@@ -920,6 +920,8 @@
     "enable_order_rotation": true,
     "rotation_interval_min": 60,
     "skip_stable_live_orders": true,
-    "book_loop_concurrency": 5
+    "book_loop_concurrency": 5,
+    "post_delay_min_sec": 3,
+    "post_delay_max_sec": 15
   }
 }
