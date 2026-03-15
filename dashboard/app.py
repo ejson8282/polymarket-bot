@@ -638,9 +638,9 @@ with tab_markets:
         df = pd.DataFrame(rows)
         styled = (
             df.style
-            .applymap(lambda v: STATUS_COLORS.get(v, ""), subset=["Status"])
-            .applymap(lambda v: ZONE_COLORS.get(v, ""),   subset=["Zone"])
-            .applymap(lambda v: RISK_COLORS.get(v, ""),   subset=["Risk"])
+            .map(lambda v: STATUS_COLORS.get(v, ""), subset=["Status"])
+            .map(lambda v: ZONE_COLORS.get(v, ""),   subset=["Zone"])
+            .map(lambda v: RISK_COLORS.get(v, ""),   subset=["Risk"])
             .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"})
         )
         st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -981,7 +981,7 @@ with tab_proxy:
             def color_proxy_status(val):
                 return "color:#3fb950" if val == "OK" else "color:#f85149"
             st.dataframe(
-                df_p.style.applymap(color_proxy_status, subset=["Status"])
+                df_p.style.map(color_proxy_status, subset=["Status"])
                     .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"}),
                 use_container_width=True, hide_index=True,
             )
@@ -1134,8 +1134,8 @@ with tab_accounts:
 
         st.dataframe(
             df_acc.style
-                .applymap(acc_color_status, subset=["Status"])
-                .applymap(acc_color_cooldown, subset=["Cooldown"])
+                .map(acc_color_status, subset=["Status"])
+                .map(acc_color_cooldown, subset=["Cooldown"])
                 .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"}),
             use_container_width=True,
             hide_index=True,
