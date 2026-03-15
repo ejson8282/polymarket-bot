@@ -126,7 +126,7 @@ class PolyLPSMulti:
         funder = str(account.get("funder", "")).strip()
         env_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
         private_key = env_key or str(account.get("private_key", "")).strip()
-        if not private_key or "REPLACE" in private_key:
+        if not private_key or "REPLACE" in private_key or "REDACTED" in private_key:
             raise ValueError("Private key missing. Set POLY_PRIVATE_KEY env var or config.account.private_key")
 
         client_kwargs = {
@@ -366,6 +366,8 @@ class PolyLPSMulti:
                 await asyncio.to_thread(self.client.cancel_orders, ids)
                 log(f"[safety] best_bid_guard cancelled {len(ids)} orders at/above best_bid={current_best_bid} token={token_id}")
                 self._last_plan_sig[token_id] = ""
+                # do not just cancel-and-idle: force next pass to rebuild quote from latest book
+                self.last_quote_ts[token_id] = 0.0
         except Exception as e:
             log(f"[safety] best_bid_guard error token={token_id} err={e}")
 
@@ -423,9 +425,21 @@ class PolyLPSMulti:
                 if cancel_ids:
                     ids = [oid for _, _, oid in cancel_ids]
                     await asyncio.to_thread(self.client.cancel_orders, ids)
+
+                    touched_tokens: set[str] = set()
                     for tid, bb, oid in cancel_ids:
                         log(f"[guard-loop] cancelled order at best_bid={bb} token={tid} oid={oid}")
                         self._last_plan_sig[tid] = ""
+                        self.last_quote_ts[tid] = 0.0
+                        touched_tokens.add(tid)
+
+                    # user-requested behavior: after post-check cancel, immediately rebuild quote
+                    # from latest best-bid/ask (same quoting logic), instead of cancel-and-wait only.
+                    for tid in touched_tokens:
+                        try:
+                            await self.update_and_quote_market(tid)
+                        except Exception as e:
+                            log(f"[guard-loop] requote error token={tid} err={e}")
 
             except Exception as e:
                 log(f"[guard-loop] error: {e}")
@@ -790,6 +804,7 @@ class PolyLPSMulti:
         try:
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, token_id="", signature_type=self.signature_type)
             data = await asyncio.to_thread(self.client.get_balance_allowance, params)
+            log(f"[debug-bal] raw={data} sig={self.signature_type}")
             if not isinstance(data, dict):
                 return None
 
@@ -1092,7 +1107,8 @@ class PolyLPSMulti:
                 self._market_balance_fail_streak[token_id] = self._market_balance_fail_streak.get(token_id, 0) + 1
                 log(
                     f"[risk] balance/allowance token={token_id} "
-                    f"market_streak={self._market_balance_fail_streak[token_id]} global_streak={self._balance_fail_streak}"
+                    f"market_streak={self._market_balance_fail_streak[token_id]} global_streak={self._balance_fail_streak} "
+                    f"err={e}"
                 )
 
                 # isolate to market-level cooldown; do not cancel all events
