@@ -344,13 +344,36 @@ class PolyLPSMulti:
         self._tick_resolved.add(token_id)
         log(f"[tick-auto] {token_id}: tick={resolved}")
 
+    async def _normalize_guard_best_bid(self, token_id: str, book_now: Any) -> Optional[Decimal]:
+        """Use the same anti-placeholder top-of-book normalization as quote path."""
+        if not book_now or not getattr(book_now, "bids", None) or not getattr(book_now, "asks", None):
+            return None
+        try:
+            best_bid = Decimal(str(book_now.bids[0].price))
+            best_ask = Decimal(str(book_now.asks[0].price))
+        except Exception:
+            return None
+
+        if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+            return None
+
+        # align with quote-path fallback for placeholder books like 0.001/0.999
+        if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
+            anchor = await self._get_anchor_bid_from_gamma(token_id)
+            if anchor is None or anchor <= 0:
+                log(f"[guard-loop] skip token={token_id} reason=placeholder_book_no_anchor bid={best_bid} ask={best_ask}")
+                return None
+            best_bid = anchor
+
+        return best_bid
+
     async def _check_not_at_best_bid(self, token_id: str) -> None:
         """Cancel any of our orders that are at or above current best_bid."""
         try:
             book_now = await asyncio.to_thread(self.client.get_order_book, token_id)
-            if not book_now or not getattr(book_now, "bids", None):
+            current_best_bid = await self._normalize_guard_best_bid(token_id, book_now)
+            if current_best_bid is None:
                 return
-            current_best_bid = Decimal(str(book_now.bids[0].price))
 
             orders = await asyncio.to_thread(self.client.get_orders)
             at_risk = [
@@ -410,9 +433,9 @@ class PolyLPSMulti:
                     _last_guard_ts[tid] = now
                     try:
                         book_now = await asyncio.to_thread(self.client.get_order_book, tid)
-                        if not book_now or not getattr(book_now, "bids", None):
+                        best_bid = await self._normalize_guard_best_bid(tid, book_now)
+                        if best_bid is None:
                             continue
-                        best_bid = Decimal(str(book_now.bids[0].price))
                         for o in tok_orders:
                             op = Decimal(str(o.get("price", 0) or 0))
                             if op >= best_bid:
