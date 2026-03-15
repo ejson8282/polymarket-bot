@@ -221,9 +221,14 @@ class PolyLPSMulti:
         self._health_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self._book_req_exc_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self.net_degraded_fail_threshold = int(execution.get("net_degraded_fail_threshold", 10))
-        self.global_req_exc_window_sec = int(execution.get("global_req_exc_window_sec", 30))
-        self.global_req_exc_events_threshold = int(execution.get("global_req_exc_events_threshold", 5))
+        # request-exception storm gate (anti-jitter tuned)
+        self.global_req_exc_window_sec = int(execution.get("global_req_exc_window_sec", 45))
+        self.global_req_exc_events_threshold = int(execution.get("global_req_exc_events_threshold", 8))
+        self.req_exc_confirm_trade_poll = int(execution.get("req_exc_confirm_trade_poll", 2))
+        self.req_exc_confirm_guard_loop = int(execution.get("req_exc_confirm_guard_loop", 2))
         self._req_exc_recent: Dict[str, float] = {}
+        self._trade_poll_req_exc_streak: int = 0
+        self._guard_loop_req_exc_streak: int = 0
         self._poll_err_ts: float = 0.0
         self._last_ws_ok_ts: float = 0.0
         self._last_http_ok_ts: float = 0.0
@@ -466,10 +471,18 @@ class PolyLPSMulti:
                         except Exception as e:
                             log(f"[guard-loop] requote error token={tid} err={e}")
 
+                # healthy iteration resets guard req-exception streak
+                self._guard_loop_req_exc_streak = 0
+
             except Exception as e:
                 log(f"[guard-loop] error: {e}")
                 if self._is_req_exc(e):
                     self._log_req_diag("guard-loop", e)
+                    self._guard_loop_req_exc_streak += 1
+                    if self._guard_loop_req_exc_streak >= self.req_exc_confirm_guard_loop:
+                        await self._mark_req_exc_and_maybe_storm("guard-loop", "global_request_exception_storm")
+                else:
+                    self._guard_loop_req_exc_streak = 0
             await asyncio.sleep(guard_interval)
 
     def _build_price_legs(self, token_id: str, book: TopOfBook, live_spread: Optional[Decimal] = None) -> list[Decimal]:
@@ -917,6 +930,16 @@ class PolyLPSMulti:
             f"read_proxy={read_proxy} ws_proxy={ws_proxy} msg={em} cause={cause}"
         )
 
+    async def _mark_req_exc_and_maybe_storm(self, key: str, reason: str) -> None:
+        now = time.time()
+        self._req_exc_recent[key] = now
+        active_exc = [
+            k for k, ts in list(self._req_exc_recent.items())
+            if now - ts <= self.global_req_exc_window_sec
+        ]
+        if len(active_exc) >= self.global_req_exc_events_threshold:
+            await self.trigger_global_kill_switch(reason)
+
     async def book_loop(self) -> None:
         sem = asyncio.Semaphore(self._book_loop_concurrency)
 
@@ -930,9 +953,7 @@ class PolyLPSMulti:
                     log(f"[book-loop] token={token_id} error: {em}")
                     if self._is_req_exc(e):
                         self._log_req_diag("book-loop", e, token_id)
-                        now = time.time()
                         self._book_req_exc_streak[token_id] = self._book_req_exc_streak.get(token_id, 0) + 1
-                        self._req_exc_recent[token_id] = now
 
                         # event-level hard protect
                         if self._book_req_exc_streak[token_id] >= self.net_degraded_fail_threshold:
@@ -940,12 +961,7 @@ class PolyLPSMulti:
                             self._book_req_exc_streak[token_id] = 0
 
                         # global storm hard protect (distinct events in last window)
-                        active_exc = [
-                            t for t, ts in list(self._req_exc_recent.items())
-                            if now - ts <= self.global_req_exc_window_sec
-                        ]
-                        if len(active_exc) >= self.global_req_exc_events_threshold:
-                            await self.trigger_global_kill_switch("global_request_exception_storm")
+                        await self._mark_req_exc_and_maybe_storm(token_id, "global_request_exception_storm")
                     else:
                         self._book_req_exc_streak[token_id] = 0
 
@@ -1433,11 +1449,18 @@ class PolyLPSMulti:
                     self._seen_trade_ids = set(keep)
                     self._seen_trade_ids_order = keep
 
+                # healthy iteration resets req-exception streak
+                self._trade_poll_req_exc_streak = 0
                 await asyncio.sleep(2)
             except Exception as e:
                 log(f"[trade-poll] err={e}")
                 if self._is_req_exc(e):
                     self._log_req_diag("trade-poll", e)
+                    self._trade_poll_req_exc_streak += 1
+                    if self._trade_poll_req_exc_streak >= self.req_exc_confirm_trade_poll:
+                        await self._mark_req_exc_and_maybe_storm("trade-poll", "global_request_exception_storm")
+                else:
+                    self._trade_poll_req_exc_streak = 0
                 await asyncio.sleep(3)
 
     async def fill_watch_loop(self) -> None:
