@@ -393,6 +393,8 @@ class PolyLPSMulti:
                 self.last_quote_ts[token_id] = 0.0
         except Exception as e:
             log(f"[safety] best_bid_guard error token={token_id} err={e}")
+            if self._is_req_exc(e):
+                self._log_req_diag("best-bid-guard-check", e, token_id)
 
     async def best_bid_guard_loop(self) -> None:
         """Continuous background loop: scan all live orders across all markets.
@@ -466,6 +468,8 @@ class PolyLPSMulti:
 
             except Exception as e:
                 log(f"[guard-loop] error: {e}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("guard-loop", e)
             await asyncio.sleep(guard_interval)
 
     def _build_price_legs(self, token_id: str, book: TopOfBook, live_spread: Optional[Decimal] = None) -> list[Decimal]:
@@ -896,6 +900,23 @@ class PolyLPSMulti:
             for t in tasks:
                 t.cancel()
 
+    def _is_req_exc(self, e: Exception) -> bool:
+        em = str(e)
+        return (
+            "Request exception" in em
+            or isinstance(e, requests.exceptions.RequestException)
+        )
+
+    def _log_req_diag(self, scope: str, e: Exception, token_id: str = "") -> None:
+        em = str(e).replace("\n", " ")[:240]
+        cause = repr(getattr(e, "__cause__", None))[:180]
+        read_proxy = "on" if HTTP_PROXIES else "off"
+        ws_proxy = "on" if WS_PROXY else "off"
+        log(
+            f"[netdiag] scope={scope} token={token_id or '-'} etype={type(e).__name__} "
+            f"read_proxy={read_proxy} ws_proxy={ws_proxy} msg={em} cause={cause}"
+        )
+
     async def book_loop(self) -> None:
         sem = asyncio.Semaphore(self._book_loop_concurrency)
 
@@ -907,7 +928,8 @@ class PolyLPSMulti:
                 except Exception as e:
                     em = str(e)
                     log(f"[book-loop] token={token_id} error: {em}")
-                    if "Request exception" in em:
+                    if self._is_req_exc(e):
+                        self._log_req_diag("book-loop", e, token_id)
                         now = time.time()
                         self._book_req_exc_streak[token_id] = self._book_req_exc_streak.get(token_id, 0) + 1
                         self._req_exc_recent[token_id] = now
@@ -1282,6 +1304,8 @@ class PolyLPSMulti:
                 if ws_down_since <= 0:
                     ws_down_since = now
                 log(f"[fill-ws] err={e}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("fill-ws", e)
 
                 ws_down = now - ws_down_since
                 poll_recent_bad = (now - self._poll_err_ts) <= 15 if self._poll_err_ts > 0 else False
@@ -1343,6 +1367,8 @@ class PolyLPSMulti:
             except Exception as e:
                 self._poll_err_ts = time.time()
                 log(f"[fill-poll] err={e}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("fill-poll", e)
                 await asyncio.sleep(3)
 
     async def _trade_poll_watch(self) -> None:
@@ -1410,6 +1436,8 @@ class PolyLPSMulti:
                 await asyncio.sleep(2)
             except Exception as e:
                 log(f"[trade-poll] err={e}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("trade-poll", e)
                 await asyncio.sleep(3)
 
     async def fill_watch_loop(self) -> None:
