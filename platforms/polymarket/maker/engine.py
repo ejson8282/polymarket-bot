@@ -63,7 +63,11 @@ def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
     if (not for_ws) and not pp.get("use_for_reads", True):
         return None
 
-    items = [x for x in (pp.get("items") or []) if x and x.get("enabled") and str(x.get("url", "")).strip()]
+    # enabled semantics: only explicit False means disabled; None/omitted are treated as enabled
+    items = [
+        x for x in (pp.get("items") or [])
+        if x and x.get("enabled") is not False and str(x.get("url", "")).strip()
+    ]
     if not items:
         return None
 
@@ -595,7 +599,7 @@ class PolyLPSMulti:
                 "https://gamma-api.polymarket.com/markets",
                 params={"clob_token_ids": token_id, "limit": 1},
                 timeout=20,
-                proxies=HTTP_PROXIES,
+                proxies=self._read_proxies_for_token(token_id),
             )
             if r.status_code == 200:
                 arr = r.json()
@@ -641,7 +645,7 @@ class PolyLPSMulti:
                 "https://gamma-api.polymarket.com/markets",
                 params={"clob_token_ids": token_id, "limit": 3},
                 timeout=20,
-                proxies=HTTP_PROXIES,
+                proxies=self._read_proxies_for_token(token_id),
             )
             if r.status_code != 200:
                 return True, "api_unstable_skip"
@@ -913,6 +917,10 @@ class PolyLPSMulti:
             for t in tasks:
                 t.cancel()
 
+    def _read_proxies_for_token(self, token_id: str = "") -> Optional[dict]:
+        p = _choose_proxy(self.cfg, for_ws=False, shard_key=str(token_id or ""))
+        return {"http": p, "https": p} if p else None
+
     def _is_req_exc(self, e: Exception) -> bool:
         em = str(e)
         return (
@@ -986,7 +994,7 @@ class PolyLPSMulti:
                 "https://gamma-api.polymarket.com/markets",
                 params={"clob_token_ids": token_id, "limit": 2},
                 timeout=20,
-                proxies=HTTP_PROXIES,
+                proxies=self._read_proxies_for_token(token_id),
             )
             # requests.get positional args above: url, params, timeout
             if r.status_code != 200:
