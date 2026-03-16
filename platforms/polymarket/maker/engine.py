@@ -20,6 +20,7 @@ HTTP_PROXIES_WRITE = None  # write operations: cancel, place order — always di
 WS_PROXY = None
 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
+from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 
 
 @dataclass
@@ -128,22 +129,55 @@ class PolyLPSMulti:
         signature_type = int(account.get("signature_type", 0))
         self.signature_type = signature_type
         funder = str(account.get("funder", "")).strip()
-        env_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
-        private_key = env_key or str(account.get("private_key", "")).strip()
-        if not private_key or "REPLACE" in private_key or "REDACTED" in private_key:
-            raise ValueError("Private key missing. Set POLY_PRIVATE_KEY env var or config.account.private_key")
 
-        client_kwargs = {
-            "host": host,
-            "chain_id": chain_id,
-            "key": private_key,
-            "signature_type": signature_type,
-        }
-        if funder:
-            client_kwargs["funder"] = funder
-        self.client = ClobClient(**client_kwargs)
-        self.api_creds = self.client.create_or_derive_api_creds()
-        self.client.set_api_creds(self.api_creds)
+        signer_server_url = str(account.get("signer_server_url", "")).strip()
+        self.remote_signer: RemoteSignerClient | None = None
+
+        if signer_server_url:
+            # --- Remote signer mode: private key lives on Mac Mini ---
+            log(f">>> REMOTE SIGNER MODE: using Mac Mini at {signer_server_url} (private key is NOT on this machine)")
+            signer_token = os.getenv("SIGNER_TOKEN", "").strip() or str(account.get("signer_token", "")).strip()
+            self.remote_signer = RemoteSignerClient(signer_server_url, signer_token)
+            creds_data = self.remote_signer.derive_creds()
+            address = creds_data["address"]
+            log(f">>> Remote signer connected, address: {address}")
+
+            # Create ClobClient without private key (L0 read-only + L2 via api_creds)
+            self.client = ClobClient(host=host, chain_id=chain_id)
+            # Inject AddressStub so client.signer.address() works for HMAC headers
+            self.client.signer = AddressStub(address, chain_id)
+            # Inject a stub builder so code that accesses self.client.builder won't crash
+            self.client.builder = BuilderStub(sig_type=signature_type, funder=funder)
+
+            from py_clob_client.clob_types import ApiCreds
+            self.api_creds = ApiCreds(
+                api_key=creds_data["api_key"],
+                api_secret=creds_data["api_secret"],
+                api_passphrase=creds_data["api_passphrase"],
+            )
+            self.client.set_api_creds(self.api_creds)
+        else:
+            # --- Local signer mode: backward-compatible ---
+            env_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
+            private_key = env_key or str(account.get("private_key", "")).strip()
+            if not private_key or "REPLACE" in private_key or "REDACTED" in private_key:
+                raise ValueError("Private key missing. Set POLY_PRIVATE_KEY env var or config.account.private_key")
+
+            client_kwargs = {
+                "host": host,
+                "chain_id": chain_id,
+                "key": private_key,
+                "signature_type": signature_type,
+            }
+            if funder:
+                client_kwargs["funder"] = funder
+            self.client = ClobClient(**client_kwargs)
+            self.api_creds = self.client.create_or_derive_api_creds()
+            self.client.set_api_creds(self.api_creds)
+            # some py_clob_client builds may not expose .builder in local mode
+            # but downstream polling paths still reference it indirectly.
+            if not hasattr(self.client, "builder"):
+                self.client.builder = BuilderStub(sig_type=signature_type, funder=funder)
 
         strategy = self.cfg.get("strategy", {})
         risk = self.cfg.get("risk", {})
@@ -271,7 +305,7 @@ class PolyLPSMulti:
         self._seen_trade_ids_order: list[str] = []
         # pending unwind SELL orders: [{token_id, fill_price, fill_size, order_id, placed_at}]
         self._pending_unwinds: list[dict] = []
-        self._unwind_check_interval_sec: int = int(execution.get("unwind_check_interval_sec", 1800))
+        self._unwind_check_interval_sec: int = int(execution.get("unwind_check_interval_sec", 300))
         self._unwind_max_age_sec: int = int(execution.get("unwind_max_age_sec", 14400))
 
         # state writer
@@ -505,6 +539,7 @@ class PolyLPSMulti:
 
         if safe_top < reward_lower or safe_top < tick:
             # No valid position exists in reward zone; skip this market
+            log(f"[price-legs-skip] token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
             return []
 
         # Number of qualifying positions below best_bid that remain in the reward zone
@@ -802,33 +837,61 @@ class PolyLPSMulti:
             log(f"[risk] EVENT_BANNED token={token_id} canceled={canceled}/{len(ids)} ttl={self.event_ban_ttl_sec}s")
 
             # Unwind strategy: always post-only SELL at fill price (break-even exit).
-            # All fills regardless of size get an unwind order.
-            # unwind_tracking_loop monitors progress; if still open after unwind_max_age_sec,
-            # sends a Discord alert for manual review — no automatic re-pricing.
+            # Post with retry + verification: confirm order is live, retry up to 3 times.
             if matched_size is not None and matched_price is not None and matched_size > 0 and matched_price > 0:
-                try:
-                    await self._action_delay(f"unwind-post token={token_id}")
-                    s_args = OrderArgs(token_id=token_id, price=float(matched_price), size=float(matched_size), side=SELL)
-                    s_signed = await asyncio.to_thread(self.client.create_order, s_args)
-                    s_resp = await asyncio.to_thread(self.client.post_order, s_signed, OrderType.GTC)
-                    unwind_order_id = ""
-                    if isinstance(s_resp, dict):
-                        unwind_order_id = str(s_resp.get("orderID") or s_resp.get("id") or "")
-                    notional = matched_size * matched_price
-                    self._pending_unwinds.append({
-                        "token_id": token_id,
-                        "fill_price": float(matched_price),
-                        "fill_size": float(matched_size),
-                        "order_id": unwind_order_id,
-                        "placed_at": time.time(),
-                        "reason": reason,
-                    })
-                    log(
-                        f"[risk] UNWIND_POSTED token={token_id} price={matched_price} size={matched_size} "
-                        f"notional={notional:.2f} order_id={unwind_order_id}"
-                    )
-                except Exception as ue:
-                    log(f"[risk] UNWIND_POST_FAIL token={token_id} err={ue}")
+                unwind_confirmed = False
+                for attempt in range(1, 4):
+                    try:
+                        await self._action_delay(f"unwind-post token={token_id} attempt={attempt}")
+                        if self.remote_signer:
+                            s_signed = await asyncio.to_thread(
+                                self.remote_signer.sign_order, token_id, float(matched_price), float(matched_size), "SELL"
+                            )
+                        else:
+                            s_args = OrderArgs(token_id=token_id, price=float(matched_price), size=float(matched_size), side=SELL)
+                            s_signed = await asyncio.to_thread(self.client.create_order, s_args)
+                        s_resp = await asyncio.to_thread(self.client.post_order, s_signed, OrderType.GTC)
+                        unwind_order_id = ""
+                        if isinstance(s_resp, dict):
+                            unwind_order_id = str(s_resp.get("orderID") or s_resp.get("id") or "")
+                        if not unwind_order_id:
+                            log(f"[risk] UNWIND_POST no order_id returned attempt={attempt} resp={s_resp}")
+                            await asyncio.sleep(2)
+                            continue
+                        # Verify order is actually live
+                        await asyncio.sleep(2)
+                        orders = await asyncio.to_thread(self.client.get_orders)
+                        live_ids = {
+                            str(o.get("id") or o.get("orderID") or "")
+                            for o in orders
+                            if str(o.get("status", "")).lower() in ("live", "open", "active", "matched")
+                        }
+                        if unwind_order_id in live_ids:
+                            notional = matched_size * matched_price
+                            self._pending_unwinds.append({
+                                "token_id": token_id,
+                                "fill_price": float(matched_price),
+                                "fill_size": float(matched_size),
+                                "order_id": unwind_order_id,
+                                "placed_at": time.time(),
+                                "reason": reason,
+                            })
+                            log(
+                                f"[risk] UNWIND_POSTED token={token_id} price={matched_price} size={matched_size} "
+                                f"notional={notional:.2f} order_id={unwind_order_id} attempt={attempt}"
+                            )
+                            unwind_confirmed = True
+                            break
+                        else:
+                            log(f"[risk] UNWIND_VERIFY_FAIL order_id={unwind_order_id} not in live orders attempt={attempt}")
+                            await asyncio.sleep(3)
+                    except Exception as ue:
+                        log(f"[risk] UNWIND_POST_FAIL token={token_id} attempt={attempt} err={ue}")
+                        await asyncio.sleep(3)
+                if not unwind_confirmed:
+                    msg = f"[ALERT] Unwind SELL failed after 3 attempts token={token_id} price={matched_price} size={matched_size}"
+                    log(f"[risk] {msg}")
+                    self.send_discord(msg)
 
             # Also ban the paired YES/NO token to prevent correlated fills
             paired = self._paired_token_cache.get(token_id)
@@ -1065,12 +1128,29 @@ class PolyLPSMulti:
         if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
             return
 
-        # fallback for placeholder books like 0.001/0.999 -> use gamma outcomePrices anchor
+        # placeholder books (0.01/0.99 or 0.001/0.999) can come from stale/shared snapshots.
+        # try one direct refresh first, then gamma anchor fallback.
+        if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
+            try:
+                fresh = await asyncio.to_thread(self.client.get_order_book, token_id)
+                if fresh and getattr(fresh, "bids", None) and getattr(fresh, "asks", None):
+                    fbid = Decimal(str(fresh.bids[0].price))
+                    fask = Decimal(str(fresh.asks[0].price))
+                    if fbid > Decimal("0.02") and fask < Decimal("0.98") and fask >= fbid:
+                        book = fresh
+                        best_bid, best_ask = fbid, fask
+            except Exception:
+                pass
+
+        # fallback for unresolved placeholder books -> use gamma outcomePrices anchor
         if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
             anchor = await self._get_anchor_bid_from_gamma(token_id)
             if anchor is not None and anchor > 0:
                 best_bid = anchor
                 best_ask = min(Decimal("1"), anchor + Decimal("0.01"))
+            else:
+                log(f"[quote-skip] token={token_id} reason=placeholder_book_unresolved bid={best_bid} ask={best_ask}")
+                return
 
         await self._resolve_market_tick(token_id, best_bid, best_ask)
 
@@ -1192,8 +1272,13 @@ class PolyLPSMulti:
 
     async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal) -> None:
         await self._post_delay(f"post token={token_id}")
-        args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
-        signed = await asyncio.to_thread(self.client.create_order, args)
+        if self.remote_signer:
+            signed = await asyncio.to_thread(
+                self.remote_signer.sign_order, token_id, float(price), float(size), "BUY"
+            )
+        else:
+            args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
+            signed = await asyncio.to_thread(self.client.create_order, args)
         # GTC = passive resting order in normal use; post-only behavior is exchange-enforced by price placement.
         await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
 
@@ -1374,18 +1459,22 @@ class PolyLPSMulti:
                             await self._trigger_event_offline(token, f"POLL_REMAINING_DROP:{last}->{remain}")
 
                 # notifications audit fallback (low weight)
-                notes = await asyncio.to_thread(self.client.get_notifications)
-                if isinstance(notes, list):
-                    for n in notes:
-                        token = str(n.get("asset_id") or n.get("token_id") or n.get("market") or "")
-                        if token not in self.market_cfg:
-                            continue
-                        et = str(n.get("eventType", n.get("type", ""))).lower()
-                        if "fill" in et or et == "2":
-                            nid = str(n.get("id") or f"notif:{token}:{et}")
-                            if self._allow_signal(token, nid):
-                                self._fills_seen += 1
-                                await self._trigger_event_offline(token, f"NOTIF_{et}")
+                # keep this non-fatal: some client builds may not support this path consistently.
+                try:
+                    notes = await asyncio.to_thread(self.client.get_notifications)
+                    if isinstance(notes, list):
+                        for n in notes:
+                            token = str(n.get("asset_id") or n.get("token_id") or n.get("market") or "")
+                            if token not in self.market_cfg:
+                                continue
+                            et = str(n.get("eventType", n.get("type", ""))).lower()
+                            if "fill" in et or et == "2":
+                                nid = str(n.get("id") or f"notif:{token}:{et}")
+                                if self._allow_signal(token, nid):
+                                    self._fills_seen += 1
+                                    await self._trigger_event_offline(token, f"NOTIF_{et}")
+                except Exception as e:
+                    log(f"[fill-poll] notifications-path-skip err={e}")
 
                 await asyncio.sleep(5)
             except Exception as e:
@@ -1486,10 +1575,30 @@ class PolyLPSMulti:
             )
             self.send_discord(msg)
 
+    async def _get_token_position(self, token_id: str) -> float:
+        """Check how many conditional tokens we hold for a given token_id."""
+        try:
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL, token_id=token_id, signature_type=self.signature_type
+            )
+            data = await asyncio.to_thread(self.client.get_balance_allowance, params)
+            if not isinstance(data, dict):
+                return -1.0  # unknown
+            bal = data.get("balance")
+            if isinstance(bal, dict):
+                bal = bal.get("available") or bal.get("raw") or bal.get("value")
+            if bal is not None:
+                return float(self._norm_usdc(Decimal(str(bal))))
+            return -1.0
+        except Exception as e:
+            log(f"[unwind] position check failed token={token_id} err={e}")
+            return -1.0  # unknown — don't act on error
+
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
+        - If position is 0 → already sold (manually or filled), cancel residual order, remove.
         - If the order is no longer in live orders → assume filled, remove.
-        - If age > unwind_max_age_sec and still open → cancel and escalate (re-post at lower price).
+        - If age > unwind_max_age_sec and still open → Discord alert for manual review.
         """
         while self._running:
             await asyncio.sleep(self._unwind_check_interval_sec)
@@ -1512,6 +1621,19 @@ class PolyLPSMulti:
                     placed_at = float(uw.get("placed_at") or 0)
                     age = now - placed_at
 
+                    # Check if position has been closed (manually sold or filled)
+                    position = await self._get_token_position(token_id)
+                    if position == 0.0:
+                        # Position gone — cancel any residual sell order and clear
+                        if oid and oid in live_ids:
+                            try:
+                                await asyncio.to_thread(self.client.cancel, oid)
+                                log(f"[unwind] position=0, canceled residual order={oid}")
+                            except Exception as ce:
+                                log(f"[unwind] cancel residual failed order={oid} err={ce}")
+                        log(f"[unwind] cleared token={token_id} position=0 age={age:.0f}s (manually sold or filled)")
+                        continue
+
                     if oid and oid not in live_ids:
                         # Order no longer open — filled or externally cancelled; consider done
                         log(f"[unwind] completed token={token_id} order_id={oid} age={age:.0f}s")
@@ -1525,12 +1647,12 @@ class PolyLPSMulti:
                             f"token={token_id}\n"
                             f"fill_price={fill_price} size={fill_size} notional={float(fill_price * fill_size):.2f}\n"
                             f"order_id={oid}\n"
+                            f"position={position}\n"
                             f"reason={uw.get('reason', '')}\n"
                             f"Action required: check market and decide manually."
                         )
-                        log(f"[unwind] timeout alert token={token_id} age={hours:.1f}h order_id={oid}")
+                        log(f"[unwind] timeout alert token={token_id} age={hours:.1f}h order_id={oid} position={position}")
                         self.send_discord(msg)
-                        # Keep in pending list — alert will repeat next check cycle until resolved
                         still_pending.append(uw)
                     else:
                         still_pending.append(uw)
