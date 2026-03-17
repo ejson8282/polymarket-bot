@@ -1276,6 +1276,17 @@ class PolyLPSMulti:
             signed = await asyncio.to_thread(
                 self.remote_signer.sign_order, token_id, float(price), float(size), "BUY"
             )
+            # remote signer may return a plain dict, while py_clob_client expects
+            # an object exposing .dict(). Wrap minimally for compatibility.
+            if isinstance(signed, dict):
+                class _SignedOrderWrap:
+                    def __init__(self, d: dict):
+                        self._d = d
+
+                    def dict(self):
+                        return self._d
+
+                signed = _SignedOrderWrap(signed)
         else:
             args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
             signed = await asyncio.to_thread(self.client.create_order, args)
