@@ -16,7 +16,10 @@ import platform
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# Beijing timezone (UTC+8)
+_BJT = timezone(timedelta(hours=8))
 from pathlib import Path
 from typing import Any
 
@@ -185,9 +188,11 @@ def stop_engine() -> str:
 
 def emergency_cancel_all() -> str:
     key = st.session_state.get("test_private_key", "").strip() or os.getenv("POLY_PRIVATE_KEY", "")
-    if not key or "REDACTED" in key:
-        return "cancel_all skipped — no key."
-    code = """
+    signer_server_url = str(acc.get("signer_server_url", "")).strip()
+    signer_token = os.getenv("SIGNER_TOKEN", "").strip() or str(acc.get("signer_token", "")).strip()
+
+    if key and "REDACTED" not in key:
+        code = """
 import json, os, sys
 from pathlib import Path
 from py_clob_client.client import ClobClient
@@ -204,16 +209,48 @@ client.set_api_creds(client.create_or_derive_api_creds())
 client.cancel_all()
 print("OK")
 """
-    env = os.environ.copy()
-    env["POLY_PRIVATE_KEY"] = key
-    p = subprocess.run([sys.executable, "-c", code],
-                       cwd=str(BASE_DIR), capture_output=True, text=True, env=env)
-    if p.returncode == 0:
-        return "cancel_all OK."
-    return f"cancel_all failed (code={p.returncode})."
+        env = os.environ.copy()
+        env["POLY_PRIVATE_KEY"] = key
+        p = subprocess.run([sys.executable, "-c", code],
+                           cwd=str(BASE_DIR), capture_output=True, text=True, env=env)
+        if p.returncode == 0:
+            return "cancel_all OK (local key)."
+        return f"cancel_all failed (local key, code={p.returncode})."
 
+    if signer_server_url and signer_token:
+        code = """
+import json
+from pathlib import Path
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import ApiCreds
+from platforms.polymarket.maker.remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+cfg = json.loads(Path("platforms/polymarket/maker/config.json").read_text(encoding="utf-8"))
+acc = cfg.get("account", {})
+host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
+chain_id = int(acc.get("chain_id", 137))
+signature_type = int(acc.get("signature_type", 0))
+funder = acc.get("funder")
+signer = RemoteSignerClient(acc.get("signer_server_url"), acc.get("signer_token"))
+creds = signer.derive_creds()
+client = ClobClient(host=host, chain_id=chain_id)
+client.signer = AddressStub(creds["address"], chain_id)
+client.builder = BuilderStub(sig_type=signature_type, funder=funder)
+client.set_api_creds(ApiCreds(
+    api_key=creds["api_key"],
+    api_secret=creds["api_secret"],
+    api_passphrase=creds["api_passphrase"],
+))
+client.cancel_all()
+print("OK")
+"""
+        p = subprocess.run([sys.executable, "-c", code],
+                           cwd=str(REPO_DIR), capture_output=True, text=True, env=os.environ.copy())
+        if p.returncode == 0:
+            return "cancel_all OK (remote signer)."
+        return f"cancel_all failed (remote signer, code={p.returncode})."
 
-# ── CLOB API helpers ───────────────────────────────────────────────────────────
+    return "cancel_all skipped: no local key or remote signer credentials."
+
 
 @st.cache_data(ttl=30)
 def fetch_balance_info(host: str, key: str, chain_id: int, sig_type: int, funder: str | None) -> dict:
@@ -335,7 +372,7 @@ def load_engine_state() -> dict:
             return s
         except Exception:
             pass
-    return {"fills": [], "pending_unwinds": [], "banned_tokens": [], "markets": {}}
+    return {"fills": [], "pending_unwinds": [], "banned_tokens": [], "latency_records": [], "markets": {}}
 
 
 def load_all_engine_states() -> dict[int, dict]:
@@ -360,6 +397,42 @@ def load_all_engine_states() -> dict[int, dict]:
             except Exception:
                 pass
     return result
+
+
+def _format_countdown(seconds: Any) -> str:
+    try:
+        if seconds is None:
+            return "-"
+        secs = int(round(float(seconds)))
+    except Exception:
+        return "-"
+    if secs <= 0:
+        return "started"
+    hours, rem = divmod(secs, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _pretty_event_state(state: Any, reason: Any = None) -> str:
+    raw = str(state or "").upper()
+    reason_text = str(reason or "")
+    if raw == "START_BLOCKED":
+        if "market_started" in reason_text or "market_in_play" in reason_text:
+            return "???"
+        return "????"
+    mapping = {
+        "ACTIVE": "ACTIVE",
+        "DEFENSIVE": "DEFENSIVE",
+        "CANCELING": "CANCELING",
+        "HALTED_ON_FILL": "HALTED_ON_FILL",
+        "HALTED_ON_DATA": "HALTED_ON_DATA",
+        "COOLDOWN": "COOLDOWN",
+    }
+    return mapping.get(raw, str(state or "waiting"))
 
 
 def multi_engine_running() -> dict[int, bool]:
@@ -458,7 +531,7 @@ with col_status:
     badge = '<span class="pill-green">● RUNNING</span>' if running else '<span class="pill-red">● STOPPED</span>'
     key_badge = '<span class="pill-green">KEY OK</span>' if has_key else '<span class="pill-yellow">NO KEY</span>'
     st.markdown(f"{badge}&nbsp;&nbsp;{key_badge}", unsafe_allow_html=True)
-    st.caption(f"Refresh: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
+    st.caption(f"Refresh: {datetime.now(_BJT).strftime('%H:%M:%S')} 北京时间")
 with col_stop:
     if st.button("EMERGENCY STOP", type="primary", use_container_width=True):
         msg = stop_engine()
@@ -470,23 +543,43 @@ st.divider()
 engine_state = load_engine_state()
 _now_unix = time.time()
 
-if has_key:
+# Prefer engine_state.json (written every 5s by engine) over slow subprocess calls.
+# Only fall back to CLOB API subprocess when engine state is missing.
+_es_balance = engine_state.get("balance")
+_es_markets = engine_state.get("markets", {})
+_es_has_data = _es_balance is not None and bool(_es_markets)
+
+if _es_has_data:
+    # Fast path: all data from engine_state.json — no subprocess needed
+    balance_raw = float(_es_balance)
+    bal_info = {"balance": None, "allowance": None}
+    open_orders = []
+    # Compute order stats from engine_state markets
+    _total_order_notional = 0.0
+    _total_order_count = 0
+    for _ms in _es_markets.values():
+        for _o in _ms.get("orders", []):
+            _total_order_notional += float(_o.get("price", 0) or 0) * float(_o.get("size", 0) or 0)
+            _total_order_count += 1
+    order_size_sum = _total_order_notional
+    allowance_raw = 0.0
+    utilization = (order_size_sum / balance_raw * 100) if balance_raw > 0 else 0.0
+elif has_key:
+    # Slow path: engine not running or no state file, use subprocess
     bal_info   = fetch_balance_info(host, active_key, chain_id, sig_type, funder)
     open_orders = fetch_open_orders(host, active_key, chain_id, sig_type, funder)
+    balance_raw = float(bal_info.get("balance") or 0) / 1e6
+    allowance_raw = float(bal_info.get("allowance") or 0) / 1e6
+    order_size_sum = sum(float(o.get("size_matched", 0) or 0) * float(o.get("price", 0) or 0)
+                         for o in open_orders)
+    utilization = (order_size_sum / allowance_raw * 100) if allowance_raw > 0 else 0.0
 else:
     bal_info   = {"balance": None, "allowance": None}
     open_orders = []
-
-# Use engine_state balance when available (avoids subprocess call latency)
-_es_balance = engine_state.get("balance")
-if _es_balance is not None:
-    balance_raw = float(_es_balance)
-else:
-    balance_raw = float(bal_info.get("balance") or 0) / 1e6
-allowance_raw = float(bal_info.get("allowance") or 0) / 1e6
-order_size_sum = sum(float(o.get("size_matched", 0) or 0) * float(o.get("price", 0) or 0)
-                     for o in open_orders)
-utilization = (order_size_sum / allowance_raw * 100) if allowance_raw > 0 else 0.0
+    balance_raw = 0.0
+    allowance_raw = 0.0
+    order_size_sum = 0.0
+    utilization = 0.0
 
 fills_today  = [f for f in engine_state.get("fills", [])
                 if _now_unix - float(f.get("ts", 0) or 0) < 86400]
@@ -496,16 +589,18 @@ overdue_unwinds = [u for u in unwinds
 
 m1, m2, m3, m4, m5 = st.columns(5)
 with m1:
+    _show_bal = _es_has_data or has_key
     st.metric("USDC Balance",
-              f"${balance_raw:,.2f}" if has_key else "—",
+              f"${balance_raw:,.2f}" if _show_bal else "—",
               help="Polygon USDC collateral balance")
 with m2:
     st.metric("Order Utilization",
-              f"{utilization:.1f}%" if has_key else "—",
-              delta=f"${order_size_sum:,.0f} deployed" if has_key else None)
+              f"{utilization:.1f}%" if _show_bal else "—",
+              delta=f"${order_size_sum:,.0f} deployed" if _show_bal else None)
 with m3:
+    _order_count = _total_order_count if _es_has_data else len(open_orders)
     st.metric("Open Orders",
-              str(len(open_orders)) if has_key else "—",
+              str(_order_count) if _show_bal else "—",
               help="All live BUY limit orders")
 with m4:
     st.metric("Fills Today", str(len(fills_today)))
@@ -533,9 +628,19 @@ with tab_markets:
 
     if has_engine_state:
         age_s = _now_unix - float(engine_state.get("_loaded_at", _now_unix) or _now_unix)
-        st.caption(f"Engine state: {es_ts} UTC  |  quotes_sent={engine_state.get('quotes_sent',0)}  "
+        # Convert UTC timestamp to Beijing time for display
+        es_ts_bjt = es_ts
+        try:
+            if es_ts:
+                _utc_dt = datetime.strptime(es_ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                es_ts_bjt = _utc_dt.astimezone(_BJT).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+        current_session = engine_state.get("current_session", "—")
+        session_label = f"  |  session={current_session}" if engine_state.get("session_enabled") else ""
+        st.caption(f"Engine state: {es_ts_bjt} 北京时间  |  quotes_sent={engine_state.get('quotes_sent',0)}  "
                    f"fills_seen={engine_state.get('fills_seen',0)}  "
-                   f"cooldown={'YES' if engine_state.get('cooldown_active') else 'no'}")
+                   f"cooldown={'YES' if engine_state.get('cooldown_active') else 'no'}{session_label}")
     else:
         st.caption("Engine state file not found — showing config + CLOB API data only.")
 
@@ -551,10 +656,23 @@ with tab_markets:
         name    = resolve_market_name(tid)
         risk    = m.get("risk", "—")
         enabled = m.get("enabled", True)
+        event_state = "waiting"
+        event_reason = ""
+        countdown = "-"
+        gate_grade = ""
+        gate_action = ""
+        gate_reason = ""
 
         if has_engine_state and tid in es_markets:
             ms = es_markets[tid]
             status = ms.get("status", "waiting")
+            event_reason = ms.get("event_reason", "")
+            event_state = _pretty_event_state(ms.get("event_state", status), event_reason)
+            countdown = _format_countdown(ms.get("seconds_to_start"))
+            gate = ms.get("gate") or {}
+            gate_grade = gate.get("risk_grade", "")
+            gate_action = gate.get("top_leg_action", "")
+            gate_reason = ",".join(gate.get("reason", [])[:2]) if isinstance(gate.get("reason"), list) else ""
             mid    = ms.get("mid")
             bb     = ms.get("best_bid")
             ba     = ms.get("best_ask")
@@ -571,7 +689,7 @@ with tab_markets:
             lqt = ms.get("last_quote_ts")
             last_quote = (
                 f"{int(_now_unix - lqt)}s ago" if lqt and (_now_unix - lqt) < 3600
-                else datetime.utcfromtimestamp(lqt).strftime("%H:%M:%S") if lqt else "—"
+                else datetime.fromtimestamp(lqt, tz=_BJT).strftime("%H:%M:%S") if lqt else "—"
             )
             # in-zone check: are orders within [reward_lower, reward_upper]?
             if es_orders and rl is not None and ru is not None:
@@ -596,17 +714,26 @@ with tab_markets:
             zone_str   = "—"
             if not enabled:
                 status = "disabled"
+                event_state = status
             elif not has_key:
                 status = "no key"
+                event_state = status
             elif n_orders == 0:
                 status = "no orders"
+                event_state = status
             else:
                 status = "active"
+                event_state = status
 
         rows.append({
             "#":          _i,
             "Market":     name,
             "Status":     status,
+            "Event":      event_state,
+            "Event ETA":  countdown,
+            "Gate":       gate_grade,
+            "Action":     gate_action,
+            "Reason":     gate_reason,
             "Zone":       zone_str,
             "Mid":        f"{mid:.4f}" if mid is not None else "—",
             "Best Bid":   f"{bb:.4f}"  if bb  is not None else "—",
@@ -634,11 +761,15 @@ with tab_markets:
             "out of zone": "color:#d29922",
         }
         RISK_COLORS = {"low": "color:#3fb950", "mid": "color:#d29922", "high": "color:#f85149"}
+        EVENT_COLORS = {"ACTIVE": "color:#3fb950; font-weight:600", "DEFENSIVE": "color:#d29922; font-weight:600", "CANCELING": "color:#f85149; font-weight:600", "HALTED_ON_FILL": "color:#f85149; font-weight:600", "HALTED_ON_DATA": "color:#f85149; font-weight:600", "COOLDOWN": "color:#8b949e", "????": "color:#d29922; font-weight:600", "???": "color:#f85149; font-weight:600"}
+        GATE_COLORS = {"A": "color:#3fb950", "B": "color:#d29922", "C": "color:#f85149", "BLOCK": "color:#f85149; font-weight:600"}
 
         df = pd.DataFrame(rows)
         styled = (
             df.style
             .map(lambda v: STATUS_COLORS.get(v, ""), subset=["Status"])
+            .map(lambda v: EVENT_COLORS.get(v, ""),  subset=["Event"])
+            .map(lambda v: GATE_COLORS.get(v, ""),   subset=["Gate"])
             .map(lambda v: ZONE_COLORS.get(v, ""),   subset=["Zone"])
             .map(lambda v: RISK_COLORS.get(v, ""),   subset=["Risk"])
             .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"})
@@ -646,6 +777,67 @@ with tab_markets:
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:
         st.info("No markets configured.")
+
+    # ── Night Markets ──────────────────────────────────────────────────────────
+    night_markets_cfg = cfg.get("night_markets", [])
+    if night_markets_cfg:
+        st.divider()
+        current_session = engine_state.get("current_session", "day")
+        session_indicator = " (ACTIVE)" if current_session == "night" else ""
+        st.markdown(f'<p class="section-title">Night Markets 夜盘{session_indicator}</p>', unsafe_allow_html=True)
+
+        night_rows = []
+        for nm in night_markets_cfg:
+            tid = str(nm.get("token_id", ""))
+            enabled = nm.get("enabled", True)
+            ms = es_markets.get(tid, {})
+
+            label = resolve_market_name(tid)
+            risk = nm.get("risk", "mid")
+            quote_size = nm.get("quote_size", "—")
+            spread = nm.get("max_incentive_spread", "—")
+            min_dist = nm.get("min_distance_from_best_bid", "—")
+
+            if ms:
+                mid = ms.get("mid")
+                bb = ms.get("best_bid")
+                n_orders = len(ms.get("orders", []))
+                event_state = ms.get("event_state", "—")
+                status = ms.get("status", "—")
+            else:
+                mid = bb = None
+                n_orders = 0
+                event_state = "—"
+                status = "disabled" if not enabled else "waiting"
+
+            night_rows.append({
+                "Market": label,
+                "Status": status,
+                "Event": event_state,
+                "Mid": f"{mid:.4f}" if mid is not None else "—",
+                "Best Bid": f"{bb:.4f}" if bb is not None else "—",
+                "Size": str(quote_size),
+                "Spread": str(spread),
+                "Risk": risk,
+            })
+
+        if night_rows:
+            NIGHT_STATUS_COLORS = {
+                "active": "color:#3fb950; font-weight:600",
+                "waiting": "color:#8b949e",
+                "disabled": "color:#8b949e",
+                "banned": "color:#f85149; font-weight:600",
+            }
+            df_night = pd.DataFrame(night_rows)
+            styled_night = (
+                df_night.style
+                .map(lambda v: NIGHT_STATUS_COLORS.get(v, ""), subset=["Status"])
+                .map(lambda v: {"low": "color:#3fb950", "mid": "color:#d29922", "high": "color:#f85149"}.get(v, ""), subset=["Risk"])
+                .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"})
+            )
+            st.dataframe(styled_night, use_container_width=True, hide_index=True)
+        else:
+            st.info("No night markets configured.")
 
     if st.button("Refresh Markets", key="refresh_markets"):
         fetch_balance_info.clear()
@@ -698,10 +890,10 @@ with tab_fills:
         fill_rows = []
         for f in reversed(all_fills[-50:]):
             ts_unix = float(f.get("ts", 0) or 0)
-            ts_str  = datetime.utcfromtimestamp(ts_unix).strftime("%Y-%m-%d %H:%M:%S") if ts_unix else "—"
+            ts_str  = datetime.fromtimestamp(ts_unix, tz=_BJT).strftime("%Y-%m-%d %H:%M:%S") if ts_unix else "—"
             notional = (float(f.get("price", 0) or 0) * float(f.get("size", 0) or 0))
             fill_rows.append({
-                "Time (UTC)": ts_str,
+                "Time (BJT)": ts_str,
                 "Token":      f.get("token_id", "")[:16] + "...",
                 "Price":      f"{f.get('price', 0):.4f}" if f.get("price") else "—",
                 "Size":       f"{f.get('size', 0):.1f}"  if f.get("size")  else "—",
@@ -717,25 +909,39 @@ with tab_fills:
 with tab_scan:
     st.markdown('<p class="section-title">Market Scanner</p>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        min_reward = st.number_input("Min Daily Reward ($)", value=20, step=10)
-    with c2:
+    row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
+    with row1_c1:
+        min_reward = st.number_input("Min Daily Reward ($)", value=10, step=10)
+    with row1_c2:
+        max_reward = st.number_input("Max Daily Reward ($)", value=8888, step=10, help="0 = no limit")
+    with row1_c3:
+        min_spread = st.number_input("Min Spread", value=1, step=1, help="maxIncentiveSpread lower bound")
+    with row1_c4:
+        max_spread = st.number_input("Max Spread", value=10, step=1, help="0 = no limit")
+
+    row2_c1, row2_c2, row2_c3 = st.columns(3)
+    with row2_c1:
         min_vol = st.number_input("Min 24h Volume ($)", value=10_000, step=10_000)
-    with c3:
-        sort_by = st.selectbox("Sort by", ["reward", "reward_score", "volume", "score"])
-    with c4:
+    with row2_c2:
+        sort_by = st.selectbox("Sort by", ["reward", "reward_score", "volume", "score"], index=1)
+    with row2_c3:
         top_n = st.number_input("Top N", value=50, min_value=5, max_value=200)
 
     if st.button("Run Scan", use_container_width=False):
         with st.spinner("Scanning Polymarket... (30-60s)"):
+            scan_cmd = [
+                sys.executable, str(SCAN_PATH),
+                "--min-volume", str(int(min_vol)),
+                "--min-reward", str(int(min_reward)),
+                "--max-reward", str(int(max_reward)),
+                "--min-spread", str(min_spread),
+                "--max-spread", str(max_spread),
+                "--sort-by", sort_by,
+                "--top", str(int(top_n)),
+                "--json",
+            ]
             proc_json = subprocess.run(
-                [sys.executable, str(SCAN_PATH),
-                 "--min-volume", str(int(min_vol)),
-                 "--min-reward", str(int(min_reward)),
-                 "--sort-by", sort_by,
-                 "--top", str(int(top_n)),
-                 "--json"],
+                scan_cmd,
                 cwd=str(BASE_DIR), capture_output=True, text=True,
             )
         # find the JSON line robustly (first line starting with "[")
@@ -827,7 +1033,7 @@ with tab_scan:
                 fig.add_annotation(text=txt, x=x, y=y, showarrow=False,
                                    font=dict(color="#8b949e", size=11))
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
 
             # ── Merged table: results + config toggle ─────────────────────────
             st.markdown(
@@ -839,11 +1045,13 @@ with tab_scan:
             )
 
             existing_tokens = {m["token_id"] for m in cfg.get("markets", [])}
+            existing_night_tokens = {m["token_id"] for m in cfg.get("night_markets", [])}
 
             df_edit = pd.DataFrame([{
                 "#":         idx + 1,
                 "In Config": (item.get("token_id", "") in existing_tokens
                               or item.get("quadrant", "").startswith(("A", "C"))),
+                "夜盘":      item.get("token_id", "") in existing_night_tokens,
                 "Market":    item.get("question", "")[:60],
                 "Zone":      item.get("quadrant", "?")[0],
                 "Daily $":   round(item.get("reward", 0), 0),
@@ -866,6 +1074,9 @@ with tab_scan:
                     "In Config": st.column_config.CheckboxColumn(
                         "In Config", help="Check to add, uncheck to remove", width="small"
                     ),
+                    "夜盘": st.column_config.CheckboxColumn(
+                        "夜盘", help="勾选添加到夜盘 config", width="small"
+                    ),
                     "Market":  st.column_config.TextColumn("Market", width="large"),
                     "打开链接": st.column_config.LinkColumn("打开链接", display_text="打开链接", width="small"),
                     "Zone":    st.column_config.TextColumn("Zone", width="small"),
@@ -875,14 +1086,16 @@ with tab_scan:
                     "Spread":  st.column_config.NumberColumn("Spread",  format="%.3f"),
                 },
                 disabled=["#", "Market", "Zone", "Daily $", "Risk", "Crowd", "Vol 24h", "Spread", "打开链接"],
+                # Note: "In Config" and "夜盘" columns are editable
                 key=f"scan_editor_{len(scan_results)}",
             )
 
-            # apply changes when In Config column differs from original
+            # apply changes when In Config / 夜盘 columns differ from original
             changed = False
             for i, row in edited.iterrows():
                 tid  = df_edit.at[i, "_token_id"]
                 item = json.loads(df_edit.at[i, "_item"])
+                # --- day market toggle ---
                 want_in = bool(row["In Config"])
                 is_in   = tid in existing_tokens
                 if want_in and not is_in:
@@ -902,36 +1115,95 @@ with tab_scan:
                                       if m["token_id"] != tid]
                     existing_tokens.discard(tid)
                     changed = True
+                # --- night market toggle ---
+                want_night = bool(row["夜盘"])
+                is_night   = tid in existing_night_tokens
+                if want_night and not is_night:
+                    cfg.setdefault("night_markets", []).append({
+                        "token_id": tid,
+                        "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
+                        "price_tick": 0.01,
+                        "min_distance_from_best_bid": 0.02,
+                        "quote_size": 80.0,
+                        "risk": "low",
+                        "enabled": True,
+                    })
+                    existing_night_tokens.add(tid)
+                    changed = True
+                elif not want_night and is_night:
+                    cfg["night_markets"] = [m for m in cfg.get("night_markets", [])
+                                            if m["token_id"] != tid]
+                    existing_night_tokens.discard(tid)
+                    changed = True
             if changed:
                 save_config(cfg)
                 st.rerun()
 
             # ── Replace all button ────────────────────────────────────────────
             st.markdown("")
-            if st.button("应用到 Config（替换全部旧市场）", type="primary"):
-                checked_items = [
-                    item for i, (row, item) in enumerate(
-                        zip(edited.itertuples(), table_results)
-                    )
-                    if row._1  # "In Config" is first column
-                ]
-                new_markets = [{
-                    "token_id": item.get("token_id", ""),
-                    "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
-                    "price_tick": 0.01,
-                    "min_distance_from_best_bid": 0.01,
-                    "quote_size": 100.0,
-                    "risk": "low" if item.get("quadrant", "").startswith("A") else "mid",
-                    "enabled": True,
-                } for item in checked_items if item.get("token_id")]
-                cfg["markets"] = new_markets
-                save_config(cfg)
-                st.success(f"已替换：写入 {len(new_markets)} 个市场，旧配置已清除。")
-                st.rerun()
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("应用到 Config（替换全部旧市场）", type="primary"):
+                    checked_items = [
+                        item for i, (row, item) in enumerate(
+                            zip(edited.itertuples(), table_results)
+                        )
+                        if row._1  # "In Config" is first column
+                    ]
+                    new_markets = [{
+                        "token_id": item.get("token_id", ""),
+                        "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
+                        "price_tick": 0.01,
+                        "min_distance_from_best_bid": 0.01,
+                        "quote_size": 100.0,
+                        "risk": "low" if item.get("quadrant", "").startswith("A") else "mid",
+                        "enabled": True,
+                    } for item in checked_items if item.get("token_id")]
+                    cfg["markets"] = new_markets
+                    save_config(cfg)
+                    st.success(f"已替换：写入 {len(new_markets)} 个市场，旧配置已清除。")
+                    st.rerun()
+            with btn_col2:
+                if st.button("应用到夜盘 Config（替换全部旧夜盘市场）", type="secondary"):
+                    checked_night = []
+                    for i, row in edited.iterrows():
+                        if bool(row["夜盘"]):
+                            item = json.loads(df_edit.at[i, "_item"])
+                            if item.get("token_id"):
+                                checked_night.append({
+                                    "token_id": item["token_id"],
+                                    "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
+                                    "price_tick": 0.01,
+                                    "min_distance_from_best_bid": 0.02,
+                                    "quote_size": 80.0,
+                                    "risk": "low",
+                                    "enabled": True,
+                                })
+                    cfg["night_markets"] = checked_night
+                    save_config(cfg)
+                    st.success(f"夜盘已更新：写入 {len(checked_night)} 个市场。")
+                    st.rerun()
+
+            # ── Night market summary ───────────────────────────────────────────
+            night_selected = [df_edit.at[i, "Market"] for i, row in edited.iterrows()
+                              if bool(row.get("夜盘", False))]
+            night_cfg_count = len(cfg.get("night_markets", []))
+            if night_selected or night_cfg_count:
+                st.markdown(
+                    f'<p class="section-title">已选夜盘市场'
+                    f'&nbsp;&nbsp;<span style="color:#58a6ff">'
+                    f'{len(night_selected)} 个已勾选 / {night_cfg_count} 个在 config'
+                    f'</span></p>',
+                    unsafe_allow_html=True,
+                )
+                if night_selected:
+                    for idx, name in enumerate(night_selected, 1):
+                        st.markdown(f"&ensp;{idx}. {name}")
+                else:
+                    st.caption("当前表格中无勾选夜盘，config 中已有的夜盘市场不在本次 scan 结果中。")
 
         except ImportError:
             st.warning("pip install plotly  to enable scatter chart.")
-
 
 
 # ══ TAB: PROXY ════════════════════════════════════════════════════════════════
@@ -1050,7 +1322,7 @@ with tab_control:
 
         # future: remote signer status
         st.markdown("")
-        signer_url = acc.get("signer_url", "")
+        signer_url = acc.get("signer_server_url", "")
         if signer_url:
             st.markdown(
                 f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
@@ -1089,7 +1361,15 @@ with tab_accounts:
             cfg_name = f"config_{acc_id}.json" if acc_id > 0 else "config.json"
 
             is_running = alive_map.get(acc_id, False)
-            state_ts   = s.get("ts", "—")
+            _raw_ts = s.get("ts", "—")
+            try:
+                if _raw_ts and _raw_ts != "—":
+                    _utc_dt = datetime.strptime(_raw_ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    state_ts = _utc_dt.astimezone(_BJT).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    state_ts = "—"
+            except Exception:
+                state_ts = _raw_ts
             balance    = s.get("balance")
             n_markets  = len(s.get("markets", {}))
             n_orders   = sum(
@@ -1213,8 +1493,8 @@ with tab_accounts:
         st.info("No config*.json files found.")
 
 
-# ── auto-refresh (5s) ──────────────────────────────────────────────────────────
-st_autorefresh(interval=10000, key="auto_refresh")
+# ── auto-refresh disabled ──────────────────────────────────────────────────────
+# st_autorefresh(interval=10000, key="auto_refresh")
 
 st.markdown(
     "<p style='color:#30363d; font-size:11px; text-align:right; margin-top:24px;'>"
