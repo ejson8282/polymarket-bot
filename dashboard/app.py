@@ -509,6 +509,7 @@ with st.sidebar:
 cfg = load_config()
 acc = cfg.get("account", {})
 host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
+scan_defaults = cfg.get("dashboard", {}).get("scan_defaults", {})
 
 # active key: test session key > env var > config (REDACTED)
 active_key = (
@@ -910,22 +911,32 @@ with tab_scan:
     st.markdown('<p class="section-title">Market Scanner</p>', unsafe_allow_html=True)
 
     row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
+    scan_min_reward = int(scan_defaults.get("min_reward", 10) or 0)
+    scan_max_reward = int(scan_defaults.get("max_reward", 8888) or 0)
+    scan_min_spread = int(scan_defaults.get("min_spread", 1) or 0)
+    scan_max_spread = int(scan_defaults.get("max_spread", 10) or 0)
+    scan_min_vol = int(scan_defaults.get("min_volume", 10_000) or 0)
+    scan_sort_by = str(scan_defaults.get("sort_by", "reward_score") or "reward_score")
+    scan_top_n = int(scan_defaults.get("top_n", 50) or 50)
+    sort_options = ["reward", "reward_score", "volume", "score"]
+    sort_index = sort_options.index(scan_sort_by) if scan_sort_by in sort_options else 1
+
     with row1_c1:
-        min_reward = st.number_input("Min Daily Reward ($)", value=10, step=10)
+        min_reward = st.number_input("Min Daily Reward ($)", value=scan_min_reward, step=10)
     with row1_c2:
-        max_reward = st.number_input("Max Daily Reward ($)", value=8888, step=10, help="0 = no limit")
+        max_reward = st.number_input("Max Daily Reward ($)", value=scan_max_reward, step=10, help="0 = no limit")
     with row1_c3:
-        min_spread = st.number_input("Min Spread", value=1, step=1, help="maxIncentiveSpread lower bound")
+        min_spread = st.number_input("Min Spread", value=scan_min_spread, step=1, help="maxIncentiveSpread lower bound")
     with row1_c4:
-        max_spread = st.number_input("Max Spread", value=10, step=1, help="0 = no limit")
+        max_spread = st.number_input("Max Spread", value=scan_max_spread, step=1, help="0 = no limit")
 
     row2_c1, row2_c2, row2_c3 = st.columns(3)
     with row2_c1:
-        min_vol = st.number_input("Min 24h Volume ($)", value=10_000, step=10_000)
+        min_vol = st.number_input("Min 24h Volume ($)", value=scan_min_vol, step=10_000)
     with row2_c2:
-        sort_by = st.selectbox("Sort by", ["reward", "reward_score", "volume", "score"], index=1)
+        sort_by = st.selectbox("Sort by", sort_options, index=sort_index)
     with row2_c3:
-        top_n = st.number_input("Top N", value=50, min_value=5, max_value=200)
+        top_n = st.number_input("Top N", value=scan_top_n, min_value=5, max_value=200)
 
     if st.button("Run Scan", use_container_width=False):
         with st.spinner("Scanning Polymarket... (30-60s)"):
