@@ -3,8 +3,9 @@ import json
 import os
 import random
 import time
+import urllib.request
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,6 +34,34 @@ class TopOfBook:
         return (self.best_bid + self.best_ask) / Decimal("2")
 
 
+@dataclass
+class MarketSnapshot:
+    best_bid: Decimal = Decimal("0")
+    best_ask: Decimal = Decimal("0")
+    bids: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    asks: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    last_update_ts: float = 0.0
+    last_book_ts_ms: int = 0
+    source: str = "rest"
+
+
+EVENT_ACTIVE = "ACTIVE"
+EVENT_DEFENSIVE = "DEFENSIVE"
+EVENT_CANCELING = "CANCELING"
+EVENT_HALTED_ON_FILL = "HALTED_ON_FILL"
+EVENT_HALTED_ON_DATA = "HALTED_ON_DATA"
+EVENT_COOLDOWN = "COOLDOWN"
+EVENT_STARTED_BLOCKED = "START_BLOCKED"
+EVENT_WATCH = "WATCH"
+EVENT_QUARANTINE = "QUARANTINE"
+EVENT_EXIT_PENDING = "EXIT_PENDING"
+EVENT_PENDING_MANUAL_EXIT = "PENDING_MANUAL_EXIT"
+
+
+class EventHaltPreempted(RuntimeError):
+    pass
+
+
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
@@ -41,6 +70,33 @@ def log(msg: str) -> None:
     except UnicodeEncodeError:
         safe = line.encode("gbk", errors="ignore").decode("gbk", errors="ignore")
         print(safe, flush=True)
+
+
+def _format_exc(exc: Exception, limit: int = 220) -> str:
+    msg = str(exc or "").strip()
+    if not msg:
+        return exc.__class__.__name__
+    compact = " ".join(msg.split())
+    lower = compact.lower()
+    if "cloudflare" in lower and "502" in lower:
+        return "Cloudflare 502 Bad Gateway"
+    if len(compact) > limit:
+        return compact[: limit - 3] + "..."
+    return compact
+
+
+def _ws_proxy_diag() -> str:
+    sys_proxies = urllib.request.getproxies() or {}
+    sys_proxy = (
+        sys_proxies.get("https")
+        or sys_proxies.get("http")
+        or sys_proxies.get("all")
+        or sys_proxies.get("ftp")
+    )
+    effective = WS_PROXY if WS_PROXY else "direct"
+    forced_direct = WS_PROXY is None
+    detected = sys_proxy or "none"
+    return f"system_proxy={detected} effective_ws_proxy={effective} ws_direct_forced={forced_direct}"
 
 
 def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
@@ -105,7 +161,27 @@ def _init_proxy_settings(cfg: dict):
     if read_proxy:
         HTTP_PROXIES = {"http": read_proxy, "https": read_proxy}
     else:
-        HTTP_PROXIES = None
+        # Fall back to system proxy env vars when proxy_pool is disabled
+        sys_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+        if sys_proxy:
+            HTTP_PROXIES = {"http": sys_proxy, "https": sys_proxy}
+        else:
+            HTTP_PROXIES = None
+
+    # Patch py_clob_client's httpx client to use the resolved proxy
+    # Patch py_clob_client's httpx client:
+    # - Use http2=False to avoid WinError 10035 with asyncio.to_thread on Windows
+    # - Apply proxy if available
+    _final_proxy = read_proxy or (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "")
+    try:
+        import httpx
+        from py_clob_client.http_helpers import helpers as _hh
+        kwargs = {"http2": False}
+        if _final_proxy:
+            kwargs["proxy"] = _final_proxy
+        _hh._http_client = httpx.Client(**kwargs)
+    except Exception:
+        pass
 
 
 class PolyLPSMulti:
@@ -208,6 +284,7 @@ class PolyLPSMulti:
 
         self.kill_switch_on_fill = bool(risk.get("kill_switch_on_fill", True))
         self.cooldown_seconds = int(risk.get("cooldown_seconds", 60))
+        self.start_freeze_seconds = int(risk.get("start_freeze_seconds", 120))
 
         reporting = self.cfg.get("reporting", {})
         self.discord_webhook = str(reporting.get("discord_webhook", "")).strip()
@@ -225,20 +302,42 @@ class PolyLPSMulti:
                 "tick": Decimal(str(m.get("price_tick", self.default_tick))),
                 "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
                 "risk": str(m.get("risk", "mid")).lower(),
+                "session": str(m.get("session", "both")).lower(),
             }
 
         if not self.market_cfg:
             raise ValueError("No valid enabled markets in config.markets")
 
         self.market_states: Dict[str, TopOfBook] = {}
+        self._market_snapshots: Dict[str, MarketSnapshot] = {}
+        self._market_depth_snapshots: Dict[str, MarketSnapshot] = {}
+        self._event_states: Dict[str, Dict[str, Any]] = {
+            tid: {"state": EVENT_ACTIVE, "reason": "init", "updated_at": time.time()}
+            for tid in self.market_cfg
+        }
+        self._event_locks: Dict[str, asyncio.Lock] = {tid: asyncio.Lock() for tid in self.market_cfg}
+        self._latency_marks: Dict[str, Dict[str, float]] = {tid: {} for tid in self.market_cfg}
+        self._latency_records: list[dict] = []
+        self._halt_requested: Dict[str, Optional[str]] = {tid: None for tid in self.market_cfg}
+        self._top_leg_defense_tasks: Dict[str, asyncio.Task] = {}
+        self._gate_decisions: Dict[str, Dict[str, Any]] = {}
+        self._last_top_plan_sig: Dict[str, str] = {}
+        self._last_back_plan_sig: Dict[str, str] = {}
         self.last_quote_ts: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+        self._market_budget_pct: Dict[str, Decimal] = {}
+        self._size_requote_tolerance_pct = Decimal(str(strategy.get("size_requote_tolerance_pct", 0.05)))
         self._tick_resolved: set[str] = set()
+
+        # execution pacing: risk actions immediate, normal posting lightly paced
+        execution = self.cfg.get("execution", {})
 
         self._cooldown_until = 0.0
         self._running = True
         self._fills_seen = 0
         self._quotes_sent = 0
         self._balance_fail_streak = 0
+        self._balance_cache_ttl_sec = float(execution.get("balance_cache_ttl_sec", 3.0))
+        self._balance_cache: tuple[Optional[Decimal], float] = (None, 0.0)
         self.max_balance_fail_streak = int(risk.get("max_balance_fail_streak", 8))
         # {token_id: (anchor_value, timestamp)} — TTL-based
         self._anchor_cache: Dict[str, tuple] = {}
@@ -247,10 +346,13 @@ class PolyLPSMulti:
         self._market_balance_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self._market_skip_until: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
 
-        # execution pacing: risk actions immediate, normal posting lightly paced
-        execution = self.cfg.get("execution", {})
         self.post_delay_min_sec = float(execution.get("post_delay_min_sec", 1))
         self.post_delay_max_sec = float(execution.get("post_delay_max_sec", 3))
+        self.signer_max_concurrency = max(1, int(execution.get("signer_max_concurrency", 1)))
+        self.signer_requote_gap_sec = float(execution.get("signer_requote_gap_sec", 1.2))
+        self._signer_sem = asyncio.Semaphore(self.signer_max_concurrency)
+        self._signer_gap_lock = asyncio.Lock()
+        self._last_signer_post_ts = 0.0
 
         # market reward-health auto offlining
         self.health_check_interval_sec = int(execution.get("health_check_interval_sec", 600))
@@ -269,6 +371,8 @@ class PolyLPSMulti:
         self._guard_loop_req_exc_streak: int = 0
         self._poll_err_ts: float = 0.0
         self._last_ws_ok_ts: float = 0.0
+        self._last_market_ws_ok_ts: float = 0.0
+        self._market_ws_down_cancel_sec: float = float(execution.get("market_ws_down_cancel_sec", 30))
         self._last_http_ok_ts: float = 0.0
         self.ws_down_trigger_sec = int(execution.get("ws_down_trigger_sec", 10))
         self.cancel_retry_window_sec = int(execution.get("cancel_retry_window_sec", 300))
@@ -281,6 +385,7 @@ class PolyLPSMulti:
             "crude-oil-cl-hit",
             "presidential-election-winner-2028",
             "2028-us-presidential-election",
+            "democratic-presidential-nominee-2028",
         ]
         self._token_slug_cache: Dict[str, str] = {}
         # {token_id: (meta_dict, timestamp)} — TTL prevents stale reward/spread data
@@ -290,6 +395,7 @@ class PolyLPSMulti:
         self._anchor_cache_ttl_sec: int = int(execution.get("anchor_cache_ttl_sec", 120))
         # YES/NO paired token map: {token_id: paired_token_id}
         self._paired_token_cache: Dict[str, str] = {}
+        self._market_condition_ids: Dict[str, str] = {}
 
         # aggressive fill guard (event-level offlining)
         self.fill_size_threshold = Decimal(str(risk.get("fill_size_threshold", 0.01)))
@@ -308,6 +414,50 @@ class PolyLPSMulti:
         self._unwind_check_interval_sec: int = int(execution.get("unwind_check_interval_sec", 300))
         self._unwind_max_age_sec: int = int(execution.get("unwind_max_age_sec", 14400))
 
+        # --- P0: watch/quarantine volatility tracker ---
+        volatility_cfg = self.cfg.get("volatility", {})
+        self._vol_front_notional_drop_pct: float = float(volatility_cfg.get("front_notional_drop_pct", 0.30))
+        self._vol_bba_jump_ticks: int = int(volatility_cfg.get("bba_jump_ticks", 2))
+        self._vol_defense_action_window_sec: float = float(volatility_cfg.get("defense_action_window_sec", 60))
+        self._vol_defense_action_threshold: int = int(volatility_cfg.get("defense_action_threshold", 2))
+        self._vol_watch_duration_sec: float = float(volatility_cfg.get("watch_duration_sec", 120))
+        self._vol_quarantine_duration_sec: float = float(volatility_cfg.get("quarantine_duration_sec", 300))
+        # per-token rolling window: {token_id: {"front_notional_history": [(ts, val)], "defense_actions": [(ts, action)], "watch_enter_ts": float, "quarantine_enter_ts": float}}
+        self._volatility_tracker: Dict[str, Dict[str, Any]] = {
+            tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None}
+            for tid in self.market_cfg
+        }
+
+        # --- P1: fill后限价卖出 ---
+        exit_cfg = self.cfg.get("exit_strategy", {})
+        self._exit_delay_sec: float = float(exit_cfg.get("exit_delay_sec", 5))
+        self._exit_timeout_sec: float = float(exit_cfg.get("exit_timeout_sec", 300))
+        self._exit_retry_count: int = int(exit_cfg.get("retry_count", 2))
+
+        # --- P2: 日盘/夜盘 session mode (redesigned: day=scan markets, night=night_markets) ---
+        session_cfg = self.cfg.get("session", {})
+        self._session_enabled: bool = bool(session_cfg.get("enabled", False))
+        self._session_night_start: str = str(session_cfg.get("night_start", "00:00"))
+        self._session_night_end: str = str(session_cfg.get("night_end", "06:00"))
+        self._session_tz: str = str(session_cfg.get("tz", "Asia/Shanghai"))
+        self._session_switch_gap_sec: float = float(session_cfg.get("switch_gap_sec", 5))
+        self._last_session: str = "unknown"  # track session transitions
+
+        # night_markets config: separate market list for night session
+        self._night_market_cfg: Dict[str, Dict[str, Any]] = {}
+        for m in self.cfg.get("night_markets", []):
+            if not m.get("enabled", True):
+                continue
+            token_id = str(m.get("token_id", ""))
+            if not token_id.isdigit():
+                continue
+            self._night_market_cfg[token_id] = {
+                "spread": Decimal(str(m.get("max_incentive_spread", 0.02))),
+                "tick": Decimal(str(m.get("price_tick", self.default_tick))),
+                "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
+                "risk": str(m.get("risk", "mid")).lower(),
+            }
+
         # state writer
         self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 5))
         _maker_dir = Path(config_path).resolve().parent
@@ -321,6 +471,12 @@ class PolyLPSMulti:
         self._fills_record: list[dict] = []
         self._market_live_orders: Dict[str, list] = {}
         self._last_balance: Optional[Decimal] = None
+        self._market_ws_backoff_cap_sec: int = int(execution.get("market_ws_backoff_cap_sec", 20))
+        self._market_snapshot_stale_sec: float = float(execution.get("market_snapshot_stale_sec", 5.0))
+        self._ws_recv_idle_timeout_sec: float = float(execution.get("ws_recv_idle_timeout_sec", 90.0))
+        self._ws_pong_timeout_sec: float = float(execution.get("ws_pong_timeout_sec", 10.0))
+        self._gate_send_accept_budget_ms: float = float(execution.get("gate_send_accept_budget_ms", 2500))
+        self._gate_halt_clear_budget_ms: float = float(execution.get("gate_halt_clear_budget_ms", 5000))
 
         # multi-account shared book cache (set by multi_runner; None in single-account mode)
         self._shared_book_cache: Optional[Any] = None
@@ -332,13 +488,993 @@ class PolyLPSMulti:
     def _floor_to_tick(px: Decimal, tick: Decimal) -> Decimal:
         return (px / tick).to_integral_value(rounding=ROUND_DOWN) * tick
 
+    def _event_state_entry(self, token_id: str) -> Dict[str, Any]:
+        return self._event_states.setdefault(
+            token_id,
+            {"state": EVENT_ACTIVE, "reason": "init", "updated_at": time.time()},
+        )
+
+    def _event_state_name(self, token_id: str) -> str:
+        return str(self._event_state_entry(token_id).get("state") or EVENT_ACTIVE)
+
+    def _event_blocks_quote(self, token_id: str) -> bool:
+        return self._event_state_name(token_id) in {
+            EVENT_CANCELING,
+            EVENT_HALTED_ON_FILL,
+            EVENT_HALTED_ON_DATA,
+            EVENT_COOLDOWN,
+            EVENT_STARTED_BLOCKED,
+            EVENT_WATCH,
+            EVENT_QUARANTINE,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }
+
+    def _latency_flow_reset(self, token_id: str, preserve: Optional[set[str]] = None) -> None:
+        marks = self._latency_marks.setdefault(token_id, {})
+        if not marks:
+            return
+        keep = preserve or set()
+        self._latency_marks[token_id] = {k: v for k, v in marks.items() if k in keep}
+
+    def _arm_halt_preemption(self, token_id: str, reason: str) -> None:
+        self._halt_requested[token_id] = reason
+        task = self._top_leg_defense_tasks.get(token_id)
+        if task and not task.done():
+            task.cancel()
+
+    def _clear_halt_preemption(self, token_id: str) -> None:
+        self._halt_requested[token_id] = None
+
+    def _halt_preemption_reason(self, token_id: str) -> Optional[str]:
+        reason = self._halt_requested.get(token_id)
+        if reason:
+            return reason
+        state = self._event_state_name(token_id)
+        if state in {EVENT_CANCELING, EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
+            return f"event_state={state}"
+        return None
+
+    def _ensure_order_path_open(self, token_id: str, label: str) -> None:
+        reason = self._halt_preemption_reason(token_id)
+        if reason:
+            raise EventHaltPreempted(f"{label}:{reason}")
+
+    def _set_event_state(self, token_id: str, state: str, reason: str) -> None:
+        entry = self._event_state_entry(token_id)
+        prev = str(entry.get("state") or EVENT_ACTIVE)
+        if prev == state and str(entry.get("reason") or "") == reason:
+            return
+        entry.update({"state": state, "reason": reason, "updated_at": time.time()})
+        log(f"[event-state] token={token_id} {prev}->{state} reason={reason}")
+
+    def _is_sports_market(self, meta: Optional[Dict[str, Any]] = None) -> bool:
+        info = meta or {}
+        text_parts = [
+            str(info.get("slug") or ""),
+            str(info.get("question") or ""),
+            str(info.get("title") or ""),
+            str(info.get("category") or ""),
+            str(info.get("groupItemTitle") or ""),
+            str(info.get("seriesSlug") or ""),
+        ]
+        hay = " ".join(text_parts).lower()
+        sports_markers = [
+            "sports", "nba", "nfl", "mlb", "nhl", "soccer", "football", "basketball",
+            "baseball", "tennis", "golf", "ufc", "mma", "match", "game", "vs ", " vs ",
+            "champions league", "premier league", "la liga", "serie a", "bundesliga", "world cup",
+            "super bowl", "playoffs", "final", "semi-final", "semifinal", "quarterfinal",
+        ]
+        return any(marker in hay for marker in sports_markers)
+
+    def _market_start_guard_status(
+        self,
+        token_id: str,
+        meta: Optional[Dict[str, Any]] = None,
+        now_ts: Optional[float] = None,
+    ) -> tuple[bool, str, Optional[float]]:
+        info = meta or {}
+        start_ts_raw = info.get("gameStartTs")
+        start_ts: Optional[float] = None
+        try:
+            if start_ts_raw is not None:
+                start_ts = float(start_ts_raw)
+        except Exception:
+            start_ts = None
+        if not self._is_sports_market(info):
+            return False, "", start_ts
+        now = now_ts if now_ts is not None else time.time()
+        if start_ts is not None:
+            freeze_at = start_ts - max(self.start_freeze_seconds, 0)
+            if now >= freeze_at:
+                if now >= start_ts:
+                    return True, "market_started", start_ts
+                return True, f"market_near_start:{self.start_freeze_seconds}s", start_ts
+        if bool(info.get("isInPlay")):
+            return True, "market_in_play", start_ts
+        return False, "", start_ts
+
+    async def _enforce_start_guard(
+        self,
+        token_id: str,
+        meta: Optional[Dict[str, Any]] = None,
+        trigger: str = "quote_loop",
+    ) -> bool:
+        blocked, reason, start_ts = self._market_start_guard_status(token_id, meta=meta)
+        if not blocked:
+            return False
+        reason_parts = [reason]
+        if start_ts is not None:
+            reason_parts.append(f"game_start_ts={int(start_ts)}")
+        reason_parts.append(f"trigger={trigger}")
+        final_reason = "|".join(reason_parts)
+        self._set_event_state(token_id, EVENT_STARTED_BLOCKED, final_reason)
+        live_orders = await self._refresh_live_orders(token_id)
+        if live_orders:
+            await self._cancel_order_ids(
+                token_id,
+                [self._order_id(o) for o in live_orders],
+                f"start_guard:{trigger}",
+            )
+            self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+        self.last_quote_ts[token_id] = 0.0
+        self._last_plan_sig[token_id] = ""
+        self._last_top_plan_sig[token_id] = ""
+        self._last_back_plan_sig[token_id] = ""
+        return True
+
+    def _mark_latency(self, token_id: str, key: str, ts: Optional[float] = None) -> float:
+        when = ts if ts is not None else time.time()
+        self._latency_marks.setdefault(token_id, {})[key] = when
+        return when
+
+    def _emit_latency_record(self, token_id: str, label: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        marks = dict(self._latency_marks.get(token_id, {}))
+        if not marks:
+            return
+
+        def delta(start: str, end: str) -> Optional[float]:
+            if start in marks and end in marks:
+                diff = marks[end] - marks[start]
+                if diff < 0:
+                    return None
+                return round(diff * 1000.0, 1)
+            return None
+
+        record = {
+            "token_id": token_id,
+            "label": label,
+            "ts": time.time(),
+            "detect_to_decision_ms": delta("t_detect", "t_decision"),
+            "decision_to_sign_start_ms": delta("t_decision", "t_sign_start"),
+            "sign_ms": delta("t_sign_start", "t_sign_done"),
+            "send_to_accept_ms": delta("t_send", "t_exchange_accept"),
+            "fill_to_halt_ms": delta("t_fill_seen", "t_halt_entered"),
+            "halt_to_cleared_ms": delta("t_halt_entered", "t_orders_cleared"),
+        }
+        if extra:
+            record.update(extra)
+        self._latency_records.append(record)
+        if len(self._latency_records) > 200:
+            self._latency_records = self._latency_records[-100:]
+        compact = {k: v for k, v in record.items() if k.endswith("_ms") and v is not None}
+        log(f"[latency] token={token_id} label={label} metrics={compact}")
+
+    @staticmethod
+    def _coerce_levels(levels: Any) -> list[tuple[Decimal, Decimal]]:
+        out: list[tuple[Decimal, Decimal]] = []
+        for level in levels or []:
+            try:
+                if isinstance(level, dict):
+                    px = Decimal(str(level.get("price", 0) or 0))
+                    sz = Decimal(str(level.get("size", 0) or 0))
+                else:
+                    px = Decimal(str(getattr(level, "price", 0) or 0))
+                    sz = Decimal(str(getattr(level, "size", 0) or 0))
+                if px > 0 and sz > 0:
+                    out.append((px, sz))
+            except Exception:
+                continue
+        return out
+
+    @staticmethod
+    def _sort_book_levels(
+        bids: list[tuple[Decimal, Decimal]],
+        asks: list[tuple[Decimal, Decimal]],
+    ) -> tuple[list[tuple[Decimal, Decimal]], list[tuple[Decimal, Decimal]]]:
+        return (
+            sorted(bids, key=lambda x: x[0], reverse=True),
+            sorted(asks, key=lambda x: x[0]),
+        )
+
+    @classmethod
+    def _best_prices_from_levels(
+        cls,
+        bids: list[tuple[Decimal, Decimal]],
+        asks: list[tuple[Decimal, Decimal]],
+    ) -> tuple[Decimal, Decimal]:
+        bids_sorted, asks_sorted = cls._sort_book_levels(bids, asks)
+        best_bid = bids_sorted[0][0] if bids_sorted else Decimal("0")
+        best_ask = asks_sorted[0][0] if asks_sorted else Decimal("0")
+        return best_bid, best_ask
+
+    @staticmethod
+    def _snapshot_values_valid(best_bid: Decimal, best_ask: Decimal) -> bool:
+        return best_bid > 0 and best_ask > 0 and best_ask >= best_bid
+
+    @staticmethod
+    def _snapshot_is_placeholder(best_bid: Decimal, best_ask: Decimal) -> bool:
+        return best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98")
+
+    def _fresh_valid_snapshot(self, token_id: str) -> Optional[MarketSnapshot]:
+        snap = self._market_snapshots.get(token_id)
+        if not snap:
+            return None
+        if self._snapshot_is_stale(token_id, snap):
+            return None
+        if not self._snapshot_values_valid(snap.best_bid, snap.best_ask):
+            return None
+        return snap
+
+    def _fresh_depth_snapshot(self, token_id: str) -> Optional[MarketSnapshot]:
+        snap = self._market_depth_snapshots.get(token_id)
+        if not snap:
+            return None
+        if self._snapshot_is_stale(token_id, snap):
+            return None
+        if not self._snapshot_values_valid(snap.best_bid, snap.best_ask):
+            return None
+        if self._snapshot_is_placeholder(snap.best_bid, snap.best_ask):
+            return None
+        if not snap.bids or not snap.asks:
+            return None
+        return snap
+
+    async def _recv_ws_message(self, ws: Any, scope: str) -> Any:
+        idle_timeout = self._ws_recv_idle_timeout_sec
+        if idle_timeout <= 0:
+            return await ws.recv()
+        while self._running:
+            try:
+                return await asyncio.wait_for(ws.recv(), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                try:
+                    pong_waiter = await ws.ping()
+                    await asyncio.wait_for(pong_waiter, timeout=self._ws_pong_timeout_sec)
+                    if scope == "fill-ws":
+                        self._last_ws_ok_ts = time.time()
+                except Exception as ping_exc:
+                    raise TimeoutError(
+                        f"{scope} idle>{idle_timeout:.0f}s and ping failed: {_format_exc(ping_exc)}"
+                    ) from ping_exc
+        raise asyncio.CancelledError()
+
+    def _update_market_snapshot(
+        self,
+        token_id: str,
+        *,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        bids: Optional[list[tuple[Decimal, Decimal]]] = None,
+        asks: Optional[list[tuple[Decimal, Decimal]]] = None,
+        source: str,
+        ts_ms: int = 0,
+    ) -> Optional[MarketSnapshot]:
+        prev = self._market_snapshots.get(token_id)
+        if not self._snapshot_values_valid(best_bid, best_ask):
+            log(
+                f"[snapshot-drop] token={token_id} source={source} "
+                f"bid={best_bid} ask={best_ask} reason=invalid_quote"
+            )
+            return prev
+
+        now = time.time()
+        incoming_bids, incoming_asks = self._sort_book_levels(
+            list(bids) if bids else [],
+            list(asks) if asks else [],
+        )
+        incoming_depth_trusted = (
+            bool(incoming_bids)
+            and bool(incoming_asks)
+            and not self._snapshot_is_placeholder(best_bid, best_ask)
+        )
+        if incoming_depth_trusted:
+            depth_snap = MarketSnapshot(
+                best_bid=best_bid,
+                best_ask=best_ask,
+                bids=list(incoming_bids),
+                asks=list(incoming_asks),
+                last_update_ts=now,
+                last_book_ts_ms=ts_ms,
+                source=source,
+            )
+            self._market_depth_snapshots[token_id] = depth_snap
+        else:
+            depth_snap = self._fresh_depth_snapshot(token_id)
+
+        effective_best_bid = best_bid
+        effective_best_ask = best_ask
+        if depth_snap is not None and self._snapshot_is_placeholder(best_bid, best_ask):
+            effective_best_bid = depth_snap.best_bid
+            effective_best_ask = depth_snap.best_ask
+
+        snap = prev or MarketSnapshot()
+        snap.best_bid = effective_best_bid
+        snap.best_ask = effective_best_ask
+        if incoming_depth_trusted:
+            snap.bids = list(incoming_bids)
+            snap.asks = list(incoming_asks)
+        elif depth_snap is not None:
+            snap.bids = list(depth_snap.bids)
+            snap.asks = list(depth_snap.asks)
+        elif bids is not None:
+            snap.bids = list(incoming_bids)
+            snap.asks = list(incoming_asks)
+        snap.last_update_ts = now
+        snap.last_book_ts_ms = ts_ms
+        snap.source = source
+        self._market_snapshots[token_id] = snap
+        self.market_states[token_id] = TopOfBook(best_bid=best_bid, best_ask=best_ask)
+        return snap
+
+    def _snapshot_is_stale(self, token_id: str, snapshot: Optional[MarketSnapshot] = None) -> bool:
+        snap = snapshot or self._market_snapshots.get(token_id)
+        if not snap:
+            return True
+        return (time.time() - snap.last_update_ts) > self._market_snapshot_stale_sec
+
+    def _trusted_depth_for_snapshot(
+        self,
+        token_id: str,
+        snapshot: Optional[MarketSnapshot],
+    ) -> Optional[MarketSnapshot]:
+        if snapshot is not None and snapshot.bids and snapshot.asks and not self._snapshot_is_placeholder(snapshot.best_bid, snapshot.best_ask):
+            return snapshot
+        return self._fresh_depth_snapshot(token_id)
+
+    def _effective_snapshot_for_gate(
+        self,
+        token_id: str,
+        snapshot: Optional[MarketSnapshot],
+    ) -> Optional[MarketSnapshot]:
+        if snapshot is None:
+            return None
+        depth_snapshot = self._trusted_depth_for_snapshot(token_id, snapshot)
+        if depth_snapshot is not None and self._snapshot_is_placeholder(snapshot.best_bid, snapshot.best_ask):
+            return depth_snapshot
+        return snapshot
+
+    def _quote_gate(self, token_id: str, snapshot: Optional[MarketSnapshot]) -> tuple[bool, str]:
+        effective_snapshot = self._effective_snapshot_for_gate(token_id, snapshot)
+        if effective_snapshot is None:
+            return False, "no_snapshot"
+        if self._snapshot_is_stale(token_id, effective_snapshot):
+            return False, "snapshot_stale"
+        if effective_snapshot.best_bid <= 0 or effective_snapshot.best_ask <= 0:
+            return False, "crossed_or_empty_book"
+        if effective_snapshot.best_ask < effective_snapshot.best_bid:
+            return False, "crossed_or_empty_book"
+        depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
+        if depth_snapshot is not None and depth_snapshot.bids:
+            front_notional = self._front_notional_from_snapshot(depth_snapshot, effective_snapshot.best_bid)
+            if front_notional < self.min_front_bid_notional_usdc:
+                return False, "front_depth_thin"
+        return True, "ok"
+
+    def _market_quote_budget_pct(self, token_id: str, market_risk: str) -> Decimal:
+        cached = self._market_budget_pct.get(token_id)
+        if cached is not None and cached > 0:
+            return cached
+        lo, hi = self.quote_balance_pct_ranges.get(market_risk, (self.quote_balance_pct_min, self.quote_balance_pct_max))
+        lo = max(Decimal("0"), min(lo, Decimal("1")))
+        hi = max(lo, min(hi, Decimal("1")))
+        pct = Decimal(str(random.uniform(float(lo), float(hi))))
+        self._market_budget_pct[token_id] = pct
+        return pct
+
+    def _latency_capability(self, token_id: str) -> Dict[str, Any]:
+        send_accept_ms = None
+        halt_clear_ms = None
+        for rec in reversed(self._latency_records):
+            if rec.get("token_id") != token_id:
+                continue
+            if send_accept_ms is None and rec.get("send_to_accept_ms") is not None:
+                send_accept_ms = float(rec.get("send_to_accept_ms"))
+            if halt_clear_ms is None and rec.get("halt_to_cleared_ms") is not None:
+                halt_clear_ms = float(rec.get("halt_to_cleared_ms"))
+            if send_accept_ms is not None and halt_clear_ms is not None:
+                break
+        level = "healthy"
+        if (
+            (send_accept_ms is not None and send_accept_ms > self._gate_send_accept_budget_ms)
+            or (halt_clear_ms is not None and halt_clear_ms > self._gate_halt_clear_budget_ms)
+        ):
+            level = "degraded"
+        return {
+            "send_accept_ms": send_accept_ms,
+            "halt_clear_ms": halt_clear_ms,
+            "level": level,
+        }
+
+    def _feasibility_gate(
+        self,
+        token_id: str,
+        meta: Dict[str, Any],
+        snapshot: Optional[MarketSnapshot],
+        top_price: Optional[Decimal] = None,
+    ) -> Dict[str, Any]:
+        reasons: list[str] = []
+        latency = self._latency_capability(token_id)
+        decision: Dict[str, Any] = {
+            "can_quote": True,
+            "size_cap": 1.0,
+            "top_leg_action": "keep",
+            "risk_grade": "A",
+            "reason": reasons,
+            "latency": latency,
+        }
+        effective_snapshot = self._effective_snapshot_for_gate(token_id, snapshot)
+        if effective_snapshot is None:
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "halt", "risk_grade": "BLOCK"})
+            reasons.append("no_snapshot")
+            return decision
+        if self._snapshot_is_stale(token_id, effective_snapshot):
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "halt", "risk_grade": "BLOCK"})
+            reasons.append("snapshot_stale")
+            return decision
+        if effective_snapshot.best_bid <= 0 or effective_snapshot.best_ask <= 0 or effective_snapshot.best_ask < effective_snapshot.best_bid:
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "halt", "risk_grade": "BLOCK"})
+            reasons.append("book_invalid")
+            return decision
+        if self._snapshot_is_placeholder(effective_snapshot.best_bid, effective_snapshot.best_ask):
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "halt", "risk_grade": "BLOCK"})
+            reasons.append("placeholder_book")
+            return decision
+        reward = Decimal(str(meta.get("reward") or 0))
+        if reward <= 0:
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "cancel", "risk_grade": "BLOCK"})
+            reasons.append("reward_zero")
+            return decision
+        probe_price = top_price if top_price is not None and top_price > 0 else max(effective_snapshot.best_bid, Decimal("0.01"))
+        depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
+        front_notional = self._front_notional_from_snapshot(depth_snapshot or effective_snapshot, probe_price)
+        decision["front_notional"] = float(front_notional)
+        fill_risk = float(meta.get("fill_risk") or 0.0)
+        decision["fill_risk"] = fill_risk
+        if latency["level"] == "degraded":
+            decision["size_cap"] = min(float(decision["size_cap"]), 0.5)
+            decision["risk_grade"] = "B"
+            reasons.append("latency_degraded")
+        if front_notional < (self.min_front_bid_notional_usdc * Decimal("0.50")):
+            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "cancel", "risk_grade": "BLOCK"})
+            reasons.append("front_depth_critical")
+            return decision
+        if front_notional < self.min_front_bid_notional_usdc:
+            decision.update({"size_cap": min(float(decision["size_cap"]), 0.25), "top_leg_action": "move_back", "risk_grade": "C"})
+            reasons.append("front_depth_thin")
+        if fill_risk >= 75:
+            decision.update({"size_cap": min(float(decision["size_cap"]), 0.25), "top_leg_action": "move_back", "risk_grade": "C"})
+            reasons.append("fill_risk_high")
+        elif fill_risk >= 55:
+            if decision["risk_grade"] == "A":
+                decision["risk_grade"] = "B"
+            decision["size_cap"] = min(float(decision["size_cap"]), 0.5)
+            reasons.append("fill_risk_mid")
+        if not reasons:
+            reasons.append("ok")
+        return decision
+
+    # ---------------------------------------------------------------
+    # P0: Watch / Quarantine — rapid-change market detection
+    # ---------------------------------------------------------------
+
+    def _vol_tracker(self, token_id: str) -> Dict[str, Any]:
+        return self._volatility_tracker.setdefault(
+            token_id, {"front_notional_history": [], "defense_actions": [], "bba_prev": None}
+        )
+
+    def _vol_record_front_notional(self, token_id: str, notional: Decimal) -> None:
+        tracker = self._vol_tracker(token_id)
+        now = time.time()
+        tracker["front_notional_history"].append((now, float(notional)))
+        # keep 30s window
+        tracker["front_notional_history"] = [
+            (ts, v) for ts, v in tracker["front_notional_history"] if now - ts <= 30
+        ]
+
+    def _vol_record_defense_action(self, token_id: str, action: str) -> None:
+        if action == "KEEP":
+            return
+        tracker = self._vol_tracker(token_id)
+        now = time.time()
+        tracker["defense_actions"].append((now, action))
+        tracker["defense_actions"] = [
+            (ts, a) for ts, a in tracker["defense_actions"]
+            if now - ts <= self._vol_defense_action_window_sec
+        ]
+
+    def _vol_check_bba_jump(self, token_id: str, best_bid: Decimal, best_ask: Decimal) -> bool:
+        """Return True if BBA jumped >= threshold ticks."""
+        tracker = self._vol_tracker(token_id)
+        prev = tracker.get("bba_prev")
+        tracker["bba_prev"] = (best_bid, best_ask)
+        if prev is None:
+            return False
+        prev_bid, prev_ask = prev
+        tick = self._get_mcfg(token_id).get("tick", Decimal("0.01"))
+        threshold = tick * self._vol_bba_jump_ticks
+        if abs(best_bid - prev_bid) >= threshold or abs(best_ask - prev_ask) >= threshold:
+            return True
+        return False
+
+    def _vol_check_front_notional_drop(self, token_id: str) -> bool:
+        """Return True if front_notional dropped >30% within the 30s rolling window."""
+        tracker = self._vol_tracker(token_id)
+        history = tracker.get("front_notional_history", [])
+        if len(history) < 2:
+            return False
+        oldest_val = history[0][1]
+        newest_val = history[-1][1]
+        if oldest_val <= 0:
+            return False
+        drop_pct = (oldest_val - newest_val) / oldest_val
+        return drop_pct >= self._vol_front_notional_drop_pct
+
+    def _vol_check_defense_action_storm(self, token_id: str) -> bool:
+        """Return True if >= threshold non-KEEP defense actions in the rolling window."""
+        tracker = self._vol_tracker(token_id)
+        return len(tracker.get("defense_actions", [])) >= self._vol_defense_action_threshold
+
+    def _vol_should_watch_or_quarantine(self, token_id: str) -> Optional[str]:
+        """Check all volatility signals. Returns 'watch', 'quarantine', or None."""
+        state = self._event_state_name(token_id)
+        if state in {EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA, EVENT_CANCELING,
+                      EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT, EVENT_STARTED_BLOCKED}:
+            return None
+        triggered = (
+            self._vol_check_front_notional_drop(token_id)
+            or self._vol_check_defense_action_storm(token_id)
+        )
+        if not triggered:
+            return None
+        if state == EVENT_WATCH:
+            return "quarantine"
+        return "watch"
+
+    async def _enter_watch(self, token_id: str, reason: str) -> None:
+        """Enter WATCH state: cancel all orders, start observation timer."""
+        tracker = self._vol_tracker(token_id)
+        tracker["watch_enter_ts"] = time.time()
+        self._set_event_state(token_id, EVENT_WATCH, reason)
+        live = await self._refresh_live_orders(token_id)
+        ids = [self._order_id(o) for o in live]
+        if ids:
+            await self._cancel_order_ids(token_id, ids, f"watch:{reason}")
+        log(f"[watch] token={token_id} entered WATCH reason={reason} duration={self._vol_watch_duration_sec}s")
+
+    async def _enter_quarantine(self, token_id: str, reason: str) -> None:
+        """Enter QUARANTINE state: cancel all orders, longer cooldown."""
+        tracker = self._vol_tracker(token_id)
+        tracker["quarantine_enter_ts"] = time.time()
+        self._set_event_state(token_id, EVENT_QUARANTINE, reason)
+        live = await self._refresh_live_orders(token_id)
+        ids = [self._order_id(o) for o in live]
+        if ids:
+            await self._cancel_order_ids(token_id, ids, f"quarantine:{reason}")
+        log(f"[quarantine] token={token_id} entered QUARANTINE reason={reason} duration={self._vol_quarantine_duration_sec}s")
+        self.send_discord(f"[QUARANTINE] token={token_id} reason={reason}")
+
+    def _vol_check_recovery(self, token_id: str) -> bool:
+        """Check if WATCH/QUARANTINE timer has expired and can auto-recover."""
+        state = self._event_state_name(token_id)
+        tracker = self._vol_tracker(token_id)
+        now = time.time()
+        if state == EVENT_WATCH:
+            enter_ts = tracker.get("watch_enter_ts", 0)
+            if now - enter_ts >= self._vol_watch_duration_sec:
+                return True
+        elif state == EVENT_QUARANTINE:
+            enter_ts = tracker.get("quarantine_enter_ts", 0)
+            if now - enter_ts >= self._vol_quarantine_duration_sec:
+                return True
+        return False
+
+    # ---------------------------------------------------------------
+    # P1: Fill后限价卖出 — exit strategy
+    # ---------------------------------------------------------------
+
+    async def _attempt_exit_sell(self, token_id: str, fill_price: Decimal, fill_size: Decimal, reason: str) -> None:
+        """After fill halt completes, wait then place a limit SELL order at >= fill_price."""
+        await asyncio.sleep(self._exit_delay_sec)
+
+        state = self._event_state_name(token_id)
+        if state != EVENT_HALTED_ON_FILL:
+            log(f"[exit] token={token_id} skip exit, state changed to {state}")
+            return
+
+        self._set_event_state(token_id, EVENT_EXIT_PENDING, f"exit_sell:{reason}")
+
+        position = await self._get_token_position(token_id)
+        if position <= 0:
+            log(f"[exit] token={token_id} no position to sell, position={position}")
+            self._set_event_state(token_id, EVENT_COOLDOWN, "exit_no_position")
+            return
+
+        sell_size = Decimal(str(position)) if position > 0 else fill_size
+        sell_price = fill_price
+        if sell_price <= 0:
+            sell_price = Decimal("0.01")
+
+        for attempt in range(1, self._exit_retry_count + 1):
+            try:
+                log(f"[exit] token={token_id} placing SELL attempt={attempt} price={sell_price} size={sell_size}")
+                resp = await self._place_sell_order(token_id, sell_price, sell_size)
+                order_id = str((resp or {}).get("orderID") or (resp or {}).get("id") or "")
+                log(f"[exit] token={token_id} SELL order placed order_id={order_id}")
+                self._pending_unwinds.append({
+                    "token_id": token_id,
+                    "fill_price": float(fill_price),
+                    "fill_size": float(fill_size),
+                    "sell_price": float(sell_price),
+                    "order_id": order_id,
+                    "placed_at": time.time(),
+                    "reason": reason,
+                })
+                self.send_discord(
+                    f"[EXIT] SELL order placed\n"
+                    f"token={token_id}\n"
+                    f"fill_price={fill_price} sell_price={sell_price} size={sell_size}\n"
+                    f"order_id={order_id}"
+                )
+                # start monitoring the sell order
+                asyncio.create_task(self._monitor_exit_order(token_id, order_id, sell_price, sell_size, reason))
+                return
+            except Exception as e:
+                log(f"[exit] token={token_id} SELL attempt={attempt} failed: {e}")
+                if attempt < self._exit_retry_count:
+                    await asyncio.sleep(3)
+
+        # all retries failed
+        self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_sell_failed:{reason}")
+        self.send_discord(
+            f"[EXIT FAILED] Could not place SELL order after {self._exit_retry_count} attempts\n"
+            f"token={token_id}\n"
+            f"fill_price={fill_price} size={fill_size}\n"
+            f"ACTION REQUIRED: manual exit"
+        )
+
+    async def _place_sell_order(self, token_id: str, price: Decimal, size: Decimal) -> Any:
+        """Place a SELL limit order."""
+        if self.remote_signer:
+            signed = await asyncio.to_thread(
+                self.remote_signer.sign_order, token_id, float(price), float(size), "SELL"
+            )
+            if isinstance(signed, dict):
+                class _SignedOrderWrap:
+                    def __init__(self, d: dict):
+                        self._d = d
+                    def dict(self):
+                        return self._d
+                signed = _SignedOrderWrap(signed)
+        else:
+            args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=SELL)
+            signed = await asyncio.to_thread(self.client.create_order, args)
+        resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+        return resp
+
+    async def _monitor_exit_order(self, token_id: str, order_id: str, sell_price: Decimal, sell_size: Decimal, reason: str) -> None:
+        """Monitor the exit SELL order until filled or timeout."""
+        deadline = time.time() + self._exit_timeout_sec
+        check_interval = 15
+        while self._running and time.time() < deadline:
+            await asyncio.sleep(check_interval)
+            try:
+                position = await self._get_token_position(token_id)
+                if position == 0.0:
+                    log(f"[exit] token={token_id} position=0 exit complete")
+                    self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
+                    self.send_discord(f"[EXIT COMPLETE] token={token_id} position sold")
+                    return
+
+                orders = await asyncio.to_thread(self.client.get_orders)
+                live_ids = {
+                    str(o.get("id") or o.get("orderID") or "")
+                    for o in orders
+                    if str(o.get("status", "")).lower() in ("live", "open", "active")
+                }
+                if order_id and order_id not in live_ids:
+                    new_position = await self._get_token_position(token_id)
+                    if new_position == 0.0:
+                        log(f"[exit] token={token_id} order gone + position=0, exit complete")
+                        self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
+                        self.send_discord(f"[EXIT COMPLETE] token={token_id} position sold")
+                        return
+                    else:
+                        log(f"[exit] token={token_id} order gone but position={new_position}, needs manual review")
+                        self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, "exit_order_gone_position_remains")
+                        self.send_discord(
+                            f"[EXIT ALERT] SELL order disappeared but position remains\n"
+                            f"token={token_id} position={new_position}\n"
+                            f"ACTION REQUIRED: manual exit"
+                        )
+                        return
+            except Exception as e:
+                log(f"[exit] token={token_id} monitor error: {e}")
+
+        # timeout
+        log(f"[exit] token={token_id} SELL order timeout after {self._exit_timeout_sec}s")
+        self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_timeout:{reason}")
+        self.send_discord(
+            f"[EXIT TIMEOUT] SELL order not filled after {self._exit_timeout_sec}s\n"
+            f"token={token_id}\n"
+            f"sell_price={sell_price} size={sell_size}\n"
+            f"ACTION REQUIRED: manual review"
+        )
+
+    # ---------------------------------------------------------------
+    # P2: 日盘/夜盘 session mode (redesigned)
+    # ---------------------------------------------------------------
+    # Day: run normal markets list.  Night: cancel all day orders, gap,
+    # then run night_markets list.  Transition is automatic.
+
+    def _get_mcfg(self, token_id: str) -> Dict[str, Any]:
+        """Resolve market config for a token_id from day or night markets."""
+        if token_id in self.market_cfg:
+            return self.market_cfg[token_id]
+        if token_id in self._night_market_cfg:
+            return self._night_market_cfg[token_id]
+        return {}
+
+    def _current_session(self) -> str:
+        """Return 'night' or 'day' based on current time in configured timezone."""
+        if not self._session_enabled:
+            return "day"
+        try:
+            from datetime import timezone, timedelta
+            nh_start_h, nh_start_m = map(int, self._session_night_start.split(":"))
+            nh_end_h, nh_end_m = map(int, self._session_night_end.split(":"))
+
+            if "shanghai" in self._session_tz.lower() or "beijing" in self._session_tz.lower():
+                tz_offset = timezone(timedelta(hours=8))
+            else:
+                tz_offset = timezone(timedelta(hours=8))
+            now = datetime.now(tz_offset)
+            current_minutes = now.hour * 60 + now.minute
+
+            night_start = nh_start_h * 60 + nh_start_m
+            night_end = nh_end_h * 60 + nh_end_m
+
+            if night_start <= night_end:
+                if night_start <= current_minutes < night_end:
+                    return "night"
+                return "day"
+            else:
+                if current_minutes >= night_start or current_minutes < night_end:
+                    return "night"
+                return "day"
+        except Exception as e:
+            log(f"[session] error determining session: {e}")
+            return "day"
+
+    def _active_market_cfg(self) -> Dict[str, Dict[str, Any]]:
+        """Return the market config dict for the current session."""
+        if not self._session_enabled:
+            return self.market_cfg
+        current = self._current_session()
+        if current == "night" and self._night_market_cfg:
+            return self._night_market_cfg
+        return self.market_cfg
+
+    def _session_allows(self, token_id: str) -> bool:
+        """Check if token_id belongs to the current session's active markets."""
+        if not self._session_enabled:
+            return True
+        return token_id in self._active_market_cfg()
+
+    async def _session_switch_cleanup(self) -> None:
+        """Cancel ALL orders when session switches, wait gap, then let new session start."""
+        current = self._current_session()
+        if current == self._last_session:
+            return
+
+        prev = self._last_session
+        self._last_session = current
+        if prev == "unknown":
+            log(f"[session] initial session: {current}")
+            return
+
+        log(f"[session] === SESSION SWITCH: {prev} → {current} ===")
+        self.send_discord(f"[SESSION] Switching from {prev} to {current}")
+
+        # Cancel all orders from the previous session's markets
+        prev_markets = self._night_market_cfg if prev == "night" else self.market_cfg
+        for token_id in list(prev_markets.keys()):
+            state = self._event_state_name(token_id)
+            if state in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
+                continue
+            try:
+                live = await self._refresh_live_orders(token_id)
+                ids = [self._order_id(o) for o in live]
+                if ids:
+                    await self._cancel_order_ids(token_id, ids, "session_switch")
+                    log(f"[session] token={token_id} cancelled {len(ids)} orders for session switch")
+                self._set_event_state(token_id, EVENT_COOLDOWN, "session_switch")
+            except Exception as e:
+                log(f"[session] error cancelling token={token_id}: {e}")
+
+        # Gap period before starting new session
+        gap = self._session_switch_gap_sec
+        log(f"[session] waiting {gap}s gap before starting {current} session...")
+        await asyncio.sleep(gap)
+
+        # Initialize event states for new session's markets if not already tracked
+        new_markets = self._active_market_cfg()
+        for token_id in new_markets:
+            if token_id not in self._event_states:
+                self._event_states[token_id] = {"state": EVENT_ACTIVE, "reason": "session_switch_init", "updated_at": time.time()}
+            if token_id not in self._event_locks:
+                self._event_locks[token_id] = asyncio.Lock()
+            if token_id not in self.last_quote_ts:
+                self.last_quote_ts[token_id] = 0.0
+            if token_id not in self._market_balance_fail_streak:
+                self._market_balance_fail_streak[token_id] = 0
+            if token_id not in self._market_skip_until:
+                self._market_skip_until[token_id] = 0.0
+            if token_id not in self._health_fail_streak:
+                self._health_fail_streak[token_id] = 0
+            if token_id not in self._book_req_exc_streak:
+                self._book_req_exc_streak[token_id] = 0
+            # Reset to ACTIVE for fresh start
+            self._set_event_state(token_id, EVENT_ACTIVE, f"session_switch_to_{current}")
+
+        log(f"[session] {current} session started with {len(new_markets)} markets")
+
     async def _action_delay(self, label: str) -> None:
         # emergency/risk/control actions should be immediate
         return
 
+    @staticmethod
+    def _order_id(order: dict) -> str:
+        return str(order.get("id") or order.get("orderID") or "")
+
+    @staticmethod
+    def _order_price(order: dict) -> Decimal:
+        return Decimal(str(order.get("price", 0) or 0))
+
+    @staticmethod
+    def _order_size(order: dict) -> Decimal:
+        return Decimal(str(order.get("size", 0) or order.get("original_size", 0) or 0))
+
+    def _size_change_within_tolerance(self, current_size: Decimal, desired_size: Decimal) -> bool:
+        if current_size <= 0 or desired_size <= 0:
+            return False
+        base = max(abs(current_size), abs(desired_size))
+        if base <= 0:
+            return False
+        diff_ratio = abs(current_size - desired_size) / base
+        return diff_ratio <= self._size_requote_tolerance_pct
+
+    def _sorted_live_orders(self, orders: list[dict]) -> list[dict]:
+        return sorted(
+            orders,
+            key=lambda o: (
+                self._order_price(o),
+                self._order_id(o),
+            ),
+            reverse=True,
+        )
+
+    async def _refresh_live_orders(self, token_id: str) -> list[dict]:
+        orders = await asyncio.to_thread(self.client.get_orders)
+        live = [
+            o for o in orders
+            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
+        ]
+        live = self._sorted_live_orders(live)
+        self._market_live_orders[token_id] = live
+        return live
+
+    async def _cancel_order_ids(self, token_id: str, ids: list[str], reason: str) -> bool:
+        ids = [str(x) for x in ids if x]
+        if not ids:
+            self._mark_latency(token_id, "t_orders_cleared")
+            return True
+        cancel_kind = "sync"
+        if reason.startswith("quote_gate:") or reason.startswith("feasibility_gate:"):
+            cancel_kind = "risk_gate"
+        elif "top_leg_defense" in reason or reason.endswith(":move_top") or reason.endswith(":cancel_top"):
+            cancel_kind = "top_leg_defense"
+        elif reason.startswith("empty_plan"):
+            cancel_kind = "plan_empty"
+        elif reason.startswith("guard-loop"):
+            cancel_kind = "guard"
+        log(f"[cancel] token={token_id} kind={cancel_kind} reason={reason} ids={len(ids)}")
+        self._mark_latency(token_id, "t_send")
+        try:
+            await self._action_delay(f"cancel token={token_id} reason={reason}")
+            await asyncio.to_thread(self.client.cancel_orders, ids)
+            self._mark_latency(token_id, "t_cancel_ack")
+        except Exception as e:
+            log(f"[cancel] token={token_id} kind={cancel_kind} reason={reason} err={e}")
+            return False
+        live = await self._refresh_live_orders(token_id)
+        live_ids = {self._order_id(o) for o in live}
+        cleared = all(oid not in live_ids for oid in ids)
+        if cleared:
+            self._mark_latency(token_id, "t_orders_cleared")
+        return cleared
+
+    def _front_notional_from_snapshot(self, snapshot: MarketSnapshot, my_price: Decimal) -> Decimal:
+        total = Decimal("0")
+        for bp, bs in snapshot.bids:
+            if bp >= my_price and bs > 0:
+                total += bp * bs
+        return total
+
+    async def _request_event_halt(
+        self,
+        token_id: str,
+        final_state: str,
+        reason: str,
+        matched_size: Optional[Decimal] = None,
+        matched_price: Optional[Decimal] = None,
+        halt_key: str = "t_fill_seen",
+    ) -> None:
+        self._arm_halt_preemption(token_id, reason)
+        lock = self._event_locks[token_id]
+        async with lock:
+            state = self._event_state_name(token_id)
+            if state in {EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA}:
+                return
+            preserve = {halt_key} if halt_key else set()
+            self._latency_flow_reset(token_id, preserve=preserve)
+            self._mark_latency(token_id, halt_key)
+            self._mark_latency(token_id, "t_detect")
+            self._mark_latency(token_id, "t_decision")
+            self._set_event_state(token_id, EVENT_CANCELING, reason)
+            self._mark_latency(token_id, "t_halt_entered")
+            self._fills_record.append({
+                "token_id": token_id,
+                "price": float(matched_price) if matched_price is not None else None,
+                "size": float(matched_size) if matched_size is not None else None,
+                "reason": reason,
+                "ts": time.time(),
+                "final_state": final_state,
+            })
+            if len(self._fills_record) > 200:
+                self._fills_record = self._fills_record[-100:]
+            live = await self._refresh_live_orders(token_id)
+            ids = [self._order_id(o) for o in live]
+            cleared = await self._cancel_order_ids(token_id, ids, f"halt:{reason}") if ids else True
+            if cleared:
+                self._set_event_state(token_id, final_state, reason)
+            else:
+                log(f"[event-state] token={token_id} state={EVENT_CANCELING} reason=cancel_not_cleared")
+            self._emit_latency_record(
+                token_id,
+                "event_halt",
+                {"reason": reason, "final_state": final_state, "orders_targeted": len(ids)},
+            )
+            paired = self._paired_token_cache.get(token_id)
+            if paired and paired in self.market_cfg and self._event_state_name(paired) == EVENT_ACTIVE:
+                asyncio.create_task(
+                    self._request_event_halt(
+                        paired,
+                        final_state,
+                        f"paired_halt_from:{token_id}",
+                        halt_key="t_detect",
+                    )
+                )
+
+
     async def _post_delay(self, label: str) -> None:
-        lo = max(0.0, self.post_delay_min_sec)
-        hi = max(lo, self.post_delay_max_sec)
+        pace_label = label.lower()
+        if "top_leg_defense" in pace_label:
+            lo, hi = 0.0, 1.0
+        else:
+            lo = max(0.0, self.post_delay_min_sec)
+            hi = max(lo, self.post_delay_max_sec)
         d = random.uniform(lo, hi)
         log(f"[pace] {label} sleep={d:.2f}s")
         await asyncio.sleep(d)
@@ -381,9 +1517,10 @@ class PolyLPSMulti:
             # clamp to known-safe grids in this strategy
             resolved = Decimal("0.001") if resolved < Decimal("0.01") else Decimal("0.01")
 
-        self.market_cfg[token_id]["tick"] = resolved
+        mcfg = self._get_mcfg(token_id)
+        mcfg["tick"] = resolved
         # keep min distance at least one tick
-        self.market_cfg[token_id]["min_distance"] = max(self.market_cfg[token_id]["min_distance"], resolved)
+        mcfg["min_distance"] = max(mcfg["min_distance"], resolved)
         self._tick_resolved.add(token_id)
         log(f"[tick-auto] {token_id}: tick={resolved}")
 
@@ -392,8 +1529,9 @@ class PolyLPSMulti:
         if not book_now or not getattr(book_now, "bids", None) or not getattr(book_now, "asks", None):
             return None
         try:
-            best_bid = Decimal(str(book_now.bids[0].price))
-            best_ask = Decimal(str(book_now.asks[0].price))
+            bids = self._coerce_levels(getattr(book_now, "bids", None))
+            asks = self._coerce_levels(getattr(book_now, "asks", None))
+            best_bid, best_ask = self._best_prices_from_levels(bids, asks)
         except Exception:
             return None
 
@@ -401,7 +1539,7 @@ class PolyLPSMulti:
             return None
 
         # align with quote-path fallback for placeholder books like 0.001/0.999
-        if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
+        if self._snapshot_is_placeholder(best_bid, best_ask):
             anchor = await self._get_anchor_bid_from_gamma(token_id)
             if anchor is None or anchor <= 0:
                 log(f"[guard-loop] skip token={token_id} reason=placeholder_book_no_anchor bid={best_bid} ask={best_ask}")
@@ -410,27 +1548,51 @@ class PolyLPSMulti:
 
         return best_bid
 
+    async def _legal_top_price_from_book(self, token_id: str, book_now: Any) -> Optional[Decimal]:
+        if not book_now or not getattr(book_now, "bids", None) or not getattr(book_now, "asks", None):
+            return None
+        try:
+            bids = self._coerce_levels(getattr(book_now, "bids", None))
+            asks = self._coerce_levels(getattr(book_now, "asks", None))
+            best_bid, best_ask = self._best_prices_from_levels(bids, asks)
+        except Exception:
+            return None
+        if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+            return None
+        if self._snapshot_is_placeholder(best_bid, best_ask):
+            anchor = await self._get_anchor_bid_from_gamma(token_id)
+            if anchor is None or anchor <= 0:
+                return None
+            best_bid = anchor
+        meta = await self._get_market_meta(token_id)
+        live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+        live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+        prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
+        return prices[0] if prices else None
+
     async def _check_not_at_best_bid(self, token_id: str) -> None:
-        """Cancel any of our orders that are at or above current best_bid."""
+        """Cancel any of our orders that sit above the current legal top quote."""
         try:
             book_now = await asyncio.to_thread(self.client.get_order_book, token_id)
             current_best_bid = await self._normalize_guard_best_bid(token_id, book_now)
             if current_best_bid is None:
                 return
+            legal_top = await self._legal_top_price_from_book(token_id, book_now)
+            risk_limit = legal_top if legal_top is not None else current_best_bid
 
             orders = await asyncio.to_thread(self.client.get_orders)
             at_risk = [
                 o for o in orders
                 if str(o.get("status", "")).lower() in ("live", "open", "active")
                 and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
-                and Decimal(str(o.get("price", 0) or 0)) >= current_best_bid
+                and Decimal(str(o.get("price", 0) or 0)) > risk_limit
             ]
             if not at_risk:
                 return
             ids = [o.get("id") or o.get("orderID") for o in at_risk if (o.get("id") or o.get("orderID"))]
             if ids:
                 await asyncio.to_thread(self.client.cancel_orders, ids)
-                log(f"[safety] best_bid_guard cancelled {len(ids)} orders at/above best_bid={current_best_bid} token={token_id}")
+                log(f"[safety] legal_top_guard cancelled {len(ids)} orders above legal_top={risk_limit} token={token_id}")
                 self._last_plan_sig[token_id] = ""
                 # do not just cancel-and-idle: force next pass to rebuild quote from latest book
                 self.last_quote_ts[token_id] = 0.0
@@ -453,6 +1615,23 @@ class PolyLPSMulti:
 
         while self._running:
             try:
+                # Market-WS down detection: if no message received for too long,
+                # cancel all orders — we are blind to market changes.
+                if self._last_market_ws_ok_ts > 0:
+                    market_ws_age = time.time() - self._last_market_ws_ok_ts
+                    if market_ws_age > self._market_ws_down_cancel_sec:
+                        try:
+                            await asyncio.to_thread(self.client.cancel_all)
+                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s — cancelled all orders")
+                            self.send_discord(f"[ALERT] market-ws down {market_ws_age:.0f}s, cancelled all orders for safety")
+                            for tid in self.market_cfg:
+                                self._last_plan_sig[tid] = ""
+                                self.last_quote_ts[tid] = 0.0
+                        except Exception as e:
+                            log(f"[guard-loop] market-ws-down cancel_all failed: {e}")
+                        await asyncio.sleep(guard_interval)
+                        continue
+
                 orders = await asyncio.to_thread(self.client.get_orders)
                 live = [
                     o for o in orders
@@ -481,12 +1660,14 @@ class PolyLPSMulti:
                         best_bid = await self._normalize_guard_best_bid(tid, book_now)
                         if best_bid is None:
                             continue
+                        legal_top = await self._legal_top_price_from_book(tid, book_now)
+                        risk_limit = legal_top if legal_top is not None else best_bid
                         for o in tok_orders:
                             op = Decimal(str(o.get("price", 0) or 0))
-                            if op >= best_bid:
+                            if op > risk_limit:
                                 oid = o.get("id") or o.get("orderID")
                                 if oid:
-                                    cancel_ids.append((tid, best_bid, oid))
+                                    cancel_ids.append((tid, risk_limit, oid))
                     except Exception:
                         continue
 
@@ -496,7 +1677,7 @@ class PolyLPSMulti:
 
                     touched_tokens: set[str] = set()
                     for tid, bb, oid in cancel_ids:
-                        log(f"[guard-loop] cancelled order at best_bid={bb} token={tid} oid={oid}")
+                        log(f"[guard-loop] cancelled order above legal_top={bb} token={tid} oid={oid}")
                         self._last_plan_sig[tid] = ""
                         self.last_quote_ts[tid] = 0.0
                         touched_tokens.add(tid)
@@ -524,7 +1705,7 @@ class PolyLPSMulti:
             await asyncio.sleep(guard_interval)
 
     def _build_price_legs(self, token_id: str, book: TopOfBook, live_spread: Optional[Decimal] = None) -> list[Decimal]:
-        cfg = self.market_cfg[token_id]
+        cfg = self._get_mcfg(token_id)
         tick = cfg["tick"]
 
         # Prefer live rewardsMaxSpread from API; fall back to config value
@@ -538,6 +1719,8 @@ class PolyLPSMulti:
         safe_top = book.best_bid - tick  # ceiling: best_bid - 1 tick
 
         if safe_top < reward_lower or safe_top < tick:
+            if book.best_bid >= reward_lower and book.best_bid >= tick:
+                return [self._floor_to_tick(book.best_bid, tick)]
             # No valid position exists in reward zone; skip this market
             log(f"[price-legs-skip] token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
             return []
@@ -554,6 +1737,9 @@ class PolyLPSMulti:
         else:
             max_legs = 5
 
+        if range_ticks <= 1 and book.best_bid >= reward_lower and book.best_bid >= tick:
+            return [self._floor_to_tick(book.best_bid, tick)]
+
         n_legs = min(range_ticks, max_legs)
         if n_legs <= 0:
             return []
@@ -561,6 +1747,7 @@ class PolyLPSMulti:
         prices = []
         for i in range(1, n_legs + 1):
             p = self._floor_to_tick(book.best_bid - tick * Decimal(i), tick)
+            # Liquidity rewards score falls to zero exactly at the max-spread boundary.
             if p >= reward_lower and p >= tick:
                 prices.append(p)
 
@@ -587,6 +1774,184 @@ class PolyLPSMulti:
         if n_legs == 2:
             return [Decimal("0.5"), Decimal("0.5")]
         return [Decimal("0.3"), Decimal("0.3"), Decimal("0.4")]
+
+    async def _sync_top_leg(self, token_id: str, desired: Optional[tuple[Decimal, Decimal, Decimal]], live_orders: list[dict]) -> list[dict]:
+        self._ensure_order_path_open(token_id, "planner_top_leg_sync")
+        current_top = live_orders[0] if live_orders else None
+        desired_sig = f"{desired[0]}:{desired[1]}" if desired is not None else ""
+        current_sig = f"{self._order_price(current_top)}:{self._order_size(current_top)}" if current_top else ""
+        if desired_sig == current_sig:
+            self._last_top_plan_sig[token_id] = desired_sig
+            return live_orders
+        if desired is not None and current_top is not None:
+            current_price = self._order_price(current_top)
+            current_size = self._order_size(current_top)
+            desired_price, desired_size, _ = desired
+            if current_price == desired_price and self._size_change_within_tolerance(current_size, desired_size):
+                self._last_top_plan_sig[token_id] = current_sig
+                return live_orders
+        if current_top is not None:
+            await self._cancel_order_ids(token_id, [self._order_id(current_top)], "planner_top_leg_sync")
+            live_orders = await self._refresh_live_orders(token_id)
+        if desired is not None:
+            price, size, _ = desired
+            await self.place_post_only_order(token_id, price, size, label="top_leg_sync")
+            live_orders = await self._refresh_live_orders(token_id)
+        self._last_top_plan_sig[token_id] = desired_sig
+        return live_orders
+
+    async def _sync_back_legs(self, token_id: str, desired_back: list[tuple[Decimal, Decimal, Decimal]], live_orders: list[dict]) -> list[dict]:
+        self._ensure_order_path_open(token_id, "planner_back_legs_sync")
+        live_back = live_orders[1:] if len(live_orders) > 1 else []
+        desired_sig = "|".join(f"{p}:{s}" for p, s, _ in desired_back)
+        live_sig = "|".join(f"{self._order_price(o)}:{self._order_size(o)}" for o in live_back)
+        if desired_sig == live_sig:
+            self._last_back_plan_sig[token_id] = desired_sig
+            return live_orders
+        if len(desired_back) == len(live_back) and desired_back:
+            within_tolerance = True
+            for (dp, ds, _), live_order in zip(desired_back, live_back):
+                lp = self._order_price(live_order)
+                ls = self._order_size(live_order)
+                if lp != dp or not self._size_change_within_tolerance(ls, ds):
+                    within_tolerance = False
+                    break
+            if within_tolerance:
+                self._last_back_plan_sig[token_id] = live_sig
+                return live_orders
+        ids = [self._order_id(o) for o in live_back]
+        if ids:
+            await self._cancel_order_ids(token_id, ids, "planner_back_legs_sync")
+            live_orders = await self._refresh_live_orders(token_id)
+        for price, size, _ in desired_back:
+            await self.place_post_only_order(token_id, price, size, label="back_leg_sync")
+        live_orders = await self._refresh_live_orders(token_id)
+        self._last_back_plan_sig[token_id] = desired_sig
+        return live_orders
+
+    async def _maybe_run_top_leg_defense(
+        self,
+        token_id: str,
+        trigger: str,
+        snapshot: Optional[MarketSnapshot] = None,
+    ) -> None:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._top_leg_defense_tasks[token_id] = current_task
+        try:
+            if self._event_blocks_quote(token_id):
+                return
+            snap = snapshot or self._market_snapshots.get(token_id)
+            snap = self._effective_snapshot_for_gate(token_id, snap)
+            if not snap:
+                return
+            if self._snapshot_is_stale(token_id, snap):
+                await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"stale_snapshot:{trigger}", halt_key="t_detect")
+                return
+            best_bid = snap.best_bid
+            best_ask = snap.best_ask
+            if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"bad_market_snapshot:{trigger}", halt_key="t_detect")
+                return
+
+            # --- P0: BBA jump detection (before any gate/order logic) ---
+            bba_jumped = self._vol_check_bba_jump(token_id, best_bid, best_ask)
+            if bba_jumped:
+                vol_decision = self._vol_should_watch_or_quarantine(token_id)
+                if vol_decision is None:
+                    vol_decision = "watch"
+                if vol_decision == "quarantine":
+                    await self._enter_quarantine(token_id, f"bba_jump:{trigger}")
+                    return
+                elif vol_decision == "watch":
+                    await self._enter_watch(token_id, f"bba_jump:{trigger}")
+                    return
+
+            meta = await self._get_market_meta(token_id)
+            lock = self._event_locks[token_id]
+            if lock.locked():
+                return
+            halt_reason: Optional[str] = None
+            self._ensure_order_path_open(token_id, "top_leg_defense_enter")
+            async with lock:
+                live_orders = self._sorted_live_orders(self._market_live_orders.get(token_id, []))
+                if not live_orders:
+                    return
+                top_order = live_orders[0]
+                tick = self._get_mcfg(token_id).get("tick", Decimal("0.01"))
+                top_price = self._order_price(top_order)
+                top_size = self._order_size(top_order)
+                live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+                live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+                legal_prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
+                legal_top = legal_prices[0] if legal_prices else None
+                depth_snapshot = self._trusted_depth_for_snapshot(token_id, snap)
+                front_notional = self._front_notional_from_snapshot(depth_snapshot or snap, top_price)
+
+                # --- P0: record front notional for rolling window ---
+                self._vol_record_front_notional(token_id, front_notional)
+
+                gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
+                self._gate_decisions[token_id] = gate
+                action = "KEEP"
+                if gate.get("top_leg_action") == "halt":
+                    halt_reason = f"feasibility_gate:{'|'.join(gate.get('reason', []))}"
+                    action = "HALT_EVENT"
+                elif gate.get("top_leg_action") == "cancel":
+                    action = "CANCEL_TOP_LEG"
+                elif gate.get("top_leg_action") == "move_back":
+                    action = "MOVE_BACK_TOP_LEG"
+                elif legal_top is None:
+                    action = "CANCEL_TOP_LEG"
+                elif top_price > legal_top:
+                    action = "MOVE_BACK_TOP_LEG" if legal_top > 0 and legal_top < best_ask else "CANCEL_TOP_LEG"
+                # --- P0: record defense action for volatility tracker ---
+                self._vol_record_defense_action(token_id, action)
+
+                if action == "KEEP":
+                    if self._event_state_name(token_id) == EVENT_DEFENSIVE:
+                        self._set_event_state(token_id, EVENT_ACTIVE, f"defense_keep:{trigger}")
+                    return
+
+                # --- P0: check if defense action storm or depth drop triggers watch/quarantine ---
+                vol_decision = self._vol_should_watch_or_quarantine(token_id)
+                if vol_decision == "quarantine":
+                    await self._enter_quarantine(token_id, f"defense_storm:{trigger}:{action}")
+                    return
+                elif vol_decision == "watch":
+                    await self._enter_watch(token_id, f"defense_storm:{trigger}:{action}")
+                    return
+
+                self._latency_flow_reset(token_id)
+                self._mark_latency(token_id, "t_detect")
+                self._mark_latency(token_id, "t_decision")
+                self._set_event_state(token_id, EVENT_DEFENSIVE, f"{trigger}:{action}")
+                if action == "HALT_EVENT":
+                    pass
+                elif action == "CANCEL_TOP_LEG":
+                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:cancel_top")
+                    self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                else:
+                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:move_top")
+                    self._ensure_order_path_open(token_id, "top_leg_defense_after_cancel")
+                    if legal_top is None or legal_top <= 0 or legal_top >= best_ask:
+                        halt_reason = f"unsafe_move_back:{trigger}"
+                    else:
+                        await self.place_post_only_order(token_id, legal_top, top_size, label="top_leg_defense")
+                        self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                self._emit_latency_record(token_id, "top_leg_defense", {"trigger": trigger, "action": action})
+                if halt_reason is None:
+                    self._set_event_state(token_id, EVENT_ACTIVE, f"defense_complete:{trigger}")
+            if halt_reason is not None:
+                await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, halt_reason, halt_key="t_detect")
+        except EventHaltPreempted as exc:
+            log(f"[preempt] token={token_id} path=top_leg_defense reason={exc}")
+        except asyncio.CancelledError:
+            log(f"[preempt] token={token_id} path=top_leg_defense reason=task_cancelled")
+            raise
+        finally:
+            if self._top_leg_defense_tasks.get(token_id) is current_task:
+                self._top_leg_defense_tasks.pop(token_id, None)
 
     @staticmethod
     def _norm_usdc(v: Optional[Decimal]) -> Optional[Decimal]:
@@ -654,6 +2019,10 @@ class PolyLPSMulti:
                             if other != token_id and other.isdigit():
                                 self._paired_token_cache[token_id] = other
                                 break
+                    condition_id = str(raw.get("market") or raw.get("conditionId") or "").strip()
+                    if condition_id:
+                        self._market_condition_ids[token_id] = condition_id
+                        nm["condition_id"] = condition_id
                     return nm
         except Exception:
             pass
@@ -695,7 +2064,11 @@ class PolyLPSMulti:
             if msp <= 0:
                 return False, "incentive_spread_zero"
             end_ts = self._to_end_ts(arr[0])
-            if end_ts and (end_ts - time.time()) < self.health_near_expiry_hours * 3600:
+            if (
+                self.health_near_expiry_hours > 0
+                and end_ts
+                and (end_ts - time.time()) < self.health_near_expiry_hours * 3600
+            ):
                 return False, f"near_expiry_lt_{self.health_near_expiry_hours}h"
             return True, "ok"
         except Exception:
@@ -770,6 +2143,17 @@ class PolyLPSMulti:
 
     def _event_is_banned(self, token_id: str) -> bool:
         self._clean_signal_cache()
+        if self._event_state_name(token_id) in {
+            EVENT_CANCELING,
+            EVENT_HALTED_ON_FILL,
+            EVENT_HALTED_ON_DATA,
+            EVENT_STARTED_BLOCKED,
+            EVENT_WATCH,
+            EVENT_QUARANTINE,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }:
+            return True
         exp = self._event_banned_until.get(self._event_key(token_id), 0.0)
         return time.time() < exp
 
@@ -795,124 +2179,32 @@ class PolyLPSMulti:
         matched_size: Optional[Decimal] = None,
         matched_price: Optional[Decimal] = None,
     ) -> None:
-        if self._event_is_banned(token_id):
-            return
+        log(f"[risk] FILL_HALT token={token_id} reason={reason} size={matched_size} price={matched_price}")
+        await self._request_event_halt(
+            token_id,
+            EVENT_HALTED_ON_FILL,
+            reason,
+            matched_size=matched_size,
+            matched_price=matched_price,
+            halt_key="t_fill_seen",
+        )
+        # --- P1: auto exit sell after fill halt ---
+        fill_price = matched_price if matched_price is not None and matched_price > 0 else Decimal("0")
+        fill_size = matched_size if matched_size is not None and matched_size > 0 else Decimal("0")
+        if fill_price > 0:
+            asyncio.create_task(self._attempt_exit_sell(token_id, fill_price, fill_size, reason))
 
-        log(f"[risk] SUSPECT_FILL token={token_id} reason={reason}")
-        self._fills_record.append({
-            "token_id": token_id,
-            "price": float(matched_price) if matched_price is not None else None,
-            "size": float(matched_size) if matched_size is not None else None,
-            "reason": reason,
-            "ts": time.time(),
-        })
-        if len(self._fills_record) > 200:
-            self._fills_record = self._fills_record[-100:]
-        self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
-
-        try:
-            orders = await asyncio.to_thread(self.client.get_orders)
-            live = [
-                o for o in orders
-                if str(o.get("status", "")).lower() in ("live", "open", "active")
-                and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
-            ]
-            ids = [o.get("id") or o.get("orderID") for o in live if (o.get("id") or o.get("orderID"))]
-
-            canceled = 0
-            for i in range(3):
-                if not ids:
-                    break
-                try:
-                    await self._action_delay(f"cancel token={token_id} try={i+1}")
-                    r = await asyncio.to_thread(self.client.cancel_orders, ids)
-                    c = len((r or {}).get("canceled", [])) if isinstance(r, dict) else 0
-                    canceled = max(canceled, c)
-                    if c >= len(ids):
-                        break
-                except Exception as e:
-                    log(f"[risk] cancel retry error token={token_id} try={i+1} err={e}")
-                await asyncio.sleep(0.2 if i == 0 else 0.5)
-
-            log(f"[risk] EVENT_BANNED token={token_id} canceled={canceled}/{len(ids)} ttl={self.event_ban_ttl_sec}s")
-
-            # Unwind strategy: always post-only SELL at fill price (break-even exit).
-            # Post with retry + verification: confirm order is live, retry up to 3 times.
-            if matched_size is not None and matched_price is not None and matched_size > 0 and matched_price > 0:
-                unwind_confirmed = False
-                for attempt in range(1, 4):
-                    try:
-                        await self._action_delay(f"unwind-post token={token_id} attempt={attempt}")
-                        if self.remote_signer:
-                            s_signed = await asyncio.to_thread(
-                                self.remote_signer.sign_order, token_id, float(matched_price), float(matched_size), "SELL"
-                            )
-                        else:
-                            s_args = OrderArgs(token_id=token_id, price=float(matched_price), size=float(matched_size), side=SELL)
-                            s_signed = await asyncio.to_thread(self.client.create_order, s_args)
-                        s_resp = await asyncio.to_thread(self.client.post_order, s_signed, OrderType.GTC)
-                        unwind_order_id = ""
-                        if isinstance(s_resp, dict):
-                            unwind_order_id = str(s_resp.get("orderID") or s_resp.get("id") or "")
-                        if not unwind_order_id:
-                            log(f"[risk] UNWIND_POST no order_id returned attempt={attempt} resp={s_resp}")
-                            await asyncio.sleep(2)
-                            continue
-                        # Verify order is actually live
-                        await asyncio.sleep(2)
-                        orders = await asyncio.to_thread(self.client.get_orders)
-                        live_ids = {
-                            str(o.get("id") or o.get("orderID") or "")
-                            for o in orders
-                            if str(o.get("status", "")).lower() in ("live", "open", "active", "matched")
-                        }
-                        if unwind_order_id in live_ids:
-                            notional = matched_size * matched_price
-                            self._pending_unwinds.append({
-                                "token_id": token_id,
-                                "fill_price": float(matched_price),
-                                "fill_size": float(matched_size),
-                                "order_id": unwind_order_id,
-                                "placed_at": time.time(),
-                                "reason": reason,
-                            })
-                            log(
-                                f"[risk] UNWIND_POSTED token={token_id} price={matched_price} size={matched_size} "
-                                f"notional={notional:.2f} order_id={unwind_order_id} attempt={attempt}"
-                            )
-                            unwind_confirmed = True
-                            break
-                        else:
-                            log(f"[risk] UNWIND_VERIFY_FAIL order_id={unwind_order_id} not in live orders attempt={attempt}")
-                            await asyncio.sleep(3)
-                    except Exception as ue:
-                        log(f"[risk] UNWIND_POST_FAIL token={token_id} attempt={attempt} err={ue}")
-                        await asyncio.sleep(3)
-                if not unwind_confirmed:
-                    msg = f"[ALERT] Unwind SELL failed after 3 attempts token={token_id} price={matched_price} size={matched_size}"
-                    log(f"[risk] {msg}")
-                    self.send_discord(msg)
-
-            # Also ban the paired YES/NO token to prevent correlated fills
-            paired = self._paired_token_cache.get(token_id)
-            if paired and paired in self.market_cfg and not self._event_is_banned(paired):
-                log(f"[risk] banning paired token={paired} due to fill on token={token_id}")
-                await self._trigger_event_offline(paired, f"paired_fill_from:{token_id}")
-
-            self.send_discord(
-                f"[ALERT] Event offlined token={token_id} reason={reason} canceled={canceled}/{len(ids)}"
-            )
-        except Exception as e:
-            log(f"[risk] event offline failed token={token_id} err={e}")
-            await self.trigger_global_kill_switch(f"event_offline_failed:{token_id}")
-
-    async def _get_collateral_available(self) -> Optional[Decimal]:
+    async def _get_collateral_available(self, force_refresh: bool = False) -> Optional[Decimal]:
         """Best-effort fetch of available collateral (normalized to USDC units)."""
+        now = time.time()
+        cached_value, cached_at = self._balance_cache
+        if (not force_refresh) and cached_at > 0 and (now - cached_at) < self._balance_cache_ttl_sec:
+            return cached_value
         try:
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, token_id="", signature_type=self.signature_type)
             data = await asyncio.to_thread(self.client.get_balance_allowance, params)
-            log(f"[debug-bal] raw={data} sig={self.signature_type}")
             if not isinstance(data, dict):
+                self._balance_cache = (None, now)
                 return None
 
             bal = data.get("balance")
@@ -951,19 +2243,25 @@ class PolyLPSMulti:
             if bal_d is not None and alw_d is not None and bal_d >= Decimal('50') and alw_d < Decimal('2'):
                 alw_d = None
 
+            result: Optional[Decimal]
             if bal_d is not None and alw_d is not None and not allowance_unlimited:
-                return min(bal_d, alw_d)
-            if bal_d is not None:
-                return bal_d
-            if alw_d is not None:
-                return alw_d
-            return None
+                result = min(bal_d, alw_d)
+            elif bal_d is not None:
+                result = bal_d
+            elif alw_d is not None:
+                result = alw_d
+            else:
+                result = None
+            self._balance_cache = (result, now)
+            return result
         except Exception:
+            self._balance_cache = (None, now)
             return None
 
     async def run(self) -> None:
         tasks = [
             asyncio.create_task(self.book_loop(), name="book_loop"),
+            asyncio.create_task(self._ws_market_watch(), name="market_ws_watch"),
             asyncio.create_task(self.fill_watch_loop(), name="fill_watch_loop"),
             asyncio.create_task(self.market_health_loop(), name="market_health_loop"),
             asyncio.create_task(self.unwind_tracking_loop(), name="unwind_tracking_loop"),
@@ -982,7 +2280,10 @@ class PolyLPSMulti:
 
     def _read_proxies_for_token(self, token_id: str = "") -> Optional[dict]:
         p = _choose_proxy(self.cfg, for_ws=False, shard_key=str(token_id or ""))
-        return {"http": p, "https": p} if p else None
+        if not p:
+            # Fall back to global HTTP_PROXIES (which may come from system env)
+            return HTTP_PROXIES
+        return {"http": p, "https": p}
 
     def _is_req_exc(self, e: Exception) -> bool:
         em = str(e)
@@ -1020,7 +2321,7 @@ class PolyLPSMulti:
                     await self.update_and_quote_market(token_id)
                     self._book_req_exc_streak[token_id] = 0
                 except Exception as e:
-                    em = str(e)
+                    em = _format_exc(e)
                     log(f"[book-loop] token={token_id} error: {em}")
                     if self._is_req_exc(e):
                         self._log_req_diag("book-loop", e, token_id)
@@ -1037,7 +2338,10 @@ class PolyLPSMulti:
                         self._book_req_exc_streak[token_id] = 0
 
         while self._running:
-            token_ids = list(self.market_cfg.keys())
+            # P2: check for session switch and handle cleanup/gap
+            await self._session_switch_cleanup()
+            active_cfg = self._active_market_cfg()
+            token_ids = list(active_cfg.keys())
             random.shuffle(token_ids)
             await asyncio.gather(*[_process(tid) for tid in token_ids])
             if self._shared_book_cache is not None:
@@ -1046,6 +2350,101 @@ class PolyLPSMulti:
             else:
                 cycle_sleep = max(self.requote_interval_ms / 1000.0, 0.1)
             await asyncio.sleep(cycle_sleep)
+
+    async def _ws_market_watch(self) -> None:
+        url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        # Subscribe to both day and night markets so WS data is ready for session switches
+        all_token_ids = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+        payload = {
+            "assets_ids": all_token_ids,
+            "type": "market",
+            "custom_feature_enabled": True,
+        }
+        backoff = 1
+        while self._running:
+            try:
+                async with websockets.connect(url, proxy=WS_PROXY, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
+                    await ws.send(json.dumps(payload))
+                    log(f"[market-ws] netpath {_ws_proxy_diag()}")
+                    log(f"[market-ws] connected assets={len(payload['assets_ids'])}")
+                    backoff = 1
+                    self._last_market_ws_ok_ts = time.time()
+                    while self._running:
+                        raw = await self._recv_ws_message(ws, "market-ws")
+                        self._last_market_ws_ok_ts = time.time()
+                        msgs = json.loads(raw)
+                        payloads = msgs if isinstance(msgs, list) else [msgs]
+                        for msg in payloads:
+                            if not isinstance(msg, dict):
+                                continue
+                            event_type = str(msg.get("event_type") or msg.get("type") or "").lower()
+                            if event_type == "book":
+                                token_id = str(msg.get("asset_id") or "")
+                                if token_id not in self.market_cfg:
+                                    continue
+                                bids = self._coerce_levels(msg.get("bids"))
+                                asks = self._coerce_levels(msg.get("asks"))
+                                bids, asks = self._sort_book_levels(bids, asks)
+                                if not bids or not asks:
+                                    continue
+                                best_bid, best_ask = self._best_prices_from_levels(bids, asks)
+                                if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                                    continue
+                                snap = self._update_market_snapshot(
+                                    token_id,
+                                    best_bid=best_bid,
+                                    best_ask=best_ask,
+                                    bids=bids,
+                                    asks=asks,
+                                    source="market_ws_book",
+                                    ts_ms=int(str(msg.get("timestamp") or 0) or 0),
+                                )
+                                asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:book", snap))
+                            elif event_type == "best_bid_ask":
+                                token_id = str(msg.get("asset_id") or "")
+                                if token_id not in self.market_cfg:
+                                    continue
+                                try:
+                                    best_bid = Decimal(str(msg.get("best_bid", 0) or 0))
+                                    best_ask = Decimal(str(msg.get("best_ask", 0) or 0))
+                                except Exception:
+                                    continue
+                                snap = self._update_market_snapshot(
+                                    token_id,
+                                    best_bid=best_bid,
+                                    best_ask=best_ask,
+                                    source="market_ws_bba",
+                                    ts_ms=int(str(msg.get("timestamp") or 0) or 0),
+                                )
+                                asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:best_bid_ask", snap))
+                            elif event_type == "price_change":
+                                for change in msg.get("price_changes") or []:
+                                    if not isinstance(change, dict):
+                                        continue
+                                    token_id = str(change.get("asset_id") or "")
+                                    if token_id not in self.market_cfg:
+                                        continue
+                                    try:
+                                        best_bid = Decimal(str(change.get("best_bid", 0) or 0))
+                                        best_ask = Decimal(str(change.get("best_ask", 0) or 0))
+                                    except Exception:
+                                        continue
+                                    if best_bid <= 0 or best_ask <= 0:
+                                        continue
+                                    snap = self._update_market_snapshot(
+                                        token_id,
+                                        best_bid=best_bid,
+                                        best_ask=best_ask,
+                                        source="market_ws_price_change",
+                                        ts_ms=int(str(msg.get("timestamp") or 0) or 0),
+                                    )
+                                    asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:price_change", snap))
+            except Exception as e:
+                log(f"[market-ws] err={_format_exc(e)}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("market-ws", e)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, self._market_ws_backoff_cap_sec)
 
     async def _get_anchor_bid_from_gamma(self, token_id: str) -> Optional[Decimal]:
         try:
@@ -1088,210 +2487,276 @@ class PolyLPSMulti:
             return None
 
     async def update_and_quote_market(self, token_id: str) -> None:
-        now_ts = time.time()
-        if now_ts < self._cooldown_until:
-            return
-
-        # after global kill-switch, auto-resume only when recovery gate fully passes
-        if self._require_recovery_gate:
-            if not self._recovery_ready():
+        lock = self._event_locks[token_id]
+        async with lock:
+            now_ts = time.time()
+            if now_ts < self._cooldown_until:
+                self._set_event_state(token_id, EVENT_COOLDOWN, "global_cooldown")
                 return
-            self._require_recovery_gate = False
-            log("[recovery] recovery gate passed, auto-resuming quoting")
-            self.send_discord("[ALERT] Recovery conditions satisfied. Auto-resuming quoting.")
-        if self._event_is_banned(token_id):
-            return
-        if time.time() < self._market_skip_until.get(token_id, 0.0):
-            return
-
-        blocked, breason = await self._is_blocked_market(token_id)
-        if blocked:
-            await self._deactivate_market(token_id, breason)
-            return
-
-        now = time.time()
-        if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
-            return
-
-        # Use shared book cache in multi-account mode to avoid redundant API calls
-        if self._shared_book_cache is not None:
-            book = self._shared_book_cache.get(token_id)
-        else:
-            book = None
-        if book is None:
-            book = await asyncio.to_thread(self.client.get_order_book, token_id)
-        if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
-            return
-
-        best_bid = Decimal(str(book.bids[0].price))
-        best_ask = Decimal(str(book.asks[0].price))
-        if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
-            return
-
-        # placeholder books (0.01/0.99 or 0.001/0.999) can come from stale/shared snapshots.
-        # try one direct refresh first, then gamma anchor fallback.
-        if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
-            try:
-                fresh = await asyncio.to_thread(self.client.get_order_book, token_id)
-                if fresh and getattr(fresh, "bids", None) and getattr(fresh, "asks", None):
-                    fbid = Decimal(str(fresh.bids[0].price))
-                    fask = Decimal(str(fresh.asks[0].price))
-                    if fbid > Decimal("0.02") and fask < Decimal("0.98") and fask >= fbid:
-                        book = fresh
-                        best_bid, best_ask = fbid, fask
-            except Exception:
-                pass
-
-        # fallback for unresolved placeholder books -> use gamma outcomePrices anchor
-        if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
-            anchor = await self._get_anchor_bid_from_gamma(token_id)
-            if anchor is not None and anchor > 0:
-                best_bid = anchor
-                best_ask = min(Decimal("1"), anchor + Decimal("0.01"))
-            else:
-                log(f"[quote-skip] token={token_id} reason=placeholder_book_unresolved bid={best_bid} ask={best_ask}")
+            if self._require_recovery_gate:
+                if not self._recovery_ready():
+                    return
+                self._require_recovery_gate = False
+                log("[recovery] recovery gate passed, auto-resuming quoting")
+                self.send_discord("[ALERT] Recovery conditions satisfied. Auto-resuming quoting.")
+            if self._event_is_banned(token_id):
+                # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
+                if self._vol_check_recovery(token_id):
+                    prev_state = self._event_state_name(token_id)
+                    self._set_event_state(token_id, EVENT_ACTIVE, f"vol_recovery_from_{prev_state.lower()}")
+                    log(f"[vol-recovery] token={token_id} recovered from {prev_state}")
+                else:
+                    return
+            # --- P2: session mode check ---
+            if not self._session_allows(token_id):
                 return
-
-        await self._resolve_market_tick(token_id, best_bid, best_ask)
-
-        tob = TopOfBook(best_bid=best_bid, best_ask=best_ask)
-        self.market_states[token_id] = tob
-
-        # Fetch live market meta first — needed for real rewardsMaxSpread and rewardsMinSize
-        meta = await self._get_market_meta(token_id)
-        reward_min_size = Decimal(str(meta.get("rewardsMinSize") or 0))
-
-        # Use live incentive spread from API; fall back to config
-        live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
-        live_spread: Optional[Decimal] = None
-        if live_spread_raw is not None:
-            try:
-                live_spread = Decimal(str(live_spread_raw))
-            except Exception:
-                live_spread = None
-
-        prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
-        market_risk = str(self.market_cfg[token_id].get("risk", "mid")).lower()
-        required_min_size = max(self.min_order_size, reward_min_size)
-
-        avail = await self._get_collateral_available()
-        if avail is not None:
-            self._last_balance = avail
-
-        # event budget: balance_pct mode only
-        if avail is not None and avail > 0:
-            lo, hi = self.quote_balance_pct_ranges.get(market_risk, (self.quote_balance_pct_min, self.quote_balance_pct_max))
-            lo = max(Decimal("0"), min(lo, Decimal("1")))
-            hi = max(lo, min(hi, Decimal("1")))
-            pct = Decimal(str(random.uniform(float(lo), float(hi))))
-            event_budget = avail * pct
-            event_budget = min(event_budget, avail * Decimal("0.98"))
-        else:
-            log(f"[quote-skip] token={token_id} reason=no_balance_available")
-            return
-
-        weights = self._alloc_weights(len(prices))
-        plan = []
-        for p, w in zip(prices, weights):
-            front_notional = self._front_bid_notional(book, p)
-            if front_notional < self.min_front_bid_notional_usdc:
-                log(
-                    f"[quote-skip-leg] token={token_id} price={p} "
-                    f"reason=front_bid_notional_lt_threshold front={front_notional} threshold={self.min_front_bid_notional_usdc}"
-                )
-                continue
-
-            leg_notional = event_budget * w
-            size = self._floor_to_tick(leg_notional / p, Decimal("0.001")) if p > 0 else Decimal("0")
-            notional = p * size
-            if size >= required_min_size and size > 0 and notional > 0:
-                plan.append((p, size, notional))
-            else:
-                log(
-                    f"[quote-skip-leg] token={token_id} price={p} reason=below_min_size "
-                    f"size={size} required={required_min_size} (exchange/reward)"
-                )
-
-        if not plan:
-            log(f"[quote-skip] token={token_id} reason=empty_plan avail={avail} budget={event_budget}")
-            return
-
-        plan_sig = "|".join([f"{p}:{s}" for p, s, _ in plan])
-        live = await asyncio.to_thread(self.client.get_orders)
-        live_token = [
-            o for o in live
-            if str(o.get("status", "")).lower() in ("live", "open", "active")
-            and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
-        ]
-        self._market_live_orders[token_id] = live_token
-        if self._last_plan_sig.get(token_id) == plan_sig and len(live_token) >= len(plan):
-            return
-
-        # reprice: cancel old token orders first
-        ids = [o.get("id") or o.get("orderID") for o in live_token if (o.get("id") or o.get("orderID"))]
-        if ids:
-            await self._action_delay(f"cancel-before-reprice token={token_id}")
-            await asyncio.to_thread(self.client.cancel_orders, ids)
-
-        log(
-            f"[quote] token={token_id} risk={market_risk} "
-            f"legs={len(plan)} budget={event_budget} avail_usdc={avail} "
-            f"plan={[ (str(p), str(s)) for p,s,_ in plan ]}"
-        )
-
-        try:
-            for p, size, _ in plan:
-                await self.place_post_only_order(token_id, p, size)
-            self._last_plan_sig[token_id] = plan_sig
-            self._balance_fail_streak = 0
-            self._market_balance_fail_streak[token_id] = 0
-
-            # Safety check: after placing, verify none of our orders became best_bid.
-            # The book can shift during the post_delay between price calculation and placement.
-            await self._check_not_at_best_bid(token_id)
-        except Exception as e:
-            em = str(e).lower()
-            if "not enough balance" in em or "allowance" in em:
-                self._balance_fail_streak += 1
-                self._market_balance_fail_streak[token_id] = self._market_balance_fail_streak.get(token_id, 0) + 1
-                log(
-                    f"[risk] balance/allowance token={token_id} "
-                    f"market_streak={self._market_balance_fail_streak[token_id]} global_streak={self._balance_fail_streak} "
-                    f"err={e}"
-                )
-
-                # isolate to market-level cooldown; do not cancel all events
-                if self._market_balance_fail_streak[token_id] >= self.max_balance_fail_streak:
-                    self._market_skip_until[token_id] = time.time() + self.cooldown_seconds
-                    self._market_balance_fail_streak[token_id] = 0
-                    log(f"[risk] market-skip token={token_id} cooldown={self.cooldown_seconds}s")
+            if time.time() < self._market_skip_until.get(token_id, 0.0):
+                self._set_event_state(token_id, EVENT_COOLDOWN, "market_skip_ttl")
                 return
-            raise
-        self.last_quote_ts[token_id] = now
-        self._quotes_sent += 1
-
-    async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal) -> None:
-        await self._post_delay(f"post token={token_id}")
-        if self.remote_signer:
-            signed = await asyncio.to_thread(
-                self.remote_signer.sign_order, token_id, float(price), float(size), "BUY"
+            blocked, breason = await self._is_blocked_market(token_id)
+            if blocked:
+                await self._deactivate_market(token_id, breason)
+                return
+            meta = await self._get_market_meta(token_id)
+            if await self._enforce_start_guard(token_id, meta=meta, trigger="update_and_quote_market"):
+                return
+            if self._event_blocks_quote(token_id):
+                return
+            now = time.time()
+            if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
+                return
+            book = self._shared_book_cache.get(token_id) if self._shared_book_cache is not None else None
+            if book is None:
+                try:
+                    book = await asyncio.to_thread(self.client.get_order_book, token_id)
+                except Exception as e:
+                    snap = self._fresh_valid_snapshot(token_id)
+                    if snap is not None:
+                        age_ms = round((time.time() - snap.last_update_ts) * 1000.0, 1)
+                        log(
+                            f"[book-loop] token={token_id} keep_last_snapshot source={snap.source} "
+                            f"age_ms={age_ms} cause={_format_exc(e)}"
+                        )
+                        return
+                    raise
+            if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                return
+            bids = self._coerce_levels(getattr(book, "bids", None))
+            asks = self._coerce_levels(getattr(book, "asks", None))
+            bids, asks = self._sort_book_levels(bids, asks)
+            best_bid, best_ask = self._best_prices_from_levels(bids, asks)
+            if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                return
+            if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
+                ws_snap = self._fresh_valid_snapshot(token_id)
+                if ws_snap is not None and str(ws_snap.source).startswith("market_ws"):
+                    best_bid = ws_snap.best_bid
+                    best_ask = ws_snap.best_ask
+                    bids = list(ws_snap.bids)
+                    asks = list(ws_snap.asks)
+                    log(
+                        f"[book-loop] token={token_id} using_market_ws_snapshot "
+                        f"source={ws_snap.source} age_ms={round((time.time() - ws_snap.last_update_ts) * 1000.0, 1)}"
+                    )
+                else:
+                    anchor = await self._get_anchor_bid_from_gamma(token_id)
+                    if anchor is None or anchor <= 0:
+                        log(f"[quote-skip] token={token_id} reason=placeholder_book_unresolved bid={best_bid} ask={best_ask}")
+                        return
+                    best_bid = anchor
+                    best_ask = min(Decimal("1"), anchor + Decimal("0.01"))
+                    bids = []
+                    asks = []
+            await self._resolve_market_tick(token_id, best_bid, best_ask)
+            tob = TopOfBook(best_bid=best_bid, best_ask=best_ask)
+            snapshot = self._update_market_snapshot(
+                token_id,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                bids=bids,
+                asks=asks,
+                source="rest",
             )
-            # remote signer may return a plain dict, while py_clob_client expects
-            # an object exposing .dict(). Wrap minimally for compatibility.
-            if isinstance(signed, dict):
-                class _SignedOrderWrap:
-                    def __init__(self, d: dict):
-                        self._d = d
+            effective_snapshot = self._effective_snapshot_for_gate(token_id, snapshot)
+            if effective_snapshot is not None:
+                tob = TopOfBook(best_bid=effective_snapshot.best_bid, best_ask=effective_snapshot.best_ask)
+            depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
+            can_quote, gate_reason = self._quote_gate(token_id, effective_snapshot)
+            if not can_quote:
+                live_token = await self._refresh_live_orders(token_id)
+                if live_token:
+                    self._mark_latency(token_id, "t_detect")
+                    self._mark_latency(token_id, "t_decision")
+                    self._set_event_state(token_id, EVENT_DEFENSIVE, f"quote_gate:{gate_reason}")
+                    await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], f"quote_gate:{gate_reason}")
+                    self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                if gate_reason in {"snapshot_stale", "crossed_or_empty_book"}:
+                    await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"quote_gate:{gate_reason}", halt_key="t_detect")
+                return
+            reward_min_size = Decimal(str(meta.get("rewardsMinSize") or 0))
+            live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+            live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+            prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
+            gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
+            self._gate_decisions[token_id] = gate
+            if not gate.get("can_quote", False):
+                live_token = await self._refresh_live_orders(token_id)
+                if live_token:
+                    self._mark_latency(token_id, "t_detect")
+                    self._mark_latency(token_id, "t_decision")
+                    self._set_event_state(token_id, EVENT_DEFENSIVE, f"feasibility_gate:{'|'.join(gate.get('reason', []))}")
+                    await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], f"feasibility_gate:{'|'.join(gate.get('reason', []))}")
+                if gate.get("top_leg_action") == "halt":
+                    await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"feasibility_gate:{'|'.join(gate.get('reason', []))}", halt_key="t_detect")
+                return
+            market_risk = str(self._get_mcfg(token_id).get("risk", "mid")).lower()
+            required_min_size = max(self.min_order_size, reward_min_size)
+            size_cap = Decimal(str(gate.get("size_cap", 1.0) or 0.0))
+            pct = self._market_quote_budget_pct(token_id, market_risk)
+            weights = self._alloc_weights(len(prices))
+            viable_legs = []
+            total_weight = Decimal("0")
+            for p, w in zip(prices, weights):
+                front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else self._front_bid_notional(book, p)
+                if front_notional < self.min_front_bid_notional_usdc:
+                    continue
+                viable_legs.append((p, w))
+                total_weight += w
+            if not viable_legs or total_weight <= 0:
+                live_token = await self._refresh_live_orders(token_id)
+                self._gate_decisions[token_id] = {
+                    **gate,
+                    "can_quote": False,
+                    "top_leg_action": "cancel",
+                    "reason": list(gate.get("reason", [])) + ["empty_plan_after_gate"],
+                }
+                if live_token:
+                    await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], "empty_plan")
+                self._last_plan_sig[token_id] = ""
+                self._last_top_plan_sig[token_id] = ""
+                self._last_back_plan_sig[token_id] = ""
+                return
+            min_weight = min(w for _, w in viable_legs)
+            min_price = min(p for p, _ in viable_legs)
+            min_size_needed = max(required_min_size, Decimal("0.001"))
+            min_budget_needed = (min_price * min_size_needed / min_weight) if min_weight > 0 else Decimal("0")
+            budget_divisor = min(max(pct * size_cap, Decimal("0.0001")), Decimal("0.98"))
+            avail = await self._get_collateral_available()
+            if avail is not None:
+                self._last_balance = avail
+            if avail is None or avail <= 0:
+                log(f"[quote-skip] token={token_id} reason=no_balance_available")
+                return
+            event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
+            if event_budget <= 0 or avail < (min_budget_needed / budget_divisor):
+                log(f"[quote-skip] token={token_id} reason=insufficient_budget_for_min_size")
+                return
+            plan = []
+            for p, w in viable_legs:
+                leg_notional = event_budget * w
+                size = self._floor_to_tick(leg_notional / p, Decimal("0.001")) if p > 0 else Decimal("0")
+                notional = p * size
+                if size >= required_min_size and size > 0 and notional > 0:
+                    plan.append((p, size, notional))
+            live_token = await self._refresh_live_orders(token_id)
+            if not plan:
+                self._gate_decisions[token_id] = {
+                    **gate,
+                    "can_quote": False,
+                    "top_leg_action": "cancel",
+                    "reason": list(gate.get("reason", [])) + ["empty_plan_after_gate"],
+                }
+                if live_token:
+                    await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], "empty_plan")
+                self._last_plan_sig[token_id] = ""
+                self._last_top_plan_sig[token_id] = ""
+                self._last_back_plan_sig[token_id] = ""
+                return
+            desired_top = plan[0]
+            desired_back = plan[1:] if len(plan) > 1 else []
+            try:
+                live_token = await self._sync_top_leg(token_id, desired_top, live_token)
+                live_token = await self._sync_back_legs(token_id, desired_back, live_token)
+                self._market_live_orders[token_id] = live_token
+                self._last_plan_sig[token_id] = "|".join([f"{p}:{s}" for p, s, _ in plan])
+                self._balance_fail_streak = 0
+                self._market_balance_fail_streak[token_id] = 0
+                self.last_quote_ts[token_id] = now
+                self._quotes_sent += 1
+                if self._event_state_name(token_id) in {EVENT_DEFENSIVE, EVENT_COOLDOWN}:
+                    self._set_event_state(token_id, EVENT_ACTIVE, "planner_sync_complete")
+                # Removed: immediate _check_not_at_best_bid() call here caused a
+                # race condition — it fetches a fresh book milliseconds after placing,
+                # and micro-movements make _build_price_legs compute a different
+                # legal_top, triggering instant cancellation. The background
+                # best_bid_guard_loop (every 10s per token) already provides
+                # the same safety check with a stable book.
+            except Exception as e:
+                if isinstance(e, EventHaltPreempted):
+                    log(f"[preempt] token={token_id} path=planner reason={e}")
+                    return
+                em = str(e).lower()
+                if "not enough balance" in em or "allowance" in em:
+                    self._balance_fail_streak += 1
+                    self._market_balance_fail_streak[token_id] = self._market_balance_fail_streak.get(token_id, 0) + 1
+                    log(
+                        f"[risk] balance/allowance token={token_id} "
+                        f"market_streak={self._market_balance_fail_streak[token_id]} global_streak={self._balance_fail_streak} "
+                        f"err={e}"
+                    )
+                    if self._market_balance_fail_streak[token_id] >= self.max_balance_fail_streak:
+                        self._market_skip_until[token_id] = time.time() + self.cooldown_seconds
+                        self._market_balance_fail_streak[token_id] = 0
+                        self._set_event_state(token_id, EVENT_COOLDOWN, "balance_or_allowance")
+                        log(f"[risk] market-skip token={token_id} cooldown={self.cooldown_seconds}s")
+                    return
+                raise
 
-                    def dict(self):
-                        return self._d
+    async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
+        self._ensure_order_path_open(token_id, f"place_pre_meta:{label}")
+        meta = await self._get_market_meta(token_id)
+        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
+            raise RuntimeError(f"market_start_blocked token={token_id}")
+        await self._post_delay(f"{label} token={token_id}")
+        self._ensure_order_path_open(token_id, f"place_post_delay:{label}")
+        meta = await self._get_market_meta(token_id)
+        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_delay_complete:{label}"):
+            raise RuntimeError(f"market_start_blocked token={token_id}")
 
-                signed = _SignedOrderWrap(signed)
-        else:
-            args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
-            signed = await asyncio.to_thread(self.client.create_order, args)
-        # GTC = passive resting order in normal use; post-only behavior is exchange-enforced by price placement.
-        await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+        async with self._signer_sem:
+            async with self._signer_gap_lock:
+                now = time.time()
+                wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
+                if wait_sec > 0:
+                    log(f"[signer-pace] token={token_id} label={label} sleep={wait_sec:.2f}s")
+                    await asyncio.sleep(wait_sec)
+                self._last_signer_post_ts = time.time()
+
+            self._ensure_order_path_open(token_id, f"place_pre_sign:{label}")
+            self._mark_latency(token_id, "t_sign_start")
+            if self.remote_signer:
+                signed = await asyncio.to_thread(
+                    self.remote_signer.sign_order, token_id, float(price), float(size), "BUY"
+                )
+                if isinstance(signed, dict):
+                    class _SignedOrderWrap:
+                        def __init__(self, d: dict):
+                            self._d = d
+
+                        def dict(self):
+                            return self._d
+
+                    signed = _SignedOrderWrap(signed)
+            else:
+                args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
+                signed = await asyncio.to_thread(self.client.create_order, args)
+            self._mark_latency(token_id, "t_sign_done")
+            self._ensure_order_path_open(token_id, f"place_pre_send:{label}")
+            self._mark_latency(token_id, "t_send")
+            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+            self._mark_latency(token_id, "t_exchange_accept")
+            self._last_signer_post_ts = time.time()
+            return resp
 
     def _count_live_orders(self, orders: list[dict]) -> int:
         return sum(1 for o in orders if str(o.get("status", "")).lower() in ("live", "open", "active"))
@@ -1339,7 +2804,10 @@ class PolyLPSMulti:
             return
 
         urls = ["wss://ws-subscriptions-clob.polymarket.com/ws/user"]
-        token_ids = list(self.market_cfg.keys())
+        for token_id in list(self.market_cfg.keys()):
+            if token_id not in self._market_condition_ids:
+                await self._get_market_meta(token_id)
+        condition_ids = [cid for cid in self._market_condition_ids.values() if cid]
         auth = {
             "apiKey": getattr(self.api_creds, "api_key", ""),
             "secret": getattr(self.api_creds, "api_secret", ""),
@@ -1347,11 +2815,11 @@ class PolyLPSMulti:
         }
 
         def _payloads() -> list[dict]:
-            return [
-                {"type": "user", "markets": token_ids, "auth": auth},
-                {"type": "user", "assets_ids": token_ids, "auth": auth},
-                {"type": "subscribe", "channel": "user", "markets": token_ids, "auth": auth},
-            ]
+            payloads = []
+            if condition_ids:
+                payloads.append({"type": "user", "markets": condition_ids, "auth": auth})
+            payloads.append({"type": "user", "assets_ids": list(self.market_cfg.keys()), "auth": auth})
+            return payloads
 
         backoff = 1
         ws_down_since = 0.0
@@ -1359,18 +2827,19 @@ class PolyLPSMulti:
             url = urls[0]
             try:
                 async with websockets.connect(url, proxy=WS_PROXY, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
+                    log(f"[fill-ws] netpath {_ws_proxy_diag()}")
                     for p in _payloads():
                         try:
                             await ws.send(json.dumps(p))
                         except Exception:
                             pass
-                    log("[fill-ws] connected")
+                    log(f"[fill-ws] connected markets={len(condition_ids)} assets={len(self.market_cfg)}")
                     self._last_ws_ok_ts = time.time()
                     ws_down_since = 0.0
                     backoff = 1
 
                     while self._running:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=30)
+                        raw = await self._recv_ws_message(ws, "fill-ws")
                         self._last_ws_ok_ts = time.time()
                         try:
                             msg = json.loads(raw)
@@ -1384,7 +2853,7 @@ class PolyLPSMulti:
 
                             typ = str(it.get("type") or it.get("event_type") or "").lower()
                             status = str(it.get("status") or "").upper()
-                            token = str(it.get("asset_id") or it.get("token_id") or it.get("market") or "")
+                            token = str(it.get("asset_id") or it.get("token_id") or "")
                             if token and token not in self.market_cfg:
                                 continue
 
@@ -1423,7 +2892,7 @@ class PolyLPSMulti:
                 now = time.time()
                 if ws_down_since <= 0:
                     ws_down_since = now
-                log(f"[fill-ws] err={e}")
+                log(f"[fill-ws] err={_format_exc(e)}")
                 if self._is_req_exc(e):
                     self._log_req_diag("fill-ws", e)
 
@@ -1678,7 +3147,10 @@ class PolyLPSMulti:
             try:
                 now = time.time()
                 markets_out: dict = {}
-                for tid, mcfg in self.market_cfg.items():
+                # Combine day + night markets for state output
+                all_markets = dict(self.market_cfg)
+                all_markets.update(self._night_market_cfg)
+                for tid, mcfg in all_markets.items():
                     tob = self.market_states.get(tid)
                     spread = mcfg.get("spread")
                     mid = float(tob.mid) if tob else None
@@ -1692,6 +3164,8 @@ class PolyLPSMulti:
                         tick = mcfg["tick"]
                         rl = max(tick, tob.mid - s)
                         ru = tob.best_bid - tick
+                        if ru <= rl and tob.best_bid >= rl and tob.best_bid >= tick:
+                            ru = tob.best_bid
                         reward_lower = float(rl)
                         reward_upper = float(ru)
 
@@ -1705,8 +3179,16 @@ class PolyLPSMulti:
                         for o in live_orders
                     ]
 
+                    event_state = self._event_state_name(tid)
                     banned = self._event_is_banned(tid)
                     skipped = now < self._market_skip_until.get(tid, 0.0)
+                    cached_meta = self._market_meta_cache.get(tid)
+                    market_meta = cached_meta[0] if cached_meta else {}
+                    start_blocked, start_reason, start_ts = self._market_start_guard_status(
+                        tid,
+                        meta=market_meta,
+                        now_ts=now,
+                    )
                     if banned:
                         status = "banned"
                     elif skipped:
@@ -1716,6 +3198,9 @@ class PolyLPSMulti:
                     else:
                         status = "waiting"
 
+                    snap = self._market_snapshots.get(tid)
+                    gate = self._gate_decisions.get(tid)
+                    vol_tracker = self._volatility_tracker.get(tid, {})
                     markets_out[tid] = {
                         "mid": mid,
                         "best_bid": best_bid,
@@ -1725,20 +3210,39 @@ class PolyLPSMulti:
                         "orders": orders_out,
                         "last_quote_ts": self.last_quote_ts.get(tid),
                         "status": status,
+                        "event_state": event_state,
+                        "event_reason": self._event_state_entry(tid).get("reason"),
+                        "game_start_ts": start_ts,
+                        "seconds_to_start": round(start_ts - now, 1) if start_ts is not None else None,
+                        "start_guard_blocked": start_blocked,
+                        "start_guard_reason": start_reason or None,
+                        "legacy_offline_until": self._event_banned_until.get(self._event_key(tid)),
+                        "snapshot_source": snap.source if snap else None,
+                        "snapshot_age_ms": round((now - snap.last_update_ts) * 1000.0, 1) if snap else None,
+                        "gate": gate,
+                        "is_night_market": tid in self._night_market_cfg,
+                        "vol_defense_actions_60s": len(vol_tracker.get("defense_actions", [])),
+                        "vol_watch_enter_ts": vol_tracker.get("watch_enter_ts"),
+                        "vol_quarantine_enter_ts": vol_tracker.get("quarantine_enter_ts"),
                     }
 
+                current_session = self._current_session()
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,
                     "cooldown_active": now < self._cooldown_until,
+                    "current_session": current_session,
+                    "session_enabled": self._session_enabled,
                     "markets": markets_out,
                     "fills": list(self._fills_record[-100:]),
                     "pending_unwinds": list(self._pending_unwinds),
+                    "night_markets_count": len(self._night_market_cfg),
                     "banned_tokens": [
-                        tid for tid in self.market_cfg if self._event_is_banned(tid)
+                        tid for tid in all_markets if self._event_is_banned(tid)
                     ],
+                    "latency_records": list(self._latency_records[-50:]),
                 }
 
                 tmp = self._state_path.with_suffix(".tmp")
