@@ -62,6 +62,10 @@ class EventHaltPreempted(RuntimeError):
     pass
 
 
+class SoftQuoteSkip(RuntimeError):
+    pass
+
+
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
@@ -1867,10 +1871,6 @@ class PolyLPSMulti:
             live_orders = await self._refresh_live_orders(token_id)
         if desired is not None:
             price, size, _ = desired
-            snap = self._market_snapshots.get(token_id)
-            bid_info = f" bid={snap.best_bid} ask={snap.best_ask}" if snap else ""
-            log(f"[quote] slug={slug} token={token_id[:16]} target={price} size={size}"
-                f"{bid_info} label=top_leg_sync")
             await self.place_post_only_order(token_id, price, size, label="top_leg_sync")
             live_orders = await self._refresh_live_orders(token_id)
         self._last_top_plan_sig[token_id] = desired_sig
@@ -1902,7 +1902,6 @@ class PolyLPSMulti:
             await self._cancel_order_ids(token_id, ids, "planner_back_legs_sync")
             live_orders = await self._refresh_live_orders(token_id)
         for price, size, _ in desired_back:
-            log(f"[quote] slug={slug} token={token_id[:16]} target={price} size={size} label=back_leg_sync")
             await self.place_post_only_order(token_id, price, size, label="back_leg_sync")
         live_orders = await self._refresh_live_orders(token_id)
         self._last_back_plan_sig[token_id] = desired_sig
@@ -2039,6 +2038,8 @@ class PolyLPSMulti:
                 await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, halt_reason, halt_key="t_detect")
         except EventHaltPreempted as exc:
             log(f"[preempt] token={token_id} path=top_leg_defense reason={exc}")
+        except SoftQuoteSkip:
+            return
         except asyncio.CancelledError:
             log(f"[preempt] token={token_id} path=top_leg_defense reason=task_cancelled")
             raise
@@ -2823,6 +2824,8 @@ class PolyLPSMulti:
                 if isinstance(e, EventHaltPreempted):
                     log(f"[preempt] token={token_id} path=planner reason={e}")
                     return
+                if isinstance(e, SoftQuoteSkip):
+                    return
                 em = str(e).lower()
                 if "not enough balance" in em or "allowance" in em:
                     self._balance_fail_streak += 1
@@ -2889,9 +2892,7 @@ class PolyLPSMulti:
                     f"target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
                 raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
         elif effective is None or self._snapshot_is_stale(token_id, effective):
-            log(f"[safety] REJECT stale_data_at_order slug={slug} token={token_id[:16]} "
-                f"target={price} label={label}")
-            raise RuntimeError(f"pre_order_reject:stale_snapshot token={token_id[:16]}")
+            raise SoftQuoteSkip(f"stale_snapshot token={token_id[:16]} label={label}")
         # ── End pre-order validation ──────────────────────────────────────
 
         async with self._signer_sem:
