@@ -2729,10 +2729,7 @@ class PolyLPSMulti:
                 self._last_top_plan_sig[token_id] = ""
                 self._last_back_plan_sig[token_id] = ""
                 return
-            min_weight = min(w for _, w in viable_legs)
-            min_price = min(p for p, _ in viable_legs)
             min_size_needed = max(required_min_size, Decimal("0.001"))
-            min_budget_needed = (min_price * min_size_needed / min_weight) if min_weight > 0 else Decimal("0")
             budget_divisor = min(max(pct * size_cap, Decimal("0.0001")), Decimal("0.98"))
             avail = await self._get_collateral_available()
             if avail is not None:
@@ -2744,23 +2741,52 @@ class PolyLPSMulti:
                 )
                 return
             event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
-            required_avail = (min_budget_needed / budget_divisor) if budget_divisor > 0 else Decimal("0")
-            if event_budget <= 0 or avail < required_avail:
+
+            plan = []
+            requested_legs = len(viable_legs)
+            planned_legs = 0
+            degrade_reason = ""
+            single_leg_required_avail = Decimal("0")
+            top_price = viable_legs[0][0] if viable_legs else Decimal("0")
+            if top_price > 0 and budget_divisor > 0:
+                single_leg_required_avail = (top_price * min_size_needed) / budget_divisor
+
+            for keep_count in range(len(viable_legs), 0, -1):
+                subset = viable_legs[:keep_count]
+                subset_weight = sum(w for _, w in subset)
+                if subset_weight <= 0:
+                    continue
+                candidate = []
+                candidate_ok = True
+                for p, w in subset:
+                    normalized_weight = w / subset_weight
+                    leg_notional = event_budget * normalized_weight
+                    size = self._floor_to_tick(leg_notional / p, Decimal("0.001")) if p > 0 else Decimal("0")
+                    notional = p * size
+                    if size < required_min_size or size <= 0 or notional <= 0:
+                        candidate_ok = False
+                        break
+                    candidate.append((p, size, notional))
+                if candidate_ok and candidate:
+                    plan = candidate
+                    planned_legs = keep_count
+                    if keep_count < requested_legs:
+                        degrade_reason = f"budget_limited_degrade requested_legs={requested_legs} planned_legs={planned_legs}"
+                    break
+
+            if event_budget <= 0 or not plan:
                 log(
-                    f"[quote-skip] token={token_id} reason=insufficient_budget_for_min_size "
+                    f"[quote-skip] token={token_id} reason=no_single_leg_budget "
                     f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
-                    f"required_avail={required_avail} min_budget_needed={min_budget_needed} "
-                    f"required_min_size={required_min_size} min_price={min_price} min_weight={min_weight} "
-                    f"pct={pct} size_cap={size_cap} budget_divisor={budget_divisor}"
+                    f"single_leg_required_avail={single_leg_required_avail} required_min_size={required_min_size} "
+                    f"top_price={top_price} pct={pct} size_cap={size_cap} budget_divisor={budget_divisor} "
+                    f"requested_legs={requested_legs}"
                 )
                 return
-            plan = []
-            for p, w in viable_legs:
-                leg_notional = event_budget * w
-                size = self._floor_to_tick(leg_notional / p, Decimal("0.001")) if p > 0 else Decimal("0")
-                notional = p * size
-                if size >= required_min_size and size > 0 and notional > 0:
-                    plan.append((p, size, notional))
+
+            if degrade_reason:
+                log(f"[plan-degrade] token={token_id} {degrade_reason} event_budget={event_budget} avail={avail}")
+
             live_token = await self._refresh_live_orders(token_id)
             if not plan:
                 self._gate_decisions[token_id] = {
