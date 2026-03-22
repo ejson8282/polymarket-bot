@@ -1547,9 +1547,6 @@ class PolyLPSMulti:
             self._global_last_order_ts = order_ts
             self._per_token_last_order_ts[token_id] = order_ts
 
-            log(f"[pace] cleared slug={slug} token={token_id[:16]} path={label} "
-                f"token_gap={time.time() - per_token_last:.1f}s "
-                f"global_gap={time.time() - (now - global_elapsed):.1f}s")
 
     @staticmethod
     def _infer_tick_from_book(best_bid: Decimal, best_ask: Decimal) -> Decimal:
@@ -2783,9 +2780,6 @@ class PolyLPSMulti:
                     f"requested_legs={requested_legs}"
                 )
                 return
-
-            if degrade_reason:
-                log(f"[plan-degrade] token={token_id} {degrade_reason} event_budget={event_budget} avail={avail}")
 
             live_token = await self._refresh_live_orders(token_id)
             if not plan:
