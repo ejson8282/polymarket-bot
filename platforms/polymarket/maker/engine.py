@@ -1679,8 +1679,8 @@ class PolyLPSMulti:
         Per-token check interval: each token_id is only book-fetched every
         guard_per_token_interval_sec to limit API load when many markets are active.
         """
-        guard_interval = 2.0          # seconds between outer loop ticks
-        per_token_interval = 10.0     # min seconds between book fetches per token
+        guard_interval = 3.0          # seconds between outer loop ticks
+        per_token_interval = 15.0     # min seconds between book fetches per token
         _last_guard_ts: dict[str, float] = {}
 
         while self._running:
