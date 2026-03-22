@@ -2619,27 +2619,45 @@ class PolyLPSMulti:
             if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
                 return
             book = self._shared_book_cache.get(token_id) if self._shared_book_cache is not None else None
+            quote_source = "shared" if book is not None else "rest"
+            used_ws_fallback = False
             if book is None:
                 try:
                     book = await asyncio.to_thread(self.client.get_order_book, token_id)
+                    quote_source = "rest"
                 except Exception as e:
-                    snap = self._fresh_valid_snapshot(token_id)
-                    if snap is not None:
-                        age_ms = round((time.time() - snap.last_update_ts) * 1000.0, 1)
+                    depth_snap = self._fresh_depth_snapshot(token_id)
+                    if depth_snap is not None and str(depth_snap.source).startswith("market_ws"):
+                        bids = list(depth_snap.bids)
+                        asks = list(depth_snap.asks)
+                        best_bid = depth_snap.best_bid
+                        best_ask = depth_snap.best_ask
+                        used_ws_fallback = True
+                        quote_source = depth_snap.source
+                        age_ms = round((time.time() - depth_snap.last_update_ts) * 1000.0, 1)
                         log(
-                            f"[book-loop] token={token_id} keep_last_snapshot source={snap.source} "
+                            f"[book-loop] token={token_id} using_market_ws_fallback source={depth_snap.source} "
                             f"age_ms={age_ms} cause={_format_exc(e)}"
                         )
-                        return
-                    raise
-            if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
-                return
-            bids = self._coerce_levels(getattr(book, "bids", None))
-            asks = self._coerce_levels(getattr(book, "asks", None))
-            bids, asks = self._sort_book_levels(bids, asks)
-            best_bid, best_ask = self._best_prices_from_levels(bids, asks)
-            if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
-                return
+                    else:
+                        snap = self._fresh_valid_snapshot(token_id)
+                        if snap is not None:
+                            age_ms = round((time.time() - snap.last_update_ts) * 1000.0, 1)
+                            log(
+                                f"[book-loop] token={token_id} keep_last_snapshot source={snap.source} "
+                                f"age_ms={age_ms} cause={_format_exc(e)}"
+                            )
+                            return
+                        raise
+            if not used_ws_fallback:
+                if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                    return
+                bids = self._coerce_levels(getattr(book, "bids", None))
+                asks = self._coerce_levels(getattr(book, "asks", None))
+                bids, asks = self._sort_book_levels(bids, asks)
+                best_bid, best_ask = self._best_prices_from_levels(bids, asks)
+                if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                    return
             if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
                 ws_snap = self._fresh_valid_snapshot(token_id)
                 if ws_snap is not None and str(ws_snap.source).startswith("market_ws"):
@@ -2668,7 +2686,7 @@ class PolyLPSMulti:
                 best_ask=best_ask,
                 bids=bids,
                 asks=asks,
-                source="rest",
+                source=quote_source,
             )
             effective_snapshot = self._effective_snapshot_for_gate(token_id, snapshot)
             if effective_snapshot is not None:
