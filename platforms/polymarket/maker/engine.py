@@ -2590,7 +2590,6 @@ class PolyLPSMulti:
                 if not self._recovery_ready():
                     return
                 self._require_recovery_gate = False
-                log("[recovery] recovery gate passed, auto-resuming quoting")
                 self.send_discord("[ALERT] Recovery conditions satisfied. Auto-resuming quoting.")
             if self._event_is_banned(token_id):
                 # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
@@ -2900,7 +2899,6 @@ class PolyLPSMulti:
                 now = time.time()
                 wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
                 if wait_sec > 0:
-                    log(f"[signer-pace] wait={wait_sec:.2f}s label={label}")
                     await asyncio.sleep(wait_sec)
                 self._last_signer_post_ts = time.time()
 
