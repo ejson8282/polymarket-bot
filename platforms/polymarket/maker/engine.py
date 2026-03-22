@@ -2741,7 +2741,10 @@ class PolyLPSMulti:
             planned_legs = 0
             degrade_reason = ""
             single_leg_required_avail = Decimal("0")
+            single_leg_required_notional = Decimal("0")
             top_price = viable_legs[0][0] if viable_legs else Decimal("0")
+            if top_price > 0:
+                single_leg_required_notional = top_price * min_size_needed
             if top_price > 0 and budget_divisor > 0:
                 single_leg_required_avail = (top_price * min_size_needed) / budget_divisor
 
@@ -2768,13 +2771,30 @@ class PolyLPSMulti:
                         degrade_reason = f"budget_limited_degrade requested_legs={requested_legs} planned_legs={planned_legs}"
                     break
 
-            if event_budget <= 0 or not plan:
+            if not plan and top_price > 0 and avail >= single_leg_required_notional:
+                fallback_size = self._floor_to_tick(min_size_needed, Decimal("0.001"))
+                fallback_notional = top_price * fallback_size
+                if fallback_size >= required_min_size and fallback_notional > 0 and fallback_notional <= avail:
+                    plan = [(top_price, fallback_size, fallback_notional)]
+                    planned_legs = 1
+
+            if event_budget <= 0 and not plan:
                 log(
                     f"[quote-skip] token={token_id} reason=no_single_leg_budget "
                     f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
-                    f"single_leg_required_avail={single_leg_required_avail} required_min_size={required_min_size} "
-                    f"top_price={top_price} pct={pct} size_cap={size_cap} budget_divisor={budget_divisor} "
-                    f"requested_legs={requested_legs}"
+                    f"single_leg_required_avail={single_leg_required_avail} single_leg_required_notional={single_leg_required_notional} "
+                    f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
+                    f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
+                )
+                return
+
+            if not plan:
+                log(
+                    f"[quote-skip] token={token_id} reason=no_single_leg_budget "
+                    f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
+                    f"single_leg_required_avail={single_leg_required_avail} single_leg_required_notional={single_leg_required_notional} "
+                    f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
+                    f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
                 )
                 return
 
