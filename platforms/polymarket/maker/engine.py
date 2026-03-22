@@ -1537,9 +1537,6 @@ class PolyLPSMulti:
             wait = max(per_token_wait, global_wait)
 
             if wait > 0:
-                log(f"[pace] throttle slug={slug} token={token_id[:16]} path={label} "
-                    f"wait={wait:.1f}s (token_elapsed={per_token_elapsed:.1f}s "
-                    f"global_elapsed={global_elapsed:.1f}s global_min={global_min:.1f}s)")
                 await asyncio.sleep(wait)
 
             # Record timestamps
