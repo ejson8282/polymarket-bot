@@ -885,11 +885,10 @@ class PolyLPSMulti:
             return False, "crossed_or_empty_book"
         depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
         if depth_snapshot is not None and depth_snapshot.bids:
-            # Only act on depth if data is fresh and has meaningful depth levels
+            # Depth-thin is handled later in planner/feasibility so we can back off price
+            # instead of hard-failing at best_bid immediately.
             if not self._snapshot_is_stale(token_id, depth_snapshot) and len(depth_snapshot.bids) >= 2:
-                front_notional = self._front_notional_from_snapshot(depth_snapshot, effective_snapshot.best_bid)
-                if front_notional < self.min_front_bid_notional_usdc:
-                    return False, "front_depth_thin"
+                pass
             # If depth is stale or too shallow, skip depth gate rather than act on bad data
         return True, "ok"
 
@@ -1846,6 +1845,25 @@ class PolyLPSMulti:
             return [Decimal("0.5"), Decimal("0.5")]
         return [Decimal("0.3"), Decimal("0.3"), Decimal("0.4")]
 
+    def _adapt_prices_for_front_depth(
+        self,
+        token_id: str,
+        prices: list[Decimal],
+        depth_snapshot: Optional[MarketSnapshot],
+    ) -> list[tuple[Decimal, Decimal]]:
+        if not prices:
+            return []
+        adapted: list[tuple[Decimal, Decimal]] = []
+        for p in prices:
+            front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else Decimal("0")
+            adapted.append((p, front_notional))
+        if depth_snapshot is None:
+            return adapted
+        for idx, (p, front_notional) in enumerate(adapted):
+            if front_notional >= self.min_front_bid_notional_usdc:
+                return adapted[idx:]
+        return []
+
     async def _sync_top_leg(self, token_id: str, desired: Optional[tuple[Decimal, Decimal, Decimal]], live_orders: list[dict]) -> list[dict]:
         self._ensure_order_path_open(token_id, "planner_top_leg_sync")
         current_top = live_orders[0] if live_orders else None
@@ -2724,11 +2742,12 @@ class PolyLPSMulti:
             required_min_size = max(self.min_order_size, reward_min_size)
             size_cap = Decimal(str(gate.get("size_cap", 1.0) or 0.0))
             pct = self._market_quote_budget_pct(token_id, market_risk)
-            weights = self._alloc_weights(len(prices))
+            adapted_prices = self._adapt_prices_for_front_depth(token_id, prices, depth_snapshot)
+            requested_legs_raw = len(prices)
+            weights = self._alloc_weights(len(adapted_prices))
             viable_legs = []
             total_weight = Decimal("0")
-            for p, w in zip(prices, weights):
-                front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else self._front_bid_notional(book, p)
+            for (p, front_notional), w in zip(adapted_prices, weights):
                 if front_notional < self.min_front_bid_notional_usdc:
                     continue
                 viable_legs.append((p, w))
@@ -2761,7 +2780,7 @@ class PolyLPSMulti:
             event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
 
             plan = []
-            requested_legs = len(viable_legs)
+            requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)
             planned_legs = 0
             degrade_reason = ""
             single_leg_required_avail = Decimal("0")
