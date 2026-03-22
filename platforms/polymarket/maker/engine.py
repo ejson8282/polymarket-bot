@@ -354,6 +354,14 @@ class PolyLPSMulti:
         self._signer_gap_lock = asyncio.Lock()
         self._last_signer_post_ts = 0.0
 
+        # ── Global + per-token order throttle ─────────────────────────────
+        self._global_order_lock = asyncio.Lock()
+        self._global_last_order_ts = 0.0
+        self._global_order_min_sec = float(execution.get("global_order_min_sec", 10))
+        self._global_order_max_sec = float(execution.get("global_order_max_sec", 30))
+        self._per_token_order_min_sec = float(execution.get("per_token_order_min_sec", 15))
+        self._per_token_last_order_ts: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+
         # market reward-health auto offlining
         self.health_check_interval_sec = int(execution.get("health_check_interval_sec", 600))
         self.health_fail_threshold = int(execution.get("health_fail_threshold", 2))
@@ -829,6 +837,9 @@ class PolyLPSMulti:
         snapshot: Optional[MarketSnapshot],
     ) -> Optional[MarketSnapshot]:
         if snapshot is not None and snapshot.bids and snapshot.asks and not self._snapshot_is_placeholder(snapshot.best_bid, snapshot.best_ask):
+            # Reject depth data that is too old for order decisions
+            if self._snapshot_is_stale(token_id, snapshot):
+                return None
             return snapshot
         return self._fresh_depth_snapshot(token_id)
 
@@ -842,6 +853,15 @@ class PolyLPSMulti:
         depth_snapshot = self._trusted_depth_for_snapshot(token_id, snapshot)
         if depth_snapshot is not None and self._snapshot_is_placeholder(snapshot.best_bid, snapshot.best_ask):
             return depth_snapshot
+        # If both snapshot and depth exist, check BBA divergence
+        if depth_snapshot is not None and snapshot.best_bid > 0 and depth_snapshot.best_bid > 0:
+            divergence = abs(snapshot.best_bid - depth_snapshot.best_bid)
+            if divergence > Decimal("0.03"):
+                slug = self._token_slug_cache.get(token_id, token_id[:16])
+                log(f"[safety] snapshot_divergence slug={slug} token={token_id[:16]} "
+                    f"snap_bid={snapshot.best_bid} depth_bid={depth_snapshot.best_bid} "
+                    f"diff={divergence}")
+                return None  # force skip — data mismatch
         return snapshot
 
     def _quote_gate(self, token_id: str, snapshot: Optional[MarketSnapshot]) -> tuple[bool, str]:
@@ -856,9 +876,12 @@ class PolyLPSMulti:
             return False, "crossed_or_empty_book"
         depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
         if depth_snapshot is not None and depth_snapshot.bids:
-            front_notional = self._front_notional_from_snapshot(depth_snapshot, effective_snapshot.best_bid)
-            if front_notional < self.min_front_bid_notional_usdc:
-                return False, "front_depth_thin"
+            # Only act on depth if data is fresh and has meaningful depth levels
+            if not self._snapshot_is_stale(token_id, depth_snapshot) and len(depth_snapshot.bids) >= 2:
+                front_notional = self._front_notional_from_snapshot(depth_snapshot, effective_snapshot.best_bid)
+                if front_notional < self.min_front_bid_notional_usdc:
+                    return False, "front_depth_thin"
+            # If depth is stale or too shallow, skip depth gate rather than act on bad data
         return True, "ok"
 
     def _market_quote_budget_pct(self, token_id: str, market_risk: str) -> Decimal:
@@ -937,7 +960,16 @@ class PolyLPSMulti:
             return decision
         probe_price = top_price if top_price is not None and top_price > 0 else max(effective_snapshot.best_bid, Decimal("0.01"))
         depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
-        front_notional = self._front_notional_from_snapshot(depth_snapshot or effective_snapshot, probe_price)
+        # Only evaluate depth-based gates when depth data is trustworthy
+        _depth_trustworthy = (
+            depth_snapshot is not None
+            and not self._snapshot_is_stale(token_id, depth_snapshot)
+            and len(depth_snapshot.bids) >= 2
+        )
+        if _depth_trustworthy:
+            front_notional = self._front_notional_from_snapshot(depth_snapshot, probe_price)
+        else:
+            front_notional = self._front_notional_from_snapshot(effective_snapshot, probe_price) if effective_snapshot.bids else self.min_front_bid_notional_usdc  # assume OK if no depth
         decision["front_notional"] = float(front_notional)
         fill_risk = float(meta.get("fill_risk") or 0.0)
         decision["fill_risk"] = fill_risk
@@ -945,13 +977,15 @@ class PolyLPSMulti:
             decision["size_cap"] = min(float(decision["size_cap"]), 0.5)
             decision["risk_grade"] = "B"
             reasons.append("latency_degraded")
-        if front_notional < (self.min_front_bid_notional_usdc * Decimal("0.50")):
+        if _depth_trustworthy and front_notional < (self.min_front_bid_notional_usdc * Decimal("0.50")):
             decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "cancel", "risk_grade": "BLOCK"})
             reasons.append("front_depth_critical")
             return decision
-        if front_notional < self.min_front_bid_notional_usdc:
+        if _depth_trustworthy and front_notional < self.min_front_bid_notional_usdc:
             decision.update({"size_cap": min(float(decision["size_cap"]), 0.25), "top_leg_action": "move_back", "risk_grade": "C"})
             reasons.append("front_depth_thin")
+        elif not _depth_trustworthy and depth_snapshot is not None:
+            reasons.append("depth_data_untrusted")
         if fill_risk >= 75:
             decision.update({"size_cap": min(float(decision["size_cap"]), 0.25), "top_leg_action": "move_back", "risk_grade": "C"})
             reasons.append("fill_risk_high")
@@ -1316,6 +1350,8 @@ class PolyLPSMulti:
                 self._event_locks[token_id] = asyncio.Lock()
             if token_id not in self.last_quote_ts:
                 self.last_quote_ts[token_id] = 0.0
+            if token_id not in self._per_token_last_order_ts:
+                self._per_token_last_order_ts[token_id] = 0.0
             if token_id not in self._market_balance_fail_streak:
                 self._market_balance_fail_streak[token_id] = 0
             if token_id not in self._market_skip_until:
@@ -1469,15 +1505,47 @@ class PolyLPSMulti:
 
 
     async def _post_delay(self, label: str) -> None:
-        pace_label = label.lower()
-        if "top_leg_defense" in pace_label:
-            lo, hi = 0.0, 1.0
-        else:
-            lo = max(0.0, self.post_delay_min_sec)
-            hi = max(lo, self.post_delay_max_sec)
+        # Unified pace — no fast path for defense, everything goes through same rhythm
+        lo = max(0.0, self.post_delay_min_sec)
+        hi = max(lo, self.post_delay_max_sec)
         d = random.uniform(lo, hi)
         log(f"[pace] {label} sleep={d:.2f}s")
         await asyncio.sleep(d)
+
+    async def _acquire_order_throttle(self, token_id: str, label: str) -> None:
+        """Unified order throttle: per-token + global.
+        Must be called before every real order placement."""
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+        async with self._global_order_lock:
+            now = time.time()
+
+            # ── Per-token cooldown ────────────────────────────────────────
+            per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
+            per_token_elapsed = now - per_token_last
+            per_token_wait = max(0.0, self._per_token_order_min_sec - per_token_elapsed)
+
+            # ── Global cooldown ───────────────────────────────────────────
+            global_elapsed = now - self._global_last_order_ts
+            global_min = random.uniform(self._global_order_min_sec, self._global_order_max_sec)
+            global_wait = max(0.0, global_min - global_elapsed)
+
+            # Take the larger wait
+            wait = max(per_token_wait, global_wait)
+
+            if wait > 0:
+                log(f"[pace] throttle slug={slug} token={token_id[:16]} path={label} "
+                    f"wait={wait:.1f}s (token_elapsed={per_token_elapsed:.1f}s "
+                    f"global_elapsed={global_elapsed:.1f}s global_min={global_min:.1f}s)")
+                await asyncio.sleep(wait)
+
+            # Record timestamps
+            order_ts = time.time()
+            self._global_last_order_ts = order_ts
+            self._per_token_last_order_ts[token_id] = order_ts
+
+            log(f"[pace] cleared slug={slug} token={token_id[:16]} path={label} "
+                f"token_gap={time.time() - per_token_last:.1f}s "
+                f"global_gap={time.time() - (now - global_elapsed):.1f}s")
 
     @staticmethod
     def _infer_tick_from_book(best_bid: Decimal, best_ask: Decimal) -> Decimal:
@@ -1722,7 +1790,8 @@ class PolyLPSMulti:
             if book.best_bid >= reward_lower and book.best_bid >= tick:
                 return [self._floor_to_tick(book.best_bid, tick)]
             # No valid position exists in reward zone; skip this market
-            log(f"[price-legs-skip] token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
+            _slug = self._token_slug_cache.get(token_id, "")
+            log(f"[price-legs-skip] slug={_slug} token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
             return []
 
         # Number of qualifying positions below best_bid that remain in the reward zone
@@ -1790,11 +1859,18 @@ class PolyLPSMulti:
             if current_price == desired_price and self._size_change_within_tolerance(current_size, desired_size):
                 self._last_top_plan_sig[token_id] = current_sig
                 return live_orders
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
         if current_top is not None:
+            log(f"[cancel] slug={slug} token={token_id[:16]} kind=sync reason=planner_top_leg_sync "
+                f"old_price={self._order_price(current_top)} ids=1")
             await self._cancel_order_ids(token_id, [self._order_id(current_top)], "planner_top_leg_sync")
             live_orders = await self._refresh_live_orders(token_id)
         if desired is not None:
             price, size, _ = desired
+            snap = self._market_snapshots.get(token_id)
+            bid_info = f" bid={snap.best_bid} ask={snap.best_ask}" if snap else ""
+            log(f"[quote] slug={slug} token={token_id[:16]} target={price} size={size}"
+                f"{bid_info} label=top_leg_sync")
             await self.place_post_only_order(token_id, price, size, label="top_leg_sync")
             live_orders = await self._refresh_live_orders(token_id)
         self._last_top_plan_sig[token_id] = desired_sig
@@ -1819,11 +1895,14 @@ class PolyLPSMulti:
             if within_tolerance:
                 self._last_back_plan_sig[token_id] = live_sig
                 return live_orders
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
         ids = [self._order_id(o) for o in live_back]
         if ids:
+            log(f"[cancel] slug={slug} token={token_id[:16]} kind=sync reason=planner_back_legs_sync ids={len(ids)}")
             await self._cancel_order_ids(token_id, ids, "planner_back_legs_sync")
             live_orders = await self._refresh_live_orders(token_id)
         for price, size, _ in desired_back:
+            log(f"[quote] slug={slug} token={token_id[:16]} target={price} size={size} label=back_leg_sync")
             await self.place_post_only_order(token_id, price, size, label="back_leg_sync")
         live_orders = await self._refresh_live_orders(token_id)
         self._last_back_plan_sig[token_id] = desired_sig
@@ -1907,6 +1986,20 @@ class PolyLPSMulti:
                     action = "MOVE_BACK_TOP_LEG" if legal_top > 0 and legal_top < best_ask else "CANCEL_TOP_LEG"
                 # --- P0: record defense action for volatility tracker ---
                 self._vol_record_defense_action(token_id, action)
+
+                # Detailed defense decision log
+                _slug = self._token_slug_cache.get(token_id, token_id[:16])
+                _spread_val = live_spread if live_spread is not None else "?"
+                _reward_lower = "?"
+                if live_spread is not None:
+                    _mid = (best_bid + best_ask) / Decimal("2")
+                    _reward_lower = max(tick, _mid - live_spread) if live_spread <= Decimal("1") else max(tick, _mid - live_spread / Decimal("100"))
+                if action != "KEEP":
+                    log(f"[risk] defense slug={_slug} token={token_id[:16]} action={action} "
+                        f"top_price={top_price} legal_top={legal_top} bid={best_bid} ask={best_ask} "
+                        f"spread={_spread_val} reward_lower={_reward_lower} "
+                        f"front_notional={front_notional} gate={','.join(gate.get('reason', []))} "
+                        f"trigger={trigger}")
 
                 if action == "KEEP":
                     if self._event_state_name(token_id) == EVENT_DEFENSIVE:
@@ -2645,11 +2738,21 @@ class PolyLPSMulti:
             if avail is not None:
                 self._last_balance = avail
             if avail is None or avail <= 0:
-                log(f"[quote-skip] token={token_id} reason=no_balance_available")
+                log(
+                    f"[quote-skip] token={token_id} reason=no_balance_available "
+                    f"event_state={self._event_state_name(token_id)} pct={pct} size_cap={size_cap}"
+                )
                 return
             event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
-            if event_budget <= 0 or avail < (min_budget_needed / budget_divisor):
-                log(f"[quote-skip] token={token_id} reason=insufficient_budget_for_min_size")
+            required_avail = (min_budget_needed / budget_divisor) if budget_divisor > 0 else Decimal("0")
+            if event_budget <= 0 or avail < required_avail:
+                log(
+                    f"[quote-skip] token={token_id} reason=insufficient_budget_for_min_size "
+                    f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
+                    f"required_avail={required_avail} min_budget_needed={min_budget_needed} "
+                    f"required_min_size={required_min_size} min_price={min_price} min_weight={min_weight} "
+                    f"pct={pct} size_cap={size_cap} budget_divisor={budget_divisor}"
+                )
                 return
             plan = []
             for p, w in viable_legs:
@@ -2717,18 +2820,61 @@ class PolyLPSMulti:
         meta = await self._get_market_meta(token_id)
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
-        await self._post_delay(f"{label} token={token_id}")
-        self._ensure_order_path_open(token_id, f"place_post_delay:{label}")
+
+        # ── Unified throttle: global + per-token (replaces _post_delay) ───
+        await self._acquire_order_throttle(token_id, label)
+
+        self._ensure_order_path_open(token_id, f"place_post_throttle:{label}")
         meta = await self._get_market_meta(token_id)
-        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_delay_complete:{label}"):
+        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_throttle_complete:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
+
+        # ── Final pre-order reward-zone validation ────────────────────────
+        snap = self._market_snapshots.get(token_id)
+        effective = self._effective_snapshot_for_gate(token_id, snap)
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+        if effective and not self._snapshot_is_stale(token_id, effective):
+            fresh_bid = effective.best_bid
+            fresh_ask = effective.best_ask
+            live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+            live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+            cfg = self._get_mcfg(token_id)
+            spread = live_spread if live_spread is not None else cfg["spread"]
+            if spread > Decimal("1"):
+                spread = spread / Decimal("100")
+            mid = (fresh_bid + fresh_ask) / Decimal("2")
+            tick = cfg["tick"]
+            reward_lower = max(tick, mid - spread)
+            legal_top = fresh_bid - tick
+            # Reject: price above legal_top
+            if price > legal_top and legal_top > 0:
+                log(f"[safety] REJECT price>{legal_top} slug={slug} token={token_id[:16]} "
+                    f"target={price} legal_top={legal_top} bid={fresh_bid} ask={fresh_ask} "
+                    f"spread={spread} reward_lower={reward_lower} label={label}")
+                raise RuntimeError(f"pre_order_reject:price_above_legal_top token={token_id[:16]}")
+            # Reject: price below reward zone
+            if price < reward_lower:
+                log(f"[safety] REJECT price<reward_lower slug={slug} token={token_id[:16]} "
+                    f"target={price} reward_lower={reward_lower} bid={fresh_bid} ask={fresh_ask} "
+                    f"spread={spread} mid={mid} label={label}")
+                raise RuntimeError(f"pre_order_reject:price_below_reward_zone token={token_id[:16]}")
+            # Reject: price at or above best_ask (would cross spread)
+            if price >= fresh_ask:
+                log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} "
+                    f"target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
+                raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
+        elif effective is None or self._snapshot_is_stale(token_id, effective):
+            log(f"[safety] REJECT stale_data_at_order slug={slug} token={token_id[:16]} "
+                f"target={price} label={label}")
+            raise RuntimeError(f"pre_order_reject:stale_snapshot token={token_id[:16]}")
+        # ── End pre-order validation ──────────────────────────────────────
 
         async with self._signer_sem:
             async with self._signer_gap_lock:
                 now = time.time()
                 wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
                 if wait_sec > 0:
-                    log(f"[signer-pace] token={token_id} label={label} sleep={wait_sec:.2f}s")
+                    log(f"[signer-pace] wait={wait_sec:.2f}s label={label}")
                     await asyncio.sleep(wait_sec)
                 self._last_signer_post_ts = time.time()
 
