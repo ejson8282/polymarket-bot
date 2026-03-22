@@ -349,6 +349,11 @@ class PolyLPSMulti:
         # per-market failure isolation (do not nuke all events on single-market balance issues)
         self._market_balance_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self._market_skip_until: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+        self._market_stale_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
+        self._market_budget_skip_until: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+        self.stale_skip_threshold = int(execution.get("stale_skip_threshold", 2))
+        self.stale_skip_cooldown_sec = float(execution.get("stale_skip_cooldown_sec", 20))
+        self.budget_skip_cooldown_sec = float(execution.get("budget_skip_cooldown_sec", 45))
 
         self.post_delay_min_sec = float(execution.get("post_delay_min_sec", 1))
         self.post_delay_max_sec = float(execution.get("post_delay_max_sec", 3))
@@ -2600,6 +2605,8 @@ class PolyLPSMulti:
             if time.time() < self._market_skip_until.get(token_id, 0.0):
                 self._set_event_state(token_id, EVENT_COOLDOWN, "market_skip_ttl")
                 return
+            if time.time() < self._market_budget_skip_until.get(token_id, 0.0):
+                return
             blocked, breason = await self._is_blocked_market(token_id)
             if blocked:
                 await self._deactivate_market(token_id, breason)
@@ -2786,6 +2793,7 @@ class PolyLPSMulti:
                     f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
                     f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
                 )
+                self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
                 return
 
             if not plan:
@@ -2796,8 +2804,11 @@ class PolyLPSMulti:
                     f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
                     f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
                 )
+                self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
                 return
 
+            self._market_budget_skip_until[token_id] = 0.0
+            self._market_stale_fail_streak[token_id] = 0
             live_token = await self._refresh_live_orders(token_id)
             if not plan:
                 self._gate_decisions[token_id] = {
@@ -2836,6 +2847,13 @@ class PolyLPSMulti:
                     log(f"[preempt] token={token_id} path=planner reason={e}")
                     return
                 if isinstance(e, SoftQuoteSkip):
+                    em = str(e).lower()
+                    if "stale_snapshot" in em:
+                        self._market_stale_fail_streak[token_id] = self._market_stale_fail_streak.get(token_id, 0) + 1
+                        if self._market_stale_fail_streak[token_id] >= self.stale_skip_threshold:
+                            self._market_skip_until[token_id] = time.time() + self.stale_skip_cooldown_sec
+                            self._market_stale_fail_streak[token_id] = 0
+                        return
                     return
                 em = str(e).lower()
                 if "not enough balance" in em or "allowance" in em:
