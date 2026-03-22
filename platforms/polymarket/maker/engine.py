@@ -1593,7 +1593,6 @@ class PolyLPSMulti:
         # keep min distance at least one tick
         mcfg["min_distance"] = max(mcfg["min_distance"], resolved)
         self._tick_resolved.add(token_id)
-        log(f"[tick-auto] {token_id}: tick={resolved}")
 
     async def _normalize_guard_best_bid(self, token_id: str, book_now: Any) -> Optional[Decimal]:
         """Use the same anti-placeholder top-of-book normalization as quote path."""
