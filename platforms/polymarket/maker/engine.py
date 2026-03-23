@@ -1978,8 +1978,9 @@ class PolyLPSMulti:
                 live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
                 live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
                 legal_prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
-                legal_top = legal_prices[0] if legal_prices else None
                 depth_snapshot = self._trusted_depth_for_snapshot(token_id, snap)
+                adapted_legal_prices = self._adapt_prices_for_front_depth(token_id, legal_prices, depth_snapshot)
+                legal_top = adapted_legal_prices[0][0] if adapted_legal_prices else (legal_prices[0] if legal_prices else None)
                 front_notional = self._front_notional_from_snapshot(depth_snapshot or snap, top_price)
 
                 # --- P0: record front notional for rolling window ---
@@ -1997,7 +1998,7 @@ class PolyLPSMulti:
                     action = "MOVE_BACK_TOP_LEG"
                 elif legal_top is None:
                     action = "CANCEL_TOP_LEG"
-                elif top_price > legal_top:
+                elif legal_top is not None and top_price > legal_top:
                     action = "MOVE_BACK_TOP_LEG" if legal_top > 0 and legal_top < best_ask else "CANCEL_TOP_LEG"
                 # --- P0: record defense action for volatility tracker ---
                 self._vol_record_defense_action(token_id, action)
