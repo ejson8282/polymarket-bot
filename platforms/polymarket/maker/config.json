@@ -11,33 +11,6 @@
   },
   "markets": [
     {
-      "token_id": "65839662109591074033782728219667955348275025326531255130678296855834444389248",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "low",
-      "enabled": true
-    },
-    {
-      "token_id": "85191934649046129480174964255278880752271767733539167443243111973456166096127",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "110773817950849039587117814239345113446666563282132134483524560374665145060775",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
       "token_id": "48872355094865625228359634693368699252583684794965591115087662730300025170156",
       "max_incentive_spread": 4.5,
       "price_tick": 0.01,
@@ -56,15 +29,6 @@
       "enabled": true
     },
     {
-      "token_id": "4535122699075910617296689739209052182591729434840370870460954445200030058884",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
       "token_id": "5708561660601459805512817131601230493971589760294984590237789749933853841330",
       "max_incentive_spread": 4.5,
       "price_tick": 0.01,
@@ -74,16 +38,7 @@
       "enabled": true
     },
     {
-      "token_id": "44446804496889907209027787393532554522900719536131325061789855807185516080089",
-      "max_incentive_spread": 3.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "48764428286656921488851644351774667118009263342042758531252625616470924946480",
+      "token_id": "61632675331702048147078780815220303527641050471244335251400398164522839856051",
       "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
@@ -92,70 +47,7 @@
       "enabled": true
     },
     {
-      "token_id": "94757964743270149228522113189634683652272474785632160948391564775755006004229",
-      "max_incentive_spread": 3.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "93308328062728124186692153416180775659470768200522386127022919005411046385976",
-      "max_incentive_spread": 3.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "77893140510362582253172593084218413010407941075415081594586195705930819989216",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
-      "max_incentive_spread": 3.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "45477629983983454025018402952865236613131543289256695752349077579364954910137",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "95900802534833268457962724984643816638826235519419508284062795060224733525781",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "71214017986624957337385201992007376699630328389263919510899485868148879273380",
-      "max_incentive_spread": 4.5,
-      "price_tick": 0.01,
-      "min_distance_from_best_bid": 0.01,
-      "quote_size": 100.0,
-      "risk": "mid",
-      "enabled": true
-    },
-    {
-      "token_id": "29577345180542753188700941748705224076025927865234220835903826643992439907745",
+      "token_id": "101083186608313981443973041180919242949313297291506239384068182730249434635927",
       "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
@@ -173,8 +65,8 @@
       "enabled": true
     },
     {
-      "token_id": "108404583612412017900991614858319938451930820299691195982097842688880737648604",
-      "max_incentive_spread": 5.5,
+      "token_id": "48764428286656921488851644351774667118009263342042758531252625616470924946480",
+      "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
@@ -182,8 +74,80 @@
       "enabled": true
     },
     {
-      "token_id": "43849040965042844507777759840706002277693580873354818985912205362308537091627",
-      "max_incentive_spread": 5.5,
+      "token_id": "4535122699075910617296689739209052182591729434840370870460954445200030058884",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "99401142895146400200227798161321921785767520026845591441072901966903091578191",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "87156637535191445432907117827973341625365728747184987840263766998632916111454",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "48464425405555344857387107244938047683732239375598369689950940167574784623069",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "66760013958706218500063341242954853503885044406421636173986330736153883161818",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "54402695429900470764907392330278667073010991886307296737230650166662112291828",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "34514951598995324542274721341337612242968019664802771000703925452863948989504",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "77893140510362582253172593084218413010407941075415081594586195705930819989216",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "17428932234445583828745867561202762355100277948020637961554361298021337764026",
+      "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
@@ -200,8 +164,8 @@
       "enabled": true
     },
     {
-      "token_id": "54738578272831851666700908122658091902117438038105121569140524867640917249271",
-      "max_incentive_spread": 4.5,
+      "token_id": "82530627405409911305927805635950267430246838540555305041705674192961973127302",
+      "max_incentive_spread": 3.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
@@ -209,8 +173,8 @@
       "enabled": true
     },
     {
-      "token_id": "63586620628756015058616403521099137018911742768824051367331188904593189743777",
-      "max_incentive_spread": 3.5,
+      "token_id": "108404583612412017900991614858319938451930820299691195982097842688880737648604",
+      "max_incentive_spread": 5.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
@@ -220,6 +184,717 @@
     {
       "token_id": "48825140812430902098404528620382945035793471220915259967486864813738884055220",
       "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "95900802534833268457962724984643816638826235519419508284062795060224733525781",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "91851388830923641218615793149765322805282194001900444983744404881757241655792",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "6302359956133594764084277082169634158291609371270652093164054687145970756151",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "40303813194347010887823273434013543644352929920348332007073570246634387702802",
+      "max_incentive_spread": 5.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "112937628087331697317065233168528083229287804207100901534711974468554098083004",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "72223647059482161321777035355535254168984102436017216383672365031077799535046",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false
+    },
+    {
+      "token_id": "99535854150125584073372680075762028968693385870149483240170023512322890475476",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "19129029159125180324000259892263123632565353973397097558019077031411883001062",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "106442077621018671814685163058566326323020044377770749589187818682915414193619",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "110255793229997375167301163435477269306240851287496454756514703439982186529249",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "16284020935514892022998451638073467942811611856826047163432808295515881580380",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "34522029811885165268273792456913474420221035255265728336691773789337117326368",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "7200026789453746703388655813494351095041529029673870442064146506887486572501",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "103274234192321208107821824013484076636003204013423276004994178153717658919613",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "73712795699983855066686259772340490663241338961547814881655254416441442582954",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "12547537570294567682592266581780022308578210689316624477489481456823420966761",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "89110596788673536475065853727140488937259064164063660201050220270400840228269",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "11171618905857319805355893398009978356002287408842633593535559412449299952250",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false
+    },
+    {
+      "token_id": "65193234666628291664907888364936366210889305490897648116746073820519263548476",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "44446804496889907209027787393532554522900719536131325061789855807185516080089",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "96594120749450794604075797545737644381616507929306323589190604953243290667102",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "55967247602586075622194066715639476769739937290480392734882753272229618363087",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "99308764485765552888542373236405354280486342174935314281037215048612491168324",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "33982069727714559228613640542553959722814245008182061746055194466505822089643",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "6611858959530530089519885423924982722693112027632057905878632700245864474671",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "98250445447699368679516529207365255018790721464590833209064266254238063117329",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false
+    },
+    {
+      "token_id": "75028752776148090296091099469912621384650554615761384992997579209329182670110",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "95835705062472305459663741402900736177330733688944910993896545106260819635212",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "76966216861676765455847161978020811345081637695305334651438116829300115482952",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "104731530598978202925563656323694933154318837341770296468059903473029914991939",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "6277505806648023389057664400175298588319001309944943399622582765026441481422",
+      "max_incentive_spread": 5.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "83479140651306794046790588004449066364152228067472874205697111967337978544729",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "30767812841387255642892182147223249245545002662653079696958384408588201824258",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "88086391416057660143225156211375033544197376414522271146941722200299997817776",
+      "max_incentive_spread": 5.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "104228558642724222037595795660879644586231185994161012152212385910850967326037",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "4576347847245480575260753962072852009398058944437537080619261475961185008530",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "16040015440196279900485035793550429453516625694844857319147506590755961451627",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false
+    },
+    {
+      "token_id": "69136365945621600854789649488423522395843457249417452310260493085275775221076",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false
+    },
+    {
+      "token_id": "30474492153316523915604855839063847245493287455989692695957038531302522868025",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "78068220500269443395575202230211880308774351893663660148122351947693218065915",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "50143980393435996217714022897965886420387298227054033598176282877756178368402",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "77200405920919406047222396714341713902953085905930865032809647038536176521469",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "2916184120206223749839849644877707470354946028257066951797428049170871002238",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "54533043819946592547517511176940999955633860128497669742211153063842200957669",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "60396150294056475674860934419619480139938118116601719506967369709790058295210",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "24403333663857542318749963185881540287132775184421001118083997035290758448042",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "70364657290228044448461397404440906092275799648915793839023224483022545171360",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "16894424691858208925745474726543713759924126381815674402361002638388880101929",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "44149007410374101286260953227333745102128417138356632089802983317837574022801",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "70235644432412964121917864255900359382638971100146813592379821470215190007259",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "72535544017897924722695722172278828562733090748474862987195303914909938482758",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "110773817950849039587117814239345113446666563282132134483524560374665145060775",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "100379208559626151022751801118534484742123694725746262280150222742563282755057",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "34722410608062854697106861099776685947172185964394483545370684749662285977831",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "31335564527155177318544135513783493075328451393660649396114225549873718295223",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "72011231072462679087270523340672725549955186145298756875462147357638355580004",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "99767261437055226116306337813801042912696159191602956091233868382444699564874",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "112434828665041337854033745240098052999773438249964130665844574663228374653496",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "1291454874125024564913411658636854434792972068510027777552181749936579562639",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "23072428889948871919916997912866343746006774483855187447858489211364943872755",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "12403602920039269077597917340921667997547115084613238528792639013246536343316",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "103971336418419351548990142781195320713490282483637854831265186666012554199721",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "13565458761220145250977753098276900790902214604876327357986816739576288755859",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "39613364913865315931514386378018944414998874795564653895884416470707478023814",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "81548019791840902517287112193384358135389303980460339107425376112037459333655",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "69625364846840598716576766409133467014678469688514096710920250102107522915422",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "61963573353880265694358880181512412652951688509792017552668784297365342759317",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "19426830997860641827867742428794225516264548638293070052741093336218482490309",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "2528427303479769929472330676109185201769566652113008979656338625030036326005",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "113287701564209339913693347405685749986285999146352375265161592243948562084773",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "39692746408839627006625117454702416483396848777109545915742836472702053280131",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "51939490109676186832507970701169130490548061087912630009168726706475001411420",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "97390751868769233430161550786035197721004217118584051662030655361575807718008",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "51545532861486385873692934524720384955493736271416969951012544640145812214434",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "91347242536105459969213788769929618447748782724898414007495579710952664644740",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true
+    },
+    {
+      "token_id": "75262277240576503541125200255351734877619831936165222710769956674779076695947",
+      "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
@@ -730,8 +1405,35 @@
   },
   "night_markets": [
     {
+      "token_id": "85191934649046129480174964255278880752271767733539167443243111973456166096127",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true
+    },
+    {
       "token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
       "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true
+    },
+    {
+      "token_id": "44446804496889907209027787393532554522900719536131325061789855807185516080089",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true
+    },
+    {
+      "token_id": "44149007410374101286260953227333745102128417138356632089802983317837574022801",
+      "max_incentive_spread": 4.5,
       "price_tick": 0.01,
       "min_distance_from_best_bid": 0.02,
       "quote_size": 80.0,
