@@ -1403,6 +1403,22 @@
     "tz": "Asia/Shanghai",
     "switch_gap_sec": 5
   },
+  "proxy_failover": {
+    "enabled": true,
+    "controller_url": "http://127.0.0.1:9097",
+    "group_name": "Proxy",
+    "allowed_keywords": [
+      "HONG KONG",
+      "JAPAN"
+    ],
+    "request_exception_count": 5,
+    "ws_handshake_fail_count": 3,
+    "ws_down_trigger_sec": 30,
+    "observe_sec": 120,
+    "max_switches_per_window": 3,
+    "switch_window_sec": 600,
+    "bad_node_ttl_sec": 600
+  },
   "night_markets": [
     {
       "token_id": "85191934649046129480174964255278880752271767733539167443243111973456166096127",

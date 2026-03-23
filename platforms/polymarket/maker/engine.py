@@ -89,6 +89,11 @@ def _format_exc(exc: Exception, limit: int = 220) -> str:
     return compact
 
 
+def _contains_any_ci(text: str, needles: list[str]) -> bool:
+    hay = str(text or "").lower()
+    return any(str(n or "").strip().lower() in hay for n in needles if str(n or "").strip())
+
+
 def _ws_proxy_diag() -> str:
     sys_proxies = urllib.request.getproxies() or {}
     sys_proxy = (
@@ -444,6 +449,33 @@ class PolyLPSMulti:
             tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None, "watch_count": 0}
             for tid in self.market_cfg
         }
+
+        # --- automatic Clash proxy failover ---
+        pf_cfg = self.cfg.get("proxy_failover", {})
+        self._proxy_failover_enabled: bool = bool(pf_cfg.get("enabled", False))
+        self._proxy_failover_controller_url: str = str(pf_cfg.get("controller_url", "http://127.0.0.1:9097")).rstrip("/")
+        self._proxy_failover_group_name: str = str(pf_cfg.get("group_name", "Proxy")).strip() or "Proxy"
+        self._proxy_failover_whitelist_keywords: list[str] = [
+            str(x).strip() for x in (pf_cfg.get("allowed_keywords") or []) if str(x).strip()
+        ]
+        self._proxy_failover_observe_sec: float = float(pf_cfg.get("observe_sec", 120))
+        self._proxy_failover_bad_node_ttl_sec: float = float(pf_cfg.get("bad_node_ttl_sec", 600))
+        self._proxy_failover_max_switches_per_window: int = int(pf_cfg.get("max_switches_per_window", 3))
+        self._proxy_failover_switch_window_sec: float = float(pf_cfg.get("switch_window_sec", 600))
+        self._proxy_failover_request_exception_threshold: int = int(pf_cfg.get("request_exception_count", 5))
+        self._proxy_failover_ws_handshake_fail_threshold: int = int(pf_cfg.get("ws_handshake_fail_count", 3))
+        self._proxy_failover_ws_down_trigger_sec: float = float(pf_cfg.get("ws_down_trigger_sec", 30))
+        self._proxy_failover_lock = asyncio.Lock()
+        self._proxy_failover_observe_until: float = 0.0
+        self._proxy_failover_switch_history: list[float] = []
+        self._proxy_failover_node_bad_until: Dict[str, float] = {}
+        self._proxy_failover_last_switch_from: str = ""
+        self._proxy_failover_last_switch_to: str = ""
+        self._proxy_failover_last_switch_reason: str = ""
+        self._proxy_failover_last_switch_ts: float = 0.0
+        self._proxy_failover_req_exc_count: int = 0
+        self._proxy_failover_ws_handshake_fail_count: int = 0
+        self._proxy_failover_halt_until: float = 0.0
 
         # --- P1: fill后限价卖出 ---
         exit_cfg = self.cfg.get("exit_strategy", {})
@@ -1700,6 +1732,8 @@ class PolyLPSMulti:
                 if self._last_market_ws_ok_ts > 0:
                     market_ws_age = time.time() - self._last_market_ws_ok_ts
                     if market_ws_age > self._market_ws_down_cancel_sec:
+                        if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
+                            asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
                         try:
                             await asyncio.to_thread(self.client.cancel_all)
                             log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s — cancelled all orders")
@@ -2407,6 +2441,149 @@ class PolyLPSMulti:
             return HTTP_PROXIES
         return {"http": p, "https": p}
 
+    def _proxy_failover_is_enabled(self) -> bool:
+        return self._proxy_failover_enabled and bool(self._proxy_failover_controller_url) and bool(self._proxy_failover_group_name)
+
+    def _proxy_failover_reset_counters(self) -> None:
+        self._proxy_failover_req_exc_count = 0
+        self._proxy_failover_ws_handshake_fail_count = 0
+
+    def _proxy_failover_record_success(self, source: str) -> None:
+        if not self._proxy_failover_is_enabled():
+            return
+        if time.time() < self._proxy_failover_observe_until:
+            log(f"[PROXY] recovered source={source} node={self._proxy_failover_last_switch_to or '-'}")
+        self._proxy_failover_observe_until = 0.0
+        self._proxy_failover_halt_until = 0.0
+        self._proxy_failover_reset_counters()
+
+    def _proxy_failover_record_req_exc(self, source: str) -> None:
+        if not self._proxy_failover_is_enabled():
+            return
+        self._proxy_failover_req_exc_count += 1
+        if self._proxy_failover_req_exc_count >= self._proxy_failover_request_exception_threshold:
+            asyncio.create_task(self._maybe_failover_proxy(f"request_exception_storm:{source}"))
+
+    def _proxy_failover_record_ws_handshake_failure(self, source: str) -> None:
+        if not self._proxy_failover_is_enabled():
+            return
+        self._proxy_failover_ws_handshake_fail_count += 1
+        if self._proxy_failover_ws_handshake_fail_count >= self._proxy_failover_ws_handshake_fail_threshold:
+            asyncio.create_task(self._maybe_failover_proxy(f"ws_handshake_timeout:{source}"))
+
+    def _proxy_failover_should_halt(self) -> bool:
+        now = time.time()
+        self._proxy_failover_switch_history = [
+            ts for ts in self._proxy_failover_switch_history
+            if now - ts <= self._proxy_failover_switch_window_sec
+        ]
+        return len(self._proxy_failover_switch_history) >= self._proxy_failover_max_switches_per_window
+
+    def _proxy_failover_mark_bad(self, node_name: str) -> None:
+        if not node_name:
+            return
+        self._proxy_failover_node_bad_until[node_name] = time.time() + self._proxy_failover_bad_node_ttl_sec
+
+    def _proxy_failover_allowed_node(self, node_name: str) -> bool:
+        if not node_name or node_name in {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"}:
+            return False
+        if self._proxy_failover_whitelist_keywords and not _contains_any_ci(node_name, self._proxy_failover_whitelist_keywords):
+            return False
+        bad_until = self._proxy_failover_node_bad_until.get(node_name, 0.0)
+        return time.time() >= bad_until
+
+    def _clash_request(self, method: str, path: str, payload: Optional[dict] = None) -> Any:
+        url = f"{self._proxy_failover_controller_url}{path}"
+        kwargs: dict[str, Any] = {"timeout": 10}
+        if payload is not None:
+            kwargs["json"] = payload
+        resp = requests.request(method, url, **kwargs)
+        resp.raise_for_status()
+        if resp.content:
+            return resp.json()
+        return None
+
+    def _get_clash_proxy_candidates(self) -> tuple[str, list[str], str]:
+        data = self._clash_request("GET", "/proxies") or {}
+        proxies = data.get("proxies") or {}
+        group_names = [self._proxy_failover_group_name, "GLOBAL", "Proxies"]
+        seen: set[str] = set()
+        for group_name in group_names:
+            if not group_name or group_name in seen:
+                continue
+            seen.add(group_name)
+            group = proxies.get(group_name) or {}
+            all_nodes = [str(x).strip() for x in (group.get("all") or []) if str(x).strip()]
+            allowed = [x for x in all_nodes if self._proxy_failover_allowed_node(x)]
+            if allowed:
+                current = str(group.get("now") or "")
+                return current, allowed, group_name
+        return "", [], self._proxy_failover_group_name
+
+    def _switch_clash_proxy(self, group_name: str, node_name: str) -> None:
+        encoded_group = requests.utils.quote(group_name, safe="")
+        self._clash_request("PUT", f"/proxies/{encoded_group}", {"name": node_name})
+
+    async def _maybe_failover_proxy(self, reason: str) -> None:
+        if not self._proxy_failover_is_enabled():
+            return
+        async with self._proxy_failover_lock:
+            now = time.time()
+            if now < self._proxy_failover_observe_until:
+                return
+            if now < self._proxy_failover_halt_until:
+                return
+            if self._proxy_failover_should_halt():
+                self._proxy_failover_halt_until = now + self._proxy_failover_switch_window_sec
+                log(
+                    f"[PROXY-HALT] reason={reason} switches={len(self._proxy_failover_switch_history)} "
+                    f"window={self._proxy_failover_switch_window_sec:.0f}s"
+                )
+                self.send_discord(
+                    f"[ALERT] Proxy failover halted: too many switches ({len(self._proxy_failover_switch_history)}) in "
+                    f"{int(self._proxy_failover_switch_window_sec)}s"
+                )
+                return
+            try:
+                current, candidates, active_group = await asyncio.to_thread(self._get_clash_proxy_candidates)
+            except Exception as e:
+                log(f"[PROXY] candidate_fetch_failed reason={reason} err={_format_exc(e)}")
+                return
+            if not candidates:
+                log(f"[PROXY] no_allowed_candidates reason={reason} group={self._proxy_failover_group_name}")
+                return
+            if current in candidates:
+                idx = candidates.index(current)
+                ordered = candidates[idx + 1 :] + candidates[:idx]
+            else:
+                ordered = candidates
+            if not ordered:
+                log(f"[PROXY] no_switch_target reason={reason} current={current or '-'}")
+                return
+            target = ordered[0]
+            try:
+                await asyncio.to_thread(self._switch_clash_proxy, active_group, target)
+            except Exception as e:
+                log(f"[PROXY] switch_failed reason={reason} group={active_group} from={current or '-'} to={target} err={_format_exc(e)}")
+                return
+            if current:
+                self._proxy_failover_mark_bad(current)
+            self._proxy_failover_last_switch_from = current
+            self._proxy_failover_last_switch_to = target
+            self._proxy_failover_last_switch_reason = reason
+            self._proxy_failover_last_switch_ts = now
+            self._proxy_failover_switch_history.append(now)
+            self._proxy_failover_observe_until = now + self._proxy_failover_observe_sec
+            self._proxy_failover_reset_counters()
+            log(
+                f"[PROXY] switch group={active_group} from={current or '-'} to={target} "
+                f"reason={reason} observe={self._proxy_failover_observe_sec:.0f}s"
+            )
+            self.send_discord(
+                f"[ALERT] Proxy failover switched {active_group}: {current or '-'} -> {target} "
+                f"reason={reason}"
+            )
+
     def _is_req_exc(self, e: Exception) -> bool:
         em = str(e)
         return (
@@ -2427,11 +2604,13 @@ class PolyLPSMulti:
     async def _mark_req_exc_and_maybe_storm(self, key: str, reason: str) -> None:
         now = time.time()
         self._req_exc_recent[key] = now
+        self._proxy_failover_record_req_exc(key)
         active_exc = [
             k for k, ts in list(self._req_exc_recent.items())
             if now - ts <= self.global_req_exc_window_sec
         ]
         if len(active_exc) >= self.global_req_exc_events_threshold:
+            await self._maybe_failover_proxy(reason)
             await self.trigger_global_kill_switch(reason)
 
     async def book_loop(self) -> None:
@@ -2491,9 +2670,11 @@ class PolyLPSMulti:
                     log(f"[market-ws] connected assets={len(payload['assets_ids'])}")
                     backoff = 1
                     self._last_market_ws_ok_ts = time.time()
+                    self._proxy_failover_record_success("market-ws")
                     while self._running:
                         raw = await self._recv_ws_message(ws, "market-ws")
                         self._last_market_ws_ok_ts = time.time()
+                        self._proxy_failover_record_success("market-ws")
                         msgs = json.loads(raw)
                         payloads = msgs if isinstance(msgs, list) else [msgs]
                         for msg in payloads:
@@ -2562,7 +2743,10 @@ class PolyLPSMulti:
                                     )
                                     asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:price_change", snap))
             except Exception as e:
-                log(f"[market-ws] err={_format_exc(e)}")
+                em = _format_exc(e)
+                log(f"[market-ws] err={em}")
+                if "opening handshake" in em.lower() and "timed out" in em.lower():
+                    self._proxy_failover_record_ws_handshake_failure("market-ws")
                 if self._is_req_exc(e):
                     self._log_req_diag("market-ws", e)
                 await asyncio.sleep(backoff)
@@ -3084,12 +3268,14 @@ class PolyLPSMulti:
                             pass
                     log(f"[fill-ws] connected markets={len(condition_ids)} assets={len(self.market_cfg)}")
                     self._last_ws_ok_ts = time.time()
+                    self._proxy_failover_record_success("fill-ws")
                     ws_down_since = 0.0
                     backoff = 1
 
                     while self._running:
                         raw = await self._recv_ws_message(ws, "fill-ws")
                         self._last_ws_ok_ts = time.time()
+                        self._proxy_failover_record_success("fill-ws")
                         try:
                             msg = json.loads(raw)
                         except Exception:
@@ -3141,7 +3327,10 @@ class PolyLPSMulti:
                 now = time.time()
                 if ws_down_since <= 0:
                     ws_down_since = now
-                log(f"[fill-ws] err={_format_exc(e)}")
+                em = _format_exc(e)
+                log(f"[fill-ws] err={em}")
+                if "opening handshake" in em.lower() and "timed out" in em.lower():
+                    self._proxy_failover_record_ws_handshake_failure("fill-ws")
                 if self._is_req_exc(e):
                     self._log_req_diag("fill-ws", e)
 
