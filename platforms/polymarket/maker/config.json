@@ -188,7 +188,7 @@
       "min_distance_from_best_bid": 0.01,
       "quote_size": 100.0,
       "risk": "mid",
-      "enabled": true
+      "enabled": false
     },
     {
       "token_id": "95900802534833268457962724984643816638826235519419508284062795060224733525781",
