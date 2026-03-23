@@ -1406,7 +1406,7 @@
   "proxy_failover": {
     "enabled": true,
     "controller_url": "http://127.0.0.1:9097",
-    "group_name": "Proxy",
+    "group_name": "GLOBAL",
     "allowed_keywords": [
       "HONG KONG",
       "JAPAN"
