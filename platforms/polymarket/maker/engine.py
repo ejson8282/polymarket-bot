@@ -439,9 +439,9 @@ class PolyLPSMulti:
         self._vol_defense_action_threshold: int = int(volatility_cfg.get("defense_action_threshold", 2))
         self._vol_watch_duration_sec: float = float(volatility_cfg.get("watch_duration_sec", 120))
         self._vol_quarantine_duration_sec: float = float(volatility_cfg.get("quarantine_duration_sec", 300))
-        # per-token rolling window: {token_id: {"front_notional_history": [(ts, val)], "defense_actions": [(ts, action)], "watch_enter_ts": float, "quarantine_enter_ts": float}}
+        # per-token rolling window: {token_id: {"front_notional_history": [(ts, val)], "defense_actions": [(ts, action)], "watch_enter_ts": float, "quarantine_enter_ts": float, "watch_count": int}}
         self._volatility_tracker: Dict[str, Dict[str, Any]] = {
-            tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None}
+            tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None, "watch_count": 0}
             for tid in self.market_cfg
         }
 
@@ -1084,8 +1084,19 @@ class PolyLPSMulti:
         return "watch"
 
     async def _enter_watch(self, token_id: str, reason: str) -> None:
-        """Enter WATCH state: cancel all orders, start observation timer."""
+        """Enter WATCH state: cancel all orders, start observation timer. After 2 WATCH entries, forbid the event."""
         tracker = self._vol_tracker(token_id)
+        tracker["watch_count"] = int(tracker.get("watch_count", 0)) + 1
+        if tracker["watch_count"] >= 2:
+            self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
+            self._set_event_state(token_id, EVENT_QUARANTINE, f"watch_limit_forbid:{reason}")
+            live = await self._refresh_live_orders(token_id)
+            ids = [self._order_id(o) for o in live]
+            if ids:
+                await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
+            log(f"[forbid] token={token_id} watch_count=2 reason={reason} ttl={self.event_ban_ttl_sec}s")
+            self.send_discord(f"[FORBID] token={token_id} reason={reason} watch_count=2 ttl={self.event_ban_ttl_sec}s")
+            return
         tracker["watch_enter_ts"] = time.time()
         self._set_event_state(token_id, EVENT_WATCH, reason)
         live = await self._refresh_live_orders(token_id)
@@ -2613,6 +2624,7 @@ class PolyLPSMulti:
                 # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
                 if self._vol_check_recovery(token_id):
                     prev_state = self._event_state_name(token_id)
+                    self._vol_tracker(token_id)["watch_count"] = 0
                     self._set_event_state(token_id, EVENT_ACTIVE, f"vol_recovery_from_{prev_state.lower()}")
                     log(f"[vol-recovery] token={token_id} recovered from {prev_state}")
                 else:
