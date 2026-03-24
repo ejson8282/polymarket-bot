@@ -2722,7 +2722,9 @@ class PolyLPSMulti:
         if not self._proxy_failover_is_enabled():
             return
         if time.time() < self._proxy_failover_observe_until:
-            log(f"[PROXY] recovered source={source} node={self._proxy_failover_last_switch_to or '-'}")
+            msg = f"[PROXY] recovered source={source} node={self._proxy_failover_last_switch_to or '-'}"
+            log(msg)
+            self.send_fill_discord(msg)
         self._proxy_failover_observe_until = 0.0
         self._proxy_failover_halt_until = 0.0
         self._proxy_failover_reset_counters()
@@ -2849,9 +2851,9 @@ class PolyLPSMulti:
                 f"[PROXY] switch group={active_group} from={current or '-'} to={target} "
                 f"reason={reason} observe={self._proxy_failover_observe_sec:.0f}s"
             )
-            self.send_discord(
-                f"[ALERT] Proxy failover switched {active_group}: {current or '-'} -> {target} "
-                f"reason={reason}"
+            self.send_fill_discord(
+                f"[PROXY] switch group={active_group} from={current or '-'} to={target} "
+                f"reason={reason} observe={self._proxy_failover_observe_sec:.0f}s"
             )
 
     def _is_req_exc(self, e: Exception) -> bool:
