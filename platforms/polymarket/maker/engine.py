@@ -1283,7 +1283,7 @@ class PolyLPSMulti:
                     if new_position == 0.0:
                         log(f"[exit] token={token_id} order gone + position=0, exit complete")
                         self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
-                        self.send_discord(f"[EXIT COMPLETE] token={token_id} position sold")
+                        self.send_fill_discord(f"[EXIT COMPLETE] token={token_id} position sold")
                         return
                     else:
                         log(f"[exit] token={token_id} order gone but position={new_position}, needs manual review")
