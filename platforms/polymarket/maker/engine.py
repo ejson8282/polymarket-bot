@@ -1381,6 +1381,7 @@ class PolyLPSMulti:
 
         log(f"[session] === SESSION SWITCH: {prev} → {current} ===")
         self.send_discord(f"[SESSION] Switching from {prev} to {current}")
+        self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
 
         # Cancel all orders from the previous session's markets
         prev_markets = self._night_market_cfg if prev == "night" else self.market_cfg
