@@ -337,6 +337,17 @@ class PolyLPSMulti:
         self._size_requote_tolerance_pct = Decimal(str(strategy.get("size_requote_tolerance_pct", 0.05)))
         self._tick_resolved: set[str] = set()
 
+        # ── Dual-side (low-price) quoting config ──────────────────────────
+        dual = strategy.get("dual_side", {})
+        self._dual_side_enabled = bool(dual.get("enabled", False))
+        self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
+        self._dual_side_ask_budget_pct = Decimal(str(dual.get("ask_budget_pct", "0.30")))
+        self._dual_side_ask_max_legs = int(dual.get("ask_max_legs", 2))
+        self._dual_side_ask_retreat_ticks = int(dual.get("ask_retreat_ticks", 2))
+        self._dual_side_total_budget_cap = Decimal(str(dual.get("total_budget_cap_pct", "0.50")))
+        self._dual_side_ask_orders: Dict[str, list[dict]] = {}
+        self._dual_side_last_sig: Dict[str, str] = {}
+
         # execution pacing: risk actions immediate, normal posting lightly paced
         execution = self.cfg.get("execution", {})
 
@@ -1821,6 +1832,7 @@ class PolyLPSMulti:
     def _build_price_legs(self, token_id: str, book: TopOfBook, live_spread: Optional[Decimal] = None) -> list[Decimal]:
         cfg = self._get_mcfg(token_id)
         tick = cfg["tick"]
+        _slug = self._token_slug_cache.get(token_id, token_id[:16])
 
         # Prefer live rewardsMaxSpread from API; fall back to config value
         spread = live_spread if live_spread is not None else cfg["spread"]
@@ -1836,21 +1848,21 @@ class PolyLPSMulti:
             if book.best_bid >= reward_lower and book.best_bid >= tick:
                 return [self._floor_to_tick(book.best_bid, tick)]
             # No valid position exists in reward zone; skip this market
-            _slug = self._token_slug_cache.get(token_id, "")
             log(f"[price-legs-skip] slug={_slug} token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
             return []
 
-        # Number of qualifying positions below best_bid that remain in the reward zone
-        # e.g. best_bid=0.30, reward_lower=0.27, tick=0.01 → range_ticks=3 → legs at -1/-2/-3
+        reward_zone_width = safe_top - reward_lower
+
+        # ── Fine-tick markets (tick < 0.01): percentage-based distribution ──
+        if tick < Decimal("0.01"):
+            return self._build_fine_tick_legs(
+                token_id, book, tick, reward_lower, safe_top, reward_zone_width, _slug,
+            )
+
+        # ── Regular 1-cent markets: original mechanical logic ──────────────
         range_ticks = int((book.best_bid - reward_lower) / tick)
 
-        # Max legs by tick granularity:
-        #   1 cent  (0.01) markets: reward zone is narrow, use up to 3 legs
-        #   0.1 cent (0.001) markets: fine granularity, use up to 5 legs
-        if tick >= Decimal("0.01"):
-            max_legs = 3
-        else:
-            max_legs = 5
+        max_legs = 3
 
         if range_ticks <= 1 and book.best_bid >= reward_lower and book.best_bid >= tick:
             return [self._floor_to_tick(book.best_bid, tick)]
@@ -1867,6 +1879,260 @@ class PolyLPSMulti:
                 prices.append(p)
 
         return prices
+
+    def _build_fine_tick_legs(
+        self,
+        token_id: str,
+        book: TopOfBook,
+        tick: Decimal,
+        reward_lower: Decimal,
+        safe_top: Decimal,
+        reward_zone_width: Decimal,
+        slug: str,
+    ) -> list[Decimal]:
+        """Generate price legs for fine-tick (0.001) markets using reward-zone
+        percentage distribution instead of mechanical best_bid - N*tick.
+
+        The legs are spread across the reward zone with a configurable retreat
+        bias, so they sit further from best_bid and are less likely to be hit.
+
+        Config knobs (in strategy section):
+          fine_tick_max_legs      – max number of legs (default 5)
+          fine_tick_retreat_pct   – how far into the reward zone to start,
+                                   as a fraction of zone width (default 0.35,
+                                   meaning skip the top 35% of the zone)
+          fine_tick_zone_use_pct  – what fraction of the remaining zone to
+                                   spread legs across (default 0.50)
+        """
+        strategy = self.cfg.get("strategy", {})
+        max_legs = int(strategy.get("fine_tick_max_legs", 5))
+        retreat_pct = Decimal(str(strategy.get("fine_tick_retreat_pct", "0.35")))
+        zone_use_pct = Decimal(str(strategy.get("fine_tick_zone_use_pct", "0.50")))
+
+        # Clamp config values to sane ranges
+        retreat_pct = max(Decimal("0.05"), min(retreat_pct, Decimal("0.80")))
+        zone_use_pct = max(Decimal("0.10"), min(zone_use_pct, Decimal("0.80")))
+
+        # The usable band within the reward zone:
+        #   top_start = safe_top - retreat_pct * zone_width   (retreat from top)
+        #   bottom    = top_start - zone_use_pct * zone_width (spread downward)
+        retreat_amount = reward_zone_width * retreat_pct
+        top_start = safe_top - retreat_amount
+        use_band = reward_zone_width * zone_use_pct
+        bottom = max(reward_lower, top_start - use_band)
+        top_start = max(bottom + tick, top_start)  # ensure at least 1 tick band
+
+        # Snap to tick grid
+        top_start = self._floor_to_tick(top_start, tick)
+        bottom = self._floor_to_tick(bottom, tick)
+
+        if top_start < reward_lower or top_start < tick:
+            # Fallback: zone too narrow after retreat, place at safe_top
+            log(f"[fine-tick-fallback] slug={slug} zone_too_narrow top_start={top_start} reward_lower={reward_lower}")
+            if safe_top >= reward_lower and safe_top >= tick:
+                return [self._floor_to_tick(safe_top, tick)]
+            return []
+
+        band_width = top_start - bottom
+        if band_width <= 0 or max_legs <= 0:
+            return [top_start] if top_start >= reward_lower and top_start >= tick else []
+
+        # Distribute legs evenly across [bottom, top_start]
+        if max_legs == 1:
+            prices = [top_start]
+        else:
+            step = band_width / Decimal(max_legs - 1)
+            # Ensure step is at least 1 tick
+            step = max(step, tick)
+            prices = []
+            for i in range(max_legs):
+                p = self._floor_to_tick(top_start - step * Decimal(i), tick)
+                if p >= reward_lower and p >= tick and p not in prices:
+                    prices.append(p)
+
+        if not prices and safe_top >= reward_lower and safe_top >= tick:
+            prices = [self._floor_to_tick(safe_top, tick)]
+
+        return prices
+
+    # ── Dual-side (ASK) helpers for low-price markets ─────────────────
+
+    def _dual_side_eligible(self, token_id: str, book: TopOfBook) -> bool:
+        """Check whether this market qualifies for dual-side quoting."""
+        if not self._dual_side_enabled:
+            return False
+        if book.mid > self._dual_side_max_mid:
+            return False
+        # Only quote ASK if BID side is also active (not halted/cooldown)
+        state = self._event_state_name(token_id)
+        if state not in {EVENT_ACTIVE, "active"}:
+            return False
+        return True
+
+    def _build_ask_price_legs(
+        self,
+        token_id: str,
+        book: TopOfBook,
+        live_spread: Optional[Decimal] = None,
+    ) -> list[Decimal]:
+        """Build ASK-side price legs for low-price dual-side quoting.
+
+        Places ask orders above best_ask, still within the reward zone on the
+        NO side (which for the YES token means the high side of the book).
+        Conservative: only 1-2 legs, a few ticks above best_ask.
+        """
+        cfg = self._get_mcfg(token_id)
+        tick = cfg["tick"]
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+
+        spread = live_spread if live_spread is not None else cfg["spread"]
+        if spread > Decimal("1"):
+            spread = spread / Decimal("100")
+
+        # ASK-side reward zone: [best_ask + tick, mid + spread]
+        ask_floor = book.best_ask + tick
+        ask_ceiling = min(Decimal("1") - tick, book.mid + spread)
+
+        if ask_floor > ask_ceiling or ask_floor >= Decimal("1"):
+            log(f"[dual-ask-skip] slug={slug} no_valid_ask_zone ask_floor={ask_floor} ask_ceiling={ask_ceiling}")
+            return []
+
+        max_legs = self._dual_side_ask_max_legs
+        retreat = tick * Decimal(self._dual_side_ask_retreat_ticks)
+        start_price = ask_floor + retreat
+        start_price = self._floor_to_tick(start_price, tick)
+        if start_price > ask_ceiling:
+            start_price = self._floor_to_tick(ask_ceiling, tick)
+
+        prices = []
+        for i in range(max_legs):
+            p = self._floor_to_tick(start_price + tick * Decimal(i), tick)
+            if p <= ask_ceiling and p < Decimal("1"):
+                prices.append(p)
+            else:
+                break
+
+        if prices:
+            log(
+                f"[dual-ask-legs] slug={slug} bid={book.best_bid} ask={book.best_ask} mid={book.mid} "
+                f"ask_floor={ask_floor} ask_ceiling={ask_ceiling} retreat_ticks={self._dual_side_ask_retreat_ticks} "
+                f"legs={len(prices)} prices={prices}"
+            )
+
+        return prices
+
+    async def _place_ask_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "dual_ask") -> Any:
+        """Place a POST-ONLY SELL (ask) order for dual-side quoting."""
+        await self._acquire_order_throttle(token_id, label)
+        self._ensure_order_path_open(token_id, f"ask_pre_sign:{label}")
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+
+        async with self._signer_sem:
+            async with self._signer_gap_lock:
+                now = time.time()
+                wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
+                if wait_sec > 0:
+                    await asyncio.sleep(wait_sec)
+                self._last_signer_post_ts = time.time()
+
+            self._ensure_order_path_open(token_id, f"ask_pre_sign2:{label}")
+            if self.remote_signer:
+                signed = await asyncio.to_thread(
+                    self.remote_signer.sign_order, token_id, float(price), float(size), "SELL"
+                )
+                if isinstance(signed, dict):
+                    class _SignedOrderWrap:
+                        def __init__(self, d: dict):
+                            self._d = d
+                        def dict(self):
+                            return self._d
+                    signed = _SignedOrderWrap(signed)
+            else:
+                args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=SELL)
+                signed = await asyncio.to_thread(self.client.create_order, args)
+            self._ensure_order_path_open(token_id, f"ask_pre_send:{label}")
+            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+            self._last_signer_post_ts = time.time()
+            log(f"[dual-ask-placed] slug={slug} price={price} size={size} label={label}")
+            return resp
+
+    async def _sync_dual_ask_side(
+        self,
+        token_id: str,
+        book: TopOfBook,
+        live_spread: Optional[Decimal],
+        avail: Decimal,
+        event_budget: Decimal,
+        required_min_size: Decimal,
+    ) -> None:
+        """Attempt to place ASK-side orders for dual-side low-price markets.
+
+        Budget for ask side is capped at ask_budget_pct of event_budget.
+        """
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+
+        if not self._dual_side_eligible(token_id, book):
+            return
+
+        ask_prices = self._build_ask_price_legs(token_id, book, live_spread)
+        if not ask_prices:
+            return
+
+        # Ask-side budget: fraction of the total event budget
+        ask_budget = event_budget * self._dual_side_ask_budget_pct
+        # Cap total (bid + ask) at total_budget_cap_pct of available
+        ask_budget = min(ask_budget, avail * self._dual_side_total_budget_cap - event_budget)
+        if ask_budget <= 0:
+            log(f"[dual-ask-skip] slug={slug} budget_exhausted ask_budget={ask_budget}")
+            return
+
+        # Build ask plan
+        n_ask = len(ask_prices)
+        per_leg = ask_budget / Decimal(n_ask)
+        ask_plan = []
+        for p in ask_prices:
+            # For SELL orders on YES token: size = notional / (1 - price)
+            # because selling YES at price p costs (1-p) per share in collateral
+            cost_per_share = Decimal("1") - p
+            if cost_per_share <= 0:
+                continue
+            size = self._floor_to_tick(per_leg / cost_per_share, Decimal("0.001"))
+            if size >= required_min_size and size > 0:
+                ask_plan.append((p, size))
+
+        if not ask_plan:
+            log(f"[dual-ask-skip] slug={slug} no_viable_ask_legs budget={ask_budget}")
+            return
+
+        # Signature check: avoid duplicate sends
+        sig = "|".join(f"{p}:{s}" for p, s in ask_plan)
+        if self._dual_side_last_sig.get(token_id) == sig:
+            return
+        self._dual_side_last_sig[token_id] = sig
+
+        log(
+            f"[dual-ask-enter] slug={slug} mid={book.mid} ask_budget={ask_budget:.2f} "
+            f"legs={len(ask_plan)} plan={ask_plan}"
+        )
+
+        # Cancel existing ask orders for this token first
+        existing = self._dual_side_ask_orders.get(token_id, [])
+        if existing:
+            ids = [self._order_id(o) for o in existing if self._order_id(o)]
+            if ids:
+                await self._cancel_order_ids(token_id, ids, "dual_ask_refresh")
+
+        placed = []
+        for price, size in ask_plan:
+            try:
+                resp = await self._place_ask_order(token_id, price, size)
+                if resp:
+                    placed.append(resp)
+            except Exception as e:
+                log(f"[dual-ask-err] slug={slug} price={price} size={size} err={e}")
+                break
+
+        self._dual_side_ask_orders[token_id] = placed
 
     def _front_bid_notional(self, book_obj: Any, my_price: Decimal) -> Decimal:
         total = Decimal("0")
@@ -1888,7 +2154,11 @@ class PolyLPSMulti:
             return [Decimal("1")]
         if n_legs == 2:
             return [Decimal("0.5"), Decimal("0.5")]
-        return [Decimal("0.3"), Decimal("0.3"), Decimal("0.4")]
+        if n_legs == 3:
+            return [Decimal("0.3"), Decimal("0.3"), Decimal("0.4")]
+        # 4+ legs: equal weight distribution
+        w = Decimal("1") / Decimal(n_legs)
+        return [w] * n_legs
 
     def _adapt_prices_for_front_depth(
         self,
@@ -3075,6 +3345,14 @@ class PolyLPSMulti:
                 # legal_top, triggering instant cancellation. The background
                 # best_bid_guard_loop (every 10s per token) already provides
                 # the same safety check with a stable book.
+
+                # ── Dual-side ASK quoting for low-price markets ───────────
+                try:
+                    await self._sync_dual_ask_side(
+                        token_id, tob, live_spread, avail, event_budget, required_min_size,
+                    )
+                except Exception as dual_e:
+                    log(f"[dual-ask-err] token={token_id} err={dual_e}")
             except Exception as e:
                 if isinstance(e, EventHaltPreempted):
                     log(f"[preempt] token={token_id} path=planner reason={e}")
