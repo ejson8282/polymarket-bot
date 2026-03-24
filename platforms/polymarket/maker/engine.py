@@ -1288,7 +1288,7 @@ class PolyLPSMulti:
                     else:
                         log(f"[exit] token={token_id} order gone but position={new_position}, needs manual review")
                         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, "exit_order_gone_position_remains")
-                        self.send_discord(
+                        self.send_fill_discord(
                             f"[EXIT ALERT] SELL order disappeared but position remains\n"
                             f"token={token_id} position={new_position}\n"
                             f"ACTION REQUIRED: manual exit"
@@ -3973,6 +3973,15 @@ class PolyLPSMulti:
             return
         try:
             requests.post(self.discord_webhook, json={"content": message}, timeout=8)
+        except Exception:
+            pass
+
+    def send_fill_discord(self, message: str) -> None:
+        webhook = self.fill_discord_webhook or self.discord_webhook
+        if not webhook:
+            return
+        try:
+            requests.post(webhook, json={"content": message}, timeout=8)
         except Exception:
             pass
 
