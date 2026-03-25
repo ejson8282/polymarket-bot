@@ -2845,6 +2845,7 @@ class PolyLPSMulti:
             self._proxy_failover_last_switch_to = target
             self._proxy_failover_last_switch_reason = reason
             self._proxy_failover_last_switch_ts = now
+            self._proxy_failover_cursor_node = target
             self._proxy_failover_switch_history.append(now)
             self._proxy_failover_observe_until = now + self._proxy_failover_observe_sec
             self._proxy_failover_reset_counters()
