@@ -297,6 +297,7 @@ class PolyLPSMulti:
 
         reporting = self.cfg.get("reporting", {})
         self.discord_webhook = str(reporting.get("discord_webhook", "")).strip()
+        self.fill_discord_webhook = str(reporting.get("fill_discord_webhook", "")).strip()
         self.hourly_summary = bool(reporting.get("hourly_summary", True))
 
         self.market_cfg: Dict[str, Dict[str, Any]] = {}
@@ -312,6 +313,7 @@ class PolyLPSMulti:
                 "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
                 "risk": str(m.get("risk", "mid")).lower(),
                 "session": str(m.get("session", "both")).lower(),
+                "paired_token_id": str(m.get("paired_token_id", "")),
             }
 
         if not self.market_cfg:
@@ -338,15 +340,14 @@ class PolyLPSMulti:
         self._tick_resolved: set[str] = set()
 
         # ── Dual-side (low-price) quoting config ──────────────────────────
+        # When enabled, the engine auto-registers the paired (NO) token for
+        # markets where YES mid <= max_mid.  Both tokens are then quoted as
+        # independent BUY-side markets — no SELL orders needed.
         dual = strategy.get("dual_side", {})
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
-        self._dual_side_ask_budget_pct = Decimal(str(dual.get("ask_budget_pct", "0.30")))
-        self._dual_side_ask_max_legs = int(dual.get("ask_max_legs", 2))
-        self._dual_side_ask_retreat_ticks = int(dual.get("ask_retreat_ticks", 2))
-        self._dual_side_total_budget_cap = Decimal(str(dual.get("total_budget_cap_pct", "0.50")))
-        self._dual_side_ask_orders: Dict[str, list[dict]] = {}
-        self._dual_side_last_sig: Dict[str, str] = {}
+        self._dual_side_no_risk = str(dual.get("no_side_risk", "low")).lower()
+        self._dual_side_injected: set[str] = set()  # NO tokens auto-added
 
         # execution pacing: risk actions immediate, normal posting lightly paced
         execution = self.cfg.get("execution", {})
@@ -1956,184 +1957,53 @@ class PolyLPSMulti:
 
         return prices
 
-    # ── Dual-side (ASK) helpers for low-price markets ─────────────────
+    # ── Dual-side: auto-inject paired NO token for low-price markets ──
 
-    def _dual_side_eligible(self, token_id: str, book: TopOfBook) -> bool:
-        """Check whether this market qualifies for dual-side quoting."""
+    def _maybe_inject_dual_side_tokens(self) -> None:
+        """For markets where YES mid is low, auto-register the paired NO
+        token so the engine quotes BUY on both sides.
+
+        Called once during startup after market metadata is resolved.
+        The NO token is added to market_cfg as a regular market entry
+        with risk = dual_side.no_side_risk (default "low").
+        """
         if not self._dual_side_enabled:
-            return False
-        if book.mid > self._dual_side_max_mid:
-            return False
-        # Only quote ASK if BID side is also active (not halted/cooldown)
-        state = self._event_state_name(token_id)
-        if state not in {EVENT_ACTIVE, "active"}:
-            return False
-        return True
-
-    def _build_ask_price_legs(
-        self,
-        token_id: str,
-        book: TopOfBook,
-        live_spread: Optional[Decimal] = None,
-    ) -> list[Decimal]:
-        """Build ASK-side price legs for low-price dual-side quoting.
-
-        Places ask orders above best_ask, still within the reward zone on the
-        NO side (which for the YES token means the high side of the book).
-        Conservative: only 1-2 legs, a few ticks above best_ask.
-        """
-        cfg = self._get_mcfg(token_id)
-        tick = cfg["tick"]
-        slug = self._token_slug_cache.get(token_id, token_id[:16])
-
-        spread = live_spread if live_spread is not None else cfg["spread"]
-        if spread > Decimal("1"):
-            spread = spread / Decimal("100")
-
-        # ASK-side reward zone: [best_ask + tick, mid + spread]
-        ask_floor = book.best_ask + tick
-        ask_ceiling = min(Decimal("1") - tick, book.mid + spread)
-
-        if ask_floor > ask_ceiling or ask_floor >= Decimal("1"):
-            log(f"[dual-ask-skip] slug={slug} no_valid_ask_zone ask_floor={ask_floor} ask_ceiling={ask_ceiling}")
-            return []
-
-        max_legs = self._dual_side_ask_max_legs
-        retreat = tick * Decimal(self._dual_side_ask_retreat_ticks)
-        start_price = ask_floor + retreat
-        start_price = self._floor_to_tick(start_price, tick)
-        if start_price > ask_ceiling:
-            start_price = self._floor_to_tick(ask_ceiling, tick)
-
-        prices = []
-        for i in range(max_legs):
-            p = self._floor_to_tick(start_price + tick * Decimal(i), tick)
-            if p <= ask_ceiling and p < Decimal("1"):
-                prices.append(p)
-            else:
-                break
-
-        if prices:
-            log(
-                f"[dual-ask-legs] slug={slug} bid={book.best_bid} ask={book.best_ask} mid={book.mid} "
-                f"ask_floor={ask_floor} ask_ceiling={ask_ceiling} retreat_ticks={self._dual_side_ask_retreat_ticks} "
-                f"legs={len(prices)} prices={prices}"
-            )
-
-        return prices
-
-    async def _place_ask_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "dual_ask") -> Any:
-        """Place a POST-ONLY SELL (ask) order for dual-side quoting."""
-        await self._acquire_order_throttle(token_id, label)
-        self._ensure_order_path_open(token_id, f"ask_pre_sign:{label}")
-        slug = self._token_slug_cache.get(token_id, token_id[:16])
-
-        async with self._signer_sem:
-            async with self._signer_gap_lock:
-                now = time.time()
-                wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
-                if wait_sec > 0:
-                    await asyncio.sleep(wait_sec)
-                self._last_signer_post_ts = time.time()
-
-            self._ensure_order_path_open(token_id, f"ask_pre_sign2:{label}")
-            if self.remote_signer:
-                signed = await asyncio.to_thread(
-                    self.remote_signer.sign_order, token_id, float(price), float(size), "SELL"
-                )
-                if isinstance(signed, dict):
-                    class _SignedOrderWrap:
-                        def __init__(self, d: dict):
-                            self._d = d
-                        def dict(self):
-                            return self._d
-                    signed = _SignedOrderWrap(signed)
-            else:
-                args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=SELL)
-                signed = await asyncio.to_thread(self.client.create_order, args)
-            self._ensure_order_path_open(token_id, f"ask_pre_send:{label}")
-            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
-            self._last_signer_post_ts = time.time()
-            log(f"[dual-ask-placed] slug={slug} price={price} size={size} label={label}")
-            return resp
-
-    async def _sync_dual_ask_side(
-        self,
-        token_id: str,
-        book: TopOfBook,
-        live_spread: Optional[Decimal],
-        avail: Decimal,
-        event_budget: Decimal,
-        required_min_size: Decimal,
-    ) -> None:
-        """Attempt to place ASK-side orders for dual-side low-price markets.
-
-        Budget for ask side is capped at ask_budget_pct of event_budget.
-        """
-        slug = self._token_slug_cache.get(token_id, token_id[:16])
-
-        if not self._dual_side_eligible(token_id, book):
             return
 
-        ask_prices = self._build_ask_price_legs(token_id, book, live_spread)
-        if not ask_prices:
-            return
-
-        # Ask-side budget: fraction of the total event budget
-        ask_budget = event_budget * self._dual_side_ask_budget_pct
-        # Cap total (bid + ask) at total_budget_cap_pct of available
-        ask_budget = min(ask_budget, avail * self._dual_side_total_budget_cap - event_budget)
-        if ask_budget <= 0:
-            log(f"[dual-ask-skip] slug={slug} budget_exhausted ask_budget={ask_budget}")
-            return
-
-        # Build ask plan
-        n_ask = len(ask_prices)
-        per_leg = ask_budget / Decimal(n_ask)
-        ask_plan = []
-        for p in ask_prices:
-            # For SELL orders on YES token: size = notional / (1 - price)
-            # because selling YES at price p costs (1-p) per share in collateral
-            cost_per_share = Decimal("1") - p
-            if cost_per_share <= 0:
+        to_inject: list[tuple[str, str, Dict[str, Any]]] = []
+        for token_id, mcfg in list(self.market_cfg.items()):
+            if token_id in self._dual_side_injected:
                 continue
-            size = self._floor_to_tick(per_leg / cost_per_share, Decimal("0.001"))
-            if size >= required_min_size and size > 0:
-                ask_plan.append((p, size))
+            # Check if this market's config has a paired_token_id
+            paired = mcfg.get("paired_token_id", "")
+            if not paired or paired in self.market_cfg:
+                continue  # already present or no pair known
+            # We'll check mid later at quote time; inject speculatively
+            # and let the normal quoting gate handle eligibility.
+            to_inject.append((token_id, paired, mcfg))
 
-        if not ask_plan:
-            log(f"[dual-ask-skip] slug={slug} no_viable_ask_legs budget={ask_budget}")
-            return
-
-        # Signature check: avoid duplicate sends
-        sig = "|".join(f"{p}:{s}" for p, s in ask_plan)
-        if self._dual_side_last_sig.get(token_id) == sig:
-            return
-        self._dual_side_last_sig[token_id] = sig
-
-        log(
-            f"[dual-ask-enter] slug={slug} mid={book.mid} ask_budget={ask_budget:.2f} "
-            f"legs={len(ask_plan)} plan={ask_plan}"
-        )
-
-        # Cancel existing ask orders for this token first
-        existing = self._dual_side_ask_orders.get(token_id, [])
-        if existing:
-            ids = [self._order_id(o) for o in existing if self._order_id(o)]
-            if ids:
-                await self._cancel_order_ids(token_id, ids, "dual_ask_refresh")
-
-        placed = []
-        for price, size in ask_plan:
-            try:
-                resp = await self._place_ask_order(token_id, price, size)
-                if resp:
-                    placed.append(resp)
-            except Exception as e:
-                log(f"[dual-ask-err] slug={slug} price={price} size={size} err={e}")
-                break
-
-        self._dual_side_ask_orders[token_id] = placed
+        for yes_tid, no_tid, yes_cfg in to_inject:
+            self.market_cfg[no_tid] = {
+                "spread": yes_cfg["spread"],
+                "tick": yes_cfg["tick"],
+                "min_distance": yes_cfg.get("min_distance", self.default_min_distance),
+                "risk": self._dual_side_no_risk,
+                "session": yes_cfg.get("session", "both"),
+                "paired_token_id": yes_tid,
+                "_dual_side_auto": True,
+            }
+            # Initialise runtime state for the new token
+            self._event_states[no_tid] = {"state": EVENT_ACTIVE, "reason": "dual_side_inject", "updated_at": time.time()}
+            self._event_locks.setdefault(no_tid, asyncio.Lock())
+            self._latency_marks.setdefault(no_tid, {})
+            self._halt_requested.setdefault(no_tid, None)
+            self.last_quote_ts.setdefault(no_tid, 0.0)
+            self._dual_side_injected.add(no_tid)
+            slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
+            log(
+                f"[dual-side-inject] slug={slug} yes_token={yes_tid[:16]}... "
+                f"no_token={no_tid[:16]}... risk={self._dual_side_no_risk}"
+            )
 
     def _front_bid_notional(self, book_obj: Any, my_price: Decimal) -> Decimal:
         total = Decimal("0")
@@ -2686,6 +2556,12 @@ class PolyLPSMulti:
             return None
 
     async def run(self) -> None:
+        # Inject paired NO tokens before any task starts (so WS subscribes to them)
+        try:
+            self._maybe_inject_dual_side_tokens()
+        except Exception as e:
+            log(f"[dual-side-inject] startup error: {e}")
+
         tasks = [
             asyncio.create_task(self.book_loop(), name="book_loop"),
             asyncio.create_task(self._ws_market_watch(), name="market_ws_watch"),
@@ -3104,6 +2980,33 @@ class PolyLPSMulti:
                 return
             if self._event_blocks_quote(token_id):
                 return
+
+            # ── Dual-side gate: auto-injected NO tokens only quote when the
+            #    paired YES token's actual order prices fall below max_mid ─
+            mcfg = self._get_mcfg(token_id)
+            if mcfg.get("_dual_side_auto"):
+                yes_tid = mcfg.get("paired_token_id", "")
+                yes_snap = self._market_snapshots.get(yes_tid)
+                if yes_snap is not None:
+                    yes_tob = TopOfBook(best_bid=yes_snap.best_bid, best_ask=yes_snap.best_ask)
+                    yes_meta = await self._get_market_meta(yes_tid)
+                    yes_live_spread_raw = yes_meta.get("maxIncentiveSpread") or yes_meta.get("rewardsMaxSpread") if yes_meta else None
+                    yes_live_spread = Decimal(str(yes_live_spread_raw)) if yes_live_spread_raw is not None else None
+                    yes_prices = self._build_price_legs(yes_tid, yes_tob, live_spread=yes_live_spread)
+                    # The top (highest) order price on YES side — if it's below
+                    # max_mid, the market is effectively sub-threshold.
+                    yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
+                    if yes_top_price > self._dual_side_max_mid:
+                        return  # YES orders are above threshold; skip NO quoting
+                    slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
+                    if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
+                        log(
+                            f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
+                            f"max_mid={self._dual_side_max_mid} → quoting NO token"
+                        )
+                else:
+                    return  # No snapshot for YES side yet; wait
+
             now = time.time()
             if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
                 return
@@ -3350,13 +3253,7 @@ class PolyLPSMulti:
                 # best_bid_guard_loop (every 10s per token) already provides
                 # the same safety check with a stable book.
 
-                # ── Dual-side ASK quoting for low-price markets ───────────
-                try:
-                    await self._sync_dual_ask_side(
-                        token_id, tob, live_spread, avail, event_budget, required_min_size,
-                    )
-                except Exception as dual_e:
-                    log(f"[dual-ask-err] token={token_id} err={dual_e}")
+                # (dual-side: NO token is auto-injected as separate market)
             except Exception as e:
                 if isinstance(e, EventHaltPreempted):
                     log(f"[preempt] token={token_id} path=planner reason={e}")
@@ -3981,7 +3878,7 @@ class PolyLPSMulti:
             pass
 
     def send_fill_discord(self, message: str) -> None:
-        webhook = self.fill_discord_webhook or self.discord_webhook
+        webhook = getattr(self, "fill_discord_webhook", "") or getattr(self, "discord_webhook", "")
         if not webhook:
             return
         try:
