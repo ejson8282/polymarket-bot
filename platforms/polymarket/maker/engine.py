@@ -2000,10 +2000,6 @@ class PolyLPSMulti:
             self.last_quote_ts.setdefault(no_tid, 0.0)
             self._dual_side_injected.add(no_tid)
             slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
-            log(
-                f"[dual-side-inject] slug={slug} yes_token={yes_tid[:16]}... "
-                f"no_token={no_tid[:16]}... risk={self._dual_side_no_risk}"
-            )
 
     def _front_bid_notional(self, book_obj: Any, my_price: Decimal) -> Decimal:
         total = Decimal("0")
