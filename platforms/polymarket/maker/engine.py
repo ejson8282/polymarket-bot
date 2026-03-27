@@ -2587,9 +2587,16 @@ class PolyLPSMulti:
     def _proxy_failover_is_enabled(self) -> bool:
         return self._proxy_failover_enabled and bool(self._proxy_failover_controller_url) and bool(self._proxy_failover_group_name)
 
-    def _proxy_failover_reset_counters(self) -> None:
+    def _proxy_failover_reset_req_exc(self) -> None:
         self._proxy_failover_req_exc_count = 0
+        self._proxy_failover_req_exc_recent = []
+
+    def _proxy_failover_reset_ws_fail(self) -> None:
         self._proxy_failover_ws_handshake_fail_count = 0
+
+    def _proxy_failover_reset_counters(self) -> None:
+        self._proxy_failover_reset_req_exc()
+        self._proxy_failover_reset_ws_fail()
 
     def _proxy_failover_record_success(self, source: str) -> None:
         if not self._proxy_failover_is_enabled():
@@ -2993,12 +3000,12 @@ class PolyLPSMulti:
                     # max_mid, the market is effectively sub-threshold.
                     yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
                     if yes_top_price > self._dual_side_max_mid:
-                        return  # YES orders are above threshold; skip NO quoting
+                        return  # YES orders are above threshold; skip paired quoting for NO side
                     slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
                     if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
                         log(
                             f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
-                            f"max_mid={self._dual_side_max_mid} → quoting NO token"
+                            f"max_mid={self._dual_side_max_mid} → paired YES/NO mode active"
                         )
                 else:
                     return  # No snapshot for YES side yet; wait
@@ -3885,3 +3892,4 @@ class PolyLPSMulti:
 
 if __name__ == "__main__":
     asyncio.run(PolyLPSMulti(config_path="config.json").run())
+asyncio.run(PolyLPSMulti(config_path="config.json").run())
