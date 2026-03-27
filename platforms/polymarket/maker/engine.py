@@ -2612,7 +2612,10 @@ class PolyLPSMulti:
     def _proxy_failover_record_req_exc(self, source: str) -> None:
         if not self._proxy_failover_is_enabled():
             return
-        self._proxy_failover_req_exc_count += 1
+        now = time.time()
+        self._proxy_failover_req_exc_recent = [ts for ts in self._proxy_failover_req_exc_recent if now - ts <= self._proxy_failover_req_exc_window_sec]
+        self._proxy_failover_req_exc_recent.append(now)
+        self._proxy_failover_req_exc_count = len(self._proxy_failover_req_exc_recent)
         if self._proxy_failover_req_exc_count >= self._proxy_failover_request_exception_threshold:
             asyncio.create_task(self._maybe_failover_proxy(f"request_exception_storm:{source}"))
 
@@ -2684,6 +2687,8 @@ class PolyLPSMulti:
             if now < self._proxy_failover_observe_until:
                 return
             if now < self._proxy_failover_halt_until:
+                return
+            if self._proxy_failover_last_switch_ts and (now - self._proxy_failover_last_switch_ts) < self._proxy_failover_min_switch_gap_sec:
                 return
             if self._proxy_failover_should_halt():
                 self._proxy_failover_halt_until = now + self._proxy_failover_switch_window_sec
@@ -3155,6 +3160,17 @@ class PolyLPSMulti:
                 )
                 return
             event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
+            dual_budget_mode = False
+            mcfg = self._get_mcfg(token_id)
+            paired_yes_tid = str(mcfg.get("paired_token_id", "") or "")
+            if mcfg.get("_dual_side_auto"):
+                event_budget *= self._dual_side_budget_split_pct
+                dual_budget_mode = True
+            elif paired_yes_tid:
+                paired_cfg = self.market_cfg.get(paired_yes_tid) or {}
+                if paired_cfg.get("paired_token_id") == token_id and top_price <= self._dual_side_max_mid:
+                    event_budget *= (Decimal("1") - self._dual_side_budget_split_pct)
+                    dual_budget_mode = True
 
             plan = []
             requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)

@@ -942,7 +942,9 @@
     "ws_handshake_fail_count": 3,
     "ws_down_trigger_sec": 30,
     "observe_sec": 120,
-    "max_switches_per_window": 3,
+    "min_switch_gap_sec": 180,
+    "max_switches_per_burst": 2,
+    "max_switches_per_window": 2,
     "switch_window_sec": 600,
     "bad_node_ttl_sec": 600
   },
