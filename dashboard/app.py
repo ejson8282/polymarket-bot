@@ -96,8 +96,122 @@ div[data-testid="stButton"] button[kind="primary"] {
 
 /* dataframe */
 div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; }
+
+/* ── Log Monitor Panel ─────────────────────────────────────────── */
+.log-panel {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    max-height: 600px;
+    overflow-y: auto;
+    padding: 0;
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12.5px;
+    scroll-behavior: smooth;
+}
+.log-entry {
+    display: flex;
+    align-items: flex-start;
+    padding: 6px 14px;
+    border-bottom: 1px solid #161b22;
+    gap: 10px;
+    line-height: 1.5;
+}
+.log-entry:hover { background: #161b22; }
+.log-time {
+    color: #484f58;
+    font-size: 11px;
+    white-space: nowrap;
+    min-width: 55px;
+    padding-top: 1px;
+}
+.log-tag {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .03em;
+    border-radius: 3px;
+    padding: 1px 7px;
+    white-space: nowrap;
+    min-width: 52px;
+    text-align: center;
+}
+.log-msg { color: #c9d1d9; flex: 1; word-break: break-word; }
+.log-detail { color: #484f58; font-size: 11px; margin-top: 2px; word-break: break-all; }
+
+/* tag colors */
+.tag-success  { background: #1a3a1a; color: #3fb950; border: 1px solid #238636; }
+.tag-info     { background: #161b22; color: #8b949e; border: 1px solid #30363d; }
+.tag-warning  { background: #2d2a1a; color: #d29922; border: 1px solid #9e6a03; }
+.tag-danger   { background: #3a1a1a; color: #f85149; border: 1px solid #da3633; }
+.tag-cooldown { background: #1a2a3a; color: #58a6ff; border: 1px solid #1f6feb; }
+
+/* summary bar */
+.log-summary {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 16px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+.log-summary-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.log-summary-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.dot-green  { background: #3fb950; }
+.dot-red    { background: #f85149; }
+.dot-yellow { background: #d29922; }
+.dot-blue   { background: #58a6ff; }
+.dot-gray   { background: #484f58; }
+
+/* new entry animation */
+@keyframes logSlideIn {
+    from { opacity: 0; transform: translateY(-6px); background: #1a2332; }
+    to   { opacity: 1; transform: translateY(0);    background: transparent; }
+}
+.log-entry-new {
+    animation: logSlideIn 0.6s ease-out;
+}
+
+/* live dot pulse */
+@keyframes livePulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+}
+.live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #3fb950;
+    display: inline-block;
+    animation: livePulse 1.5s ease-in-out infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── flash message helper (survives st.rerun) ──────────────────────────────────
+def _flash(msg: str, level: str = "info") -> None:
+    """Store a message in session_state so it displays after rerun."""
+    st.session_state["_flash"] = (msg, level)
+
+def _show_flash() -> None:
+    """Display and clear any pending flash message."""
+    flash = st.session_state.pop("_flash", None)
+    if flash:
+        msg, level = flash
+        getattr(st, level, st.info)(msg)
 
 
 # ── config helpers ─────────────────────────────────────────────────────────────
@@ -127,10 +241,21 @@ def engine_pid() -> int | None:
 
 def _pid_alive(pid: int) -> bool:
     if platform.system() == "Windows":
-        out = subprocess.check_output(
-            ["tasklist", "/FI", f"PID eq {pid}"], text=True, errors="ignore"
-        )
-        return str(pid) in out
+        # Use ctypes instead of slow tasklist subprocess
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
     else:
         try:
             os.kill(pid, 0)
@@ -462,8 +587,283 @@ def multi_engine_running() -> dict[int, bool]:
 def tail_log(n: int = 60) -> str:
     if not LOG_PATH.exists():
         return "(no log file)"
-    lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
-    return "\n".join(lines[-n:])
+    # Read only the tail of the file to avoid loading large logs into memory
+    try:
+        size = LOG_PATH.stat().st_size
+        # ~200 bytes per line estimate; read a generous chunk from the end
+        chunk = min(size, n * 300)
+        with LOG_PATH.open("rb") as f:
+            if size > chunk:
+                f.seek(size - chunk)
+            raw = f.read().decode("utf-8", errors="replace")
+        lines = raw.splitlines()
+        # If we seeked mid-file, drop the first (possibly partial) line
+        if size > chunk and len(lines) > 1:
+            lines = lines[1:]
+        return "\n".join(lines[-n:])
+    except Exception:
+        return "(error reading log)"
+
+
+# ── log parsing & Chinese mapping ─────────────────────────────────────────────
+import re as _re
+
+# Tag → (Chinese label, CSS class, level category)
+_TAG_MAP: dict[str, tuple[str, str, str]] = {
+    # danger
+    "kill-switch":    ("风控熔断",   "tag-danger",   "异常"),
+    "ALERT":          ("严重警报",   "tag-danger",   "异常"),
+    "error":          ("错误",       "tag-danger",   "异常"),
+    "exception":      ("异常",       "tag-danger",   "异常"),
+    "safety":         ("安全检查",   "tag-danger",   "异常"),
+    "risk":           ("风控",       "tag-danger",   "异常"),
+    # warning / cooldown
+    "watch":          ("监控模式",   "tag-cooldown", "冷却"),
+    "cooldown":       ("冷却中",     "tag-cooldown", "冷却"),
+    "netdiag":        ("网络诊断",   "tag-warning",  "冷却"),
+    "signer-pace":    ("签名限速",   "tag-warning",  "冷却"),
+    "pace":           ("节奏控制",   "tag-warning",  "冷却"),
+    "snapshot-drop":  ("快照丢弃",   "tag-warning",  "冷却"),
+    "latency":        ("延迟监测",   "tag-warning",  "冷却"),
+    "preempt":        ("抢占执行",   "tag-warning",  "冷却"),
+    # skip
+    "quote-skip":     ("报价跳过",   "tag-warning",  "跳过"),
+    "quote-skip-leg": ("分腿跳过",   "tag-warning",  "跳过"),
+    "price-legs-skip":("价格跳过",   "tag-warning",  "跳过"),
+    # cancel
+    "cancel":         ("撤单",       "tag-danger",   "撤单"),
+    "cancel_all":     ("全部撤单",   "tag-danger",   "撤单"),
+    # recovery / success
+    "recovery":       ("系统恢复",   "tag-success",  "恢复"),
+    "vol-recovery":   ("波动恢复",   "tag-success",  "恢复"),
+    "event-state":    ("状态变更",   "tag-success",  "恢复"),
+    # info
+    "quote":          ("报价更新",   "tag-info",     "信息"),
+    "health":         ("健康检查",   "tag-info",     "信息"),
+    "fill-ws":        ("成交推送",   "tag-info",     "信息"),
+    "fill-poll":      ("成交轮询",   "tag-info",     "信息"),
+    "trade-poll":     ("交易轮询",   "tag-info",     "信息"),
+    "book-loop":      ("盘口更新",   "tag-info",     "信息"),
+    "market-ws":      ("行情推送",   "tag-info",     "信息"),
+    "guard-loop":     ("守护循环",   "tag-info",     "信息"),
+    "debug-bal":      ("余额调试",   "tag-info",     "信息"),
+    "tick-auto":      ("自动报价",   "tag-info",     "信息"),
+    "session":        ("会话管理",   "tag-info",     "信息"),
+    "unwind":         ("平仓操作",   "tag-info",     "信息"),
+    "state-writer":   ("状态写入",   "tag-info",     "信息"),
+}
+
+# Reason snippets → Chinese description
+_REASON_MAP: dict[str, str] = {
+    "insufficient_budget_for_min_size": "预算不足",
+    "blocked_slug":                     "市场已屏蔽",
+    "Request exception":                "请求异常",
+    "vol_recovery_from_watch":          "波动恢复，退出监控",
+    "bba_jump":                         "盘口跳变",
+    "planner_top_leg_sync":             "策略同步撤单",
+    "planner_back_legs_sync":           "后腿同步撤单",
+    "Reward invalid":                   "奖励无效，市场下线",
+    "REJECT price>":                    "拒绝下单：价格超出合法上限",
+    "REJECT price<reward_lower":        "拒绝下单：价格低于奖励区间",
+    "REJECT price>=ask":                "拒绝下单：价格穿越卖盘",
+    "REJECT stale_data":                "拒绝下单：数据过期",
+    "snapshot_divergence":              "快照分歧过大，跳过",
+    "CANCEL_TOP_LEG":                   "撤销头腿",
+    "MOVE_BACK_TOP_LEG":                "头腿后移",
+    "HALT_EVENT":                       "事件暂停",
+    "front_depth_critical":             "前方深度严重不足",
+    "front_depth_thin":                 "前方深度不足",
+    "depth_data_untrusted":             "深度数据不可信",
+    "market offlined":                  "市场已下线",
+    "auto-resuming":                    "自动恢复报价",
+    "recovery gate passed":             "恢复检查通过",
+    "cancel_all failed":                "全部撤单失败",
+}
+
+_LOG_LINE_RE = _re.compile(
+    r"^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[([^\]]+)\]\s*(.*)"
+)
+
+def _translate_reason(detail: str) -> str:
+    """Map known reason snippets in detail text to Chinese."""
+    for eng, chn in _REASON_MAP.items():
+        if eng in detail:
+            return chn
+    return ""
+
+
+def _parse_log_entry(line: str) -> dict | None:
+    """Parse a single log line into structured dict."""
+    m = _LOG_LINE_RE.match(line.strip())
+    if not m:
+        return None
+    ts_str, raw_tag, detail = m.group(1), m.group(2).strip(), m.group(3).strip()
+
+    # Handle nested tags like "[health] [ALERT] ..."
+    inner = _re.match(r"\[([^\]]+)\]\s*(.*)", detail)
+    if inner:
+        raw_tag = inner.group(1).strip()
+        detail = inner.group(2).strip()
+
+    tag_info = _TAG_MAP.get(raw_tag, ("其他", "tag-info", "信息"))
+    cn_label, css_class, category = tag_info
+
+    # Build human-readable Chinese description
+    reason_cn = _translate_reason(detail)
+    if reason_cn:
+        main_msg = f"{cn_label}：{reason_cn}"
+    else:
+        main_msg = cn_label
+
+    # Extract full token ID for name resolution
+    token_full_match = _re.search(r"token=(\d{20,})", detail)
+    token_full = token_full_match.group(1) if token_full_match else ""
+    token_short = token_full[:8] + "…" if token_full else ""
+
+    # Compact detail: strip long token/oid for readability
+    compact_detail = _re.sub(r"(token=)\d{20,}", r"\1…", detail)
+    compact_detail = _re.sub(r"(oid=|ids=)[0-9a-fA-F]{8,}", r"\1…", compact_detail)
+
+    return {
+        "time": ts_str[-8:],  # HH:MM:SS
+        "tag": raw_tag,
+        "cn_label": cn_label,
+        "css_class": css_class,
+        "category": category,
+        "main_msg": main_msg,
+        "detail": compact_detail,
+        "token": token_short,
+        "token_full": token_full,
+        "market_name": "",  # filled later by tail_log_parsed
+    }
+
+
+def _get_token_name_cache() -> dict[str, str]:
+    """Get or initialize the token→name cache in session_state."""
+    if "_token_name_cache" not in st.session_state:
+        st.session_state["_token_name_cache"] = {}
+    return st.session_state["_token_name_cache"]
+
+
+def _resolve_token_names(token_ids: set[str]) -> dict[str, str]:
+    """Resolve token IDs to market names, using session cache + batch API."""
+    cache = _get_token_name_cache()
+    missing = [tid for tid in token_ids if tid and tid not in cache]
+    if missing:
+        # Batch resolve via existing function (max ~30 to avoid slow API)
+        batch = tuple(missing[:30])
+        try:
+            resolved = resolve_market_names_batch(batch)
+            for tid, name in resolved.items():
+                # Only cache if we got a real name (not the fallback "xxxx...")
+                if name and not name.endswith("...") or len(name) > 20:
+                    cache[tid] = name
+        except Exception:
+            pass
+    return cache
+
+
+def tail_log_parsed(n: int = 200) -> list[dict]:
+    """Read last n lines, parse into structured entries, resolve market names."""
+    raw = tail_log(n)
+    if raw.startswith("("):
+        return []
+    entries = []
+    for line in raw.splitlines():
+        entry = _parse_log_entry(line)
+        if entry:
+            entries.append(entry)
+
+    # Collect unique token IDs and batch-resolve names
+    all_tokens = {e["token_full"] for e in entries if e["token_full"]}
+    if all_tokens:
+        name_map = _resolve_token_names(all_tokens)
+        for e in entries:
+            if e["token_full"] and e["token_full"] in name_map:
+                e["market_name"] = name_map[e["token_full"]]
+
+    return entries
+
+
+def _render_log_html(entries: list[dict], new_count: int = 0) -> str:
+    """Render parsed log entries into styled HTML.
+    new_count: how many entries at the tail are 'new' (get slide-in animation).
+    """
+    if not entries:
+        return '<div class="log-panel" style="padding:24px;color:#484f58;text-align:center;">暂无日志</div>'
+    rows = []
+    new_start = max(0, len(entries) - new_count) if new_count > 0 else len(entries)
+    for idx, e in enumerate(entries):
+        # Market name badge
+        name_html = ""
+        if e.get("market_name"):
+            name_html = (
+                f'<span style="color:#58a6ff;font-size:11px;background:#1a2332;'
+                f'border:1px solid #1f3a5f;border-radius:3px;padding:0 5px;'
+                f'margin-left:4px;white-space:nowrap;">{e["market_name"]}</span>'
+            )
+        # Detail line
+        detail_html = ""
+        if e["detail"]:
+            detail_html = f'<div class="log-detail">{e["detail"]}</div>'
+        extra_cls = " log-entry-new" if idx >= new_start else ""
+        rows.append(
+            f'<div class="log-entry{extra_cls}">'
+            f'  <span class="log-time">{e["time"]}</span>'
+            f'  <span class="log-tag {e["css_class"]}">{e["cn_label"]}</span>'
+            f'  <div class="log-msg">{e["main_msg"]}{name_html}{detail_html}</div>'
+            f'</div>'
+        )
+    # Auto-scroll: put anchor at bottom and use JS
+    html = (
+        '<div class="log-panel" id="logPanel">'
+        + "\n".join(rows)
+        + '<div id="logBottom"></div>'
+        + '</div>'
+        + '<script>var lp=document.getElementById("logPanel");if(lp)lp.scrollTop=lp.scrollHeight;</script>'
+    )
+    return html
+
+
+def _render_log_summary(entries: list[dict]) -> str:
+    """Render top summary bar."""
+    from collections import Counter
+    cat_counts = Counter(e["category"] for e in entries)
+
+    # Latest notable event
+    latest_notable = ""
+    for e in reversed(entries):
+        if e["category"] in ("异常", "撤单", "冷却", "恢复"):
+            latest_notable = f'{e["cn_label"]}（{e["time"]}）'
+            break
+
+    # Current status inference
+    status = "正常运行"
+    status_dot = "dot-green"
+    for e in entries[-10:]:
+        if e["category"] == "异常":
+            status = "异常告警"
+            status_dot = "dot-red"
+            break
+        elif e["category"] == "冷却":
+            status = "冷却等待"
+            status_dot = "dot-blue"
+
+    items = [
+        f'<span class="log-summary-item"><span class="log-summary-dot {status_dot}"></span><b>{status}</b></span>',
+    ]
+    if latest_notable:
+        items.append(f'<span class="log-summary-item" style="color:#8b949e;">最近事件：{latest_notable}</span>')
+    if cat_counts.get("异常", 0):
+        items.append(f'<span class="log-summary-item"><span class="log-summary-dot dot-red"></span>异常 {cat_counts["异常"]}</span>')
+    if cat_counts.get("撤单", 0):
+        items.append(f'<span class="log-summary-item"><span class="log-summary-dot dot-yellow"></span>撤单 {cat_counts["撤单"]}</span>')
+    if cat_counts.get("冷却", 0) + cat_counts.get("跳过", 0):
+        items.append(f'<span class="log-summary-item"><span class="log-summary-dot dot-blue"></span>冷却/跳过 {cat_counts.get("冷却", 0) + cat_counts.get("跳过", 0)}</span>')
+    if cat_counts.get("恢复", 0):
+        items.append(f'<span class="log-summary-item"><span class="log-summary-dot dot-green"></span>恢复 {cat_counts["恢复"]}</span>')
+
+    return f'<div class="log-summary">{" ".join(items)}</div>'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -536,8 +936,10 @@ with col_status:
 with col_stop:
     if st.button("EMERGENCY STOP", type="primary", use_container_width=True):
         msg = stop_engine()
-        st.error(msg)
+        _flash(msg, "error")
+        st.rerun()
 
+_show_flash()
 st.divider()
 
 # ── metric cards ───────────────────────────────────────────────────────────────
@@ -916,6 +1318,7 @@ with tab_scan:
     scan_min_spread = int(scan_defaults.get("min_spread", 1) or 0)
     scan_max_spread = int(scan_defaults.get("max_spread", 10) or 0)
     scan_min_vol = int(scan_defaults.get("min_volume", 10_000) or 0)
+    scan_min_bid_depth = int(scan_defaults.get("min_bid_depth", 100_000) or 0)
     scan_sort_by = str(scan_defaults.get("sort_by", "reward_score") or "reward_score")
     scan_top_n = int(scan_defaults.get("top_n", 50) or 50)
     sort_options = ["reward", "reward_score", "volume", "score"]
@@ -930,16 +1333,18 @@ with tab_scan:
     with row1_c4:
         max_spread = st.number_input("Max Spread", value=scan_max_spread, step=1, help="0 = no limit")
 
-    row2_c1, row2_c2, row2_c3 = st.columns(3)
+    row2_c1, row2_c2, row2_c3, row2_c4 = st.columns(4)
     with row2_c1:
         min_vol = st.number_input("Min 24h Volume ($)", value=scan_min_vol, step=10_000)
     with row2_c2:
-        sort_by = st.selectbox("Sort by", sort_options, index=sort_index)
+        min_bid_depth = st.number_input("Min Bid Depth ($)", value=scan_min_bid_depth, step=10_000, help="Bid-side order book total notional (USDC)")
     with row2_c3:
-        top_n = st.number_input("Top N", value=scan_top_n, min_value=5, max_value=200)
+        sort_by = st.selectbox("Sort by", sort_options, index=sort_index)
+    with row2_c4:
+        top_n = st.number_input("Top N", value=scan_top_n, min_value=5, max_value=500)
 
     if st.button("Run Scan", use_container_width=False):
-        with st.spinner("Scanning Polymarket... (30-60s)"):
+        with st.spinner("Scanning Polymarket... (fetching books may take 60-120s)"):
             scan_cmd = [
                 sys.executable, str(SCAN_PATH),
                 "--min-volume", str(int(min_vol)),
@@ -947,6 +1352,7 @@ with tab_scan:
                 "--max-reward", str(int(max_reward)),
                 "--min-spread", str(min_spread),
                 "--max-spread", str(max_spread),
+                "--min-bid-depth", str(int(min_bid_depth)),
                 "--sort-by", sort_by,
                 "--top", str(int(top_n)),
                 "--json",
@@ -954,6 +1360,7 @@ with tab_scan:
             proc_json = subprocess.run(
                 scan_cmd,
                 cwd=str(BASE_DIR), capture_output=True, text=True,
+                timeout=300,
             )
         # find the JSON line robustly (first line starting with "[")
         json_line = ""
@@ -1057,18 +1464,45 @@ with tab_scan:
 
             existing_tokens = {m["token_id"] for m in cfg.get("markets", [])}
             existing_night_tokens = {m["token_id"] for m in cfg.get("night_markets", [])}
+            # Also track sides already in config (lookup by both YES and NO token)
+            existing_sides: dict[str, str] = {}  # token_id -> side stored in config
+            for m in cfg.get("markets", []):
+                existing_sides[m["token_id"]] = m.get("side", "YES")
+            for m in cfg.get("night_markets", []):
+                existing_sides[m["token_id"]] = m.get("side", "YES")
+
+            # Config version hash — forces data_editor to refresh after saves
+            _cfg_sig = hash(frozenset(existing_tokens | existing_night_tokens))
+
+            def _detect_in_config(item: dict) -> bool:
+                yes_tid = item.get("token_id", "")
+                no_tid = item.get("paired_token_id", "")
+                return yes_tid in existing_tokens or no_tid in existing_tokens
+
+            def _detect_in_night(item: dict) -> bool:
+                yes_tid = item.get("token_id", "")
+                no_tid = item.get("paired_token_id", "")
+                return yes_tid in existing_night_tokens or no_tid in existing_night_tokens
+
+            def _detect_side(item: dict) -> str:
+                """Detect which side is already in config; default YES."""
+                no_tid = item.get("paired_token_id", "")
+                if no_tid in existing_tokens or no_tid in existing_night_tokens:
+                    return "NO"
+                return existing_sides.get(item.get("token_id", ""), "YES")
 
             df_edit = pd.DataFrame([{
                 "#":         idx + 1,
-                "In Config": (item.get("token_id", "") in existing_tokens
-                              or item.get("quadrant", "").startswith(("A", "C"))),
-                "夜盘":      item.get("token_id", "") in existing_night_tokens,
+                "In Config": _detect_in_config(item),
+                "夜盘":      _detect_in_night(item),
+                "Side":      _detect_side(item),
                 "Market":    item.get("question", "")[:60],
                 "Zone":      item.get("quadrant", "?")[0],
                 "Daily $":   round(item.get("reward", 0), 0),
                 "Risk":      round(item.get("fill_risk", 0), 1),
                 "Crowd":     item.get("crowd", "?"),
                 "Vol 24h":   round(item.get("volume24h", 0), 0),
+                "Bid Depth": round(item.get("bidDepth", 0), 0),
                 "Spread":    round(item.get("maxIncentiveSpread", 0), 3),
                 "打开链接":   item.get("market_url", f"https://polymarket.com/event/{item.get('slug','')}"),
                 "_token_id": item.get("token_id", ""),
@@ -1076,124 +1510,88 @@ with tab_scan:
                                          if not k.startswith("_")}),
             } for idx, item in enumerate(table_results) if item.get("token_id")])
 
-            edited = st.data_editor(
-                df_edit.drop(columns=["_token_id", "_item"]),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "#":         st.column_config.NumberColumn("#", width="small"),
-                    "In Config": st.column_config.CheckboxColumn(
-                        "In Config", help="Check to add, uncheck to remove", width="small"
-                    ),
-                    "夜盘": st.column_config.CheckboxColumn(
-                        "夜盘", help="勾选添加到夜盘 config", width="small"
-                    ),
-                    "Market":  st.column_config.TextColumn("Market", width="large"),
-                    "打开链接": st.column_config.LinkColumn("打开链接", display_text="打开链接", width="small"),
-                    "Zone":    st.column_config.TextColumn("Zone", width="small"),
-                    "Daily $": st.column_config.NumberColumn("Daily $", format="$%.0f"),
-                    "Risk":    st.column_config.NumberColumn("Risk",    format="%.1f"),
-                    "Vol 24h": st.column_config.NumberColumn("Vol 24h", format="$%,.0f"),
-                    "Spread":  st.column_config.NumberColumn("Spread",  format="%.3f"),
-                },
-                disabled=["#", "Market", "Zone", "Daily $", "Risk", "Crowd", "Vol 24h", "Spread", "打开链接"],
-                # Note: "In Config" and "夜盘" columns are editable
-                key=f"scan_editor_{len(scan_results)}",
-            )
+            # Wrap in st.form so checkbox clicks do NOT trigger reruns —
+            # changes are only applied when a submit button is pressed.
+            with st.form(key=f"scan_form_{len(scan_results)}_{_cfg_sig}"):
+                edited = st.data_editor(
+                    df_edit.drop(columns=["_token_id", "_item"]),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "#":         st.column_config.NumberColumn("#", width="small"),
+                        "In Config": st.column_config.CheckboxColumn(
+                            "In Config", help="Check to add, uncheck to remove", width="small"
+                        ),
+                        "夜盘": st.column_config.CheckboxColumn(
+                            "夜盘", help="勾选添加到夜盘 config", width="small"
+                        ),
+                        "Side": st.column_config.SelectboxColumn(
+                            "Side", options=["YES", "NO"], default="YES", width="small",
+                            help="YES = 买入 YES token, NO = 买入 NO token",
+                        ),
+                        "Market":  st.column_config.TextColumn("Market", width="large"),
+                        "打开链接": st.column_config.LinkColumn("打开链接", display_text="打开链接", width="small"),
+                        "Zone":    st.column_config.TextColumn("Zone", width="small"),
+                        "Daily $": st.column_config.NumberColumn("Daily $", format="$%.0f"),
+                        "Risk":    st.column_config.NumberColumn("Risk",    format="%.1f"),
+                        "Vol 24h":   st.column_config.NumberColumn("Vol 24h", format="$%,.0f"),
+                        "Bid Depth": st.column_config.NumberColumn("Bid Depth", format="$%,.0f", help="Bid-side order book total USDC"),
+                        "Spread":    st.column_config.NumberColumn("Spread",  format="%.3f"),
+                    },
+                    disabled=["#", "Market", "Zone", "Daily $", "Risk", "Crowd", "Vol 24h", "Bid Depth", "Spread", "打开链接"],
+                    key=f"scan_editor_{len(scan_results)}_{_cfg_sig}",
+                )
 
-            # apply changes when In Config / 夜盘 columns differ from original
-            changed = False
-            for i, row in edited.iterrows():
-                tid  = df_edit.at[i, "_token_id"]
-                item = json.loads(df_edit.at[i, "_item"])
-                # --- day market toggle ---
-                want_in = bool(row["In Config"])
-                is_in   = tid in existing_tokens
-                if want_in and not is_in:
-                    cfg.setdefault("markets", []).append({
-                        "token_id": tid,
-                        "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
-                        "price_tick": 0.01,
-                        "min_distance_from_best_bid": 0.01,
-                        "quote_size": 100.0,
-                        "risk": "low" if item.get("quadrant","").startswith("A") else "mid",
-                        "enabled": True,
-                    })
-                    existing_tokens.add(tid)
-                    changed = True
-                elif not want_in and is_in:
-                    cfg["markets"] = [m for m in cfg.get("markets", [])
-                                      if m["token_id"] != tid]
-                    existing_tokens.discard(tid)
-                    changed = True
-                # --- night market toggle ---
-                want_night = bool(row["夜盘"])
-                is_night   = tid in existing_night_tokens
-                if want_night and not is_night:
-                    cfg.setdefault("night_markets", []).append({
-                        "token_id": tid,
-                        "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
-                        "price_tick": 0.01,
-                        "min_distance_from_best_bid": 0.02,
-                        "quote_size": 80.0,
-                        "risk": "low",
-                        "enabled": True,
-                    })
-                    existing_night_tokens.add(tid)
-                    changed = True
-                elif not want_night and is_night:
-                    cfg["night_markets"] = [m for m in cfg.get("night_markets", [])
-                                            if m["token_id"] != tid]
-                    existing_night_tokens.discard(tid)
-                    changed = True
-            if changed:
+                st.markdown("")
+                submit_all = st.form_submit_button("应用选择（同时更新日盘 + 夜盘 Config）", type="primary")
+
+            # ── Handle form submission (outside the form block) ───────────────
+            if submit_all:
+                new_markets = []
+                checked_night = []
+                for i, row in edited.iterrows():
+                    item = json.loads(df_edit.at[i, "_item"])
+                    yes_tid = item.get("token_id", "")
+                    no_tid = item.get("paired_token_id", "")
+                    if not yes_tid:
+                        continue
+                    side = str(row.get("Side", "YES")).upper()
+                    tid = no_tid if side == "NO" and no_tid else yes_tid
+                    # Determine paired token for dual-side injection
+                    paired = no_tid if side == "YES" else yes_tid
+                    if bool(row["In Config"]):
+                        entry = {
+                            "token_id": tid,
+                            "side": side,
+                            "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
+                            "price_tick": 0.01,
+                            "min_distance_from_best_bid": 0.01,
+                            "quote_size": 100.0,
+                            "risk": "low" if item.get("quadrant", "").startswith("A") else "mid",
+                            "enabled": True,
+                        }
+                        if paired:
+                            entry["paired_token_id"] = paired
+                        new_markets.append(entry)
+                    if bool(row["夜盘"]):
+                        entry = {
+                            "token_id": tid,
+                            "side": side,
+                            "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
+                            "price_tick": 0.01,
+                            "min_distance_from_best_bid": 0.02,
+                            "quote_size": 80.0,
+                            "risk": "low",
+                            "enabled": True,
+                        }
+                        if paired:
+                            entry["paired_token_id"] = paired
+                        checked_night.append(entry)
+                cfg["markets"] = new_markets
+                cfg["night_markets"] = checked_night
                 save_config(cfg)
+                st.success(f"已保存：日盘 {len(new_markets)} 个市场，夜盘 {len(checked_night)} 个市场。")
                 st.rerun()
-
-            # ── Replace all button ────────────────────────────────────────────
-            st.markdown("")
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button("应用到 Config（替换全部旧市场）", type="primary"):
-                    checked_items = [
-                        item for i, (row, item) in enumerate(
-                            zip(edited.itertuples(), table_results)
-                        )
-                        if row._1  # "In Config" is first column
-                    ]
-                    new_markets = [{
-                        "token_id": item.get("token_id", ""),
-                        "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
-                        "price_tick": 0.01,
-                        "min_distance_from_best_bid": 0.01,
-                        "quote_size": 100.0,
-                        "risk": "low" if item.get("quadrant", "").startswith("A") else "mid",
-                        "enabled": True,
-                    } for item in checked_items if item.get("token_id")]
-                    cfg["markets"] = new_markets
-                    save_config(cfg)
-                    st.success(f"已替换：写入 {len(new_markets)} 个市场，旧配置已清除。")
-                    st.rerun()
-            with btn_col2:
-                if st.button("应用到夜盘 Config（替换全部旧夜盘市场）", type="secondary"):
-                    checked_night = []
-                    for i, row in edited.iterrows():
-                        if bool(row["夜盘"]):
-                            item = json.loads(df_edit.at[i, "_item"])
-                            if item.get("token_id"):
-                                checked_night.append({
-                                    "token_id": item["token_id"],
-                                    "max_incentive_spread": round(item.get("maxIncentiveSpread", 3.5), 4),
-                                    "price_tick": 0.01,
-                                    "min_distance_from_best_bid": 0.02,
-                                    "quote_size": 80.0,
-                                    "risk": "low",
-                                    "enabled": True,
-                                })
-                    cfg["night_markets"] = checked_night
-                    save_config(cfg)
-                    st.success(f"夜盘已更新：写入 {len(checked_night)} 个市场。")
-                    st.rerun()
 
             # ── Night market summary ───────────────────────────────────────────
             night_selected = [df_edit.at[i, "Market"] for i, row in edited.iterrows()
@@ -1278,6 +1676,7 @@ with tab_proxy:
 
 # ══ TAB: CONTROL ═════════════════════════════════════════════════════════════
 with tab_control:
+    _show_flash()
     col_eng, col_key = st.columns([1, 1])
 
     with col_eng:
@@ -1285,15 +1684,18 @@ with tab_control:
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("Start", use_container_width=True):
-                st.info(start_engine())
+                _flash(start_engine(), "info")
+                st.rerun()
         with c2:
             if st.button("Stop", use_container_width=True):
-                st.info(stop_engine())
+                _flash(stop_engine(), "info")
+                st.rerun()
         with c3:
             if st.button("Reload", use_container_width=True):
                 stop_engine()
                 time.sleep(0.5)
-                st.info(start_engine())
+                _flash(start_engine(), "info")
+                st.rerun()
 
         st.markdown("")
         pid = engine_pid()
@@ -1345,11 +1747,97 @@ with tab_control:
                         unsafe_allow_html=True)
 
     st.divider()
-    st.markdown('<p class="section-title">Engine Log (last 60 lines)</p>', unsafe_allow_html=True)
-    log_text = tail_log(60)
-    st.code(log_text, language="text")
-    if st.button("Refresh Log"):
-        st.rerun()
+
+    # ── Log Monitor Panel (auto-refreshing fragment) ──────────────────────────
+    st.markdown(
+        '<p class="section-title">'
+        '<span class="live-dot"></span>实时日志监控'
+        '</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Controls row (outside fragment so they don't flicker)
+    log_c1, log_c2, log_c3, log_c4 = st.columns([2, 1, 1, 1])
+    with log_c1:
+        log_filter = st.selectbox(
+            "日志筛选",
+            ["全部", "仅异常", "仅撤单", "仅冷却/跳过", "仅恢复", "仅信息"],
+            label_visibility="collapsed",
+            key="log_filter",
+        )
+    with log_c2:
+        log_count = st.selectbox(
+            "显示条数", [50, 100, 200, 500],
+            index=1,
+            label_visibility="collapsed",
+            key="log_count",
+        )
+    with log_c3:
+        refresh_interval = st.selectbox(
+            "刷新频率",
+            [("3秒", 3), ("5秒", 5), ("10秒", 10), ("暂停", 0)],
+            index=1,
+            format_func=lambda x: x[0],
+            label_visibility="collapsed",
+            key="log_refresh_interval",
+        )
+    with log_c4:
+        if st.button("⟳ 手动刷新", use_container_width=True, key="refresh_log"):
+            st.session_state.pop("_log_prev_key", None)  # reset diff tracking
+            st.rerun()
+
+    _interval_sec = refresh_interval[1] if isinstance(refresh_interval, tuple) else 5
+    _run_every = timedelta(seconds=_interval_sec) if _interval_sec > 0 else None
+
+    @st.fragment(run_every=_run_every)
+    def _live_log_panel():
+        """Auto-refreshing log fragment — only this block re-runs."""
+        _n = st.session_state.get("log_count", 100)
+        all_entries = tail_log_parsed(_n)
+
+        # Detect new entries since last render
+        if all_entries:
+            current_key = f'{all_entries[-1]["time"]}_{len(all_entries)}'
+        else:
+            current_key = ""
+        prev_key = st.session_state.get("_log_prev_key", "")
+        prev_len = st.session_state.get("_log_prev_len", 0)
+
+        new_count = 0
+        if prev_key and current_key != prev_key and len(all_entries) > 0:
+            new_count = max(0, len(all_entries) - prev_len)
+            # Cap to avoid animating everything on first load
+            new_count = min(new_count, 20)
+
+        st.session_state["_log_prev_key"] = current_key
+        st.session_state["_log_prev_len"] = len(all_entries)
+
+        # Filter
+        _FILTER_MAP = {
+            "全部": None,
+            "仅异常": ["异常"],
+            "仅撤单": ["撤单"],
+            "仅冷却/跳过": ["冷却", "跳过"],
+            "仅恢复": ["恢复"],
+            "仅信息": ["信息"],
+        }
+        _flt = st.session_state.get("log_filter", "全部")
+        active_cats = _FILTER_MAP.get(_flt)
+        if active_cats:
+            filtered = [e for e in all_entries if e["category"] in active_cats]
+        else:
+            filtered = all_entries
+
+        # Summary bar
+        st.markdown(_render_log_summary(all_entries), unsafe_allow_html=True)
+
+        # Log entries
+        st.markdown(_render_log_html(filtered, new_count=new_count), unsafe_allow_html=True)
+
+        _int_label = f"每 {_interval_sec}s 自动刷新" if _interval_sec > 0 else "自动刷新已暂停"
+        st.caption(f"共 {len(filtered)} 条 / 最近 {len(all_entries)} 条 · {_int_label}")
+
+    _live_log_panel()
 
 # ══ TAB: ACCOUNTS (D-6 multi-account aggregated view) ════════════════════════
 with tab_accounts:
@@ -1464,7 +1952,8 @@ with tab_accounts:
                         env=env,
                     )
                 multi_pid_path.write_text(str(proc.pid), encoding="utf-8")
-                st.success(f"Multi-runner started — PID {proc.pid}")
+                _flash(f"Multi-runner started — PID {proc.pid}", "success")
+                st.rerun()
 
     with col_mr2:
         if st.button("Stop Multi-Runner", use_container_width=True):
@@ -1479,18 +1968,30 @@ with tab_accounts:
                         import signal as _signal
                         os.kill(pid, _signal.SIGTERM)
                     multi_pid_path.unlink(missing_ok=True)
-                    st.success(f"Multi-runner PID {pid} stopped.")
+                    _flash(f"Multi-runner PID {pid} stopped.", "success")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Stop failed: {e}")
             else:
                 st.warning("No multi-runner PID file found.")
 
-    # Multi-runner log tail
+    # Multi-runner log tail (read only tail of file)
     multi_log_path = DATA_DIR / "multi_runner.log"
     if multi_log_path.exists():
         with st.expander("Multi-Runner Log (last 40 lines)"):
-            lines = multi_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            st.code("\n".join(lines[-40:]), language="text")
+            try:
+                _ml_size = multi_log_path.stat().st_size
+                _ml_chunk = min(_ml_size, 40 * 300)
+                with multi_log_path.open("rb") as _mlf:
+                    if _ml_size > _ml_chunk:
+                        _mlf.seek(_ml_size - _ml_chunk)
+                    _ml_raw = _mlf.read().decode("utf-8", errors="replace")
+                _ml_lines = _ml_raw.splitlines()
+                if _ml_size > _ml_chunk and len(_ml_lines) > 1:
+                    _ml_lines = _ml_lines[1:]
+                st.code("\n".join(_ml_lines[-40:]), language="text")
+            except Exception:
+                st.code("(error reading log)", language="text")
 
     # Config file setup helper
     st.markdown('<p class="section-title" style="margin-top:24px">Config Setup</p>',

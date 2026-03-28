@@ -439,7 +439,7 @@
       "min_volume": 10000,
       "min_bid_depth": 100000,
       "sort_by": "reward_score",
-      "top_n": 50
+      "top_n": 500
     }
   },
   "proxy_pool": {
