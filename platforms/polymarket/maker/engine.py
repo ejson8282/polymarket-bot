@@ -347,7 +347,6 @@ class PolyLPSMulti:
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
         self._dual_side_no_risk = str(dual.get("no_side_risk", "low")).lower()
-        self._dual_side_both_or_none = bool(dual.get("both_or_none", True))
         self._dual_side_injected: set[str] = set()  # NO tokens auto-added
 
         # execution pacing: risk actions immediate, normal posting lightly paced
