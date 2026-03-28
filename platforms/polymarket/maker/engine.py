@@ -347,6 +347,7 @@ class PolyLPSMulti:
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
         self._dual_side_no_risk = str(dual.get("no_side_risk", "low")).lower()
+        self._dual_side_both_or_none = bool(dual.get("both_or_none", True))
         self._dual_side_injected: set[str] = set()  # NO tokens auto-added
 
         # execution pacing: risk actions immediate, normal posting lightly paced
@@ -3108,6 +3109,23 @@ class PolyLPSMulti:
             live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
             live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
             prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
+            if not dual_side_active and paired_token and self._dual_side_enabled and not mcfg.get("_dual_side_auto"):
+                current_top_price = prices[0] if prices else best_bid
+                if current_top_price <= self._dual_side_max_mid:
+                    dual_side_active = True
+            if dual_side_active and self._dual_side_both_or_none and paired_token:
+                pair_snap = self._market_snapshots.get(paired_token)
+                if pair_snap is None:
+                    log(f"[quote-skip] token={token_id} reason=paired_side_unavailable paired_token={paired_token[:16]} both_or_none=1")
+                    return
+                pair_meta = await self._get_market_meta(paired_token)
+                pair_live_spread_raw = pair_meta.get("maxIncentiveSpread") or pair_meta.get("rewardsMaxSpread") if pair_meta else None
+                pair_live_spread = Decimal(str(pair_live_spread_raw)) if pair_live_spread_raw is not None else None
+                pair_tob = TopOfBook(best_bid=pair_snap.best_bid, best_ask=pair_snap.best_ask)
+                pair_prices = self._build_price_legs(paired_token, pair_tob, live_spread=pair_live_spread)
+                if not pair_prices:
+                    log(f"[quote-skip] token={token_id} reason=paired_side_no_plan paired_token={paired_token[:16]} both_or_none=1")
+                    return
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
             if not gate.get("can_quote", False):
