@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 import websockets
@@ -205,6 +206,7 @@ class PolyLPSMulti:
 
     def __init__(self, config_path: str = "config.json") -> None:
         cfg_path = Path(config_path)
+        self._config_path = cfg_path.resolve()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         _init_proxy_settings(self.cfg)
 
@@ -215,13 +217,13 @@ class PolyLPSMulti:
         self.signature_type = signature_type
         funder = str(account.get("funder", "")).strip()
 
-        signer_server_url = str(account.get("signer_server_url", "")).strip()
+        signer_server_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or str(account.get("signer_server_url", "")).strip()
         self.remote_signer: RemoteSignerClient | None = None
 
         if signer_server_url:
             # --- Remote signer mode: private key lives on Mac Mini ---
             log(f">>> REMOTE SIGNER MODE: using Mac Mini at {signer_server_url} (private key is NOT on this machine)")
-            signer_token = os.getenv("SIGNER_TOKEN", "").strip() or str(account.get("signer_token", "")).strip()
+            signer_token = os.getenv("SIGNER_TOKEN", "").strip()
             self.remote_signer = RemoteSignerClient(signer_server_url, signer_token)
             creds_data = self.remote_signer.derive_creds()
             address = creds_data["address"]
@@ -242,11 +244,11 @@ class PolyLPSMulti:
             )
             self.client.set_api_creds(self.api_creds)
         else:
-            # --- Local signer mode: backward-compatible ---
+            # --- Local signer mode: private key must come from environment ---
             env_key = os.getenv("POLY_PRIVATE_KEY", "").strip()
-            private_key = env_key or str(account.get("private_key", "")).strip()
+            private_key = env_key
             if not private_key or "REPLACE" in private_key or "REDACTED" in private_key:
-                raise ValueError("Private key missing. Set POLY_PRIVATE_KEY env var or config.account.private_key")
+                raise ValueError("Private key missing. Set POLY_PRIVATE_KEY env var.")
 
             client_kwargs = {
                 "host": host,
@@ -296,8 +298,8 @@ class PolyLPSMulti:
         self.start_freeze_seconds = int(risk.get("start_freeze_seconds", 120))
 
         reporting = self.cfg.get("reporting", {})
-        self.discord_webhook = str(reporting.get("discord_webhook", "")).strip()
-        self.fill_discord_webhook = str(reporting.get("fill_discord_webhook", "")).strip()
+        self.discord_webhook = os.getenv("POLY_DISCORD_WEBHOOK", "").strip() or str(reporting.get("discord_webhook", "")).strip()
+        self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
         self.hourly_summary = bool(reporting.get("hourly_summary", True))
 
         self.market_cfg: Dict[str, Dict[str, Any]] = {}
@@ -347,6 +349,7 @@ class PolyLPSMulti:
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
         self._dual_side_no_risk = str(dual.get("no_side_risk", "low")).lower()
+        self._dual_side_min_book_depth = Decimal(str(dual.get("min_book_depth_usdc", "10000")))
         self._dual_side_injected: set[str] = set()  # NO tokens auto-added
 
         # execution pacing: risk actions immediate, normal posting lightly paced
@@ -354,6 +357,7 @@ class PolyLPSMulti:
 
         self._cooldown_until = 0.0
         self._running = True
+        self._kill_switch_lock = asyncio.Lock()
         self._fills_seen = 0
         self._quotes_sent = 0
         self._balance_fail_streak = 0
@@ -368,6 +372,7 @@ class PolyLPSMulti:
         self._market_skip_until: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
         self._market_stale_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self._market_budget_skip_until: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+        self._paired_event_budget_reserve: Dict[str, Decimal] = {}
         self.stale_skip_threshold = int(execution.get("stale_skip_threshold", 2))
         self.stale_skip_cooldown_sec = float(execution.get("stale_skip_cooldown_sec", 20))
         self.budget_skip_cooldown_sec = float(execution.get("budget_skip_cooldown_sec", 45))
@@ -947,6 +952,46 @@ class PolyLPSMulti:
         self._market_budget_pct[token_id] = pct
         return pct
 
+    def _paired_budget_key(self, token_id: str, paired_token: Optional[str] = None) -> str:
+        other = str(paired_token or self._paired_token_cache.get(token_id) or "")
+        ids = sorted([str(token_id), other]) if other else [str(token_id)]
+        return "|".join(ids)
+
+    def _event_token_ids(self, token_id: str) -> list[str]:
+        token = str(token_id)
+        mcfg = self._get_mcfg(token)
+        paired = str(mcfg.get("paired_token_id", "") or self._paired_token_cache.get(token, "")).strip()
+        ids = [token]
+        if paired and paired.isdigit() and paired != token:
+            ids.append(paired)
+        return sorted(set(ids))
+
+    def _reserve_paired_event_budget(self, token_id: str, paired_token: str, reserve: Decimal) -> None:
+        key = self._paired_budget_key(token_id, paired_token)
+        self._paired_event_budget_reserve[key] = max(Decimal("0"), reserve)
+
+    def _paired_event_reserved_budget(self, token_id: str, paired_token: Optional[str] = None) -> Decimal:
+        key = self._paired_budget_key(token_id, paired_token)
+        return max(Decimal("0"), self._paired_event_budget_reserve.get(key, Decimal("0")))
+
+    def _calc_active_orders_reserved(self, exclude_tokens: Optional[set] = None) -> Decimal:
+        """Sum notional (price * remaining_size) of ALL active orders across all markets.
+
+        This gives the true global capital commitment so the planner can
+        compute: real_available = balance/allowance - active_reserved - safety_buffer.
+        """
+        total = Decimal("0")
+        exclude = exclude_tokens or set()
+        for tid, orders in self._market_live_orders.items():
+            if tid in exclude:
+                continue
+            for o in orders:
+                p = self._order_price(o)
+                s = self._order_size(o)
+                if p > 0 and s > 0:
+                    total += p * s
+        return total
+
     def _latency_capability(self, token_id: str) -> Dict[str, Any]:
         send_accept_ms = None
         halt_clear_ms = None
@@ -1327,15 +1372,9 @@ class PolyLPSMulti:
         if not self._session_enabled:
             return "day"
         try:
-            from datetime import timezone, timedelta
             nh_start_h, nh_start_m = map(int, self._session_night_start.split(":"))
             nh_end_h, nh_end_m = map(int, self._session_night_end.split(":"))
-
-            if "shanghai" in self._session_tz.lower() or "beijing" in self._session_tz.lower():
-                tz_offset = timezone(timedelta(hours=8))
-            else:
-                tz_offset = timezone(timedelta(hours=8))
-            now = datetime.now(tz_offset)
+            now = datetime.now(ZoneInfo(self._session_tz))
             current_minutes = now.hour * 60 + now.minute
 
             night_start = nh_start_h * 60 + nh_start_m
@@ -1957,6 +1996,168 @@ class PolyLPSMulti:
 
         return prices
 
+    # ── Dual-side: paired mode helpers for <10c markets ────────────────
+
+    def _is_low_price_paired_mode(self, token_id: str) -> tuple[bool, str]:
+        """Check whether token_id should enter paired (both-or-none) mode.
+
+        Returns (paired_mode: bool, paired_token_id: str).
+        Only activates when:
+          - dual_side is enabled globally
+          - the token is NOT itself an auto-injected NO token
+          - YES top price <= _dual_side_max_mid (0.10)
+        For auto-injected NO tokens the gate at the top of
+        update_and_quote_market already handles eligibility.
+        """
+        if not self._dual_side_enabled:
+            return False, ""
+        mcfg = self._get_mcfg(token_id)
+        if mcfg.get("_dual_side_auto"):
+            return False, ""  # NO side handled by the early gate
+        paired_token = mcfg.get("paired_token_id", "")
+        if not paired_token:
+            return False, ""
+        return True, paired_token
+
+    def _paired_side_ready(
+        self,
+        token_id: str,
+        paired_token: str,
+        yes_top_price: Decimal,
+    ) -> tuple[bool, str]:
+        """Validate that the paired side can also produce a valid plan.
+
+        Called when paired mode is active — either YES or NO is below
+        max_mid.  Returns (ready: bool, skip_reason: str).
+        """
+        yes_is_low = yes_top_price <= self._dual_side_max_mid
+        no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
+        if not yes_is_low and not no_is_low:
+            # Neither side is in low-price territory — paired mode not needed
+            return True, ""
+
+        pair_snap = self._market_snapshots.get(paired_token)
+        if pair_snap is None:
+            return False, "paired_side_unavailable"
+
+        cached = self._market_meta_cache.get(paired_token)
+        if cached is None:
+            return False, "paired_side_no_meta"
+        pair_meta = cached[0]  # (meta_dict, timestamp)
+
+        pair_live_spread_raw = (
+            pair_meta.get("maxIncentiveSpread")
+            or pair_meta.get("rewardsMaxSpread")
+        )
+        pair_live_spread = (
+            Decimal(str(pair_live_spread_raw))
+            if pair_live_spread_raw is not None
+            else None
+        )
+        pair_tob = TopOfBook(best_bid=pair_snap.best_bid, best_ask=pair_snap.best_ask)
+        pair_prices = self._build_price_legs(paired_token, pair_tob, live_spread=pair_live_spread)
+        if not pair_prices:
+            return False, "paired_side_no_plan"
+
+        pair_gate = self._feasibility_gate(
+            paired_token, pair_meta, pair_snap, top_price=pair_prices[0]
+        )
+        if not pair_gate.get("can_quote", False):
+            return False, "paired_side_gate_failed"
+
+        # ── Unified paired budget pre-check ──────────────────────────
+        # Compute real available capital: balance/allowance minus ALL active
+        # orders across every market, minus a safety buffer.  Both YES and NO
+        # notional must fit within this single envelope.
+        pair_top_price = pair_prices[0]
+        pair_reward_min = Decimal(str(pair_meta.get("rewardsMinSize") or 0))
+        pair_min_size = max(self.min_order_size, pair_reward_min, Decimal("0.001"))
+        pair_min_notional = pair_top_price * pair_min_size
+        this_min_notional = yes_top_price * pair_min_size
+
+        avail = self._last_balance
+        if avail is not None and avail > 0:
+            # Deduct active orders from OTHER markets (exclude this pair's tokens
+            # because we will replace them with the new plan).
+            exclude_set = {token_id, paired_token}
+            active_reserved = self._calc_active_orders_reserved(exclude_tokens=exclude_set)
+            safety_buffer = avail * Decimal("0.02")  # 2% safety cushion
+            real_avail = max(Decimal("0"), avail - active_reserved - safety_buffer)
+
+            pair_risk = str(self._get_mcfg(paired_token).get("risk", "mid")).lower()
+            pair_pct = self._market_quote_budget_pct(paired_token, pair_risk)
+            pair_size_cap = Decimal(str(pair_gate.get("size_cap", 1.0) or 0.0))
+            this_risk = str(self._get_mcfg(token_id).get("risk", "mid")).lower()
+            this_pct = self._market_quote_budget_pct(token_id, this_risk)
+
+            # Combined budget cap is the MINIMUM of pct-based allocation and real available
+            combined_budget_cap = min(
+                real_avail,
+                min(avail * max(this_pct, pair_pct), avail * Decimal("0.98")) * pair_size_cap,
+            )
+            combined_budget_cap = max(Decimal("0"), combined_budget_cap)
+            combined_min_required = pair_min_notional + this_min_notional
+
+            self._reserve_paired_event_budget(token_id, paired_token, combined_budget_cap)
+
+            slug = self._token_slug_cache.get(token_id, token_id[:16])
+            log(
+                f"[paired-budget-precheck] slug={slug} token={token_id[:16]} "
+                f"avail={avail} active_order_reserved={active_reserved} safety_buffer={safety_buffer} "
+                f"real_avail={real_avail} combined_budget_cap={combined_budget_cap} "
+                f"yes_min_notional={this_min_notional} no_min_notional={pair_min_notional} "
+                f"combined_min_required={combined_min_required}"
+            )
+
+            if combined_budget_cap < pair_min_notional:
+                return False, "paired_side_budget_insufficient"
+            if combined_budget_cap < combined_min_required:
+                return False, "paired_side_combined_budget_insufficient"
+        elif avail is not None and avail <= 0:
+            return False, "paired_side_budget_insufficient"
+
+        return True, ""
+
+    @staticmethod
+    def _total_bid_notional(snapshot) -> Decimal:
+        """Sum price*size across ALL bid levels of a snapshot."""
+        total = Decimal("0")
+        if snapshot is None:
+            return total
+        for bp, bs in snapshot.bids:
+            if bs > 0:
+                total += bp * bs
+        return total
+
+    def _cheap_side_depth_ok(
+        self,
+        yes_top_price: Decimal,
+        yes_token_id: str,
+        no_token_id: str,
+    ) -> tuple[bool, Decimal, str]:
+        """Check that the cheap (<10c) side has sufficient book depth.
+
+        Returns (ok, depth_usdc, reason).
+        If neither side is cheap, returns (True, 0, "").
+        """
+        yes_is_low = yes_top_price <= self._dual_side_max_mid
+        no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
+
+        if not yes_is_low and not no_is_low:
+            return True, Decimal("0"), ""
+
+        # Determine which token is the cheap side
+        cheap_tid = yes_token_id if yes_is_low else no_token_id
+        cheap_snap = self._market_snapshots.get(cheap_tid)
+        if cheap_snap is None:
+            return False, Decimal("0"), "cheap_side_no_snapshot"
+
+        depth = self._total_bid_notional(cheap_snap)
+        if depth < self._dual_side_min_book_depth:
+            return False, depth, "cheap_side_depth_insufficient"
+
+        return True, depth, ""
+
     # ── Dual-side: auto-inject paired NO token for low-price markets ──
 
     def _maybe_inject_dual_side_tokens(self) -> None:
@@ -2105,6 +2306,20 @@ class PolyLPSMulti:
         self._last_back_plan_sig[token_id] = desired_sig
         return live_orders
 
+    def _spawn_bg(self, coro, name: str = "bg"):
+        task = asyncio.create_task(coro, name=name)
+
+        def _done(t: asyncio.Task):
+            try:
+                exc = t.exception()
+                if exc:
+                    log(f"[task-error] name={t.get_name()} err={exc.__class__.__name__}: {exc}")
+            except asyncio.CancelledError:
+                pass
+
+        task.add_done_callback(_done)
+        return task
+
     async def _maybe_run_top_leg_defense(
         self,
         token_id: str,
@@ -2242,6 +2457,9 @@ class PolyLPSMulti:
         except asyncio.CancelledError:
             log(f"[preempt] token={token_id} path=top_leg_defense reason=task_cancelled")
             raise
+        except Exception as e:
+            log(f"[top-leg-defense] token={token_id} trigger={trigger} err={e.__class__.__name__}: {e}")
+            return
         finally:
             if self._top_leg_defense_tasks.get(token_id) is current_task:
                 self._top_leg_defense_tasks.pop(token_id, None)
@@ -2368,15 +2586,17 @@ class PolyLPSMulti:
             return True, "api_error_skip"
 
     async def _deactivate_market(self, token_id: str, reason: str) -> None:
+        event_token_ids = self._event_token_ids(token_id)
         self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
-        self._market_skip_until[token_id] = time.time() + self.event_ban_ttl_sec
+        for tid in event_token_ids:
+            self._market_skip_until[tid] = time.time() + self.event_ban_ttl_sec
 
         try:
             orders = await asyncio.to_thread(self.client.get_orders)
             live = [
                 o for o in orders
                 if str(o.get("status", "")).lower() in ("live", "open", "active")
-                and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
+                and str(o.get("asset_id") or o.get("token_id") or "") in event_token_ids
             ]
             ids = [o.get("id") or o.get("orderID") for o in live if (o.get("id") or o.get("orderID"))]
             if ids:
@@ -2387,12 +2607,12 @@ class PolyLPSMulti:
 
         # persist disabled in config markets
         try:
-            cfg_path = Path("config.json")
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            for m in cfg.get("markets", []):
-                if str(m.get("token_id", "")) == str(token_id):
-                    m["enabled"] = False
-            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
+            for section in ("markets", "night_markets"):
+                for m in cfg.get(section, []):
+                    if str(m.get("token_id", "")) in event_token_ids:
+                        m["enabled"] = False
+            self._config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             log(f"[health] config disable fail token={token_id} err={e}")
 
@@ -2423,7 +2643,7 @@ class PolyLPSMulti:
             await asyncio.sleep(max(60, self.health_check_interval_sec))
 
     def _event_key(self, token_id: str) -> str:
-        return str(token_id)
+        return "|".join(self._event_token_ids(token_id))
 
     def _clean_signal_cache(self) -> None:
         now = time.time()
@@ -2473,6 +2693,7 @@ class PolyLPSMulti:
         matched_price: Optional[Decimal] = None,
     ) -> None:
         log(f"[risk] FILL_HALT token={token_id} reason={reason} size={matched_size} price={matched_price}")
+        await self.trigger_global_kill_switch(f"fill_detected token={token_id} reason={reason}")
         await self._request_event_halt(
             token_id,
             EVENT_HALTED_ON_FILL,
@@ -2860,7 +3081,7 @@ class PolyLPSMulti:
                                     source="market_ws_book",
                                     ts_ms=int(str(msg.get("timestamp") or 0) or 0),
                                 )
-                                asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:book", snap))
+                                self._spawn_bg(self._maybe_run_top_leg_defense(token_id, "market_ws:book", snap), name=f"top_leg_defense:{token_id}:book")
                             elif event_type == "best_bid_ask":
                                 token_id = str(msg.get("asset_id") or "")
                                 if token_id not in self.market_cfg:
@@ -2877,7 +3098,7 @@ class PolyLPSMulti:
                                     source="market_ws_bba",
                                     ts_ms=int(str(msg.get("timestamp") or 0) or 0),
                                 )
-                                asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:best_bid_ask", snap))
+                                self._spawn_bg(self._maybe_run_top_leg_defense(token_id, "market_ws:best_bid_ask", snap), name=f"top_leg_defense:{token_id}:bba")
                             elif event_type == "price_change":
                                 for change in msg.get("price_changes") or []:
                                     if not isinstance(change, dict):
@@ -2899,7 +3120,7 @@ class PolyLPSMulti:
                                         source="market_ws_price_change",
                                         ts_ms=int(str(msg.get("timestamp") or 0) or 0),
                                     )
-                                    asyncio.create_task(self._maybe_run_top_leg_defense(token_id, "market_ws:price_change", snap))
+                                    self._spawn_bg(self._maybe_run_top_leg_defense(token_id, "market_ws:price_change", snap), name=f"top_leg_defense:{token_id}:price_change")
             except Exception as e:
                 em = _format_exc(e)
                 log(f"[market-ws] err={em}")
@@ -2989,8 +3210,10 @@ class PolyLPSMulti:
             if self._event_blocks_quote(token_id):
                 return
 
-            # ── Dual-side gate: auto-injected NO tokens only quote when the
-            #    paired YES token's actual order prices fall below max_mid ─
+            # ── Dual-side gate: auto-injected NO tokens only quote when
+            #    either side of the market is below max_mid (10c).
+            #    Case A: YES price <= max_mid  → YES is cheap, NO is auto-injected
+            #    Case B: YES price >= 1 - max_mid → NO is cheap (~1-YES <= max_mid)
             mcfg = self._get_mcfg(token_id)
             if mcfg.get("_dual_side_auto"):
                 yes_tid = mcfg.get("paired_token_id", "")
@@ -3001,16 +3224,34 @@ class PolyLPSMulti:
                     yes_live_spread_raw = yes_meta.get("maxIncentiveSpread") or yes_meta.get("rewardsMaxSpread") if yes_meta else None
                     yes_live_spread = Decimal(str(yes_live_spread_raw)) if yes_live_spread_raw is not None else None
                     yes_prices = self._build_price_legs(yes_tid, yes_tob, live_spread=yes_live_spread)
-                    # The top (highest) order price on YES side — if it's below
-                    # max_mid, the market is effectively sub-threshold.
                     yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
-                    if yes_top_price > self._dual_side_max_mid:
-                        return  # YES orders are above threshold; skip paired quoting for NO side
+                    # Either side must be below threshold for dual-side to activate:
+                    #   YES cheap: yes_top_price <= max_mid
+                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO ≈ 1-YES <= max_mid)
+                    yes_is_low = yes_top_price <= self._dual_side_max_mid
+                    no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
+                    if not yes_is_low and not no_is_low:
+                        return  # Neither side is below threshold; skip paired quoting
+                    # Depth gate: cheap side must have >= min_book_depth_usdc
+                    depth_ok, depth_val, depth_reason = self._cheap_side_depth_ok(
+                        yes_top_price, yes_tid, token_id,
+                    )
+                    if not depth_ok:
+                        slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
+                        if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
+                            log(
+                                f"[dual-side-skip] slug={slug} token={token_id[:16]} "
+                                f"reason={depth_reason} depth={depth_val} "
+                                f"min={self._dual_side_min_book_depth}"
+                            )
+                        return
                     slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
                     if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
+                        side_label = "YES_low" if yes_is_low else "NO_low"
                         log(
                             f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
-                            f"max_mid={self._dual_side_max_mid} → paired YES/NO mode active"
+                            f"max_mid={self._dual_side_max_mid} side={side_label} "
+                            f"depth={depth_val} → paired mode active"
                         )
                 else:
                     return  # No snapshot for YES side yet; wait
@@ -3108,23 +3349,49 @@ class PolyLPSMulti:
             live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
             live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
             prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
-            if not dual_side_active and paired_token and self._dual_side_enabled and not mcfg.get("_dual_side_auto"):
+
+            # ── Paired (both-or-none) gate for <10c markets ──────────────
+            # When either side is below max_mid, enforce:
+            #   1) Cheap-side book depth >= min_book_depth_usdc, else skip BOTH
+            #   2) Both-or-none: paired side must also have a valid plan
+            paired_mode, paired_token = self._is_low_price_paired_mode(token_id)
+            if paired_mode:
                 current_top_price = prices[0] if prices else best_bid
-                if current_top_price <= self._dual_side_max_mid:
-                    dual_side_active = True
-            if dual_side_active and self._dual_side_both_or_none and paired_token:
-                pair_snap = self._market_snapshots.get(paired_token)
-                if pair_snap is None:
-                    log(f"[quote-skip] token={token_id} reason=paired_side_unavailable paired_token={paired_token[:16]} both_or_none=1")
-                    return
-                pair_meta = await self._get_market_meta(paired_token)
-                pair_live_spread_raw = pair_meta.get("maxIncentiveSpread") or pair_meta.get("rewardsMaxSpread") if pair_meta else None
-                pair_live_spread = Decimal(str(pair_live_spread_raw)) if pair_live_spread_raw is not None else None
-                pair_tob = TopOfBook(best_bid=pair_snap.best_bid, best_ask=pair_snap.best_ask)
-                pair_prices = self._build_price_legs(paired_token, pair_tob, live_spread=pair_live_spread)
-                if not pair_prices:
-                    log(f"[quote-skip] token={token_id} reason=paired_side_no_plan paired_token={paired_token[:16]} both_or_none=1")
-                    return
+                yes_is_low = current_top_price <= self._dual_side_max_mid
+                no_is_low = current_top_price >= (Decimal("1") - self._dual_side_max_mid)
+                if yes_is_low or no_is_low:
+                    # Depth gate: cheap side must have enough liquidity
+                    depth_ok, depth_val, depth_reason = self._cheap_side_depth_ok(
+                        current_top_price, token_id, paired_token,
+                    )
+                    if not depth_ok:
+                        slug = self._token_slug_cache.get(token_id, token_id[:16])
+                        log(
+                            f"[dual-side-skip] token={slug} reason={depth_reason} "
+                            f"depth={depth_val} min={self._dual_side_min_book_depth} "
+                            f"→ skipping entire event"
+                        )
+                        return
+                    # Both-or-none: paired side must be ready
+                    ready, skip_reason = self._paired_side_ready(
+                        token_id, paired_token, current_top_price,
+                    )
+                    if not ready:
+                        slug = self._token_slug_cache.get(token_id, token_id[:16])
+                        log(
+                            f"[dual-side-skip] token={slug} reason={skip_reason} "
+                            f"paired_token={paired_token[:16]} both_or_none=1"
+                        )
+                        return
+                    slug = self._token_slug_cache.get(token_id, token_id[:16])
+                    if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
+                        side_label = "YES_low" if yes_is_low else "NO_low"
+                        log(
+                            f"[dual-side-ok] token={slug} paired_token={paired_token[:16]} "
+                            f"yes_top={current_top_price} side={side_label} depth={depth_val}"
+                        )
+            # ── End paired gate ──────────────────────────────────────────
+
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
             if not gate.get("can_quote", False):
@@ -3165,8 +3432,10 @@ class PolyLPSMulti:
                 self._last_top_plan_sig[token_id] = ""
                 self._last_back_plan_sig[token_id] = ""
                 return
+            # ══════════════════════════════════════════════════════════
+            # UNIFIED BUDGET PLANNER — global capital-aware
+            # ══════════════════════════════════════════════════════════
             min_size_needed = max(required_min_size, Decimal("0.001"))
-            budget_divisor = min(max(pct * size_cap, Decimal("0.0001")), Decimal("0.98"))
             avail = await self._get_collateral_available()
             if avail is not None:
                 self._last_balance = avail
@@ -3176,20 +3445,98 @@ class PolyLPSMulti:
                     f"event_state={self._event_state_name(token_id)} pct={pct} size_cap={size_cap}"
                 )
                 return
-            event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
 
+            # ── Step 1: compute real available capital ────────────────
+            paired_token_for_budget = (
+                self._paired_token_cache.get(token_id)
+                or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
+            )
+            is_paired = bool(paired_token_for_budget)
+            # Exclude this token (and paired token) from active-order reservation
+            # because we are about to replace those orders with the new plan.
+            exclude_set = {token_id}
+            if paired_token_for_budget:
+                exclude_set.add(paired_token_for_budget)
+            active_order_reserved = self._calc_active_orders_reserved(exclude_tokens=exclude_set)
+            safety_buffer = avail * Decimal("0.02")
+            real_avail = max(Decimal("0"), avail - active_order_reserved - safety_buffer)
+
+            # ── Step 2: compute this side's budget ────────────────────
+            raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
+            event_budget = min(raw_event_budget, real_avail)
+
+            # ── Step 3: if paired, enforce combined budget constraint ─
+            paired_reserved_budget = Decimal("0")
+            yes_required = Decimal("0")
+            no_required = Decimal("0")
+            combined_required = Decimal("0")
+            fallback_to_single_side = False
+            skip_reason = ""
+
+            if is_paired:
+                paired_reserved_budget = self._paired_event_reserved_budget(
+                    token_id, paired_token_for_budget
+                )
+                # Estimate the OTHER side's minimum notional requirement
+                pair_snap = self._market_snapshots.get(paired_token_for_budget)
+                pair_top_price = Decimal("0")
+                if pair_snap is not None:
+                    pair_top_price = pair_snap.best_bid
+                pair_reward_min = Decimal("0")
+                pair_meta_cached = self._market_meta_cache.get(paired_token_for_budget)
+                if pair_meta_cached:
+                    pair_reward_min = Decimal(str(
+                        pair_meta_cached[0].get("rewardsMinSize", 0) or 0
+                    ))
+                pair_min_size = max(self.min_order_size, pair_reward_min, Decimal("0.001"))
+
+                # YES / NO required = top_price * min_size for each side
+                this_top_price = viable_legs[0][0] if viable_legs else Decimal("0")
+                yes_required = this_top_price * min_size_needed
+                no_required = pair_top_price * pair_min_size if pair_top_price > 0 else Decimal("0")
+                combined_required = yes_required + no_required
+
+                # The paired budget cap is the envelope for BOTH sides.
+                # Each side gets at most half, but capped to real_avail.
+                if paired_reserved_budget > 0:
+                    half_budget = paired_reserved_budget / Decimal("2")
+                    event_budget = min(event_budget, half_budget)
+                else:
+                    # No pre-reserve yet — just split real_avail
+                    event_budget = min(event_budget, real_avail / Decimal("2"))
+
+                # Check: can combined fit?
+                if combined_required > real_avail and combined_required > 0:
+                    # Degradation: try single-side only
+                    if yes_required <= real_avail:
+                        fallback_to_single_side = True
+                        event_budget = min(raw_event_budget, real_avail)
+                        skip_reason = "paired_over_budget_fallback_single_side"
+                    else:
+                        slug = self._token_slug_cache.get(token_id, token_id[:16])
+                        log(
+                            f"[budget-plan] slug={slug} token={token_id[:16]} "
+                            f"SKIP avail={avail} active_order_reserved={active_order_reserved} "
+                            f"real_avail={real_avail} event_budget={event_budget} "
+                            f"yes_required={yes_required} no_required={no_required} "
+                            f"combined_required={combined_required} "
+                            f"skip_reason=both_sides_over_budget"
+                        )
+                        self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
+                        return
+
+            event_budget = max(Decimal("0"), event_budget)
+
+            # ── Step 4: plan generation with degradation cascade ──────
+            # Try: full legs → fewer back legs → shrink sizes → single fallback → skip
             plan = []
             requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)
             planned_legs = 0
             degrade_reason = ""
-            single_leg_required_avail = Decimal("0")
-            single_leg_required_notional = Decimal("0")
             top_price = viable_legs[0][0] if viable_legs else Decimal("0")
-            if top_price > 0:
-                single_leg_required_notional = top_price * min_size_needed
-            if top_price > 0 and budget_divisor > 0:
-                single_leg_required_avail = (top_price * min_size_needed) / budget_divisor
+            single_leg_required_notional = top_price * min_size_needed if top_price > 0 else Decimal("0")
 
+            # 4a: try fitting as many legs as possible within event_budget
             for keep_count in range(len(viable_legs), 0, -1):
                 subset = viable_legs[:keep_count]
                 subset_weight = sum(w for _, w in subset)
@@ -3207,37 +3554,51 @@ class PolyLPSMulti:
                         break
                     candidate.append((p, size, notional))
                 if candidate_ok and candidate:
+                    # Verify total plan notional doesn't exceed real_avail
+                    plan_total = sum(n for _, _, n in candidate)
+                    if is_paired and not fallback_to_single_side:
+                        # Must leave room for the other side's minimum
+                        if plan_total + no_required > real_avail:
+                            continue  # try fewer legs
                     plan = candidate
                     planned_legs = keep_count
                     if keep_count < requested_legs:
-                        degrade_reason = f"budget_limited_degrade requested_legs={requested_legs} planned_legs={planned_legs}"
+                        degrade_reason = f"budget_limited_degrade requested={requested_legs} planned={planned_legs}"
                     break
 
-            if not plan and top_price > 0 and avail >= single_leg_required_notional:
+            # 4b: fallback — single top leg at minimum size
+            if not plan and top_price > 0 and event_budget >= single_leg_required_notional:
                 fallback_size = self._floor_to_tick(min_size_needed, Decimal("0.001"))
                 fallback_notional = top_price * fallback_size
-                if fallback_size >= required_min_size and fallback_notional > 0 and fallback_notional <= avail:
+                if fallback_size >= required_min_size and fallback_notional > 0 and fallback_notional <= real_avail:
                     plan = [(top_price, fallback_size, fallback_notional)]
                     planned_legs = 1
+                    degrade_reason = "single_leg_fallback"
 
-            if event_budget <= 0 and not plan:
-                log(
-                    f"[quote-skip] token={token_id} reason=no_single_leg_budget "
-                    f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
-                    f"single_leg_required_avail={single_leg_required_avail} single_leg_required_notional={single_leg_required_notional} "
-                    f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
-                    f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
-                )
-                self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
-                return
+            # ── Step 5: comprehensive budget log ──────────────────────
+            final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
+            slug = self._token_slug_cache.get(token_id, token_id[:16])
+            log(
+                f"[budget-plan] slug={slug} token={token_id[:16]} "
+                f"avail={avail} active_order_reserved={active_order_reserved} "
+                f"real_avail={real_avail} event_budget={event_budget} "
+                f"yes_required={yes_required} no_required={no_required} "
+                f"combined_required={combined_required} "
+                f"final_planned_notional={final_planned_notional} planned_legs={planned_legs} "
+                f"{'fallback_to_single_side=' + str(fallback_to_single_side) + ' ' if is_paired else ''}"
+                f"{'skip_reason=' + skip_reason + ' ' if skip_reason else ''}"
+                f"{'degrade=' + degrade_reason if degrade_reason else ''}"
+            )
 
             if not plan:
                 log(
-                    f"[quote-skip] token={token_id} reason=no_single_leg_budget "
-                    f"event_state={self._event_state_name(token_id)} avail={avail} event_budget={event_budget} "
-                    f"single_leg_required_avail={single_leg_required_avail} single_leg_required_notional={single_leg_required_notional} "
-                    f"required_min_size={required_min_size} top_price={top_price} pct={pct} size_cap={size_cap} "
-                    f"budget_divisor={budget_divisor} requested_legs={requested_legs}"
+                    f"[quote-skip] token={token_id} reason=no_viable_plan "
+                    f"event_state={self._event_state_name(token_id)} avail={avail} "
+                    f"real_avail={real_avail} event_budget={event_budget} "
+                    f"single_leg_required_notional={single_leg_required_notional} "
+                    f"required_min_size={required_min_size} top_price={top_price} "
+                    f"pct={pct} size_cap={size_cap} requested_legs={requested_legs} "
+                    f"is_paired={is_paired}"
                 )
                 self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
                 return
@@ -3412,27 +3773,33 @@ class PolyLPSMulti:
         return True
 
     async def trigger_global_kill_switch(self, reason: str) -> None:
-        deadline = time.time() + self.cancel_retry_window_sec
-        canceled_ok = False
-        while time.time() < deadline:
-            try:
-                await asyncio.to_thread(self.client.cancel_all)
-                orders = await asyncio.to_thread(self.client.get_orders)
-                if self._count_live_orders(orders if isinstance(orders, list) else []) == 0:
-                    canceled_ok = True
-                    break
-            except Exception as e:
-                log(f"[kill-switch] cancel_all failed: {e}")
-            await asyncio.sleep(max(1, self.cancel_retry_step_sec))
+        async with self._kill_switch_lock:
+            now = time.time()
+            if now < self._cooldown_until and self._require_recovery_gate:
+                log(f"[kill-switch] already active reason={reason}")
+                return
 
-        if not canceled_ok:
-            log("[kill-switch] cancel_all retry window ended; live orders may remain")
+            deadline = time.time() + self.cancel_retry_window_sec
+            canceled_ok = False
+            while time.time() < deadline:
+                try:
+                    await asyncio.to_thread(self.client.cancel_all)
+                    orders = await asyncio.to_thread(self.client.get_orders)
+                    if self._count_live_orders(orders if isinstance(orders, list) else []) == 0:
+                        canceled_ok = True
+                        break
+                except Exception as e:
+                    log(f"[kill-switch] cancel_all failed: {e}")
+                await asyncio.sleep(max(1, self.cancel_retry_step_sec))
 
-        self._cooldown_until = time.time() + self.cooldown_seconds
-        self._require_recovery_gate = True
-        msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
-        log(msg)
-        self.send_discord(msg)
+            if not canceled_ok:
+                log("[kill-switch] cancel_all retry window ended; live orders may remain")
+
+            self._cooldown_until = time.time() + self.cooldown_seconds
+            self._require_recovery_gate = True
+            msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
+            log(msg)
+            self.send_discord(msg)
 
     async def _ws_user_watch(self) -> None:
         if not self.kill_switch_on_fill:
@@ -3553,13 +3920,12 @@ class PolyLPSMulti:
                 orders = await asyncio.to_thread(self.client.get_orders)
                 for o in orders:
                     st = str(o.get("status", "")).lower()
-                    if st not in ("live", "open", "active"):
-                        continue
                     token = str(o.get("asset_id") or o.get("token_id") or "")
                     if token not in self.market_cfg:
                         continue
-
                     oid = str(o.get("id") or o.get("orderID") or "")
+
+                    # Detect fully matched/filled orders (any status)
                     matched = max(
                         Decimal(str(o.get("size_matched", 0) or 0)),
                         Decimal(str(o.get("matched", 0) or 0)),
@@ -3569,8 +3935,20 @@ class PolyLPSMulti:
                         if self._allow_signal(token, f"poll_matched:{oid}:{matched}"):
                             self._fills_seen += 1
                             o_price = Decimal(str(o.get("price", 0) or 0))
-                            await self._trigger_event_offline(token, f"POLL_MATCHED:{matched}", matched, o_price)
+                            await self._trigger_event_offline(token, f"POLL_MATCHED:{matched}:status={st}", matched, o_price)
                             continue
+
+                    # Also trigger on status transition to matched/filled
+                    if st in ("matched", "filled", "closed"):
+                        if self._allow_signal(token, f"poll_status_filled:{oid}"):
+                            self._fills_seen += 1
+                            o_price = Decimal(str(o.get("price", 0) or 0))
+                            o_size = Decimal(str(o.get("original_size", o.get("size", 0)) or 0))
+                            await self._trigger_event_offline(token, f"POLL_STATUS_{st.upper()}:{oid}", o_size, o_price)
+                            continue
+
+                    if st not in ("live", "open", "active"):
+                        continue
 
                     remain = Decimal(str(o.get("remaining_size", o.get("size", 0)) or 0))
                     last = self._last_remaining_by_order.get(oid)
@@ -3660,7 +4038,11 @@ class PolyLPSMulti:
 
                 if not seeded:
                     seeded = True
-                    log("[trade-poll] baseline seeded")
+                    log(f"[trade-poll] baseline seeded trades_count={len(items)} seen_ids={len(self._seen_trade_ids)}")
+                elif items:
+                    new_count = sum(1 for t in items if isinstance(t, dict) and str(t.get("id") or t.get("trade_id") or t.get("transactionHash") or "") not in self._seen_trade_ids)
+                    if new_count > 0:
+                        log(f"[trade-poll] new_trades={new_count} total={len(items)}")
 
                 # keep memory bounded — use insertion-ordered list for correct FIFO truncation
                 if len(self._seen_trade_ids_order) > 5000:
@@ -3682,8 +4064,45 @@ class PolyLPSMulti:
                     self._trade_poll_req_exc_streak = 0
                 await asyncio.sleep(3)
 
+    async def _balance_drop_watch(self) -> None:
+        """Fallback fill detector: trigger alert when balance drops significantly between polls."""
+        BALANCE_DROP_PCT = Decimal("0.10")  # 10% drop triggers alert
+        BALANCE_DROP_ABS = Decimal("20")    # or $20 absolute drop
+        prev_balance: Optional[Decimal] = None
+        while self._running:
+            try:
+                avail = await self._get_collateral_available(force_refresh=True)
+                if avail is not None and prev_balance is not None and prev_balance > 0:
+                    drop = prev_balance - avail
+                    drop_pct = drop / prev_balance if prev_balance > 0 else Decimal("0")
+                    if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
+                        log(
+                            f"[balance-drop] ALERT prev={prev_balance} now={avail} "
+                            f"drop={drop} pct={drop_pct:.2%} — possible undetected fill"
+                        )
+                        # Try to identify which market lost balance by checking
+                        # if any previously tracked orders disappeared
+                        if self._fills_seen == 0 or drop > BALANCE_DROP_ABS:
+                            # Trigger global defensive: cancel all and investigate
+                            for token_id in list(self.market_cfg.keys()):
+                                if self._allow_signal(token_id, f"balance_drop:{prev_balance}->{avail}"):
+                                    self._fills_seen += 1
+                                    await self._trigger_event_offline(
+                                        token_id,
+                                        f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}",
+                                        drop,
+                                        Decimal("0"),
+                                    )
+                                    break  # one trigger is enough to halt
+                if avail is not None:
+                    prev_balance = avail
+                await asyncio.sleep(10)
+            except Exception as e:
+                log(f"[balance-drop] err={e}")
+                await asyncio.sleep(10)
+
     async def fill_watch_loop(self) -> None:
-        await asyncio.gather(self._ws_user_watch(), self._poll_fill_watch(), self._trade_poll_watch())
+        await asyncio.gather(self._ws_user_watch(), self._poll_fill_watch(), self._trade_poll_watch(), self._balance_drop_watch())
 
     async def summary_loop(self) -> None:
         while self._running:
