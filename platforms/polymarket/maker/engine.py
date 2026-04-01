@@ -17,8 +17,8 @@ from py_clob_client.client import ClobClient
 from scanner import normalize_market
 
 
-HTTP_PROXIES = None       # read operations: book queries, gamma API, meta 闁?routed through proxy pool
-HTTP_PROXIES_WRITE = None  # write operations: cancel, place order 闁?always direct (None)
+HTTP_PROXIES = None       # read operations: book queries, gamma API, meta 闂?routed through proxy pool
+HTTP_PROXIES_WRITE = None  # write operations: cancel, place order 闂?always direct (None)
 WS_PROXY = None
 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
@@ -112,10 +112,10 @@ def _ws_proxy_diag() -> str:
 def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
     """Select a proxy from the pool.
 
-    for_ws=True  闁?WS connections (long-lived)
-    for_ws=False 闁?HTTP read operations (book queries, gamma API)
+    for_ws=True  闂?WS connections (long-lived)
+    for_ws=False 闂?HTTP read operations (book queries, gamma API)
 
-    Write operations (cancel, place) always use None (direct) 闁?callers must NOT
+    Write operations (cancel, place) always use None (direct) 闂?callers must NOT
     pass HTTP_PROXIES for these; use HTTP_PROXIES_WRITE which is always None.
 
     Proxy rotation uses hash(shard_key) for stable per-token assignment.
@@ -146,7 +146,7 @@ def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
             w = 1
         weighted.extend([it] * max(1, w))
 
-    # Stable per-token hash assignment 闁?different markets use different proxies
+    # Stable per-token hash assignment 闂?different markets use different proxies
     if shard_key:
         idx = abs(hash(shard_key)) % len(weighted)
     else:
@@ -157,16 +157,16 @@ def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
 def _init_proxy_settings(cfg: dict):
     """Initialise global proxy references.
 
-    HTTP_PROXIES       闁?read operations (book queries, gamma API calls)
-    HTTP_PROXIES_WRITE 闁?write operations (cancel, place order) 闁?always None/direct
-    WS_PROXY           闁?WebSocket connections
+    HTTP_PROXIES       闂?read operations (book queries, gamma API calls)
+    HTTP_PROXIES_WRITE 闂?write operations (cancel, place order) 闂?always None/direct
+    WS_PROXY           闂?WebSocket connections
     """
     global HTTP_PROXIES, HTTP_PROXIES_WRITE, WS_PROXY
     read_proxy = _choose_proxy(cfg, for_ws=False)
     ws_proxy = _choose_proxy(cfg, for_ws=True)
 
     WS_PROXY = ws_proxy
-    HTTP_PROXIES_WRITE = None  # writes always go direct 闁?never proxy
+    HTTP_PROXIES_WRITE = None  # writes always go direct 闂?never proxy
 
     if read_proxy:
         HTTP_PROXIES = {"http": read_proxy, "https": read_proxy}
@@ -352,10 +352,10 @@ class PolyLPSMulti:
         self._repeat_defense_ban_count = int(strategy.get("repeat_defense_ban_count", 3))
         self._tick_resolved: set[str] = set()
 
-        # 闁冲厜鍋撻柍鍏夊亾 Dual-side (low-price) quoting config 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side (low-price) quoting config 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
         # When enabled, the engine auto-registers the paired (NO) token for
         # markets where YES mid <= max_mid.  Both tokens are then quoted as
-        # independent BUY-side markets 闁?no SELL orders needed.
+        # independent BUY-side markets 闂?no SELL orders needed.
         dual = strategy.get("dual_side", {})
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
@@ -375,7 +375,7 @@ class PolyLPSMulti:
         self._balance_cache_ttl_sec = float(execution.get("balance_cache_ttl_sec", 3.0))
         self._balance_cache: tuple[Optional[Decimal], float] = (None, 0.0)
         self.max_balance_fail_streak = int(risk.get("max_balance_fail_streak", 8))
-        # {token_id: (anchor_value, timestamp)} 闁?TTL-based
+        # {token_id: (anchor_value, timestamp)} 闂?TTL-based
         self._anchor_cache: Dict[str, tuple] = {}
 
         # per-market failure isolation (do not nuke all events on single-market balance issues)
@@ -396,7 +396,7 @@ class PolyLPSMulti:
         self._signer_gap_lock = asyncio.Lock()
         self._last_signer_post_ts = 0.0
 
-        # 闁冲厜鍋撻柍鍏夊亾 Global + per-token order throttle 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Global + per-token order throttle 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕?
         self._global_order_lock = asyncio.Lock()
         self._global_last_order_ts = 0.0
         self._global_order_min_sec = float(execution.get("global_order_min_sec", 10))
@@ -438,7 +438,7 @@ class PolyLPSMulti:
             "democratic-presidential-nominee-2028",
         ]
         self._token_slug_cache: Dict[str, str] = {}
-        # {token_id: (meta_dict, timestamp)} 闁?TTL prevents stale reward/spread data
+        # {token_id: (meta_dict, timestamp)} 闂?TTL prevents stale reward/spread data
         self._market_meta_cache: Dict[str, tuple] = {}
         self._meta_cache_ttl_sec: int = int(execution.get("meta_cache_ttl_sec", 300))
         # {token_id: anchor_ttl_sec}
@@ -457,7 +457,7 @@ class PolyLPSMulti:
         self._last_remaining_by_order: Dict[str, Decimal] = {}
         self._last_plan_sig: Dict[str, str] = {}
         self._seen_trade_ids: set[str] = set()
-        # ordered insertion list 闁?used for correct FIFO truncation (set is unordered)
+        # ordered insertion list 闂?used for correct FIFO truncation (set is unordered)
         self._seen_trade_ids_order: list[str] = []
         # pending unwind SELL orders: [{token_id, fill_price, fill_size, order_id, placed_at}]
         self._pending_unwinds: list[dict] = []
@@ -506,13 +506,13 @@ class PolyLPSMulti:
         self._proxy_failover_ws_handshake_fail_count: int = 0
         self._proxy_failover_halt_until: float = 0.0
 
-        # --- P1: fill闁告艾閰ｅ鐑樼瀹勬澘绀岄柛?---
+        # --- P1: fill闂備礁鎲￠懝楣冩煀閿濆拋鐎堕柣鎴烆焽椤╅鈧懓瀚妯肩矆瀹€鍕厱?---
         exit_cfg = self.cfg.get("exit_strategy", {})
         self._exit_delay_sec: float = float(exit_cfg.get("exit_delay_sec", 5))
         self._exit_timeout_sec: float = float(exit_cfg.get("exit_timeout_sec", 300))
         self._exit_retry_count: int = int(exit_cfg.get("retry_count", 2))
 
-        # --- P2: 闁哄啨鍎冲ú?濠㈣埖绮庡ú?session mode (redesigned: day=scan markets, night=night_markets) ---
+        # --- P2: 闂備礁鎼崯銊╁磿閸愯?濠电姰鍨奸崺鏍垝鎼粹埗?session mode (redesigned: day=scan markets, night=night_markets) ---
         session_cfg = self.cfg.get("session", {})
         self._session_enabled: bool = bool(session_cfg.get("enabled", False))
         self._session_night_start: str = str(session_cfg.get("night_start", "00:00"))
@@ -931,7 +931,7 @@ class PolyLPSMulti:
                 log(f"[safety] snapshot_divergence slug={slug} token={token_id[:16]} "
                     f"snap_bid={snapshot.best_bid} depth_bid={depth_snapshot.best_bid} "
                     f"diff={divergence}")
-                return None  # force skip 闁?data mismatch
+                return None  # force skip 闂?data mismatch
         return snapshot
 
     def _quote_gate(self, token_id: str, snapshot: Optional[MarketSnapshot]) -> tuple[bool, str]:
@@ -1108,7 +1108,7 @@ class PolyLPSMulti:
         return decision
 
     # ---------------------------------------------------------------
-    # P0: Watch / Quarantine 闁?rapid-change market detection
+    # P0: Watch / Quarantine 闂?rapid-change market detection
     # ---------------------------------------------------------------
 
     def _vol_tracker(self, token_id: str) -> Dict[str, Any]:
@@ -1197,12 +1197,9 @@ class PolyLPSMulti:
             if ids:
                 await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
-            self.send_discord(f"事件已禁挂
-Token: {token_id}
-原因: {reason}
-观察次数: {tracker.get('watch_count', 0)}
-重复防御次数: {tracker.get('defense_repeat_count', 0)}
-禁挂时长: {self.event_ban_ttl_sec}s")
+            self.send_discord(
+                f"Event banned\nToken: {token_id}\nReason: {reason}\nWatch count: {tracker.get('watch_count', 0)}\nDefense repeats: {tracker.get('defense_repeat_count', 0)}\nTTL: {self.event_ban_ttl_sec}s"
+            )
             return
         tracker["watch_enter_ts"] = time.time()
         self._set_event_state(token_id, EVENT_WATCH, reason)
@@ -1241,7 +1238,7 @@ Token: {token_id}
         return False
 
     # ---------------------------------------------------------------
-    # P1: Fill闁告艾閰ｅ鐑樼瀹勬澘绀岄柛?闁?exit strategy
+    # P1: Fill闂備礁鎲￠懝楣冩煀閿濆拋鐎堕柣鎴烆焽椤╅鈧懓瀚妯肩矆瀹€鍕厱?闂?exit strategy
     # ---------------------------------------------------------------
 
     async def _attempt_exit_sell(self, token_id: str, fill_price: Decimal, fill_size: Decimal, reason: str) -> None:
@@ -1373,7 +1370,7 @@ Token: {token_id}
         )
 
     # ---------------------------------------------------------------
-    # P2: 闁哄啨鍎冲ú?濠㈣埖绮庡ú?session mode (redesigned)
+    # P2: 闂備礁鎼崯銊╁磿閸愯?濠电姰鍨奸崺鏍垝鎼粹埗?session mode (redesigned)
     # ---------------------------------------------------------------
     # Day: run normal markets list.  Night: cancel all day orders, gap,
     # then run night_markets list.  Transition is automatic.
@@ -1438,7 +1435,7 @@ Token: {token_id}
             log(f"[session] initial session: {current}")
             return
 
-        log(f"[session] === SESSION SWITCH: {prev} 闁?{current} ===")
+        log(f"[session] === SESSION SWITCH: {prev} 闂?{current} ===")
         self.send_discord(f"[SESSION] Switching from {prev} to {current}")
         self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
 
@@ -1627,7 +1624,7 @@ Token: {token_id}
 
 
     async def _post_delay(self, label: str) -> None:
-        # Unified pace 闁?no fast path for defense, everything goes through same rhythm
+        # Unified pace 闂?no fast path for defense, everything goes through same rhythm
         lo = max(0.0, self.post_delay_min_sec)
         hi = max(lo, self.post_delay_max_sec)
         d = random.uniform(lo, hi)
@@ -1641,12 +1638,12 @@ Token: {token_id}
         async with self._global_order_lock:
             now = time.time()
 
-            # 闁冲厜鍋撻柍鍏夊亾 Per-token cooldown 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Per-token cooldown 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
             per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
             per_token_elapsed = now - per_token_last
             per_token_wait = max(0.0, self._per_token_order_min_sec - per_token_elapsed)
 
-            # 闁冲厜鍋撻柍鍏夊亾 Global cooldown 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Global cooldown 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁?
             global_elapsed = now - self._global_last_order_ts
             global_min = random.uniform(self._global_order_min_sec, self._global_order_max_sec)
             global_wait = max(0.0, global_min - global_elapsed)
@@ -1665,7 +1662,7 @@ Token: {token_id}
 
     @staticmethod
     def _infer_tick_from_book(best_bid: Decimal, best_ask: Decimal) -> Decimal:
-        # Common Polymarket price grids are 0.01 (1閸? or 0.001 (0.1閸?
+        # Common Polymarket price grids are 0.01 (1闂? or 0.001 (0.1闂?
         for px in (best_bid, best_ask):
             # normalize exponent, e.g. Decimal('0.201') => -3
             exp = px.normalize().as_tuple().exponent
@@ -1787,7 +1784,7 @@ Token: {token_id}
     async def best_bid_guard_loop(self) -> None:
         """Continuous background loop: scan all live orders across all markets.
         If any order is at or above the current best_bid, cancel it immediately.
-        Runs independently of the quote cycle 闁?covers cooldowns, skips, and gaps.
+        Runs independently of the quote cycle 闂?covers cooldowns, skips, and gaps.
 
         Per-token check interval: each token_id is only book-fetched every
         guard_per_token_interval_sec to limit API load when many markets are active.
@@ -1799,7 +1796,7 @@ Token: {token_id}
         while self._running:
             try:
                 # Market-WS down detection: if no message received for too long,
-                # cancel all orders 闁?we are blind to market changes.
+                # cancel all orders 闂?we are blind to market changes.
                 if self._last_market_ws_ok_ts > 0:
                     market_ws_age = time.time() - self._last_market_ws_ok_ts
                     if market_ws_age > self._market_ws_down_cancel_sec:
@@ -1807,7 +1804,7 @@ Token: {token_id}
                             asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
                         try:
                             await asyncio.to_thread(self.client.cancel_all)
-                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s 闁?cancelled all orders")
+                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s 闂?cancelled all orders")
                             self.send_discord(f"[ALERT] market-ws down {market_ws_age:.0f}s, cancelled all orders for safety")
                             for tid in self.market_cfg:
                                 self._last_plan_sig[tid] = ""
@@ -1900,7 +1897,7 @@ Token: {token_id}
             spread = spread / Decimal("100")
 
         # Valid range: [reward_lower, best_bid - 1 tick]
-        # best_bid itself is NEVER included 闁?it's a fill-risk boundary
+        # best_bid itself is NEVER included 闂?it's a fill-risk boundary
         reward_lower = max(tick, book.mid - spread)
         safe_top = book.best_bid - tick  # ceiling: best_bid - 1 tick
 
@@ -1913,13 +1910,13 @@ Token: {token_id}
 
         reward_zone_width = safe_top - reward_lower
 
-        # 闁冲厜鍋撻柍鍏夊亾 Fine-tick markets (tick < 0.01): percentage-based distribution 闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Fine-tick markets (tick < 0.01): percentage-based distribution 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
         if tick < Decimal("0.01"):
             return self._build_fine_tick_legs(
                 token_id, book, tick, reward_lower, safe_top, reward_zone_width, _slug,
             )
 
-        # 闁冲厜鍋撻柍鍏夊亾 Regular 1-cent markets: original mechanical logic 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Regular 1-cent markets: original mechanical logic 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
         range_ticks = int((book.best_bid - reward_lower) / tick)
 
         max_legs = 3
@@ -1957,11 +1954,11 @@ Token: {token_id}
         bias, so they sit further from best_bid and are less likely to be hit.
 
         Config knobs (in strategy section):
-          fine_tick_max_legs      闁?max number of legs (default 5)
-          fine_tick_retreat_pct   闁?how far into the reward zone to start,
+          fine_tick_max_legs      闂?max number of legs (default 5)
+          fine_tick_retreat_pct   闂?how far into the reward zone to start,
                                    as a fraction of zone width (default 0.35,
                                    meaning skip the top 35% of the zone)
-          fine_tick_zone_use_pct  闁?what fraction of the remaining zone to
+          fine_tick_zone_use_pct  闂?what fraction of the remaining zone to
                                    spread legs across (default 0.50)
         """
         strategy = self.cfg.get("strategy", {})
@@ -2015,7 +2012,7 @@ Token: {token_id}
 
         return prices
 
-    # 闁冲厜鍋撻柍鍏夊亾 Dual-side: paired mode helpers for <10c markets 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+    # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side: paired mode helpers for <10c markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
 
     def _is_low_price_paired_mode(self, token_id: str) -> tuple[bool, str]:
         """Check whether token_id should enter paired (both-or-none) mode.
@@ -2046,13 +2043,13 @@ Token: {token_id}
     ) -> tuple[bool, str]:
         """Validate that the paired side can also produce a valid plan.
 
-        Called when paired mode is active 闁?either YES or NO is below
+        Called when paired mode is active 闂?either YES or NO is below
         max_mid.  Returns (ready: bool, skip_reason: str).
         """
         yes_is_low = yes_top_price <= self._dual_side_max_mid
         no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
         if not yes_is_low and not no_is_low:
-            # Neither side is in low-price territory 闁?paired mode not needed
+            # Neither side is in low-price territory 闂?paired mode not needed
             return True, ""
 
         pair_snap = self._market_snapshots.get(paired_token)
@@ -2084,7 +2081,7 @@ Token: {token_id}
         if not pair_gate.get("can_quote", False):
             return False, "paired_side_gate_failed"
 
-        # 闁冲厜鍋撻柍鍏夊亾 Unified paired budget pre-check 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Unified paired budget pre-check 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
         # Compute real available capital: balance/allowance minus ALL active
         # orders across every market, minus a safety buffer.  Both YES and NO
         # notional must fit within this single envelope.
@@ -2176,7 +2173,7 @@ Token: {token_id}
 
         return True, depth, ""
 
-    # 闁冲厜鍋撻柍鍏夊亾 Dual-side: auto-inject paired NO token for low-price markets 闁冲厜鍋撻柍鍏夊亾
+    # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side: auto-inject paired NO token for low-price markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
 
     def _maybe_inject_dual_side_tokens(self) -> None:
         """For markets where YES mid is low, auto-register the paired NO
@@ -3257,10 +3254,10 @@ Token: {token_id}
             if self._event_blocks_quote(token_id):
                 return
 
-            # 闁冲厜鍋撻柍鍏夊亾 Dual-side gate: auto-injected NO tokens only quote when
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side gate: auto-injected NO tokens only quote when
             #    either side of the market is below max_mid (10c).
-            #    Case A: YES price <= max_mid  闁?YES is cheap, NO is auto-injected
-            #    Case B: YES price >= 1 - max_mid 闁?NO is cheap (~1-YES <= max_mid)
+            #    Case A: YES price <= max_mid  闂?YES is cheap, NO is auto-injected
+            #    Case B: YES price >= 1 - max_mid 闂?NO is cheap (~1-YES <= max_mid)
             mcfg = self._get_mcfg(token_id)
             if mcfg.get("_dual_side_auto"):
                 yes_tid = mcfg.get("paired_token_id", "")
@@ -3274,7 +3271,7 @@ Token: {token_id}
                     yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
                     # Either side must be below threshold for dual-side to activate:
                     #   YES cheap: yes_top_price <= max_mid
-                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO 闁?1-YES <= max_mid)
+                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO 闂?1-YES <= max_mid)
                     yes_is_low = yes_top_price <= self._dual_side_max_mid
                     no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
                     if not yes_is_low and not no_is_low:
@@ -3298,7 +3295,7 @@ Token: {token_id}
                         log(
                             f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
                             f"max_mid={self._dual_side_max_mid} side={side_label} "
-                            f"depth={depth_val} 闁?paired mode active"
+                            f"depth={depth_val} 闂?paired mode active"
                         )
                 else:
                     return  # No snapshot for YES side yet; wait
@@ -3397,7 +3394,7 @@ Token: {token_id}
             live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
             prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
 
-            # 闁冲厜鍋撻柍鍏夊亾 Paired (both-or-none) gate for <10c markets 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Paired (both-or-none) gate for <10c markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
             # When either side is below max_mid, enforce:
             #   1) Cheap-side book depth >= min_book_depth_usdc, else skip BOTH
             #   2) Both-or-none: paired side must also have a valid plan
@@ -3416,7 +3413,7 @@ Token: {token_id}
                         log(
                             f"[dual-side-skip] token={slug} reason={depth_reason} "
                             f"depth={depth_val} min={self._dual_side_min_book_depth} "
-                            f"闁?skipping entire event"
+                            f"闂?skipping entire event"
                         )
                         return
                     # Both-or-none: paired side must be ready
@@ -3437,7 +3434,7 @@ Token: {token_id}
                             f"[dual-side-ok] token={slug} paired_token={paired_token[:16]} "
                             f"yes_top={current_top_price} side={side_label} depth={depth_val}"
                         )
-            # 闁冲厜鍋撻柍鍏夊亾 End paired gate 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?End paired gate 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
 
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
@@ -3487,9 +3484,9 @@ Token: {token_id}
                 self._last_top_plan_sig[token_id] = ""
                 self._last_back_plan_sig[token_id] = ""
                 return
-            # 闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲?
-            # UNIFIED BUDGET PLANNER 闁?global capital-aware
-            # 闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲鏌ュ煛閹般劍娅滈柍鐑樺姀閺呮煡鍩￠幇銊︽珳闁崇儤鍔忛弲?
+            # 闂備礁纾崕銈夊礉韫囨稑鐤鹃柡灞诲劚閻撴盯鏌熼懜顒€濡芥繛鍛矒閺屽秹鎮滃Ο鍝勵潊闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺?
+            # UNIFIED BUDGET PLANNER 闂?global capital-aware
+            # 闂備礁纾崕銈夊礉韫囨稑鐤鹃柡灞诲劚閻撴盯鏌熼懜顒€濡芥繛鍛矒閺屽秹鎮滃Ο鍝勵潊闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺?
             min_size_needed = max(required_min_size, Decimal("0.001"))
             avail = await self._get_collateral_available()
             if avail is not None:
@@ -3501,7 +3498,7 @@ Token: {token_id}
                 )
                 return
 
-            # 闁冲厜鍋撻柍鍏夊亾 Step 1: compute real available capital 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 1: compute real available capital 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
             paired_token_for_budget = (
                 self._paired_token_cache.get(token_id)
                 or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
@@ -3519,11 +3516,11 @@ Token: {token_id}
             safety_buffer = avail * Decimal("0.02")
             real_avail = max(Decimal("0"), avail - safety_buffer)
 
-            # 闁冲厜鍋撻柍鍏夊亾 Step 2: compute this side's budget 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 2: compute this side's budget 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹?
             raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
             event_budget = min(raw_event_budget, real_avail)
 
-            # 闁冲厜鍋撻柍鍏夊亾 Step 3: if paired, enforce combined budget constraint 闁冲厜鍋?
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 3: if paired, enforce combined budget constraint 闂備礁鍟块崢婊堝磻?
             paired_reserved_budget = Decimal("0")
             yes_required = Decimal("0")
             no_required = Decimal("0")
@@ -3560,7 +3557,7 @@ Token: {token_id}
                     half_budget = paired_reserved_budget / Decimal("2")
                     event_budget = min(event_budget, half_budget)
                 else:
-                    # No pre-reserve yet 闁?just split real_avail
+                    # No pre-reserve yet 闂?just split real_avail
                     event_budget = min(event_budget, real_avail / Decimal("2"))
 
                 # Check: can combined fit?
@@ -3585,8 +3582,8 @@ Token: {token_id}
 
             event_budget = max(Decimal("0"), event_budget)
 
-            # 闁冲厜鍋撻柍鍏夊亾 Step 4: plan generation with degradation cascade 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
-            # Try: full legs 闁?fewer back legs 闁?shrink sizes 闁?single fallback 闁?skip
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 4: plan generation with degradation cascade 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+            # Try: full legs 闂?fewer back legs 闂?shrink sizes 闂?single fallback 闂?skip
             plan = []
             requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)
             planned_legs = 0
@@ -3624,7 +3621,7 @@ Token: {token_id}
                         degrade_reason = f"budget_limited_degrade requested={requested_legs} planned={planned_legs} paired={is_paired}"
                     break
 
-            # 4b: fallback 闁?single top leg at minimum size
+            # 4b: fallback 闂?single top leg at minimum size
             if not plan and top_price > 0 and event_budget >= single_leg_required_notional:
                 fallback_size = self._floor_to_tick(min_size_needed, Decimal("0.001"))
                 fallback_notional = top_price * fallback_size
@@ -3633,7 +3630,7 @@ Token: {token_id}
                     planned_legs = 1
                     degrade_reason = "single_leg_fallback"
 
-            # 闁冲厜鍋撻柍鍏夊亾 Step 5: comprehensive budget log 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 5: comprehensive budget log 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             if plan and degrade_reason:
@@ -3683,7 +3680,7 @@ Token: {token_id}
                 if self._event_state_name(token_id) in {EVENT_DEFENSIVE, EVENT_COOLDOWN}:
                     self._set_event_state(token_id, EVENT_ACTIVE, "planner_sync_complete")
                 # Removed: immediate _check_not_at_best_bid() call here caused a
-                # race condition 闁?it fetches a fresh book milliseconds after placing,
+                # race condition 闂?it fetches a fresh book milliseconds after placing,
                 # and micro-movements make _build_price_legs compute a different
                 # legal_top, triggering instant cancellation. The background
                 # best_bid_guard_loop (every 10s per token) already provides
@@ -3726,7 +3723,7 @@ Token: {token_id}
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
 
-        # 闁冲厜鍋撻柍鍏夊亾 Unified throttle: global + per-token (replaces _post_delay) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Unified throttle: global + per-token (replaces _post_delay) 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁?
         await self._acquire_order_throttle(token_id, label)
 
         self._ensure_order_path_open(token_id, f"place_post_throttle:{label}")
@@ -3734,7 +3731,7 @@ Token: {token_id}
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_throttle_complete:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
 
-        # 闁冲厜鍋撻柍鍏夊亾 Final pre-order reward-zone validation 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Final pre-order reward-zone validation 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
         snap = self._market_snapshots.get(token_id)
         effective = self._effective_snapshot_for_gate(token_id, snap)
         slug = self._token_slug_cache.get(token_id, token_id[:16])
@@ -3770,7 +3767,7 @@ Token: {token_id}
                 raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
         elif effective is None or self._snapshot_is_stale(token_id, effective):
             raise SoftQuoteSkip(f"stale_snapshot token={token_id[:16]} label={label}")
-        # 闁冲厜鍋撻柍鍏夊亾 End pre-order validation 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?End pre-order validation 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
 
         async with self._signer_sem:
             async with self._signer_gap_lock:
@@ -4094,7 +4091,7 @@ Token: {token_id}
                     if new_count > 0:
                         log(f"[trade-poll] new_trades={new_count} total={len(items)}")
 
-                # keep memory bounded 闁?use insertion-ordered list for correct FIFO truncation
+                # keep memory bounded 闂?use insertion-ordered list for correct FIFO truncation
                 if len(self._seen_trade_ids_order) > 5000:
                     keep = self._seen_trade_ids_order[-2500:]
                     self._seen_trade_ids = set(keep)
@@ -4128,7 +4125,7 @@ Token: {token_id}
                     if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
                         log(
                             f"[balance-drop] ALERT prev={prev_balance} now={avail} "
-                            f"drop={drop} pct={drop_pct:.2%} 闁?possible undetected fill"
+                            f"drop={drop} pct={drop_pct:.2%} 闂?possible undetected fill"
                         )
                         # Try to identify which market lost balance by checking
                         # if any previously tracked orders disappeared
@@ -4158,7 +4155,7 @@ Token: {token_id}
         while self._running:
             await asyncio.sleep(3600)
             msg = (
-                "妫ｅ啯鎯?PolyLPS-Multi hourly summary\n"
+                "婵☆偓绲介崯顖炲箚?PolyLPS-Multi hourly summary\n"
                 f"markets={len(self.market_cfg)}\n"
                 f"quotes_sent={self._quotes_sent}\n"
                 f"fills_seen={self._fills_seen}\n"
@@ -4183,13 +4180,13 @@ Token: {token_id}
             return -1.0
         except Exception as e:
             log(f"[unwind] position check failed token={token_id} err={e}")
-            return -1.0  # unknown 闁?don't act on error
+            return -1.0  # unknown 闂?don't act on error
 
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
-        - If position is 0 闁?already sold (manually or filled), cancel residual order, remove.
-        - If the order is no longer in live orders 闁?assume filled, remove.
-        - If age > unwind_max_age_sec and still open 闁?Discord alert for manual review.
+        - If position is 0 闂?already sold (manually or filled), cancel residual order, remove.
+        - If the order is no longer in live orders 闂?assume filled, remove.
+        - If age > unwind_max_age_sec and still open 闂?Discord alert for manual review.
         """
         while self._running:
             await asyncio.sleep(self._unwind_check_interval_sec)
@@ -4215,7 +4212,7 @@ Token: {token_id}
                     # Check if position has been closed (manually sold or filled)
                     position = await self._get_token_position(token_id)
                     if position == 0.0:
-                        # Position gone 闁?cancel any residual sell order and clear
+                        # Position gone 闂?cancel any residual sell order and clear
                         if oid and oid in live_ids:
                             try:
                                 await asyncio.to_thread(self.client.cancel, oid)
@@ -4226,12 +4223,12 @@ Token: {token_id}
                         continue
 
                     if oid and oid not in live_ids:
-                        # Order no longer open 闁?filled or externally cancelled; consider done
+                        # Order no longer open 闂?filled or externally cancelled; consider done
                         log(f"[unwind] completed token={token_id} order_id={oid} age={age:.0f}s")
                         continue
 
                     if age > self._unwind_max_age_sec:
-                        # Timed out 闁?notify via Discord for manual review, keep order alive
+                        # Timed out 闂?notify via Discord for manual review, keep order alive
                         hours = age / 3600
                         msg = (
                             f"[UNWIND ALERT] Unwind order not filled after {hours:.1f}h\n"
