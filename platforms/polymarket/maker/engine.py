@@ -223,7 +223,10 @@ class PolyLPSMulti:
         if signer_server_url:
             # --- Remote signer mode: private key lives on Mac Mini ---
             log(f">>> REMOTE SIGNER MODE: using Mac Mini at {signer_server_url} (private key is NOT on this machine)")
-            signer_token = os.getenv("SIGNER_TOKEN", "").strip()
+            signer_token = (
+                os.getenv("SIGNER_TOKEN", "").strip()
+                or str(account.get("signer_token", "")).strip()
+            )
             self.remote_signer = RemoteSignerClient(signer_server_url, signer_token)
             creds_data = self.remote_signer.derive_creds()
             address = creds_data["address"]
