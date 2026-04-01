@@ -482,6 +482,7 @@ class PolyLPSMulti:
         self._proxy_failover_bad_node_ttl_sec: float = float(pf_cfg.get("bad_node_ttl_sec", 600))
         self._proxy_failover_max_switches_per_window: int = int(pf_cfg.get("max_switches_per_window", 3))
         self._proxy_failover_switch_window_sec: float = float(pf_cfg.get("switch_window_sec", 600))
+        self._proxy_failover_min_switch_gap_sec: float = float(pf_cfg.get("min_switch_gap_sec", 60))
         self._proxy_failover_request_exception_threshold: int = int(pf_cfg.get("request_exception_count", 5))
         self._proxy_failover_ws_handshake_fail_threshold: int = int(pf_cfg.get("ws_handshake_fail_count", 3))
         self._proxy_failover_ws_down_trigger_sec: float = float(pf_cfg.get("ws_down_trigger_sec", 30))
