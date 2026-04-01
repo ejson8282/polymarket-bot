@@ -106,7 +106,7 @@
                         "min_distance_from_best_bid":  0.01,
                         "quote_size":  100.0,
                         "risk":  "mid",
-                        "enabled":  true,
+                        "enabled":  false,
                         "paired_token_id":  "16040015440196279900485035793550429453516625694844857319147506590755961451627"
                     },
                     {
@@ -426,7 +426,8 @@
                            "max_switches_per_burst":  2,
                            "max_switches_per_window":  2,
                            "switch_window_sec":  600,
-                           "bad_node_ttl_sec":  600
+                           "bad_node_ttl_sec":  600,
+                           "req_exc_window_sec":  120
                        },
     "night_markets":  [
                           {

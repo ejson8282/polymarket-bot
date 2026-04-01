@@ -492,6 +492,7 @@ class PolyLPSMulti:
         self._proxy_failover_switch_window_sec: float = float(pf_cfg.get("switch_window_sec", 600))
         self._proxy_failover_min_switch_gap_sec: float = float(pf_cfg.get("min_switch_gap_sec", 60))
         self._proxy_failover_request_exception_threshold: int = int(pf_cfg.get("request_exception_count", 5))
+        self._proxy_failover_req_exc_window_sec: float = float(pf_cfg.get("req_exc_window_sec", 120))
         self._proxy_failover_ws_handshake_fail_threshold: int = int(pf_cfg.get("ws_handshake_fail_count", 3))
         self._proxy_failover_ws_down_trigger_sec: float = float(pf_cfg.get("ws_down_trigger_sec", 30))
         self._proxy_failover_lock = asyncio.Lock()
@@ -503,6 +504,7 @@ class PolyLPSMulti:
         self._proxy_failover_last_switch_reason: str = ""
         self._proxy_failover_last_switch_ts: float = 0.0
         self._proxy_failover_req_exc_count: int = 0
+        self._proxy_failover_req_exc_recent: list[float] = []
         self._proxy_failover_ws_handshake_fail_count: int = 0
         self._proxy_failover_halt_until: float = 0.0
 
