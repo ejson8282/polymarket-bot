@@ -3455,14 +3455,12 @@ class PolyLPSMulti:
                 or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
             )
             is_paired = bool(paired_token_for_budget)
-            # Exclude this token (and paired token) from active-order reservation
-            # because we are about to replace those orders with the new plan.
-            exclude_set = {token_id}
-            if paired_token_for_budget:
-                exclude_set.add(paired_token_for_budget)
-            active_order_reserved = self._calc_active_orders_reserved(exclude_tokens=exclude_set)
+            # Per-event budgeting only: do NOT deduct active orders from other
+            # markets. Capital is reusable across events; only this event's paired
+            # sides should share the same envelope.
+            active_order_reserved = Decimal("0")
             safety_buffer = avail * Decimal("0.02")
-            real_avail = max(Decimal("0"), avail - active_order_reserved - safety_buffer)
+            real_avail = max(Decimal("0"), avail - safety_buffer)
 
             # ── Step 2: compute this side's budget ────────────────────
             raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
@@ -3581,17 +3579,7 @@ class PolyLPSMulti:
             # ── Step 5: comprehensive budget log ──────────────────────
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
-            log(
-                f"[budget-plan] slug={slug} token={token_id[:16]} "
-                f"avail={avail} active_order_reserved={active_order_reserved} "
-                f"real_avail={real_avail} event_budget={event_budget} "
-                f"yes_required={yes_required} no_required={no_required} "
-                f"combined_required={combined_required} "
-                f"final_planned_notional={final_planned_notional} planned_legs={planned_legs} "
-                f"{'fallback_to_single_side=' + str(fallback_to_single_side) + ' ' if is_paired else ''}"
-                f"{'skip_reason=' + skip_reason + ' ' if skip_reason else ''}"
-                f"{'degrade=' + degrade_reason if degrade_reason else ''}"
-            )
+            # muted noisy budget-plan log
 
             if not plan:
                 log(
