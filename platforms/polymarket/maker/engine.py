@@ -3840,7 +3840,7 @@ class PolyLPSMulti:
                             await ws.send(json.dumps(p))
                         except Exception:
                             pass
-                    log(f"[fill-ws] connected markets={len(condition_ids)} assets={len(self.market_cfg)}")
+                    # muted noisy fill-ws connected log
                     self._last_ws_ok_ts = time.time()
                     self._proxy_failover_record_success("fill-ws")
                     ws_down_since = 0.0
