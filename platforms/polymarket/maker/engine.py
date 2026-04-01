@@ -1269,7 +1269,7 @@ class PolyLPSMulti:
                     f"order_id={order_id}"
                 )
                 # start monitoring the sell order
-                asyncio.create_task(self._monitor_exit_order(token_id, order_id, sell_price, sell_size, reason))
+                self._spawn_bg(self._monitor_exit_order(token_id, order_id, sell_price, sell_size, reason), name=f"monitor_exit:{token_id}")
                 return
             except Exception as e:
                 log(f"[exit] token={token_id} SELL attempt={attempt} failed: {e}")
@@ -2706,7 +2706,7 @@ class PolyLPSMulti:
         fill_price = matched_price if matched_price is not None and matched_price > 0 else Decimal("0")
         fill_size = matched_size if matched_size is not None and matched_size > 0 else Decimal("0")
         if fill_price > 0:
-            asyncio.create_task(self._attempt_exit_sell(token_id, fill_price, fill_size, reason))
+            self._spawn_bg(self._attempt_exit_sell(token_id, fill_price, fill_size, reason), name=f"attempt_exit_sell:{token_id}")
 
     async def _get_collateral_available(self, force_refresh: bool = False) -> Optional[Decimal]:
         """Best-effort fetch of available collateral (normalized to USDC units)."""
