@@ -1197,8 +1197,9 @@ class PolyLPSMulti:
             if ids:
                 await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
+            slug = self._token_slug_cache.get(token_id, token_id[:16])
             self.send_discord(
-                f"Event banned\nToken: {token_id}\nReason: {reason}\nWatch count: {tracker.get('watch_count', 0)}\nDefense repeats: {tracker.get('defense_repeat_count', 0)}\nTTL: {self.event_ban_ttl_sec}s"
+                f"禁挂提醒\n市场: {slug}\n原因: {reason}\n进入观察次数: {tracker.get('watch_count', 0)}\n重复防御次数: {tracker.get('defense_repeat_count', 0)}\n禁挂时长: {self.event_ban_ttl_sec} 秒"
             )
             return
         tracker["watch_enter_ts"] = time.time()
