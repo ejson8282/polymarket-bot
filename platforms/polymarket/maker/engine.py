@@ -349,6 +349,7 @@ class PolyLPSMulti:
         self._level_depth_bonus_scale = Decimal(str(strategy.get("level_depth_bonus_scale", "0.10")))
         self._level_bba_penalty = Decimal(str(strategy.get("level_bba_penalty", "0.12")))
         self._level_defense_storm_penalty = Decimal(str(strategy.get("level_defense_storm_penalty", "0.18")))
+        self._repeat_defense_ban_count = int(strategy.get("repeat_defense_ban_count", 3))
         self._tick_resolved: set[str] = set()
 
         # 闁冲厜鍋撻柍鍏夊亾 Dual-side (low-price) quoting config 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
@@ -1187,15 +1188,21 @@ class PolyLPSMulti:
         """Enter WATCH state: cancel all orders, start observation timer. After 2 WATCH entries, forbid the event."""
         tracker = self._vol_tracker(token_id)
         tracker["watch_count"] = int(tracker.get("watch_count", 0)) + 1
-        if tracker["watch_count"] >= 2:
+        tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
+        if tracker["watch_count"] >= 2 or tracker.get("defense_repeat_count", 0) >= self._repeat_defense_ban_count:
             self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
             self._set_event_state(token_id, EVENT_QUARANTINE, f"watch_limit_forbid:{reason}")
             live = await self._refresh_live_orders(token_id)
             ids = [self._order_id(o) for o in live]
             if ids:
                 await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
-            log(f"[forbid] token={token_id} watch_count=2 reason={reason} ttl={self.event_ban_ttl_sec}s")
-            self.send_discord(f"[FORBID] token={token_id} reason={reason} watch_count=2 ttl={self.event_ban_ttl_sec}s")
+            log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
+            self.send_discord(f"事件已禁挂
+Token: {token_id}
+原因: {reason}
+观察次数: {tracker.get('watch_count', 0)}
+重复防御次数: {tracker.get('defense_repeat_count', 0)}
+禁挂时长: {self.event_ban_ttl_sec}s")
             return
         tracker["watch_enter_ts"] = time.time()
         self._set_event_state(token_id, EVENT_WATCH, reason)
@@ -1209,6 +1216,7 @@ class PolyLPSMulti:
         """Enter QUARANTINE state: cancel all orders, longer cooldown."""
         tracker = self._vol_tracker(token_id)
         tracker["quarantine_enter_ts"] = time.time()
+        tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
         self._set_event_state(token_id, EVENT_QUARANTINE, reason)
         live = await self._refresh_live_orders(token_id)
         ids = [self._order_id(o) for o in live]
