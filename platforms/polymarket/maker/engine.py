@@ -2222,15 +2222,40 @@ class PolyLPSMulti:
 
     @staticmethod
     def _alloc_weights(n_legs: int) -> list[Decimal]:
-        if n_legs <= 1:
-            return [Decimal("1")]
-        if n_legs == 2:
-            return [Decimal("0.5"), Decimal("0.5")]
-        if n_legs == 3:
-            return [Decimal("0.3"), Decimal("0.3"), Decimal("0.4")]
-        # 4+ legs: equal weight distribution
-        w = Decimal("1") / Decimal(n_legs)
-        return [w] * n_legs
+        if n_legs <= 0:
+            return []
+        decay = Decimal("0.82")
+        weights: list[Decimal] = []
+        cur = Decimal("1")
+        for _ in range(n_legs):
+            weights.append(cur)
+            cur *= decay
+        s = sum(weights)
+        return [w / s for w in weights]
+
+    def _score_price_levels(
+        self,
+        token_id: str,
+        prices: list[Decimal],
+        depth_snapshot: Optional[MarketSnapshot],
+        reward_lower: Decimal,
+        legal_top: Decimal,
+    ) -> list[tuple[Decimal, Decimal, Decimal]]:
+        scored: list[tuple[Decimal, Decimal, Decimal]] = []
+        if not prices:
+            return scored
+        width = max(Decimal("0.000001"), legal_top - reward_lower)
+        for idx, p in enumerate(prices):
+            front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else Decimal("0")
+            reward_score = max(Decimal("0"), min(Decimal("1"), (p - reward_lower) / width))
+            distance_penalty = Decimal(idx) * Decimal("0.08")
+            depth_bonus = Decimal("0")
+            if front_notional > 0 and self.min_front_bid_notional_usdc > 0:
+                depth_bonus = min(Decimal("0.25"), front_notional / self.min_front_bid_notional_usdc * Decimal("0.1"))
+            final_score = reward_score - distance_penalty + depth_bonus
+            scored.append((p, front_notional, final_score))
+        scored.sort(key=lambda x: (x[2], x[0]), reverse=True)
+        return scored
 
     def _adapt_prices_for_front_depth(
         self,
@@ -3412,18 +3437,22 @@ class PolyLPSMulti:
             required_min_size = max(self.min_order_size, reward_min_size)
             size_cap = Decimal(str(gate.get("size_cap", 1.0) or 0.0))
             pct = self._market_quote_budget_pct(token_id, market_risk)
+            reward_lower = max(self._get_mcfg(token_id)["tick"], tob.mid - (live_spread if live_spread is not None else self._get_mcfg(token_id)["spread"]))
+            legal_top = tob.best_bid - self._get_mcfg(token_id)["tick"]
             adapted_prices = self._adapt_prices_for_front_depth(token_id, prices, depth_snapshot)
             requested_legs_raw = len(prices)
-            raw_weights = self._alloc_weights(len(adapted_prices))
+            scored_levels = self._score_price_levels(token_id, [p for p, _ in adapted_prices], depth_snapshot, reward_lower, legal_top)
+            filtered_levels = [(p, front_notional, score) for p, front_notional, score in scored_levels if score > Decimal("0")]
+            if not filtered_levels:
+                filtered_levels = scored_levels
+            raw_weights = self._alloc_weights(len(filtered_levels))
             viable_legs = []
             total_weight = Decimal("0")
-            for idx, ((p, front_notional), w) in enumerate(zip(adapted_prices, raw_weights)):
+            for (p, front_notional, score), w in zip(filtered_levels, raw_weights):
                 if front_notional < self.min_front_bid_notional_usdc:
                     continue
-                # Mild front-leg penalty: keep multi-level distribution, but reduce concentration
-                # on the most aggressive levels instead of hard-coding 3 legs.
-                risk_penalty = Decimal("1") + (Decimal("0.18") * Decimal(idx))
-                adj_w = w / risk_penalty
+                score_boost = max(Decimal("0.15"), min(Decimal("1.5"), score + Decimal("0.25")))
+                adj_w = w * score_boost
                 viable_legs.append((p, adj_w))
                 total_weight += adj_w
             if not viable_legs or total_weight <= 0:
