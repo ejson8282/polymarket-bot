@@ -2105,13 +2105,12 @@ class PolyLPSMulti:
             self._reserve_paired_event_budget(token_id, paired_token, combined_budget_cap)
 
             slug = self._token_slug_cache.get(token_id, token_id[:16])
-            log(
-                f"[paired-budget-precheck] slug={slug} token={token_id[:16]} "
-                f"avail={avail} active_order_reserved={active_reserved} safety_buffer={safety_buffer} "
-                f"real_avail={real_avail} combined_budget_cap={combined_budget_cap} "
-                f"yes_min_notional={this_min_notional} no_min_notional={pair_min_notional} "
-                f"combined_min_required={combined_min_required}"
-            )
+            if combined_budget_cap < combined_min_required:
+                log(
+                    f"[paired-budget] slug={slug} token={token_id[:16]} "
+                    f"real_avail={real_avail} combined_cap={combined_budget_cap} "
+                    f"yes_min={this_min_notional} no_min={pair_min_notional} combined_min={combined_min_required}"
+                )
 
             if combined_budget_cap < pair_min_notional:
                 return False, "paired_side_budget_insufficient"
@@ -3409,7 +3408,7 @@ class PolyLPSMulti:
                         slug = self._token_slug_cache.get(token_id, token_id[:16])
                         log(
                             f"[dual-side-skip] token={slug} reason={skip_reason} "
-                            f"paired_token={paired_token[:16]} both_or_none=1"
+                            f"paired_token={paired_token[:16]} both_or_none=1 top={current_top_price}"
                         )
                         return
                     slug = self._token_slug_cache.get(token_id, token_id[:16])
@@ -3603,7 +3602,7 @@ class PolyLPSMulti:
                     plan = candidate
                     planned_legs = keep_count
                     if keep_count < requested_legs:
-                        degrade_reason = f"budget_limited_degrade requested={requested_legs} planned={planned_legs}"
+                        degrade_reason = f"budget_limited_degrade requested={requested_legs} planned={planned_legs} paired={is_paired}"
                     break
 
             # 4b: fallback — single top leg at minimum size
