@@ -342,6 +342,11 @@ class PolyLPSMulti:
         self.last_quote_ts: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
         self._market_budget_pct: Dict[str, Decimal] = {}
         self._size_requote_tolerance_pct = Decimal(str(strategy.get("size_requote_tolerance_pct", 0.05)))
+        self._max_reward_levels = int(strategy.get("max_reward_levels", 12))
+        self._level_weight_decay = Decimal(str(strategy.get("level_weight_decay", "0.82")))
+        self._level_distance_penalty = Decimal(str(strategy.get("level_distance_penalty", "0.08")))
+        self._level_depth_bonus_cap = Decimal(str(strategy.get("level_depth_bonus_cap", "0.25")))
+        self._level_depth_bonus_scale = Decimal(str(strategy.get("level_depth_bonus_scale", "0.10")))
         self._tick_resolved: set[str] = set()
 
         # ── Dual-side (low-price) quoting config ──────────────────────────
@@ -2223,7 +2228,7 @@ class PolyLPSMulti:
     def _alloc_weights(n_legs: int) -> list[Decimal]:
         if n_legs <= 0:
             return []
-        decay = Decimal("0.82")
+        decay = self._level_weight_decay
         weights: list[Decimal] = []
         cur = Decimal("1")
         for _ in range(n_legs):
@@ -2247,10 +2252,10 @@ class PolyLPSMulti:
         for idx, p in enumerate(prices):
             front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else Decimal("0")
             reward_score = max(Decimal("0"), min(Decimal("1"), (p - reward_lower) / width))
-            distance_penalty = Decimal(idx) * Decimal("0.08")
+            distance_penalty = Decimal(idx) * self._level_distance_penalty
             depth_bonus = Decimal("0")
             if front_notional > 0 and self.min_front_bid_notional_usdc > 0:
-                depth_bonus = min(Decimal("0.25"), front_notional / self.min_front_bid_notional_usdc * Decimal("0.1"))
+                depth_bonus = min(self._level_depth_bonus_cap, front_notional / self.min_front_bid_notional_usdc * self._level_depth_bonus_scale)
             final_score = reward_score - distance_penalty + depth_bonus
             scored.append((p, front_notional, final_score))
         scored.sort(key=lambda x: (x[2], x[0]), reverse=True)
@@ -3617,9 +3622,9 @@ class PolyLPSMulti:
             # ── Step 5: comprehensive budget log ──────────────────────
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
-            if plan:
+            if plan and (time.time() - self.last_quote_ts.get(token_id, 0) > 60 or degrade_reason):
                 levels = ",".join([f"{p}:{s}" for p, s, _ in plan[:8]])
-                log(f"[plan] slug={slug} token={token_id[:16]} levels={levels} planned_legs={planned_legs} final_notional={final_planned_notional} paired={is_paired}")
+                log(f"[plan] slug={slug} token={token_id[:16]} levels={levels} planned_legs={planned_legs} final_notional={final_planned_notional} paired={is_paired} {degrade_reason}".strip())
 
             if not plan:
                 log(
