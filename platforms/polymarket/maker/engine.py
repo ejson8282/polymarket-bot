@@ -4177,11 +4177,11 @@ class PolyLPSMulti:
         while self._running:
             await asyncio.sleep(3600)
             msg = (
-                "每小时汇总\n"
-                f"监控市场数：{len(self.market_cfg)}\n"
-                f"本小时报价次数：{self._quotes_sent}\n"
-                f"本小时检测到成交次数：{self._fills_seen}\n"
-                f"当前是否处于冷却：{'是' if time.time() < self._cooldown_until else '否'}"
+                "Hourly summary\n"
+                f"Markets monitored: {len(self.market_cfg)}\n"
+                f"Quotes sent this hour: {self._quotes_sent}\n"
+                f"Fills detected this hour: {self._fills_seen}\n"
+                f"Cooldown active: {'Yes' if time.time() < self._cooldown_until else 'No'}"
             )
             self.send_discord(msg)
 
