@@ -1241,6 +1241,26 @@ class PolyLPSMulti:
     # P1: Fill闂備礁鎲￠懝楣冩煀閿濆拋鐎堕柣鎴烆焽椤╅鈧懓瀚妯肩矆瀹€鍕厱?闂?exit strategy
     # ---------------------------------------------------------------
 
+    async def _delayed_balance_drop_reconcile(self, token_id: str, reason: str, delay_sec: float = 30.0) -> None:
+        await asyncio.sleep(delay_sec)
+        try:
+            state = self._event_state_name(token_id)
+            if state not in {EVENT_HALTED_ON_FILL, EVENT_PENDING_MANUAL_EXIT, EVENT_EXIT_PENDING}:
+                return
+            pos = self._get_position_size(token_id)
+            if pos is None or pos <= 0:
+                return
+            try:
+                price = self._book(token_id).best_bid if self._book(token_id) else Decimal("0")
+            except Exception:
+                price = Decimal("0")
+            if price <= 0:
+                price = self._get_mcfg(token_id).get("mid", Decimal("0")) if isinstance(self._get_mcfg(token_id), dict) else Decimal("0")
+            log(f"[balance-drop-reconcile] token={token_id} pos={pos} retry_exit_after={delay_sec}s")
+            self._spawn_bg(self._attempt_exit_sell(token_id, Decimal(str(price or 0)), Decimal(str(pos)), f"balance_drop_reconcile:{reason}"), name=f"balance_drop_reconcile:{token_id}")
+        except Exception as e:
+            log(f"[balance-drop-reconcile] token={token_id} err={e}")
+
     async def _attempt_exit_sell(self, token_id: str, fill_price: Decimal, fill_size: Decimal, reason: str) -> None:
         """After fill halt completes, wait then place a limit SELL order at >= fill_price."""
         await asyncio.sleep(self._exit_delay_sec)
@@ -4134,12 +4154,14 @@ class PolyLPSMulti:
                             for token_id in list(self.market_cfg.keys()):
                                 if self._allow_signal(token_id, f"balance_drop:{prev_balance}->{avail}"):
                                     self._fills_seen += 1
+                                    reason = f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}"
                                     await self._trigger_event_offline(
                                         token_id,
-                                        f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}",
+                                        reason,
                                         drop,
                                         Decimal("0"),
                                     )
+                                    self._spawn_bg(self._delayed_balance_drop_reconcile(token_id, reason, delay_sec=30.0), name=f"balance_drop_reconcile:{token_id}")
                                     break  # one trigger is enough to halt
                 if avail is not None:
                     prev_balance = avail
