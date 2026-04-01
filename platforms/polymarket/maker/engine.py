@@ -347,6 +347,8 @@ class PolyLPSMulti:
         self._level_distance_penalty = Decimal(str(strategy.get("level_distance_penalty", "0.08")))
         self._level_depth_bonus_cap = Decimal(str(strategy.get("level_depth_bonus_cap", "0.25")))
         self._level_depth_bonus_scale = Decimal(str(strategy.get("level_depth_bonus_scale", "0.10")))
+        self._level_bba_penalty = Decimal(str(strategy.get("level_bba_penalty", "0.12")))
+        self._level_defense_storm_penalty = Decimal(str(strategy.get("level_defense_storm_penalty", "0.18")))
         self._tick_resolved: set[str] = set()
 
         # ── Dual-side (low-price) quoting config ──────────────────────────
@@ -2256,7 +2258,12 @@ class PolyLPSMulti:
             depth_bonus = Decimal("0")
             if front_notional > 0 and self.min_front_bid_notional_usdc > 0:
                 depth_bonus = min(self._level_depth_bonus_cap, front_notional / self.min_front_bid_notional_usdc * self._level_depth_bonus_scale)
-            final_score = reward_score - distance_penalty + depth_bonus
+            vol_penalty = Decimal("0")
+            if self._vol_check_bba_jump(token_id, self._market_snapshots.get(token_id).best_bid if self._market_snapshots.get(token_id) else p, self._market_snapshots.get(token_id).best_ask if self._market_snapshots.get(token_id) else p):
+                vol_penalty += self._level_bba_penalty
+            if self._vol_check_defense_action_storm(token_id):
+                vol_penalty += self._level_defense_storm_penalty
+            final_score = reward_score - distance_penalty + depth_bonus - vol_penalty
             scored.append((p, front_notional, final_score))
         scored.sort(key=lambda x: (x[2], x[0]), reverse=True)
         return scored
