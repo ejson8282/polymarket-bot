@@ -228,6 +228,65 @@ def save_config(cfg: dict) -> None:
     )
 
 
+def _load_account_config() -> tuple[dict, dict]:
+    cfg = load_config()
+    return cfg, cfg.get("account", {})
+
+
+def _build_remote_signer_client():
+    cfg, acc = _load_account_config()
+    signer_server_url = (
+        os.getenv("POLY_SIGNER_SERVER_URL", "").strip()
+        or str(acc.get("signer_server_url", "")).strip()
+    )
+    signer_token = (
+        os.getenv("SIGNER_TOKEN", "").strip()
+        or str(acc.get("signer_token", "")).strip()
+    )
+    if not signer_server_url or not signer_token:
+        return None, None, cfg, acc, "Remote signer is not configured."
+
+    if str(REPO_DIR) not in sys.path:
+        sys.path.insert(0, str(REPO_DIR))
+
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds
+    from platforms.polymarket.maker.remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+
+    host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
+    chain_id = int(acc.get("chain_id", 137))
+    signature_type = int(acc.get("signature_type", 0))
+    funder = acc.get("funder")
+
+    signer = RemoteSignerClient(signer_server_url, signer_token)
+    creds = signer.derive_creds()
+    client = ClobClient(host=host, chain_id=chain_id)
+    client.signer = AddressStub(creds["address"], chain_id)
+    client.builder = BuilderStub(sig_type=signature_type, funder=funder)
+    client.set_api_creds(ApiCreds(
+        api_key=creds["api_key"],
+        api_secret=creds["api_secret"],
+        api_passphrase=creds["api_passphrase"],
+    ))
+    return client, signer, cfg, acc, None
+
+
+def _clear_runtime_caches() -> None:
+    for fn in (fetch_balance_info, fetch_open_orders, load_engine_state, load_all_engine_states):
+        clear = getattr(fn, "clear", None)
+        if callable(clear):
+            clear()
+
+
+def _decode_log_bytes(raw: bytes) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 # ── process helpers ────────────────────────────────────────────────────────────
 
 def engine_pid() -> int | None:
@@ -272,12 +331,11 @@ def engine_running() -> bool:
 def start_engine() -> str:
     if engine_running():
         return "Engine already running."
+    _, _, _, _, signer_error = _build_remote_signer_client()
+    if signer_error:
+        return "Engine start blocked: configure the remote signer first."
     LOG_PATH.touch(exist_ok=True)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
-    env = os.environ.copy()
-    test_key = st.session_state.get("test_private_key", "").strip()
-    if test_key:
-        env["POLY_PRIVATE_KEY"] = test_key
     with LOG_PATH.open("a", encoding="utf-8") as lf:
         proc = subprocess.Popen(
             [sys.executable, str(ENGINE_PATH)],
@@ -285,145 +343,86 @@ def start_engine() -> str:
             stdout=lf,
             stderr=lf,
             creationflags=flags,
-            env=env,
+            env=os.environ.copy(),
         )
     PID_PATH.write_text(str(proc.pid), encoding="utf-8")
-    return f"Engine started — PID {proc.pid}"
+    _clear_runtime_caches()
+    return f"Engine started. PID {proc.pid}"
 
 
 def stop_engine() -> str:
     pid = engine_pid()
+    msg = emergency_cancel_all()
     if pid:
         if platform.system() == "Windows":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+            subprocess.run(["taskkill", "/PID", str(pid)],
                            capture_output=True, check=False)
+            for _ in range(20):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.25)
+            if _pid_alive(pid):
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                               capture_output=True, check=False)
         else:
             try:
                 import signal
                 os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
-        try:
-            PID_PATH.unlink()
-        except Exception:
-            pass
-    msg = emergency_cancel_all()
+
+        if _pid_alive(pid):
+            return f"Engine stop incomplete. {msg}"
+
+    try:
+        PID_PATH.unlink()
+    except Exception:
+        pass
+    _clear_runtime_caches()
     return f"Engine stopped. {msg}"
 
 
 def emergency_cancel_all() -> str:
-    key = st.session_state.get("test_private_key", "").strip() or os.getenv("POLY_PRIVATE_KEY", "")
-    signer_server_url = str(acc.get("signer_server_url", "")).strip()
-    signer_token = os.getenv("SIGNER_TOKEN", "").strip() or str(acc.get("signer_token", "")).strip()
-
-    if key and "REDACTED" not in key:
-        code = """
-import json, os, sys
-from pathlib import Path
-from py_clob_client.client import ClobClient
-cfg = json.loads(Path("config.json").read_text(encoding="utf-8"))
-acc = cfg.get("account", {})
-host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
-key = os.environ.get("POLY_PRIVATE_KEY", "").strip()
-if not key or "REDACTED" in key:
-    print("ERR:NO_KEY"); sys.exit(2)
-client = ClobClient(host, chain_id=int(acc.get("chain_id", 137)),
-                    key=key, signature_type=int(acc.get("signature_type", 0)),
-                    funder=acc.get("funder"))
-client.set_api_creds(client.create_or_derive_api_creds())
-client.cancel_all()
-print("OK")
-"""
-        env = os.environ.copy()
-        env["POLY_PRIVATE_KEY"] = key
-        p = subprocess.run([sys.executable, "-c", code],
-                           cwd=str(BASE_DIR), capture_output=True, text=True, env=env)
-        if p.returncode == 0:
-            return "cancel_all OK (local key)."
-        return f"cancel_all failed (local key, code={p.returncode})."
-
-    if signer_server_url and signer_token:
-        code = """
-import json
-from pathlib import Path
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
-from platforms.polymarket.maker.remote_signer import AddressStub, BuilderStub, RemoteSignerClient
-cfg = json.loads(Path("platforms/polymarket/maker/config.json").read_text(encoding="utf-8"))
-acc = cfg.get("account", {})
-host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
-chain_id = int(acc.get("chain_id", 137))
-signature_type = int(acc.get("signature_type", 0))
-funder = acc.get("funder")
-signer = RemoteSignerClient(acc.get("signer_server_url"), acc.get("signer_token"))
-creds = signer.derive_creds()
-client = ClobClient(host=host, chain_id=chain_id)
-client.signer = AddressStub(creds["address"], chain_id)
-client.builder = BuilderStub(sig_type=signature_type, funder=funder)
-client.set_api_creds(ApiCreds(
-    api_key=creds["api_key"],
-    api_secret=creds["api_secret"],
-    api_passphrase=creds["api_passphrase"],
-))
-client.cancel_all()
-print("OK")
-"""
-        p = subprocess.run([sys.executable, "-c", code],
-                           cwd=str(REPO_DIR), capture_output=True, text=True, env=os.environ.copy())
-        if p.returncode == 0:
-            return "cancel_all OK (remote signer)."
-        return f"cancel_all failed (remote signer, code={p.returncode})."
-
-    return "cancel_all skipped: no local key or remote signer credentials."
+    try:
+        client, _, _, _, err = _build_remote_signer_client()
+        if err:
+            return f"cancel_all skipped: {err}"
+        client.cancel_all()
+        _clear_runtime_caches()
+        return "cancel_all OK (remote signer)."
+    except Exception as exc:
+        return f"cancel_all failed: {exc.__class__.__name__}: {exc}"
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=3)
 def fetch_balance_info(host: str, key: str, chain_id: int, sig_type: int, funder: str | None) -> dict:
     """Returns {balance, allowance, error}."""
-    code = f"""
-import json, os, sys
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-client = ClobClient("{host}", chain_id={chain_id}, key=os.environ["_KEY_"],
-                    signature_type={sig_type}, funder={repr(funder)})
-client.set_api_creds(client.create_or_derive_api_creds())
-r = client.get_balance_allowance(params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
-print(json.dumps({{"balance": r.get("balance","0"), "allowance": r.get("allowance","0")}}))
-"""
-    env = os.environ.copy()
-    env["_KEY_"] = key
-    p = subprocess.run([sys.executable, "-c", code],
-                       cwd=str(BASE_DIR), capture_output=True, text=True, env=env)
-    if p.returncode == 0:
-        try:
-            return json.loads(p.stdout.strip().splitlines()[-1])
-        except Exception:
-            pass
-    return {"balance": None, "allowance": None, "error": p.stderr[:200]}
+    del host, key, chain_id, sig_type, funder
+    try:
+        client, _, _, _, err = _build_remote_signer_client()
+        if err:
+            return {"balance": None, "allowance": None, "error": err}
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+        resp = client.get_balance_allowance(
+            params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        return {"balance": resp.get("balance", "0"), "allowance": resp.get("allowance", "0")}
+    except Exception as exc:
+        return {"balance": None, "allowance": None, "error": f"{exc.__class__.__name__}: {exc}"}
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=3)
 def fetch_open_orders(host: str, key: str, chain_id: int, sig_type: int, funder: str | None) -> list[dict]:
-    code = f"""
-import json, os
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OpenOrderParams
-client = ClobClient("{host}", chain_id={chain_id}, key=os.environ["_KEY_"],
-                    signature_type={sig_type}, funder={repr(funder)})
-client.set_api_creds(client.create_or_derive_api_creds())
-orders = client.get_orders(OpenOrderParams())
-print(json.dumps(orders if isinstance(orders, list) else []))
-"""
-    env = os.environ.copy()
-    env["_KEY_"] = key
-    p = subprocess.run([sys.executable, "-c", code],
-                       cwd=str(BASE_DIR), capture_output=True, text=True, env=env)
-    if p.returncode == 0:
-        try:
-            return json.loads(p.stdout.strip().splitlines()[-1])
-        except Exception:
-            pass
-    return []
+    del host, key, chain_id, sig_type, funder
+    try:
+        client, _, _, _, err = _build_remote_signer_client()
+        if err:
+            return []
+        from py_clob_client.clob_types import OpenOrderParams
+        orders = client.get_orders(OpenOrderParams())
+        return orders if isinstance(orders, list) else []
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=300)
@@ -494,11 +493,28 @@ def load_engine_state() -> dict:
         try:
             s = json.loads(ENGINE_STATE_PATH.read_text(encoding="utf-8"))
             s["_loaded_at"] = time.time()
+            markets = s.get("markets", {}) if isinstance(s.get("markets"), dict) else {}
+            global_protection_active = bool(s.get("cooldown_active"))
+            if not global_protection_active:
+                global_protection_active = any(
+                    str(m.get("event_state", "")).upper() == "HALTED_ON_FILL"
+                    for m in markets.values()
+                    if isinstance(m, dict)
+                )
+            s["global_protection_active"] = global_protection_active
+            s["global_trading_enabled"] = not global_protection_active
             return s
         except Exception:
             pass
-    return {"fills": [], "pending_unwinds": [], "banned_tokens": [], "latency_records": [], "markets": {}}
-
+    return {
+        "fills": [],
+        "pending_unwinds": [],
+        "banned_tokens": [],
+        "latency_records": [],
+        "markets": {},
+        "global_protection_active": False,
+        "global_trading_enabled": True,
+    }
 
 def load_all_engine_states() -> dict[int, dict]:
     """Load engine_state_N.json for N=1..30, plus engine_state.json as account 0."""
@@ -508,6 +524,14 @@ def load_all_engine_states() -> dict[int, dict]:
         try:
             s = json.loads(ENGINE_STATE_PATH.read_text(encoding="utf-8"))
             s["_loaded_at"] = time.time()
+            markets = s.get("markets", {}) if isinstance(s.get("markets"), dict) else {}
+            global_protection_active = bool(s.get("cooldown_active")) or any(
+                str(m.get("event_state", "")).upper() == "HALTED_ON_FILL"
+                for m in markets.values()
+                if isinstance(m, dict)
+            )
+            s["global_protection_active"] = global_protection_active
+            s["global_trading_enabled"] = not global_protection_active
             result[0] = s
         except Exception:
             pass
@@ -518,6 +542,14 @@ def load_all_engine_states() -> dict[int, dict]:
             try:
                 s = json.loads(p.read_text(encoding="utf-8"))
                 s["_loaded_at"] = time.time()
+                markets = s.get("markets", {}) if isinstance(s.get("markets"), dict) else {}
+                global_protection_active = bool(s.get("cooldown_active")) or any(
+                    str(m.get("event_state", "")).upper() == "HALTED_ON_FILL"
+                    for m in markets.values()
+                    if isinstance(m, dict)
+                )
+                s["global_protection_active"] = global_protection_active
+                s["global_trading_enabled"] = not global_protection_active
                 result[i] = s
             except Exception:
                 pass
@@ -595,7 +627,7 @@ def tail_log(n: int = 60) -> str:
         with LOG_PATH.open("rb") as f:
             if size > chunk:
                 f.seek(size - chunk)
-            raw = f.read().decode("utf-8", errors="replace")
+            raw = _decode_log_bytes(f.read())
         lines = raw.splitlines()
         # If we seeked mid-file, drop the first (possibly partial) line
         if size > chunk and len(lines) > 1:
@@ -680,6 +712,69 @@ _REASON_MAP: dict[str, str] = {
     "cancel_all failed":                "全部撤单失败",
 }
 
+_TAG_MAP = {
+    "kill-switch": ("KILL SWITCH", "tag-danger", "ERROR"),
+    "ALERT": ("ALERT", "tag-danger", "ERROR"),
+    "error": ("ERROR", "tag-danger", "ERROR"),
+    "exception": ("EXCEPTION", "tag-danger", "ERROR"),
+    "safety": ("SAFETY", "tag-danger", "ERROR"),
+    "risk": ("RISK", "tag-danger", "ERROR"),
+    "watch": ("WATCH", "tag-cooldown", "COOLDOWN"),
+    "cooldown": ("COOLDOWN", "tag-cooldown", "COOLDOWN"),
+    "netdiag": ("NET DIAG", "tag-warning", "COOLDOWN"),
+    "signer-pace": ("SIGNER PACE", "tag-warning", "COOLDOWN"),
+    "pace": ("PACE", "tag-warning", "COOLDOWN"),
+    "snapshot-drop": ("SNAPSHOT", "tag-warning", "COOLDOWN"),
+    "latency": ("LATENCY", "tag-warning", "COOLDOWN"),
+    "preempt": ("PREEMPT", "tag-warning", "COOLDOWN"),
+    "quote-skip": ("QUOTE SKIP", "tag-warning", "SKIP"),
+    "quote-skip-leg": ("LEG SKIP", "tag-warning", "SKIP"),
+    "price-legs-skip": ("PRICE SKIP", "tag-warning", "SKIP"),
+    "cancel": ("CANCEL", "tag-danger", "CANCEL"),
+    "cancel_all": ("CANCEL ALL", "tag-danger", "CANCEL"),
+    "recovery": ("RECOVERY", "tag-success", "RECOVERY"),
+    "vol-recovery": ("VOL OK", "tag-success", "RECOVERY"),
+    "event-state": ("EVENT STATE", "tag-success", "RECOVERY"),
+    "quote": ("QUOTE", "tag-info", "INFO"),
+    "health": ("HEALTH", "tag-info", "INFO"),
+    "fill-ws": ("FILL WS", "tag-info", "INFO"),
+    "fill-poll": ("FILL POLL", "tag-info", "INFO"),
+    "trade-poll": ("TRADE POLL", "tag-info", "INFO"),
+    "book-loop": ("BOOK LOOP", "tag-info", "INFO"),
+    "market-ws": ("MARKET WS", "tag-info", "INFO"),
+    "guard-loop": ("GUARD", "tag-info", "INFO"),
+    "debug-bal": ("BALANCE", "tag-info", "INFO"),
+    "tick-auto": ("AUTO TICK", "tag-info", "INFO"),
+    "session": ("SESSION", "tag-info", "INFO"),
+    "unwind": ("UNWIND", "tag-info", "INFO"),
+    "state-writer": ("STATE", "tag-info", "INFO"),
+}
+
+_REASON_MAP = {
+    "insufficient_budget_for_min_size": "Insufficient budget",
+    "blocked_slug": "Blocked market",
+    "Request exception": "Request exception",
+    "vol_recovery_from_watch": "Recovered from watch mode",
+    "bba_jump": "Top of book jumped",
+    "planner_top_leg_sync": "Top leg sync cancel",
+    "planner_back_legs_sync": "Back leg sync cancel",
+    "Reward invalid": "Reward invalid, market offlined",
+    "REJECT price>": "Rejected: price above cap",
+    "REJECT price<reward_lower": "Rejected: below reward band",
+    "REJECT price>=ask": "Rejected: crossed ask",
+    "REJECT stale_data": "Rejected: stale data",
+    "snapshot_divergence": "Snapshot divergence",
+    "CANCEL_TOP_LEG": "Cancel top leg",
+    "MOVE_BACK_TOP_LEG": "Move back top leg",
+    "HALT_EVENT": "Event halted",
+    "front_depth_critical": "Front depth critical",
+    "front_depth_thin": "Front depth thin",
+    "depth_data_untrusted": "Depth data untrusted",
+    "market offlined": "Market offlined",
+    "auto-resuming": "Auto resuming",
+    "recovery gate passed": "Recovery gate passed",
+    "cancel_all failed": "Cancel all failed",
+}
 _LOG_LINE_RE = _re.compile(
     r"^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[([^\]]+)\]\s*(.*)"
 )
@@ -768,10 +863,17 @@ def tail_log_parsed(n: int = 200) -> list[dict]:
     raw = tail_log(n)
     if raw.startswith("("):
         return []
+    hidden_tags = {"trade-poll"}
+    hidden_detail_markers = ["cheap_side_depth_insufficient"]
     entries = []
     for line in raw.splitlines():
         entry = _parse_log_entry(line)
         if entry:
+            if entry["tag"] in hidden_tags:
+                continue
+            detail_text = str(entry.get("detail", ""))
+            if any(marker in detail_text for marker in hidden_detail_markers):
+                continue
             entries.append(entry)
 
     # Collect unique token IDs and batch-resolve names
@@ -1733,15 +1835,36 @@ with tab_control:
         else:
             st.markdown('<span class="pill-gray">NO KEY — API calls disabled</span>', unsafe_allow_html=True)
 
-        # future: remote signer status
+        # remote signer status (reads env var + config, calls /health which needs no auth)
         st.markdown("")
-        signer_url = acc.get("signer_server_url", "")
+        signer_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or acc.get("signer_server_url", "")
+        signer_token = os.getenv("SIGNER_TOKEN", "").strip() or acc.get("signer_token", "")
         if signer_url:
-            st.markdown(
-                f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
-                f'<span class="pill-yellow">not tested</span>',
-                unsafe_allow_html=True,
-            )
+            try:
+                import requests as _req
+                _headers = {"Authorization": f"Bearer {signer_token}"} if signer_token else {}
+                _resp = _req.get(f"{signer_url.rstrip('/')}/health", headers=_headers, timeout=3)
+                _resp.raise_for_status()
+                _hdata = _resp.json()
+                _locked = _hdata.get("locked", False)
+                if _locked:
+                    st.markdown(
+                        f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
+                        f'<span class="pill-yellow">● LOCKED</span>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
+                        f'<span class="pill-green">● ONLINE</span>',
+                        unsafe_allow_html=True,
+                    )
+            except Exception as e:
+                st.markdown(
+                    f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
+                    f'<span class="pill-red">● OFFLINE ({e})</span>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.markdown('<span class="pill-gray">Remote Signer: not configured</span>',
                         unsafe_allow_html=True)
