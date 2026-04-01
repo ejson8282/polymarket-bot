@@ -3414,14 +3414,18 @@ class PolyLPSMulti:
             pct = self._market_quote_budget_pct(token_id, market_risk)
             adapted_prices = self._adapt_prices_for_front_depth(token_id, prices, depth_snapshot)
             requested_legs_raw = len(prices)
-            weights = self._alloc_weights(len(adapted_prices))
+            raw_weights = self._alloc_weights(len(adapted_prices))
             viable_legs = []
             total_weight = Decimal("0")
-            for (p, front_notional), w in zip(adapted_prices, weights):
+            for idx, ((p, front_notional), w) in enumerate(zip(adapted_prices, raw_weights)):
                 if front_notional < self.min_front_bid_notional_usdc:
                     continue
-                viable_legs.append((p, w))
-                total_weight += w
+                # Mild front-leg penalty: keep multi-level distribution, but reduce concentration
+                # on the most aggressive levels instead of hard-coding 3 legs.
+                risk_penalty = Decimal("1") + (Decimal("0.18") * Decimal(idx))
+                adj_w = w / risk_penalty
+                viable_legs.append((p, adj_w))
+                total_weight += adj_w
             if not viable_legs or total_weight <= 0:
                 live_token = await self._refresh_live_orders(token_id)
                 self._gate_decisions[token_id] = {
@@ -3585,7 +3589,9 @@ class PolyLPSMulti:
             # ── Step 5: comprehensive budget log ──────────────────────
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
-            # muted noisy budget-plan log
+            if plan:
+                levels = ",".join([f"{p}:{s}" for p, s, _ in plan[:8]])
+                log(f"[plan] slug={slug} token={token_id[:16]} levels={levels} planned_legs={planned_legs} final_notional={final_planned_notional} paired={is_paired}")
 
             if not plan:
                 log(
