@@ -2080,12 +2080,12 @@ class PolyLPSMulti:
 
         avail = self._last_balance
         if avail is not None and avail > 0:
-            # Deduct active orders from OTHER markets (exclude this pair's tokens
-            # because we will replace them with the new plan).
-            exclude_set = {token_id, paired_token}
-            active_reserved = self._calc_active_orders_reserved(exclude_tokens=exclude_set)
+            # Per-event budgeting only: do NOT deduct active orders from other
+            # markets. Cross-event capital is intentionally reusable. The shared
+            # cap applies only inside this paired event (YES+NO combined).
+            active_reserved = Decimal("0")
             safety_buffer = avail * Decimal("0.02")  # 2% safety cushion
-            real_avail = max(Decimal("0"), avail - active_reserved - safety_buffer)
+            real_avail = max(Decimal("0"), avail - safety_buffer)
 
             pair_risk = str(self._get_mcfg(paired_token).get("risk", "mid")).lower()
             pair_pct = self._market_quote_budget_pct(paired_token, pair_risk)
@@ -4336,4 +4336,3 @@ class PolyLPSMulti:
 
 if __name__ == "__main__":
     asyncio.run(PolyLPSMulti(config_path="config.json").run())
-asyncio.run(PolyLPSMulti(config_path="config.json").run())
