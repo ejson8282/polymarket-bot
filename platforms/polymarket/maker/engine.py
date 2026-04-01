@@ -3454,7 +3454,12 @@ class PolyLPSMulti:
                 self._paired_token_cache.get(token_id)
                 or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
             )
-            is_paired = bool(paired_token_for_budget)
+            current_top_price_for_budget = viable_legs[0][0] if viable_legs else Decimal("0")
+            is_paired = bool(
+                paired_token_for_budget
+                and current_top_price_for_budget > 0
+                and current_top_price_for_budget <= self._dual_side_max_mid
+            )
             # Per-event budgeting only: do NOT deduct active orders from other
             # markets. Capital is reusable across events; only this event's paired
             # sides should share the same envelope.
