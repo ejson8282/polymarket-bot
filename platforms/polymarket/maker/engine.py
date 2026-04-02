@@ -1230,7 +1230,7 @@ class PolyLPSMulti:
         if ids:
             await self._cancel_order_ids(token_id, ids, f"quarantine:{reason}")
         log(f"[quarantine] token={token_id} entered QUARANTINE reason={reason} duration={self._vol_quarantine_duration_sec}s")
-        self.send_discord(f"[QUARANTINE] token={token_id} reason={reason}")
+        self._notify_risk("Event quarantined", token=token_id, reason=reason)
 
     def _vol_check_recovery(self, token_id: str) -> bool:
         """Check if WATCH/QUARANTINE timer has expired and can auto-recover."""
@@ -1361,7 +1361,7 @@ class PolyLPSMulti:
                 if position == 0.0:
                     log(f"[exit] token={token_id} position=0 exit complete")
                     self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
-                    self.send_discord(f"[EXIT COMPLETE] token={token_id} position sold")
+                    self._notify_fill("Exit complete", token=token_id, status="position sold")
                     return
 
                 orders = await asyncio.to_thread(self.client.get_orders)
@@ -1466,7 +1466,7 @@ class PolyLPSMulti:
             return
 
         log(f"[session] === SESSION SWITCH: {prev} 闂?{current} ===")
-        self.send_discord(f"[SESSION] Switching from {prev} to {current}")
+        self._notify_status("Session switch", previous=prev, current=current)
         self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
 
         # Cancel all orders from the previous session's markets
@@ -1844,7 +1844,7 @@ class PolyLPSMulti:
                         try:
                             await asyncio.to_thread(self.client.cancel_all)
                             log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s 闂?cancelled all orders")
-                            self.send_discord(f"[ALERT] market-ws down {market_ws_age:.0f}s, cancelled all orders for safety")
+                            self._notify_attention("Market WS down", age_sec=f"{market_ws_age:.0f}", action="cancelled all orders")
                             for tid in self.market_cfg:
                                 self._last_plan_sig[tid] = ""
                                 self.last_quote_ts[tid] = 0.0
@@ -2730,7 +2730,7 @@ class PolyLPSMulti:
         slug = self._token_slug_cache.get(token_id, token_id[:16])
         msg = f"鐢倸婧€瀹歌弓绗呯痪绺梟鐢倸婧€: {slug}\n閸樼喎娲? {reason}"
         log(f"[health] {msg}")
-        self.send_discord(msg)
+        self._notify_status("Message", text=msg)
 
     async def market_health_loop(self) -> None:
         while self._running:
@@ -3294,7 +3294,7 @@ class PolyLPSMulti:
                 if not self._recovery_ready():
                     return
                 self._require_recovery_gate = False
-                self.send_discord("[ALERT] Recovery conditions satisfied. Auto-resuming quoting.")
+                self._notify_status("Recovery", action="auto resume quoting")
             if self._event_is_banned(token_id):
                 # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
                 if self._vol_check_recovery(token_id):
@@ -3905,7 +3905,7 @@ class PolyLPSMulti:
             self._require_recovery_gate = True
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
-            self.send_discord(msg)
+            self._notify_status("Message", text=msg)
 
     async def _ws_user_watch(self) -> None:
         if not self.kill_switch_on_fill:
@@ -4222,7 +4222,7 @@ class PolyLPSMulti:
                 f"Fills detected this hour: {self._fills_seen}\n"
                 f"Cooldown active: {'Yes' if time.time() < self._cooldown_until else 'No'}"
             )
-            self.send_discord(msg)
+            self._notify_status("Message", text=msg)
 
     async def _get_token_position(self, token_id: str) -> float:
         """Check how many conditional tokens we hold for a given token_id."""
@@ -4301,7 +4301,7 @@ class PolyLPSMulti:
                             f"Action required: check market and decide manually."
                         )
                         log(f"[unwind] timeout alert token={token_id} age={hours:.1f}h order_id={oid} position={position}")
-                        self.send_discord(msg)
+                        self._notify_status("Message", text=msg)
                         still_pending.append(uw)
                     else:
                         still_pending.append(uw)
@@ -4420,6 +4420,38 @@ class PolyLPSMulti:
             except Exception as e:
                 log(f"[state-writer] error: {e}")
             await asyncio.sleep(self._state_write_interval_sec)
+
+    def _notify_risk(self, title: str, **fields) -> None:
+        body = [title]
+        for k, v in fields.items():
+            if v is None or v == "":
+                continue
+            body.append(f"{k}: {v}")
+        self.send_discord("\n".join(body))
+
+    def _notify_fill(self, title: str, **fields) -> None:
+        body = [title]
+        for k, v in fields.items():
+            if v is None or v == "":
+                continue
+            body.append(f"{k}: {v}")
+        self.send_discord("\n".join(body))
+
+    def _notify_status(self, title: str, **fields) -> None:
+        body = [title]
+        for k, v in fields.items():
+            if v is None or v == "":
+                continue
+            body.append(f"{k}: {v}")
+        self.send_discord("\n".join(body))
+
+    def _notify_attention(self, title: str, **fields) -> None:
+        body = [title]
+        for k, v in fields.items():
+            if v is None or v == "":
+                continue
+            body.append(f"{k}: {v}")
+        self.send_discord("\n".join(body))
 
     def send_discord(self, message: str) -> None:
         if not self.discord_webhook:
