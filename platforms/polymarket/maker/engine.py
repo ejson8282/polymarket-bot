@@ -353,7 +353,7 @@ class PolyLPSMulti:
         self._defense_requote_block_sec = float(strategy.get("defense_requote_block_sec", 15))
         self._tick_resolved: set[str] = set()
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side (low-price) quoting config 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Dual-side (low-price) quoting config 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?
         # When enabled, the engine auto-registers the paired (NO) token for
         # markets where YES mid <= max_mid.  Both tokens are then quoted as
         # independent BUY-side markets 闂?no SELL orders needed.
@@ -397,7 +397,7 @@ class PolyLPSMulti:
         self._signer_gap_lock = asyncio.Lock()
         self._last_signer_post_ts = 0.0
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Global + per-token order throttle 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Global + per-token order throttle 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹?
         self._global_order_lock = asyncio.Lock()
         self._global_last_order_ts = 0.0
         self._global_order_min_sec = float(execution.get("global_order_min_sec", 10))
@@ -510,13 +510,13 @@ class PolyLPSMulti:
         self._proxy_failover_ws_handshake_fail_count: int = 0
         self._proxy_failover_halt_until: float = 0.0
 
-        # --- P1: fill闂備礁鎲￠懝楣冩煀閿濆拋鐎堕柣鎴烆焽椤╅鈧懓瀚妯肩矆瀹€鍕厱?---
+        # --- P1: fill闂傚倷绀侀幉锟犳嚌妤ｅ啯鐓€闁挎繂鎷嬮悗鍫曟煟閹寸儐鐒芥い鈺咁棑閳ь剛鎳撶€氼厼顭垮Ο鑲╃焼鐎光偓閸曨剛鍘?---
         exit_cfg = self.cfg.get("exit_strategy", {})
         self._exit_delay_sec: float = float(exit_cfg.get("exit_delay_sec", 5))
         self._exit_timeout_sec: float = float(exit_cfg.get("exit_timeout_sec", 300))
         self._exit_retry_count: int = int(exit_cfg.get("retry_count", 2))
 
-        # --- P2: 闂備礁鎼崯銊╁磿閸愯?濠电姰鍨奸崺鏍垝鎼粹埗?session mode (redesigned: day=scan markets, night=night_markets) ---
+        # --- P2: 闂傚倷绀侀幖顐﹀疮閵娾晛纾块柛鎰梿?婵犵數濮伴崹濂稿春閺嶎偄鍨濋幖绮瑰煑?session mode (redesigned: day=scan markets, night=night_markets) ---
         session_cfg = self.cfg.get("session", {})
         self._session_enabled: bool = bool(session_cfg.get("enabled", False))
         self._session_night_start: str = str(session_cfg.get("night_start", "00:00"))
@@ -1206,7 +1206,7 @@ class PolyLPSMulti:
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             self.send_discord(
-                f"禁挂提醒\n市场: {slug}\n原因: {reason}\n进入观察次数: {tracker.get('watch_count', 0)}\n重复防御次数: {tracker.get('defense_repeat_count', 0)}\n禁挂时长: {self.event_ban_ttl_sec} 秒"
+                f"绂佹寕鎻愰啋\n甯傚満: {slug}\n鍘熷洜: {reason}\n杩涘叆瑙傚療娆℃暟: {tracker.get('watch_count', 0)}\n閲嶅闃插尽娆℃暟: {tracker.get('defense_repeat_count', 0)}\n绂佹寕鏃堕暱: {self.event_ban_ttl_sec} 绉?
             )
             return
         tracker["watch_enter_ts"] = time.time()
@@ -1246,7 +1246,7 @@ class PolyLPSMulti:
         return False
 
     # ---------------------------------------------------------------
-    # P1: Fill闂備礁鎲￠懝楣冩煀閿濆拋鐎堕柣鎴烆焽椤╅鈧懓瀚妯肩矆瀹€鍕厱?闂?exit strategy
+    # P1: Fill闂傚倷绀侀幉锟犳嚌妤ｅ啯鐓€闁挎繂鎷嬮悗鍫曟煟閹寸儐鐒芥い鈺咁棑閳ь剛鎳撶€氼厼顭垮Ο鑲╃焼鐎光偓閸曨剛鍘?闂?exit strategy
     # ---------------------------------------------------------------
 
     async def _delayed_balance_drop_reconcile(self, token_id: str, reason: str, delay_sec: float = 30.0) -> None:
@@ -1398,7 +1398,7 @@ class PolyLPSMulti:
         )
 
     # ---------------------------------------------------------------
-    # P2: 闂備礁鎼崯銊╁磿閸愯?濠电姰鍨奸崺鏍垝鎼粹埗?session mode (redesigned)
+    # P2: 闂傚倷绀侀幖顐﹀疮閵娾晛纾块柛鎰梿?婵犵數濮伴崹濂稿春閺嶎偄鍨濋幖绮瑰煑?session mode (redesigned)
     # ---------------------------------------------------------------
     # Day: run normal markets list.  Night: cancel all day orders, gap,
     # then run night_markets list.  Transition is automatic.
@@ -1675,12 +1675,12 @@ class PolyLPSMulti:
         async with self._global_order_lock:
             now = time.time()
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Per-token cooldown 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Per-token cooldown 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜
             per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
             per_token_elapsed = now - per_token_last
             per_token_wait = max(0.0, self._per_token_order_min_sec - per_token_elapsed)
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Global cooldown 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Global cooldown 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺?
             global_elapsed = now - self._global_last_order_ts
             global_min = random.uniform(self._global_order_min_sec, self._global_order_max_sec)
             global_wait = max(0.0, global_min - global_elapsed)
@@ -1947,13 +1947,13 @@ class PolyLPSMulti:
 
         reward_zone_width = safe_top - reward_lower
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Fine-tick markets (tick < 0.01): percentage-based distribution 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Fine-tick markets (tick < 0.01): percentage-based distribution 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?
         if tick < Decimal("0.01"):
             return self._build_fine_tick_legs(
                 token_id, book, tick, reward_lower, safe_top, reward_zone_width, _slug,
             )
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Regular 1-cent markets: original mechanical logic 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Regular 1-cent markets: original mechanical logic 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
         range_ticks = int((book.best_bid - reward_lower) / tick)
 
         max_legs = 3
@@ -2049,7 +2049,7 @@ class PolyLPSMulti:
 
         return prices
 
-    # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side: paired mode helpers for <10c markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
+    # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Dual-side: paired mode helpers for <10c markets 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜
 
     def _is_low_price_paired_mode(self, token_id: str) -> tuple[bool, str]:
         """Check whether token_id should enter paired (both-or-none) mode.
@@ -2118,7 +2118,7 @@ class PolyLPSMulti:
         if not pair_gate.get("can_quote", False):
             return False, "paired_side_gate_failed"
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Unified paired budget pre-check 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Unified paired budget pre-check 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?
         # Compute real available capital: balance/allowance minus ALL active
         # orders across every market, minus a safety buffer.  Both YES and NO
         # notional must fit within this single envelope.
@@ -2210,7 +2210,7 @@ class PolyLPSMulti:
 
         return True, depth, ""
 
-    # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side: auto-inject paired NO token for low-price markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
+    # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Dual-side: auto-inject paired NO token for low-price markets 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?
 
     def _maybe_inject_dual_side_tokens(self) -> None:
         """For markets where YES mid is low, auto-register the paired NO
@@ -2351,7 +2351,7 @@ class PolyLPSMulti:
             live_orders = await self._get_live_orders_fast(token_id)
         if desired is not None:
             price, size, _ = desired
-            await self.place_post_only_order(token_id, price, size, label="top_leg_sync")
+            await self._place_post_only_order_fast(token_id, price, size, label="top_leg_sync")
             live_orders = await self._get_live_orders_fast(token_id)
         self._last_top_plan_sig[token_id] = desired_sig
         return live_orders
@@ -2382,7 +2382,7 @@ class PolyLPSMulti:
             await self._cancel_order_ids(token_id, ids, "planner_back_legs_sync")
             live_orders = await self._get_live_orders_fast(token_id)
         for price, size, _ in desired_back:
-            await self.place_post_only_order(token_id, price, size, label="back_leg_sync")
+            await self._place_post_only_order_fast(token_id, price, size, label="back_leg_sync")
         live_orders = await self._get_live_orders_fast(token_id)
         self._last_back_plan_sig[token_id] = desired_sig
         return live_orders
@@ -2718,7 +2718,7 @@ class PolyLPSMulti:
             log(f"[health] config disable fail token={token_id} err={e}")
 
         slug = self._token_slug_cache.get(token_id, token_id[:16])
-        msg = f"市场已下线\n市场: {slug}\n原因: {reason}"
+        msg = f"甯傚満宸蹭笅绾縗n甯傚満: {slug}\n鍘熷洜: {reason}"
         log(f"[health] {msg}")
         self.send_discord(msg)
 
@@ -3312,7 +3312,7 @@ class PolyLPSMulti:
             if self._event_blocks_quote(token_id):
                 return
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side gate: auto-injected NO tokens only quote when
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Dual-side gate: auto-injected NO tokens only quote when
             #    either side of the market is below max_mid (10c).
             #    Case A: YES price <= max_mid  闂?YES is cheap, NO is auto-injected
             #    Case B: YES price >= 1 - max_mid 闂?NO is cheap (~1-YES <= max_mid)
@@ -3452,7 +3452,7 @@ class PolyLPSMulti:
             live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
             prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Paired (both-or-none) gate for <10c markets 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Paired (both-or-none) gate for <10c markets 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
             # When either side is below max_mid, enforce:
             #   1) Cheap-side book depth >= min_book_depth_usdc, else skip BOTH
             #   2) Both-or-none: paired side must also have a valid plan
@@ -3492,7 +3492,7 @@ class PolyLPSMulti:
                             f"[dual-side-ok] token={slug} paired_token={paired_token[:16]} "
                             f"yes_top={current_top_price} side={side_label} depth={depth_val}"
                         )
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?End paired gate 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?End paired gate 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?
 
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
@@ -3542,9 +3542,9 @@ class PolyLPSMulti:
                 self._last_top_plan_sig[token_id] = ""
                 self._last_back_plan_sig[token_id] = ""
                 return
-            # 闂備礁纾崕銈夊礉韫囨稑鐤鹃柡灞诲劚閻撴盯鏌熼懜顒€濡芥繛鍛矒閺屽秹鎮滃Ο鍝勵潊闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺?
+            # 闂傚倷绀佺壕顓㈠磿閵堝绀夐煫鍥ㄧ☉閻ら箖鏌＄仦璇插姎闁绘挻鐩弻鐔兼嚋椤掆偓婵¤姤绻涢崨顔剧煉闁哄苯绉归幃婊兾熼崫鍕垫綂闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕?
             # UNIFIED BUDGET PLANNER 闂?global capital-aware
-            # 闂備礁纾崕銈夊礉韫囨稑鐤鹃柡灞诲劚閻撴盯鏌熼懜顒€濡芥繛鍛矒閺屽秹鎮滃Ο鍝勵潊闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺鏌ュ蓟閵夈儳鍘搁梺纭呭焽閸斿秴鈻嶅鍫熺厓闁绘垶锚婵偓闂佸搫鎳忛悡锟犲春閿熺姴绠涢柕濠忛檮閻濇娊姊哄畷鍥у妺闁告柨绻樺?
+            # 闂傚倷绀佺壕顓㈠磿閵堝绀夐煫鍥ㄧ☉閻ら箖鏌＄仦璇插姎闁绘挻鐩弻鐔兼嚋椤掆偓婵¤姤绻涢崨顔剧煉闁哄苯绉归幃婊兾熼崫鍕垫綂闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕閺屻儱钃熼柕澶堝劤閸樻悂姊虹涵鍛劷闁告柨绉撮埢宥咁煥閸喓鍘撻梺缁樺灦閿氬┑顔瑰亾闂備礁鎼幊蹇涙偂閿熺姴鏄ラ柨鐔哄Т缁犳盯鏌曟繝蹇涙闁绘繃濞婂鍝勭暦閸パ冨闂佸憡鏌ㄧ换妯侯嚕?
             min_size_needed = max(required_min_size, Decimal("0.001"))
             avail = await self._get_collateral_available()
             if avail is not None:
@@ -3556,7 +3556,7 @@ class PolyLPSMulti:
                 )
                 return
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 1: compute real available capital 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Step 1: compute real available capital 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜
             paired_token_for_budget = (
                 self._paired_token_cache.get(token_id)
                 or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
@@ -3574,11 +3574,11 @@ class PolyLPSMulti:
             safety_buffer = avail * Decimal("0.02")
             real_avail = max(Decimal("0"), avail - safety_buffer)
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 2: compute this side's budget 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Step 2: compute this side's budget 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟?
             raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
             event_budget = min(raw_event_budget, real_avail)
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 3: if paired, enforce combined budget constraint 闂備礁鍟块崢婊堝磻?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Step 3: if paired, enforce combined budget constraint 闂傚倷绀侀崯鍧楀储濠婂牆纾?
             paired_reserved_budget = Decimal("0")
             yes_required = Decimal("0")
             no_required = Decimal("0")
@@ -3640,7 +3640,7 @@ class PolyLPSMulti:
 
             event_budget = max(Decimal("0"), event_budget)
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 4: plan generation with degradation cascade 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Step 4: plan generation with degradation cascade 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
             # Try: full legs 闂?fewer back legs 闂?shrink sizes 闂?single fallback 闂?skip
             plan = []
             requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)
@@ -3688,7 +3688,7 @@ class PolyLPSMulti:
                     planned_legs = 1
                     degrade_reason = "single_leg_fallback"
 
-            # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Step 5: comprehensive budget log 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+            # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Step 5: comprehensive budget log 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             if plan and degrade_reason:
@@ -3795,7 +3795,7 @@ class PolyLPSMulti:
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Unified throttle: global + per-token (replaces _post_delay) 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Unified throttle: global + per-token (replaces _post_delay) 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺?
         await self._acquire_order_throttle(token_id, label)
 
         self._ensure_order_path_open(token_id, f"place_post_throttle:{label}")
@@ -3803,7 +3803,7 @@ class PolyLPSMulti:
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_throttle_complete:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
 
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Final pre-order reward-zone validation 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Final pre-order reward-zone validation 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜
         snap = self._market_snapshots.get(token_id)
         effective = self._effective_snapshot_for_gate(token_id, snap)
         slug = self._token_slug_cache.get(token_id, token_id[:16])
@@ -3839,7 +3839,7 @@ class PolyLPSMulti:
                 raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
         elif effective is None or self._snapshot_is_stale(token_id, effective):
             raise SoftQuoteSkip(f"stale_snapshot token={token_id[:16]} label={label}")
-        # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?End pre-order validation 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍?
+        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?End pre-order validation 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
 
         async with self._signer_sem:
             async with self._signer_gap_lock:
