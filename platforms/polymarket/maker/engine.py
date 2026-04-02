@@ -3789,35 +3789,34 @@ class PolyLPSMulti:
                     return
                 raise
 
-    async def _place_post_only_order_fast(self, token_id: str, price: Decimal, size: Decimal, label: str = "post_fast") -> Any:
-        """Fast repost path for defense actions. Assumes caller already made the safety decision."""
-        self._ensure_order_path_open(token_id, f"place_fast:{label}")
-        meta = await self._get_market_meta(token_id)
-        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_fast:{label}"):
-            raise RuntimeError(f"market_start_blocked token={token_id}")
-        await self._acquire_order_throttle(token_id, label)
-        self._ensure_order_path_open(token_id, f"place_fast_after_throttle:{label}")
+    async def _submit_post_order(self, token_id: str, price: Decimal, size: Decimal, label: str) -> Any:
+        self._ensure_order_path_open(token_id, f"submit_pre_sign:{label}")
         self._mark_latency(token_id, "t_send")
         args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
-        signed = await asyncio.to_thread(self.client.create_order, args)
+        if self.remote_signer:
+            signed = await asyncio.to_thread(self.remote_signer.sign_order, token_id, float(price), float(size), "BUY")
+            if isinstance(signed, dict):
+                class _SignedOrderWrap:
+                    def __init__(self, d: dict):
+                        self._d = d
+                    def dict(self):
+                        return self._d
+                signed = _SignedOrderWrap(signed)
+        else:
+            signed = await asyncio.to_thread(self.client.create_order, args)
         resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
         return resp
 
-    async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
+    async def _preflight_post_order(self, token_id: str, price: Decimal, label: str) -> None:
         self._ensure_order_path_open(token_id, f"place_pre_meta:{label}")
         meta = await self._get_market_meta(token_id)
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
-
-        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Unified throttle: global + per-token (replaces _post_delay) 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺?
         await self._acquire_order_throttle(token_id, label)
-
         self._ensure_order_path_open(token_id, f"place_post_throttle:{label}")
         meta = await self._get_market_meta(token_id)
         if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_throttle_complete:{label}"):
             raise RuntimeError(f"market_start_blocked token={token_id}")
-
-        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?Final pre-order reward-zone validation 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜
         snap = self._market_snapshots.get(token_id)
         effective = self._effective_snapshot_for_gate(token_id, snap)
         slug = self._token_slug_cache.get(token_id, token_id[:16])
@@ -3834,27 +3833,30 @@ class PolyLPSMulti:
             tick = cfg["tick"]
             reward_lower = max(tick, mid - spread)
             legal_top = fresh_bid - tick
-            # Reject: price above legal_top
             if price > legal_top and legal_top > 0:
-                log(f"[safety] REJECT price>{legal_top} slug={slug} token={token_id[:16]} "
-                    f"target={price} legal_top={legal_top} bid={fresh_bid} ask={fresh_ask} "
-                    f"spread={spread} reward_lower={reward_lower} label={label}")
+                log(f"[safety] REJECT price>{legal_top} slug={slug} token={token_id[:16]} target={price} legal_top={legal_top} bid={fresh_bid} ask={fresh_ask} spread={spread} reward_lower={reward_lower} label={label}")
                 raise RuntimeError(f"pre_order_reject:price_above_legal_top token={token_id[:16]}")
-            # Reject: price below reward zone
             if price < reward_lower:
-                log(f"[safety] REJECT price<reward_lower slug={slug} token={token_id[:16]} "
-                    f"target={price} reward_lower={reward_lower} bid={fresh_bid} ask={fresh_ask} "
-                    f"spread={spread} mid={mid} label={label}")
+                log(f"[safety] REJECT price<reward_lower slug={slug} token={token_id[:16]} target={price} reward_lower={reward_lower} bid={fresh_bid} ask={fresh_ask} spread={spread} mid={mid} label={label}")
                 raise RuntimeError(f"pre_order_reject:price_below_reward_zone token={token_id[:16]}")
-            # Reject: price at or above best_ask (would cross spread)
             if price >= fresh_ask:
-                log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} "
-                    f"target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
+                log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
                 raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
         elif effective is None or self._snapshot_is_stale(token_id, effective):
             raise SoftQuoteSkip(f"stale_snapshot token={token_id[:16]} label={label}")
-        # 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞?End pre-order validation 闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚妤ｅ啯鈷戦柛鎰絻鐢劑鏌涚€ｎ偅宕岄柡灞界Ч瀹曟寰勬繝浣割棜闂傚倷绀侀崯鍧楀储濠婂牆纾婚柟鍓х帛閻撳啴鏌涜箛鎿冩Ц濞存粓绠栧娲礃閹绘帒杈呴梺绋款儐閹瑰洭寮诲澶婄濠㈣泛锕ｆ竟鏇㈡⒒娴ｇ鏆遍柛妯荤矒瀹曟垿骞樼紒妯煎帗闂佺绻愰ˇ顖涚?
 
+    async def _place_post_only_order_fast(self, token_id: str, price: Decimal, size: Decimal, label: str = "post_fast") -> Any:
+        """Fast repost path for defense actions. Assumes caller already made the safety decision."""
+        self._ensure_order_path_open(token_id, f"place_fast:{label}")
+        meta = await self._get_market_meta(token_id)
+        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_fast:{label}"):
+            raise RuntimeError(f"market_start_blocked token={token_id}")
+        await self._acquire_order_throttle(token_id, label)
+        self._ensure_order_path_open(token_id, f"place_fast_after_throttle:{label}")
+        return await self._submit_post_order(token_id, price, size, label)
+
+    async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
+        await self._preflight_post_order(token_id, price, label)
         async with self._signer_sem:
             async with self._signer_gap_lock:
                 now = time.time()
@@ -3862,32 +3864,7 @@ class PolyLPSMulti:
                 if wait_sec > 0:
                     await asyncio.sleep(wait_sec)
                 self._last_signer_post_ts = time.time()
-
-            self._ensure_order_path_open(token_id, f"place_pre_sign:{label}")
-            self._mark_latency(token_id, "t_sign_start")
-            if self.remote_signer:
-                signed = await asyncio.to_thread(
-                    self.remote_signer.sign_order, token_id, float(price), float(size), "BUY"
-                )
-                if isinstance(signed, dict):
-                    class _SignedOrderWrap:
-                        def __init__(self, d: dict):
-                            self._d = d
-
-                        def dict(self):
-                            return self._d
-
-                    signed = _SignedOrderWrap(signed)
-            else:
-                args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
-                signed = await asyncio.to_thread(self.client.create_order, args)
-            self._mark_latency(token_id, "t_sign_done")
-            self._ensure_order_path_open(token_id, f"place_pre_send:{label}")
-            self._mark_latency(token_id, "t_send")
-            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
-            self._mark_latency(token_id, "t_exchange_accept")
-            self._last_signer_post_ts = time.time()
-            return resp
+            return await self._submit_post_order(token_id, price, size, label)
 
     def _count_live_orders(self, orders: list[dict]) -> int:
         return sum(1 for o in orders if str(o.get("status", "")).lower() in ("live", "open", "active"))
