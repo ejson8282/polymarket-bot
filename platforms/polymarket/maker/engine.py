@@ -1206,7 +1206,7 @@ class PolyLPSMulti:
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             self.send_discord(
-                f"绂佹寕鎻愰啋\n甯傚満: {slug}\n鍘熷洜: {reason}\n杩涘叆瑙傚療娆℃暟: {tracker.get('watch_count', 0)}\n閲嶅闃插尽娆℃暟: {tracker.get('defense_repeat_count', 0)}\n绂佹寕鏃堕暱: {self.event_ban_ttl_sec} 绉?
+                f"Event banned\nMarket: {slug}\nReason: {reason}\nWatch count: {tracker.get('watch_count', 0)}\nDefense repeats: {tracker.get('defense_repeat_count', 0)}\nTTL: {self.event_ban_ttl_sec}s"
             )
             return
         tracker["watch_enter_ts"] = time.time()
