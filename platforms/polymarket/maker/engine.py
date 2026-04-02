@@ -689,14 +689,14 @@ class PolyLPSMulti:
         reason_parts.append(f"trigger={trigger}")
         final_reason = "|".join(reason_parts)
         self._set_event_state(token_id, EVENT_STARTED_BLOCKED, final_reason)
-        live_orders = await self._refresh_live_orders(token_id)
+        live_orders = await self._get_live_orders_fast(token_id)
         if live_orders:
             await self._cancel_order_ids(
                 token_id,
                 [self._order_id(o) for o in live_orders],
                 f"start_guard:{trigger}",
             )
-            self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+            self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
         self.last_quote_ts[token_id] = 0.0
         self._last_plan_sig[token_id] = ""
         self._last_top_plan_sig[token_id] = ""
@@ -1194,7 +1194,7 @@ class PolyLPSMulti:
         if tracker["watch_count"] >= 2 or tracker.get("defense_repeat_count", 0) >= self._repeat_defense_ban_count:
             self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
             self._set_event_state(token_id, EVENT_QUARANTINE, f"watch_limit_forbid:{reason}")
-            live = await self._refresh_live_orders(token_id)
+            live = await self._get_live_orders_fast(token_id)
             ids = [self._order_id(o) for o in live]
             if ids:
                 await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
@@ -1206,7 +1206,7 @@ class PolyLPSMulti:
             return
         tracker["watch_enter_ts"] = time.time()
         self._set_event_state(token_id, EVENT_WATCH, reason)
-        live = await self._refresh_live_orders(token_id)
+        live = await self._get_live_orders_fast(token_id)
         ids = [self._order_id(o) for o in live]
         if ids:
             await self._cancel_order_ids(token_id, ids, f"watch:{reason}")
@@ -1218,7 +1218,7 @@ class PolyLPSMulti:
         tracker["quarantine_enter_ts"] = time.time()
         tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
         self._set_event_state(token_id, EVENT_QUARANTINE, reason)
-        live = await self._refresh_live_orders(token_id)
+        live = await self._get_live_orders_fast(token_id)
         ids = [self._order_id(o) for o in live]
         if ids:
             await self._cancel_order_ids(token_id, ids, f"quarantine:{reason}")
@@ -1469,7 +1469,7 @@ class PolyLPSMulti:
             if state in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
                 continue
             try:
-                live = await self._refresh_live_orders(token_id)
+                live = await self._get_live_orders_fast(token_id)
                 ids = [self._order_id(o) for o in live]
                 if ids:
                     await self._cancel_order_ids(token_id, ids, "session_switch")
@@ -1542,6 +1542,15 @@ class PolyLPSMulti:
             reverse=True,
         )
 
+    def _cached_live_orders(self, token_id: str) -> list[dict]:
+        return self._sorted_live_orders(list(self._market_live_orders.get(token_id, [])))
+
+    async def _get_live_orders_fast(self, token_id: str) -> list[dict]:
+        cached = self._cached_live_orders(token_id)
+        if cached:
+            return cached
+        return await self._get_live_orders_fast(token_id)
+
     async def _refresh_live_orders(self, token_id: str) -> list[dict]:
         orders = await asyncio.to_thread(self.client.get_orders)
         live = [
@@ -1576,7 +1585,7 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[cancel] token={token_id} kind={cancel_kind} reason={reason} err={e}")
             return False
-        live = await self._refresh_live_orders(token_id)
+        live = await self._get_live_orders_fast(token_id)
         live_ids = {self._order_id(o) for o in live}
         cleared = all(oid not in live_ids for oid in ids)
         if cleared:
@@ -1622,7 +1631,7 @@ class PolyLPSMulti:
             })
             if len(self._fills_record) > 200:
                 self._fills_record = self._fills_record[-100:]
-            live = await self._refresh_live_orders(token_id)
+            live = await self._get_live_orders_fast(token_id)
             ids = [self._order_id(o) for o in live]
             cleared = await self._cancel_order_ids(token_id, ids, f"halt:{reason}") if ids else True
             if cleared:
@@ -2334,11 +2343,11 @@ class PolyLPSMulti:
             log(f"[cancel] slug={slug} token={token_id[:16]} kind=sync reason=planner_top_leg_sync "
                 f"old_price={self._order_price(current_top)} ids=1")
             await self._cancel_order_ids(token_id, [self._order_id(current_top)], "planner_top_leg_sync")
-            live_orders = await self._refresh_live_orders(token_id)
+            live_orders = await self._get_live_orders_fast(token_id)
         if desired is not None:
             price, size, _ = desired
             await self.place_post_only_order(token_id, price, size, label="top_leg_sync")
-            live_orders = await self._refresh_live_orders(token_id)
+            live_orders = await self._get_live_orders_fast(token_id)
         self._last_top_plan_sig[token_id] = desired_sig
         return live_orders
 
@@ -2366,10 +2375,10 @@ class PolyLPSMulti:
         if ids:
             log(f"[cancel] slug={slug} token={token_id[:16]} kind=sync reason=planner_back_legs_sync ids={len(ids)}")
             await self._cancel_order_ids(token_id, ids, "planner_back_legs_sync")
-            live_orders = await self._refresh_live_orders(token_id)
+            live_orders = await self._get_live_orders_fast(token_id)
         for price, size, _ in desired_back:
             await self.place_post_only_order(token_id, price, size, label="back_leg_sync")
-        live_orders = await self._refresh_live_orders(token_id)
+        live_orders = await self._get_live_orders_fast(token_id)
         self._last_back_plan_sig[token_id] = desired_sig
         return live_orders
 
@@ -2432,7 +2441,7 @@ class PolyLPSMulti:
             halt_reason: Optional[str] = None
             self._ensure_order_path_open(token_id, "top_leg_defense_enter")
             async with lock:
-                live_orders = self._sorted_live_orders(self._market_live_orders.get(token_id, []))
+                live_orders = self._cached_live_orders(token_id)
                 if not live_orders:
                     return
                 top_order = live_orders[0]
@@ -2503,7 +2512,7 @@ class PolyLPSMulti:
                     pass
                 elif action == "CANCEL_TOP_LEG":
                     await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:cancel_top")
-                    self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                    self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 else:
                     await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:move_top")
                     self._ensure_order_path_open(token_id, "top_leg_defense_after_cancel")
@@ -2511,7 +2520,7 @@ class PolyLPSMulti:
                         halt_reason = f"unsafe_move_back:{trigger}"
                     else:
                         await self.place_post_only_order(token_id, legal_top, top_size, label="top_leg_defense")
-                        self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                        self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 self._emit_latency_record(token_id, "top_leg_defense", {"trigger": trigger, "action": action})
                 if halt_reason is None:
                     self._set_event_state(token_id, EVENT_ACTIVE, f"defense_complete:{trigger}")
@@ -3403,13 +3412,13 @@ class PolyLPSMulti:
             depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
             can_quote, gate_reason = self._quote_gate(token_id, effective_snapshot)
             if not can_quote:
-                live_token = await self._refresh_live_orders(token_id)
+                live_token = await self._get_live_orders_fast(token_id)
                 if live_token:
                     self._mark_latency(token_id, "t_detect")
                     self._mark_latency(token_id, "t_decision")
                     self._set_event_state(token_id, EVENT_DEFENSIVE, f"quote_gate:{gate_reason}")
                     await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], f"quote_gate:{gate_reason}")
-                    self._market_live_orders[token_id] = await self._refresh_live_orders(token_id)
+                    self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 if gate_reason in {"snapshot_stale", "crossed_or_empty_book"}:
                     await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"quote_gate:{gate_reason}", halt_key="t_detect")
                 return
@@ -3463,7 +3472,7 @@ class PolyLPSMulti:
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
             if not gate.get("can_quote", False):
-                live_token = await self._refresh_live_orders(token_id)
+                live_token = await self._get_live_orders_fast(token_id)
                 if live_token:
                     self._mark_latency(token_id, "t_detect")
                     self._mark_latency(token_id, "t_decision")
@@ -3495,7 +3504,7 @@ class PolyLPSMulti:
                 viable_legs.append((p, adj_w))
                 total_weight += adj_w
             if not viable_legs or total_weight <= 0:
-                live_token = await self._refresh_live_orders(token_id)
+                live_token = await self._get_live_orders_fast(token_id)
                 self._gate_decisions[token_id] = {
                     **gate,
                     "can_quote": False,
@@ -3676,7 +3685,7 @@ class PolyLPSMulti:
 
             self._market_budget_skip_until[token_id] = 0.0
             self._market_stale_fail_streak[token_id] = 0
-            live_token = await self._refresh_live_orders(token_id)
+            live_token = await self._get_live_orders_fast(token_id)
             if not plan:
                 self._gate_decisions[token_id] = {
                     **gate,
