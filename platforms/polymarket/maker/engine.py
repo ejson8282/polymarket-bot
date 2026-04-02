@@ -594,8 +594,6 @@ class PolyLPSMulti:
 
     def _defense_blocks_requote(self, token_id: str) -> bool:
         return time.time() < float(self._defense_block_until.get(token_id, 0.0))
-            EVENT_PENDING_MANUAL_EXIT,
-        }
 
     def _latency_flow_reset(self, token_id: str, preserve: Optional[set[str]] = None) -> None:
         marks = self._latency_marks.setdefault(token_id, {})
