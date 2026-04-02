@@ -2683,7 +2683,8 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[health] config disable fail token={token_id} err={e}")
 
-        msg = f"[ALERT] Reward invalid -> market offlined token={token_id} reason={reason}"
+        slug = self._token_slug_cache.get(token_id, token_id[:16])
+        msg = f"市场已下线\n市场: {slug}\n原因: {reason}"
         log(f"[health] {msg}")
         self.send_discord(msg)
 
