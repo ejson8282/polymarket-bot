@@ -1556,7 +1556,7 @@ class PolyLPSMulti:
         cached = self._cached_live_orders(token_id)
         if cached:
             return cached
-        return await self._get_live_orders_fast(token_id)
+        return await self._refresh_live_orders(token_id)
 
     async def _refresh_live_orders(self, token_id: str) -> list[dict]:
         orders = await asyncio.to_thread(self.client.get_orders)
@@ -2541,17 +2541,14 @@ class PolyLPSMulti:
                 self._set_event_state(token_id, EVENT_DEFENSIVE, f"{trigger}:{action}")
                 if action == "HALT_EVENT":
                     pass
-                elif action == "CANCEL_TOP_LEG":
+                elif action in ("CANCEL_TOP_LEG", "MOVE_BACK_TOP_LEG"):
+                    # STRUCTURAL FIX: defense NEVER reposts/requotes.
+                    # Both CANCEL and MOVE_BACK only cancel the top order here.
+                    # The regular planner loop will repost on its next cycle
+                    # after the defense_requote_block cooldown expires.
+                    self._defense_block_until[token_id] = time.time() + self._defense_requote_block_sec
                     await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:cancel_top")
                     self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
-                else:
-                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:move_top")
-                    self._ensure_order_path_open(token_id, "top_leg_defense_after_cancel")
-                    if legal_top is None or legal_top <= 0 or legal_top >= best_ask:
-                        halt_reason = f"unsafe_move_back:{trigger}"
-                    else:
-                        await self._place_post_only_order_fast(token_id, legal_top, top_size, label="top_leg_defense")
-                        self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 self._emit_latency_record(token_id, "top_leg_defense", {"trigger": trigger, "action": action})
                 if halt_reason is None:
                     self._set_event_state(token_id, EVENT_ACTIVE, f"defense_complete:{trigger}")
@@ -2571,13 +2568,12 @@ class PolyLPSMulti:
             if self._top_leg_defense_tasks.get(token_id) is current_task:
                 self._top_leg_defense_tasks.pop(token_id, None)
             self._top_leg_defense_active.discard(token_id)
-            pending = self._top_leg_defense_pending.pop(token_id, None)
-            if pending is not None and self._running:
-                next_trigger, next_snapshot = pending
-                self._spawn_bg(
-                    self._maybe_run_top_leg_defense(token_id, next_trigger, next_snapshot),
-                    name=f"top_leg_defense:{token_id}:coalesced",
-                )
+            # STRUCTURAL FIX: discard any pending coalesced re-invocations.
+            # The regular planner/book loop will handle requoting on its next
+            # cycle. Allowing defense to chain-spawn itself from the finally
+            # block was the root cause of unbounded task fan-out under
+            # high-frequency WS events, leading to RecursionError storms.
+            self._top_leg_defense_pending.pop(token_id, None)
 
     @staticmethod
     def _norm_usdc(v: Optional[Decimal]) -> Optional[Decimal]:
