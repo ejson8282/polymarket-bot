@@ -583,15 +583,17 @@ class PolyLPSMulti:
         return self._event_state_name(token_id) in {
             EVENT_CANCELING,
             EVENT_HALTED_ON_FILL,
-    def _defense_blocks_requote(self, token_id: str) -> bool:
-        return time.time() < float(self._defense_block_until.get(token_id, 0.0))
-
             EVENT_HALTED_ON_DATA,
             EVENT_COOLDOWN,
             EVENT_STARTED_BLOCKED,
             EVENT_WATCH,
             EVENT_QUARANTINE,
+            EVENT_PENDING_MANUAL_EXIT,
             EVENT_EXIT_PENDING,
+        }
+
+    def _defense_blocks_requote(self, token_id: str) -> bool:
+        return time.time() < float(self._defense_block_until.get(token_id, 0.0))
             EVENT_PENDING_MANUAL_EXIT,
         }
 
