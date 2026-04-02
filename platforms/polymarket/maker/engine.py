@@ -2436,10 +2436,29 @@ class PolyLPSMulti:
 
             meta = await self._get_market_meta(token_id)
             lock = self._event_locks[token_id]
-            if lock.locked():
-                return
             halt_reason: Optional[str] = None
             self._ensure_order_path_open(token_id, "top_leg_defense_enter")
+            live_orders = self._cached_live_orders(token_id)
+            if not live_orders:
+                live_orders = await self._get_live_orders_fast(token_id)
+            if not live_orders:
+                return
+            top_order = live_orders[0]
+            if lock.locked():
+                # Defense gets priority: if we already know the top order and market moved,
+                # attempt fast cancel from cache instead of giving up behind planner work.
+                tick = self._get_mcfg(token_id).get("tick", Decimal("0.01"))
+                live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+                live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+                legal_prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
+                depth_snapshot = self._trusted_depth_for_snapshot(token_id, snap)
+                adapted_legal_prices = self._adapt_prices_for_front_depth(token_id, legal_prices, depth_snapshot)
+                legal_top = adapted_legal_prices[0][0] if adapted_legal_prices else (legal_prices[0] if legal_prices else None)
+                top_price = self._order_price(top_order)
+                gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
+                if gate.get("top_leg_action") in {"cancel", "move_back", "halt"} or legal_top is None or (legal_top is not None and top_price > legal_top):
+                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"top_leg_defense:{trigger}:fast_cancel_locked")
+                return
             async with lock:
                 live_orders = self._cached_live_orders(token_id)
                 if not live_orders:
