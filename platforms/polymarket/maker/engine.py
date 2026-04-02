@@ -336,6 +336,8 @@ class PolyLPSMulti:
         self._latency_records: list[dict] = []
         self._halt_requested: Dict[str, Optional[str]] = {tid: None for tid in self.market_cfg}
         self._top_leg_defense_tasks: Dict[str, asyncio.Task] = {}
+        self._top_leg_defense_active: set[str] = set()
+        self._top_leg_defense_pending: dict[str, tuple[str, object]] = {}
         self._gate_decisions: Dict[str, Dict[str, Any]] = {}
         self._last_top_plan_sig: Dict[str, str] = {}
         self._last_back_plan_sig: Dict[str, str] = {}
@@ -2407,6 +2409,10 @@ class PolyLPSMulti:
         trigger: str,
         snapshot: Optional[MarketSnapshot] = None,
     ) -> None:
+        if token_id in self._top_leg_defense_active:
+            self._top_leg_defense_pending[token_id] = (trigger, snapshot)
+            return
+        self._top_leg_defense_active.add(token_id)
         current_task = asyncio.current_task()
         if current_task is not None:
             self._top_leg_defense_tasks[token_id] = current_task
@@ -2564,6 +2570,14 @@ class PolyLPSMulti:
         finally:
             if self._top_leg_defense_tasks.get(token_id) is current_task:
                 self._top_leg_defense_tasks.pop(token_id, None)
+            self._top_leg_defense_active.discard(token_id)
+            pending = self._top_leg_defense_pending.pop(token_id, None)
+            if pending is not None and self._running:
+                next_trigger, next_snapshot = pending
+                self._spawn_bg(
+                    self._maybe_run_top_leg_defense(token_id, next_trigger, next_snapshot),
+                    name=f"top_leg_defense:{token_id}:coalesced",
+                )
 
     @staticmethod
     def _norm_usdc(v: Optional[Decimal]) -> Optional[Decimal]:
