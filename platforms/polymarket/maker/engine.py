@@ -350,6 +350,7 @@ class PolyLPSMulti:
         self._level_bba_penalty = Decimal(str(strategy.get("level_bba_penalty", "0.12")))
         self._level_defense_storm_penalty = Decimal(str(strategy.get("level_defense_storm_penalty", "0.18")))
         self._repeat_defense_ban_count = int(strategy.get("repeat_defense_ban_count", 3))
+        self._defense_requote_block_sec = float(strategy.get("defense_requote_block_sec", 15))
         self._tick_resolved: set[str] = set()
 
         # 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Dual-side (low-price) quoting config 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
@@ -504,6 +505,7 @@ class PolyLPSMulti:
         self._proxy_failover_last_switch_reason: str = ""
         self._proxy_failover_last_switch_ts: float = 0.0
         self._proxy_failover_req_exc_count: int = 0
+        self._defense_block_until: dict[str, float] = {}
         self._proxy_failover_req_exc_recent: list[float] = []
         self._proxy_failover_ws_handshake_fail_count: int = 0
         self._proxy_failover_halt_until: float = 0.0
@@ -581,6 +583,9 @@ class PolyLPSMulti:
         return self._event_state_name(token_id) in {
             EVENT_CANCELING,
             EVENT_HALTED_ON_FILL,
+    def _defense_blocks_requote(self, token_id: str) -> bool:
+        return time.time() < float(self._defense_block_until.get(token_id, 0.0))
+
             EVENT_HALTED_ON_DATA,
             EVENT_COOLDOWN,
             EVENT_STARTED_BLOCKED,
@@ -2406,7 +2411,7 @@ class PolyLPSMulti:
         if current_task is not None:
             self._top_leg_defense_tasks[token_id] = current_task
         try:
-            if self._event_blocks_quote(token_id):
+            if self._event_blocks_quote(token_id) or self._defense_blocks_requote(token_id):
                 return
             snap = snapshot or self._market_snapshots.get(token_id)
             snap = self._effective_snapshot_for_gate(token_id, snap)
@@ -2457,6 +2462,7 @@ class PolyLPSMulti:
                 top_price = self._order_price(top_order)
                 gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
                 if gate.get("top_leg_action") in {"cancel", "move_back", "halt"} or legal_top is None or (legal_top is not None and top_price > legal_top):
+                    self._defense_block_until[token_id] = time.time() + self._defense_requote_block_sec
                     await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"top_leg_defense:{trigger}:fast_cancel_locked")
                 return
             async with lock:
