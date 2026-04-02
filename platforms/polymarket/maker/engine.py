@@ -2544,7 +2544,7 @@ class PolyLPSMulti:
                     if legal_top is None or legal_top <= 0 or legal_top >= best_ask:
                         halt_reason = f"unsafe_move_back:{trigger}"
                     else:
-                        await self.place_post_only_order(token_id, legal_top, top_size, label="top_leg_defense")
+                        await self._place_post_only_order_fast(token_id, legal_top, top_size, label="top_leg_defense")
                         self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 self._emit_latency_record(token_id, "top_leg_defense", {"trigger": trigger, "action": action})
                 if halt_reason is None:
@@ -3774,6 +3774,20 @@ class PolyLPSMulti:
                         log(f"[risk] market-skip token={token_id} cooldown={self.cooldown_seconds}s")
                     return
                 raise
+
+    async def _place_post_only_order_fast(self, token_id: str, price: Decimal, size: Decimal, label: str = "post_fast") -> Any:
+        """Fast repost path for defense actions. Assumes caller already made the safety decision."""
+        self._ensure_order_path_open(token_id, f"place_fast:{label}")
+        meta = await self._get_market_meta(token_id)
+        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_fast:{label}"):
+            raise RuntimeError(f"market_start_blocked token={token_id}")
+        await self._acquire_order_throttle(token_id, label)
+        self._ensure_order_path_open(token_id, f"place_fast_after_throttle:{label}")
+        self._mark_latency(token_id, "t_send")
+        args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
+        signed = await asyncio.to_thread(self.client.create_order, args)
+        resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+        return resp
 
     async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
         self._ensure_order_path_open(token_id, f"place_pre_meta:{label}")
