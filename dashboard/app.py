@@ -689,6 +689,8 @@ _TAG_MAP: dict[str, tuple[str, str, str]] = {
     "unwind":         ("平仓操作",   "tag-info",     "信息"),
     "state-writer":   ("状态写入",   "tag-info",     "信息"),
     "dual-side-inject": ("双边注入", "tag-info",     "信息"),
+    "dual-side-ok":   ("双边就绪", "tag-info",     "信息"),
+    "dual-side-skip": ("双边跳过", "tag-warning",  "跳过"),
     # warning - additional
     "task-error":     ("任务错误",   "tag-danger",   "异常"),
     "quarantine":     ("隔离模式",   "tag-cooldown", "冷却"),
