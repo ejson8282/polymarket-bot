@@ -336,14 +336,17 @@ def start_engine() -> str:
         return "Engine start blocked: configure the remote signer first."
     LOG_PATH.touch(exist_ok=True)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     with LOG_PATH.open("a", encoding="utf-8") as lf:
         proc = subprocess.Popen(
-            [sys.executable, str(ENGINE_PATH)],
+            [sys.executable, "-X", "utf8", str(ENGINE_PATH)],
             cwd=str(BASE_DIR),
             stdout=lf,
             stderr=lf,
             creationflags=flags,
-            env=os.environ.copy(),
+            env=env,
         )
     PID_PATH.write_text(str(proc.pid), encoding="utf-8")
     _clear_runtime_caches()
@@ -671,7 +674,9 @@ _TAG_MAP: dict[str, tuple[str, str, str]] = {
     "event-state":    ("状态变更",   "tag-success",  "恢复"),
     # info
     "quote":          ("报价更新",   "tag-info",     "信息"),
+    "plan":           ("策略规划",   "tag-info",     "信息"),
     "health":         ("健康检查",   "tag-info",     "信息"),
+    "exit":           ("退出操作",   "tag-info",     "信息"),
     "fill-ws":        ("成交推送",   "tag-info",     "信息"),
     "fill-poll":      ("成交轮询",   "tag-info",     "信息"),
     "trade-poll":     ("交易轮询",   "tag-info",     "信息"),
@@ -683,6 +688,15 @@ _TAG_MAP: dict[str, tuple[str, str, str]] = {
     "session":        ("会话管理",   "tag-info",     "信息"),
     "unwind":         ("平仓操作",   "tag-info",     "信息"),
     "state-writer":   ("状态写入",   "tag-info",     "信息"),
+    "dual-side-inject": ("双边注入", "tag-info",     "信息"),
+    # warning - additional
+    "task-error":     ("任务错误",   "tag-danger",   "异常"),
+    "quarantine":     ("隔离模式",   "tag-cooldown", "冷却"),
+    "forbid":         ("禁止交易",   "tag-cooldown", "冷却"),
+    "balance-drop":   ("余额下降",   "tag-warning",  "冷却"),
+    "balance-drop-reconcile": ("余额调节", "tag-warning", "冷却"),
+    "fine-tick-fallback": ("精细报价回退", "tag-warning", "跳过"),
+    "top-leg-defense": ("头腿防御",  "tag-warning",  "冷却"),
 }
 
 # Reason snippets → Chinese description
@@ -712,69 +726,7 @@ _REASON_MAP: dict[str, str] = {
     "cancel_all failed":                "全部撤单失败",
 }
 
-_TAG_MAP = {
-    "kill-switch": ("KILL SWITCH", "tag-danger", "ERROR"),
-    "ALERT": ("ALERT", "tag-danger", "ERROR"),
-    "error": ("ERROR", "tag-danger", "ERROR"),
-    "exception": ("EXCEPTION", "tag-danger", "ERROR"),
-    "safety": ("SAFETY", "tag-danger", "ERROR"),
-    "risk": ("RISK", "tag-danger", "ERROR"),
-    "watch": ("WATCH", "tag-cooldown", "COOLDOWN"),
-    "cooldown": ("COOLDOWN", "tag-cooldown", "COOLDOWN"),
-    "netdiag": ("NET DIAG", "tag-warning", "COOLDOWN"),
-    "signer-pace": ("SIGNER PACE", "tag-warning", "COOLDOWN"),
-    "pace": ("PACE", "tag-warning", "COOLDOWN"),
-    "snapshot-drop": ("SNAPSHOT", "tag-warning", "COOLDOWN"),
-    "latency": ("LATENCY", "tag-warning", "COOLDOWN"),
-    "preempt": ("PREEMPT", "tag-warning", "COOLDOWN"),
-    "quote-skip": ("QUOTE SKIP", "tag-warning", "SKIP"),
-    "quote-skip-leg": ("LEG SKIP", "tag-warning", "SKIP"),
-    "price-legs-skip": ("PRICE SKIP", "tag-warning", "SKIP"),
-    "cancel": ("CANCEL", "tag-danger", "CANCEL"),
-    "cancel_all": ("CANCEL ALL", "tag-danger", "CANCEL"),
-    "recovery": ("RECOVERY", "tag-success", "RECOVERY"),
-    "vol-recovery": ("VOL OK", "tag-success", "RECOVERY"),
-    "event-state": ("EVENT STATE", "tag-success", "RECOVERY"),
-    "quote": ("QUOTE", "tag-info", "INFO"),
-    "health": ("HEALTH", "tag-info", "INFO"),
-    "fill-ws": ("FILL WS", "tag-info", "INFO"),
-    "fill-poll": ("FILL POLL", "tag-info", "INFO"),
-    "trade-poll": ("TRADE POLL", "tag-info", "INFO"),
-    "book-loop": ("BOOK LOOP", "tag-info", "INFO"),
-    "market-ws": ("MARKET WS", "tag-info", "INFO"),
-    "guard-loop": ("GUARD", "tag-info", "INFO"),
-    "debug-bal": ("BALANCE", "tag-info", "INFO"),
-    "tick-auto": ("AUTO TICK", "tag-info", "INFO"),
-    "session": ("SESSION", "tag-info", "INFO"),
-    "unwind": ("UNWIND", "tag-info", "INFO"),
-    "state-writer": ("STATE", "tag-info", "INFO"),
-}
-
-_REASON_MAP = {
-    "insufficient_budget_for_min_size": "Insufficient budget",
-    "blocked_slug": "Blocked market",
-    "Request exception": "Request exception",
-    "vol_recovery_from_watch": "Recovered from watch mode",
-    "bba_jump": "Top of book jumped",
-    "planner_top_leg_sync": "Top leg sync cancel",
-    "planner_back_legs_sync": "Back leg sync cancel",
-    "Reward invalid": "Reward invalid, market offlined",
-    "REJECT price>": "Rejected: price above cap",
-    "REJECT price<reward_lower": "Rejected: below reward band",
-    "REJECT price>=ask": "Rejected: crossed ask",
-    "REJECT stale_data": "Rejected: stale data",
-    "snapshot_divergence": "Snapshot divergence",
-    "CANCEL_TOP_LEG": "Cancel top leg",
-    "MOVE_BACK_TOP_LEG": "Move back top leg",
-    "HALT_EVENT": "Event halted",
-    "front_depth_critical": "Front depth critical",
-    "front_depth_thin": "Front depth thin",
-    "depth_data_untrusted": "Depth data untrusted",
-    "market offlined": "Market offlined",
-    "auto-resuming": "Auto resuming",
-    "recovery gate passed": "Recovery gate passed",
-    "cancel_all failed": "Cancel all failed",
-}
+## (duplicate English maps removed — using Chinese versions above)
 _LOG_LINE_RE = _re.compile(
     r"^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[([^\]]+)\]\s*(.*)"
 )
@@ -2063,12 +2015,14 @@ with tab_accounts:
                 multi_pid_path = DATA_DIR / ".multi_runner.pid"
                 flags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
                 env = os.environ.copy()
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["PYTHONUTF8"] = "1"
                 test_key = st.session_state.get("test_private_key", "").strip()
                 if test_key:
                     env["POLY_PRIVATE_KEY"] = test_key
                 with multi_log.open("a", encoding="utf-8") as lf:
                     proc = subprocess.Popen(
-                        [sys.executable, str(MULTI_RUNNER_PATH)],
+                        [sys.executable, "-X", "utf8", str(MULTI_RUNNER_PATH)],
                         cwd=str(BASE_DIR),
                         stdout=lf, stderr=lf,
                         creationflags=flags,
