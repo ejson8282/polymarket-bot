@@ -17,8 +17,8 @@ from py_clob_client.client import ClobClient
 from scanner import normalize_market
 
 
-HTTP_PROXIES = None       # read operations: book queries, gamma API, meta 闂?routed through proxy pool
-HTTP_PROXIES_WRITE = None  # write operations: cancel, place order 闂?always direct (None)
+HTTP_PROXIES = None       # read operations: book queries, gamma API, meta — routed through proxy pool
+HTTP_PROXIES_WRITE = None  # write operations: cancel, place order — always direct (None)
 WS_PROXY = None
 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
@@ -112,10 +112,10 @@ def _ws_proxy_diag() -> str:
 def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
     """Select a proxy from the pool.
 
-    for_ws=True  闂?WS connections (long-lived)
-    for_ws=False 闂?HTTP read operations (book queries, gamma API)
+    for_ws=True — WS connections (long-lived)
+    for_ws=False — HTTP read operations (book queries, gamma API)
 
-    Write operations (cancel, place) always use None (direct) 闂?callers must NOT
+    Write operations (cancel, place) always use None (direct) — callers must NOT
     pass HTTP_PROXIES for these; use HTTP_PROXIES_WRITE which is always None.
 
     Proxy rotation uses hash(shard_key) for stable per-token assignment.
@@ -146,7 +146,7 @@ def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
             w = 1
         weighted.extend([it] * max(1, w))
 
-    # Stable per-token hash assignment 闂?different markets use different proxies
+    # Stable per-token hash assignment — different markets use different proxies
     if shard_key:
         idx = abs(hash(shard_key)) % len(weighted)
     else:
@@ -157,16 +157,16 @@ def _choose_proxy(cfg: dict, for_ws: bool, shard_key: str = "") -> str | None:
 def _init_proxy_settings(cfg: dict):
     """Initialise global proxy references.
 
-    HTTP_PROXIES       闂?read operations (book queries, gamma API calls)
-    HTTP_PROXIES_WRITE 闂?write operations (cancel, place order) 闂?always None/direct
-    WS_PROXY           闂?WebSocket connections
+    HTTP_PROXIES — read operations (book queries, gamma API calls)
+    HTTP_PROXIES_WRITE — write operations (cancel, place order) — always None/direct
+    WS_PROXY — WebSocket connections
     """
     global HTTP_PROXIES, HTTP_PROXIES_WRITE, WS_PROXY
     read_proxy = _choose_proxy(cfg, for_ws=False)
     ws_proxy = _choose_proxy(cfg, for_ws=True)
 
     WS_PROXY = ws_proxy
-    HTTP_PROXIES_WRITE = None  # writes always go direct 闂?never proxy
+    HTTP_PROXIES_WRITE = None  # writes always go direct — never proxy
 
     if read_proxy:
         HTTP_PROXIES = {"http": read_proxy, "https": read_proxy}
@@ -355,10 +355,10 @@ class PolyLPSMulti:
         self._defense_requote_block_sec = float(strategy.get("defense_requote_block_sec", 15))
         self._tick_resolved: set[str] = set()
 
-        # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Dual-side (low-price) quoting config 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
+        # # Dual-side (low-price) quoting config
         # When enabled, the engine auto-registers the paired (NO) token for
         # markets where YES mid <= max_mid.  Both tokens are then quoted as
-        # independent BUY-side markets 闂?no SELL orders needed.
+        # independent BUY-side markets — no SELL orders needed.
         dual = strategy.get("dual_side", {})
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
@@ -378,7 +378,7 @@ class PolyLPSMulti:
         self._balance_cache_ttl_sec = float(execution.get("balance_cache_ttl_sec", 3.0))
         self._balance_cache: tuple[Optional[Decimal], float] = (None, 0.0)
         self.max_balance_fail_streak = int(risk.get("max_balance_fail_streak", 8))
-        # {token_id: (anchor_value, timestamp)} 闂?TTL-based
+        # {token_id: (anchor_value, timestamp)} — TTL-based
         self._anchor_cache: Dict[str, tuple] = {}
 
         # per-market failure isolation (do not nuke all events on single-market balance issues)
@@ -399,7 +399,7 @@ class PolyLPSMulti:
         self._signer_gap_lock = asyncio.Lock()
         self._last_signer_post_ts = 0.0
 
-        # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Global + per-token order throttle 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎?
+        # # Global per-token order throttle
         self._global_order_lock = asyncio.Lock()
         self._global_last_order_ts = 0.0
         self._global_order_min_sec = float(execution.get("global_order_min_sec", 10))
@@ -441,7 +441,7 @@ class PolyLPSMulti:
             "democratic-presidential-nominee-2028",
         ]
         self._token_slug_cache: Dict[str, str] = {}
-        # {token_id: (meta_dict, timestamp)} 闂?TTL prevents stale reward/spread data
+        # {token_id: (meta_dict, timestamp)} — TTL prevents stale reward/spread data
         self._market_meta_cache: Dict[str, tuple] = {}
         self._meta_cache_ttl_sec: int = int(execution.get("meta_cache_ttl_sec", 300))
         # {token_id: anchor_ttl_sec}
@@ -460,7 +460,7 @@ class PolyLPSMulti:
         self._last_remaining_by_order: Dict[str, Decimal] = {}
         self._last_plan_sig: Dict[str, str] = {}
         self._seen_trade_ids: set[str] = set()
-        # ordered insertion list 闂?used for correct FIFO truncation (set is unordered)
+        # ordered insertion list — used for correct FIFO truncation (set is unordered)
         self._seen_trade_ids_order: list[str] = []
         # pending unwind SELL orders: [{token_id, fill_price, fill_size, order_id, placed_at}]
         self._pending_unwinds: list[dict] = []
@@ -512,13 +512,13 @@ class PolyLPSMulti:
         self._proxy_failover_ws_handshake_fail_count: int = 0
         self._proxy_failover_halt_until: float = 0.0
 
-        # --- P1: fill闂傚倸鍊风粈渚€骞夐敓鐘冲殞濡わ絽鍟悡鈧梺鎸庣箓閹峰鎮楅崼鏇熺厽闁瑰鍎愰悞鑺ャ亜閳哄拋妫戦柍褜鍓涢幊鎾垛偓姘煎幖椤灝螣閼测晝鐒奸悗鍏夊亾闁告洦鍓涢崢?---
+        # # P1: fill
         exit_cfg = self.cfg.get("exit_strategy", {})
         self._exit_delay_sec: float = float(exit_cfg.get("exit_delay_sec", 5))
         self._exit_timeout_sec: float = float(exit_cfg.get("exit_timeout_sec", 300))
         self._exit_retry_count: int = int(exit_cfg.get("retry_count", 2))
 
-        # --- P2: 闂傚倸鍊风粈渚€骞栭锕€鐤柕濞炬櫅绾惧潡鏌涢幇顖ｆ⒖?濠电姷鏁告慨浼村垂婵傜鏄ラ柡宥庡亜閸ㄦ繈骞栫划鐟扮厬?session mode (redesigned: day=scan markets, night=night_markets) ---
+        # # session mode (redesigned: day=scan markets, night=night_markets)
         session_cfg = self.cfg.get("session", {})
         self._session_enabled: bool = bool(session_cfg.get("enabled", False))
         self._session_night_start: str = str(session_cfg.get("night_start", "00:00"))
@@ -555,10 +555,17 @@ class PolyLPSMulti:
         self._fills_record: list[dict] = []
         self._market_live_orders: Dict[str, list] = {}
         self._last_balance: Optional[Decimal] = None
-        self._market_ws_backoff_cap_sec: int = int(execution.get("market_ws_backoff_cap_sec", 20))
+        self._market_ws_backoff_cap_sec: int = int(execution.get("market_ws_backoff_cap_sec", 30))
         self._market_snapshot_stale_sec: float = float(execution.get("market_snapshot_stale_sec", 5.0))
         self._ws_recv_idle_timeout_sec: float = float(execution.get("ws_recv_idle_timeout_sec", 90.0))
         self._ws_pong_timeout_sec: float = float(execution.get("ws_pong_timeout_sec", 10.0))
+        # WS reconnection robustness settings
+        self._ws_backoff_base_sec: float = float(execution.get("ws_backoff_base_sec", 1.0))
+        self._ws_backoff_cap_sec: float = float(execution.get("ws_backoff_cap_sec", 30.0))
+        self._ws_full_restart_after_n: int = int(execution.get("ws_full_restart_after_n", 5))
+        self._ws_heartbeat_interval_sec: float = float(execution.get("ws_heartbeat_interval_sec", 30.0))
+        self._market_ws_reconnect_count: int = 0
+        self._fill_ws_reconnect_count: int = 0
         self._gate_send_accept_budget_ms: float = float(execution.get("gate_send_accept_budget_ms", 2500))
         self._gate_halt_clear_budget_ms: float = float(execution.get("gate_halt_clear_budget_ms", 5000))
 
@@ -819,21 +826,40 @@ class PolyLPSMulti:
 
     async def _recv_ws_message(self, ws: Any, scope: str) -> Any:
         idle_timeout = self._ws_recv_idle_timeout_sec
+        heartbeat_interval = self._ws_heartbeat_interval_sec
         if idle_timeout <= 0:
             return await ws.recv()
+        # Use the shorter of heartbeat_interval and idle_timeout as the recv wait
+        # so we can send proactive pings even when no data arrives
+        check_interval = min(heartbeat_interval, idle_timeout) if heartbeat_interval > 0 else idle_timeout
+        last_activity = time.time()
         while self._running:
             try:
-                return await asyncio.wait_for(ws.recv(), timeout=idle_timeout)
+                msg = await asyncio.wait_for(ws.recv(), timeout=check_interval)
+                last_activity = time.time()
+                return msg
             except asyncio.TimeoutError:
+                now = time.time()
+                since_activity = now - last_activity
+                # Proactive heartbeat: send ping if no data within heartbeat interval
                 try:
                     pong_waiter = await ws.ping()
                     await asyncio.wait_for(pong_waiter, timeout=self._ws_pong_timeout_sec)
+                    last_activity = time.time()
                     if scope == "fill-ws":
                         self._last_ws_ok_ts = time.time()
+                    elif scope == "market-ws":
+                        self._last_market_ws_ok_ts = time.time()
                 except Exception as ping_exc:
                     raise TimeoutError(
-                        f"{scope} idle>{idle_timeout:.0f}s and ping failed: {_format_exc(ping_exc)}"
+                        f"{scope} stale connection: no data for {since_activity:.0f}s, ping failed: {_format_exc(ping_exc)}"
                     ) from ping_exc
+                # If total silence exceeds idle_timeout even though pings succeed,
+                # raise to force reconnect (server may have stopped sending data)
+                if since_activity > idle_timeout:
+                    raise TimeoutError(
+                        f"{scope} idle>{idle_timeout:.0f}s despite successful pings — forcing reconnect"
+                    )
         raise asyncio.CancelledError()
 
     def _update_market_snapshot(
@@ -940,7 +966,7 @@ class PolyLPSMulti:
                 log(f"[safety] snapshot_divergence slug={slug} token={token_id[:16]} "
                     f"snap_bid={snapshot.best_bid} depth_bid={depth_snapshot.best_bid} "
                     f"diff={divergence}")
-                return None  # force skip 闂?data mismatch
+                return None  # force skip — data mismatch
         return snapshot
 
     def _quote_gate(self, token_id: str, snapshot: Optional[MarketSnapshot]) -> tuple[bool, str]:
@@ -1117,7 +1143,7 @@ class PolyLPSMulti:
         return decision
 
     # ---------------------------------------------------------------
-    # P0: Watch / Quarantine 闂?rapid-change market detection
+    # P0: Watch / Quarantine — rapid-change market detection
     # ---------------------------------------------------------------
 
     def _vol_tracker(self, token_id: str) -> Dict[str, Any]:
@@ -1248,7 +1274,7 @@ class PolyLPSMulti:
         return False
 
     # ---------------------------------------------------------------
-    # P1: Fill闂傚倸鍊风粈渚€骞夐敓鐘冲殞濡わ絽鍟悡鈧梺鎸庣箓閹峰鎮楅崼鏇熺厽闁瑰鍎愰悞鑺ャ亜閳哄拋妫戦柍褜鍓涢幊鎾垛偓姘煎幖椤灝螣閼测晝鐒奸悗鍏夊亾闁告洦鍓涢崢?闂?exit strategy
+    # # P1: Fill exit strategy
     # ---------------------------------------------------------------
 
     async def _delayed_balance_drop_reconcile(self, token_id: str, reason: str, delay_sec: float = 30.0) -> None:
@@ -1400,7 +1426,7 @@ class PolyLPSMulti:
         )
 
     # ---------------------------------------------------------------
-    # P2: 闂傚倸鍊风粈渚€骞栭锕€鐤柕濞炬櫅绾惧潡鏌涢幇顖ｆ⒖?濠电姷鏁告慨浼村垂婵傜鏄ラ柡宥庡亜閸ㄦ繈骞栫划鐟扮厬?session mode (redesigned)
+    # # session mode (redesigned)
     # ---------------------------------------------------------------
     # Day: run normal markets list.  Night: cancel all day orders, gap,
     # then run night_markets list.  Transition is automatic.
@@ -1465,7 +1491,7 @@ class PolyLPSMulti:
             log(f"[session] initial session: {current}")
             return
 
-        log(f"[session] === SESSION SWITCH: {prev} 闂?{current} ===")
+        log(f"[session] === SESSION SWITCH: {prev} — {current} ===")
         self._notify_status("Session switch", previous=prev, current=current)
         self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
 
@@ -1663,7 +1689,7 @@ class PolyLPSMulti:
 
 
     async def _post_delay(self, label: str) -> None:
-        # Unified pace 闂?no fast path for defense, everything goes through same rhythm
+        # Unified pace — no fast path for defense, everything goes through same rhythm
         lo = max(0.0, self.post_delay_min_sec)
         hi = max(lo, self.post_delay_max_sec)
         d = random.uniform(lo, hi)
@@ -1677,12 +1703,12 @@ class PolyLPSMulti:
         async with self._global_order_lock:
             now = time.time()
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Per-token cooldown 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫?
+            # # Per-token cooldown
             per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
             per_token_elapsed = now - per_token_last
             per_token_wait = max(0.0, self._per_token_order_min_sec - per_token_elapsed)
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Global cooldown 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑?
+            # # Global cooldown
             global_elapsed = now - self._global_last_order_ts
             global_min = random.uniform(self._global_order_min_sec, self._global_order_max_sec)
             global_wait = max(0.0, global_min - global_elapsed)
@@ -1701,7 +1727,7 @@ class PolyLPSMulti:
 
     @staticmethod
     def _infer_tick_from_book(best_bid: Decimal, best_ask: Decimal) -> Decimal:
-        # Common Polymarket price grids are 0.01 (1闂? or 0.001 (0.1闂?
+        # Common Polymarket price grids are 0.01 (1c) or 0.001 (0.1c)
         for px in (best_bid, best_ask):
             # normalize exponent, e.g. Decimal('0.201') => -3
             exp = px.normalize().as_tuple().exponent
@@ -1823,7 +1849,7 @@ class PolyLPSMulti:
     async def best_bid_guard_loop(self) -> None:
         """Continuous background loop: scan all live orders across all markets.
         If any order is at or above the current best_bid, cancel it immediately.
-        Runs independently of the quote cycle 闂?covers cooldowns, skips, and gaps.
+        Runs independently of the quote cycle — covers cooldowns, skips, and gaps.
 
         Per-token check interval: each token_id is only book-fetched every
         guard_per_token_interval_sec to limit API load when many markets are active.
@@ -1835,7 +1861,7 @@ class PolyLPSMulti:
         while self._running:
             try:
                 # Market-WS down detection: if no message received for too long,
-                # cancel all orders 闂?we are blind to market changes.
+                # cancel all orders — we are blind to market changes.
                 if self._last_market_ws_ok_ts > 0:
                     market_ws_age = time.time() - self._last_market_ws_ok_ts
                     if market_ws_age > self._market_ws_down_cancel_sec:
@@ -1843,7 +1869,7 @@ class PolyLPSMulti:
                             asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
                         try:
                             await asyncio.to_thread(self.client.cancel_all)
-                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s 闂?cancelled all orders")
+                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s — cancelled all orders")
                             self._notify_attention("Market WS down", age_sec=f"{market_ws_age:.0f}", action="cancelled all orders")
                             for tid in self.market_cfg:
                                 self._last_plan_sig[tid] = ""
@@ -1936,7 +1962,7 @@ class PolyLPSMulti:
             spread = spread / Decimal("100")
 
         # Valid range: [reward_lower, best_bid - 1 tick]
-        # best_bid itself is NEVER included 闂?it's a fill-risk boundary
+        # best_bid itself is NEVER included — it's a fill-risk boundary
         reward_lower = max(tick, book.mid - spread)
         safe_top = book.best_bid - tick  # ceiling: best_bid - 1 tick
 
@@ -1949,13 +1975,13 @@ class PolyLPSMulti:
 
         reward_zone_width = safe_top - reward_lower
 
-        # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Fine-tick markets (tick < 0.01): percentage-based distribution 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
+        # # Fine-tick markets (tick < 0.01): percentage-based distribution
         if tick < Decimal("0.01"):
             return self._build_fine_tick_legs(
                 token_id, book, tick, reward_lower, safe_top, reward_zone_width, _slug,
             )
 
-        # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Regular 1-cent markets: original mechanical logic 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩?
+        # # Regular 1-cent markets: original mechanical logic
         range_ticks = int((book.best_bid - reward_lower) / tick)
 
         max_legs = 3
@@ -1993,11 +2019,11 @@ class PolyLPSMulti:
         bias, so they sit further from best_bid and are less likely to be hit.
 
         Config knobs (in strategy section):
-          fine_tick_max_legs      闂?max number of legs (default 5)
-          fine_tick_retreat_pct   闂?how far into the reward zone to start,
+          fine_tick_max_legs — max number of legs (default 5)
+          fine_tick_retreat_pct — how far into the reward zone to start,
                                    as a fraction of zone width (default 0.35,
                                    meaning skip the top 35% of the zone)
-          fine_tick_zone_use_pct  闂?what fraction of the remaining zone to
+          fine_tick_zone_use_pct — what fraction of the remaining zone to
                                    spread legs across (default 0.50)
         """
         strategy = self.cfg.get("strategy", {})
@@ -2051,7 +2077,7 @@ class PolyLPSMulti:
 
         return prices
 
-    # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Dual-side: paired mode helpers for <10c markets 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫?
+    # # Dual-side: paired mode helpers for <10c markets
 
     def _is_low_price_paired_mode(self, token_id: str) -> tuple[bool, str]:
         """Check whether token_id should enter paired (both-or-none) mode.
@@ -2082,13 +2108,13 @@ class PolyLPSMulti:
     ) -> tuple[bool, str]:
         """Validate that the paired side can also produce a valid plan.
 
-        Called when paired mode is active 闂?either YES or NO is below
+        Called when paired mode is active — either YES or NO is below
         max_mid.  Returns (ready: bool, skip_reason: str).
         """
         yes_is_low = yes_top_price <= self._dual_side_max_mid
         no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
         if not yes_is_low and not no_is_low:
-            # Neither side is in low-price territory 闂?paired mode not needed
+            # Neither side is in low-price territory — paired mode not needed
             return True, ""
 
         pair_snap = self._market_snapshots.get(paired_token)
@@ -2120,7 +2146,7 @@ class PolyLPSMulti:
         if not pair_gate.get("can_quote", False):
             return False, "paired_side_gate_failed"
 
-        # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Unified paired budget pre-check 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
+        # # Unified paired budget pre-check
         # Compute real available capital: balance/allowance minus ALL active
         # orders across every market, minus a safety buffer.  Both YES and NO
         # notional must fit within this single envelope.
@@ -2212,7 +2238,7 @@ class PolyLPSMulti:
 
         return True, depth, ""
 
-    # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Dual-side: auto-inject paired NO token for low-price markets 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
+    # # Dual-side: auto-inject paired NO token for low-price markets
 
     def _maybe_inject_dual_side_tokens(self) -> None:
         """For markets where YES mid is low, auto-register the paired NO
@@ -3143,6 +3169,21 @@ class PolyLPSMulti:
                 cycle_sleep = max(self.requote_interval_ms / 1000.0, 0.1)
             await asyncio.sleep(cycle_sleep)
 
+    def _ws_backoff_with_jitter(self, attempt: int) -> float:
+        """Exponential backoff with jitter: base * 2^attempt, capped, plus random jitter."""
+        exp = min(self._ws_backoff_base_sec * (2 ** attempt), self._ws_backoff_cap_sec)
+        jitter = random.uniform(0, exp * 0.3)
+        return exp + jitter
+
+    def _invalidate_all_market_snapshots(self) -> None:
+        """Clear all market snapshots to force fresh data on WS reconnect."""
+        for token_id in list(self._market_snapshots.keys()):
+            snap = self._market_snapshots.get(token_id)
+            if snap is not None:
+                # Set last_update_ts to 0 so snapshots are treated as stale
+                snap.last_update_ts = 0.0
+        log(f"[ws-reconnect] invalidated {len(self._market_snapshots)} market snapshots")
+
     async def _ws_market_watch(self) -> None:
         url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
         # Subscribe to both day and night markets so WS data is ready for session switches
@@ -3152,14 +3193,28 @@ class PolyLPSMulti:
             "type": "market",
             "custom_feature_enabled": True,
         }
-        backoff = 1
+        consecutive_failures = 0
         while self._running:
             try:
+                # Full restart: if too many consecutive failures, log and reset counter
+                if consecutive_failures >= self._ws_full_restart_after_n:
+                    log(f"[market-ws] {consecutive_failures} consecutive failures — performing full WS restart")
+                    self._notify_attention("Market WS full restart", failures=str(consecutive_failures))
+                    consecutive_failures = 0
+                    # Brief extra pause before full restart
+                    await asyncio.sleep(2.0)
+
+                self._market_ws_reconnect_count += 1
+                if self._market_ws_reconnect_count > 1:
+                    log(f"[market-ws] reconnect attempt #{self._market_ws_reconnect_count} (consecutive_failures={consecutive_failures})")
+                    # Invalidate snapshots to avoid stale data during reconnection gap
+                    self._invalidate_all_market_snapshots()
+
                 async with websockets.connect(url, proxy=WS_PROXY, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
                     await ws.send(json.dumps(payload))
                     log(f"[market-ws] netpath {_ws_proxy_diag()}")
-                    log(f"[market-ws] connected assets={len(payload['assets_ids'])}")
-                    backoff = 1
+                    log(f"[market-ws] connected assets={len(payload['assets_ids'])} reconnect_total={self._market_ws_reconnect_count}")
+                    consecutive_failures = 0
                     self._last_market_ws_ok_ts = time.time()
                     self._proxy_failover_record_success("market-ws")
                     while self._running:
@@ -3234,14 +3289,15 @@ class PolyLPSMulti:
                                     )
                                     self._spawn_bg(self._maybe_run_top_leg_defense(token_id, "market_ws:price_change", snap), name=f"top_leg_defense:{token_id}:price_change")
             except Exception as e:
+                consecutive_failures += 1
                 em = _format_exc(e)
-                log(f"[market-ws] err={em}")
+                backoff = self._ws_backoff_with_jitter(consecutive_failures)
+                log(f"[market-ws] err={em} consecutive_failures={consecutive_failures} backoff={backoff:.1f}s")
                 if "opening handshake" in em.lower() and "timed out" in em.lower():
                     self._proxy_failover_record_ws_handshake_failure("market-ws")
                 if self._is_req_exc(e):
                     self._log_req_diag("market-ws", e)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._market_ws_backoff_cap_sec)
 
     async def _get_anchor_bid_from_gamma(self, token_id: str) -> Optional[Decimal]:
         try:
@@ -3322,10 +3378,10 @@ class PolyLPSMulti:
             if self._event_blocks_quote(token_id):
                 return
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Dual-side gate: auto-injected NO tokens only quote when
+            # # Dual-side gate: auto-injected NO tokens only quote when
             #    either side of the market is below max_mid (10c).
-            #    Case A: YES price <= max_mid  闂?YES is cheap, NO is auto-injected
-            #    Case B: YES price >= 1 - max_mid 闂?NO is cheap (~1-YES <= max_mid)
+            #    Case A: YES price <= max_mid — YES is cheap, NO is auto-injected
+            #    Case B: YES price >= 1 - max_mid — NO is cheap (~1-YES <= max_mid)
             mcfg = self._get_mcfg(token_id)
             if mcfg.get("_dual_side_auto"):
                 yes_tid = mcfg.get("paired_token_id", "")
@@ -3339,7 +3395,7 @@ class PolyLPSMulti:
                     yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
                     # Either side must be below threshold for dual-side to activate:
                     #   YES cheap: yes_top_price <= max_mid
-                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO 闂?1-YES <= max_mid)
+                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO — 1-YES <= max_mid)
                     yes_is_low = yes_top_price <= self._dual_side_max_mid
                     no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
                     if not yes_is_low and not no_is_low:
@@ -3363,7 +3419,7 @@ class PolyLPSMulti:
                         log(
                             f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
                             f"max_mid={self._dual_side_max_mid} side={side_label} "
-                            f"depth={depth_val} 闂?paired mode active"
+                            f"depth={depth_val} — paired mode active"
                         )
                 else:
                     return  # No snapshot for YES side yet; wait
@@ -3462,7 +3518,7 @@ class PolyLPSMulti:
             live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
             prices = self._build_price_legs(token_id, tob, live_spread=live_spread)
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Paired (both-or-none) gate for <10c markets 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩?
+            # # Paired (both-or-none) gate for <10c markets
             # When either side is below max_mid, enforce:
             #   1) Cheap-side book depth >= min_book_depth_usdc, else skip BOTH
             #   2) Both-or-none: paired side must also have a valid plan
@@ -3481,7 +3537,7 @@ class PolyLPSMulti:
                         log(
                             f"[dual-side-skip] token={slug} reason={depth_reason} "
                             f"depth={depth_val} min={self._dual_side_min_book_depth} "
-                            f"闂?skipping entire event"
+                            f" — skipping entire event"
                         )
                         return
                     # Both-or-none: paired side must be ready
@@ -3552,9 +3608,9 @@ class PolyLPSMulti:
                 self._last_top_plan_sig[token_id] = ""
                 self._last_back_plan_sig[token_id] = ""
                 return
-            # 闂傚倸鍊风粈浣哄椤撱垹纾块柕鍫濐槸缁€澶愮叓閸ャ劎鈽夐柣銈夌畺閺岋紕浠︾拠鎻掑闂佺粯鎸婚惄顖炲蓟閻斿吋鍤嬫い鎺嗗亾濠德ゅГ缁绘盯宕ㄩ鍓х厜闂佸搫鑻粔褰掑箖濠婂吘鐔煎传閸曞灚缍傞梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤?
-            # UNIFIED BUDGET PLANNER 闂?global capital-aware
-            # 闂傚倸鍊风粈浣哄椤撱垹纾块柕鍫濐槸缁€澶愮叓閸ャ劎鈽夐柣銈夌畺閺岋紕浠︾拠鎻掑闂佺粯鎸婚惄顖炲蓟閻斿吋鍤嬫い鎺嗗亾濠德ゅГ缁绘盯宕ㄩ鍓х厜闂佸搫鑻粔褰掑箖濠婂吘鐔煎传閸曞灚缍傞梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤曢柡灞诲劚閽冪喖鏌曟径鍫濆姢闁告ɑ鎮傚铏规兜閸涱厾鍔烽梺鍛婃煥缁夋挳鍩㈠鍜佺叆闁割偆鍠撻崢鎾绘⒑缂佹ê鐏﹂柨姘攽椤旂懓浜鹃梻鍌欑閹碱偊骞婅箛娑欏亗闁跨喓濮撮弰銉╂煥閻斿搫孝缂佺姵鐩弻鏇熺節韫囨稒顎嶉梺缁樼箖婵炲﹤顫忛崫鍕殾闁搞儜鍐瀱闂備礁鎲￠弻銊ф崲濡警鍤?
+            # # (cleaned)
+            # UNIFIED BUDGET PLANNER — global capital-aware
+            # # (cleaned)
             min_size_needed = max(required_min_size, Decimal("0.001"))
             avail = await self._get_collateral_available()
             if avail is not None:
@@ -3566,7 +3622,7 @@ class PolyLPSMulti:
                 )
                 return
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Step 1: compute real available capital 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫?
+            # # Step 1: compute real available capital
             paired_token_for_budget = (
                 self._paired_token_cache.get(token_id)
                 or str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
@@ -3584,11 +3640,11 @@ class PolyLPSMulti:
             safety_buffer = avail * Decimal("0.02")
             real_avail = max(Decimal("0"), avail - safety_buffer)
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Step 2: compute this side's budget 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶?
+            # # Step 2: compute this side's budget
             raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
             event_budget = min(raw_event_budget, real_avail)
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Step 3: if paired, enforce combined budget constraint 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾?
+            # # Step 3: if paired, enforce combined budget constraint
             paired_reserved_budget = Decimal("0")
             yes_required = Decimal("0")
             no_required = Decimal("0")
@@ -3625,7 +3681,7 @@ class PolyLPSMulti:
                     half_budget = paired_reserved_budget / Decimal("2")
                     event_budget = min(event_budget, half_budget)
                 else:
-                    # No pre-reserve yet 闂?just split real_avail
+                    # No pre-reserve yet — just split real_avail
                     event_budget = min(event_budget, real_avail / Decimal("2"))
 
                 # Check: can combined fit?
@@ -3650,8 +3706,8 @@ class PolyLPSMulti:
 
             event_budget = max(Decimal("0"), event_budget)
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Step 4: plan generation with degradation cascade 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩?
-            # Try: full legs 闂?fewer back legs 闂?shrink sizes 闂?single fallback 闂?skip
+            # # Step 4: plan generation with degradation cascade
+            # Try: full legs — fewer back legs — shrink sizes — single fallback — skip
             plan = []
             requested_legs = requested_legs_raw if requested_legs_raw > 0 else len(viable_legs)
             planned_legs = 0
@@ -3689,7 +3745,7 @@ class PolyLPSMulti:
                         degrade_reason = f"budget_limited_degrade requested={requested_legs} planned={planned_legs} paired={is_paired}"
                     break
 
-            # 4b: fallback 闂?single top leg at minimum size
+            # 4b: fallback — single top leg at minimum size
             if not plan and top_price > 0 and event_budget >= single_leg_required_notional:
                 fallback_size = self._floor_to_tick(min_size_needed, Decimal("0.001"))
                 fallback_notional = top_price * fallback_size
@@ -3698,7 +3754,7 @@ class PolyLPSMulti:
                     planned_legs = 1
                     degrade_reason = "single_leg_fallback"
 
-            # 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Step 5: comprehensive budget log 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩?
+            # # Step 5: comprehensive budget log
             final_planned_notional = sum(n for _, _, n in plan) if plan else Decimal("0")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             if plan and degrade_reason:
@@ -3748,7 +3804,7 @@ class PolyLPSMulti:
                 if self._event_state_name(token_id) in {EVENT_DEFENSIVE, EVENT_COOLDOWN}:
                     self._set_event_state(token_id, EVENT_ACTIVE, "planner_sync_complete")
                 # Removed: immediate _check_not_at_best_bid() call here caused a
-                # race condition 闂?it fetches a fresh book milliseconds after placing,
+                # race condition — it fetches a fresh book milliseconds after placing,
                 # and micro-movements make _build_price_legs compute a different
                 # legal_top, triggering instant cancellation. The background
                 # best_bid_guard_loop (every 10s per token) already provides
@@ -3931,11 +3987,22 @@ class PolyLPSMulti:
             payloads.append({"type": "user", "assets_ids": list(self.market_cfg.keys()), "auth": auth})
             return payloads
 
-        backoff = 1
+        consecutive_failures = 0
         ws_down_since = 0.0
         while self._running:
             url = urls[0]
             try:
+                # Full restart: if too many consecutive failures, log and reset
+                if consecutive_failures >= self._ws_full_restart_after_n:
+                    log(f"[fill-ws] {consecutive_failures} consecutive failures — performing full WS restart")
+                    self._notify_attention("Fill WS full restart", failures=str(consecutive_failures))
+                    consecutive_failures = 0
+                    await asyncio.sleep(2.0)
+
+                self._fill_ws_reconnect_count += 1
+                if self._fill_ws_reconnect_count > 1:
+                    log(f"[fill-ws] reconnect attempt #{self._fill_ws_reconnect_count} (consecutive_failures={consecutive_failures})")
+
                 async with websockets.connect(url, proxy=WS_PROXY, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
                     log(f"[fill-ws] netpath {_ws_proxy_diag()}")
                     for p in _payloads():
@@ -3943,11 +4010,11 @@ class PolyLPSMulti:
                             await ws.send(json.dumps(p))
                         except Exception:
                             pass
-                    # muted noisy fill-ws connected log
+                    log(f"[fill-ws] connected reconnect_total={self._fill_ws_reconnect_count}")
                     self._last_ws_ok_ts = time.time()
                     self._proxy_failover_record_success("fill-ws")
                     ws_down_since = 0.0
-                    backoff = 1
+                    consecutive_failures = 0
 
                     while self._running:
                         raw = await self._recv_ws_message(ws, "fill-ws")
@@ -4001,11 +4068,13 @@ class PolyLPSMulti:
                                             m_price = Decimal("0")
                                     await self._trigger_event_offline(token, reason, size_matched, m_price)
             except Exception as e:
+                consecutive_failures += 1
                 now = time.time()
                 if ws_down_since <= 0:
                     ws_down_since = now
                 em = _format_exc(e)
-                log(f"[fill-ws] err={em}")
+                backoff = self._ws_backoff_with_jitter(consecutive_failures)
+                log(f"[fill-ws] err={em} consecutive_failures={consecutive_failures} backoff={backoff:.1f}s")
                 if "opening handshake" in em.lower() and "timed out" in em.lower():
                     self._proxy_failover_record_ws_handshake_failure("fill-ws")
                 if self._is_req_exc(e):
@@ -4017,7 +4086,6 @@ class PolyLPSMulti:
                     await self.trigger_global_kill_switch("ws_down_and_poll_degraded")
 
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 20)
 
     async def _poll_fill_watch(self) -> None:
         while self._running:
@@ -4150,7 +4218,7 @@ class PolyLPSMulti:
                     if new_count > 0:
                         log(f"[trade-poll] new_trades={new_count} total={len(items)}")
 
-                # keep memory bounded 闂?use insertion-ordered list for correct FIFO truncation
+                # keep memory bounded — use insertion-ordered list for correct FIFO truncation
                 if len(self._seen_trade_ids_order) > 5000:
                     keep = self._seen_trade_ids_order[-2500:]
                     self._seen_trade_ids = set(keep)
@@ -4184,7 +4252,7 @@ class PolyLPSMulti:
                     if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
                         log(
                             f"[balance-drop] ALERT prev={prev_balance} now={avail} "
-                            f"drop={drop} pct={drop_pct:.2%} 闂?possible undetected fill"
+                            f"drop={drop} pct={drop_pct:.2%} — possible undetected fill"
                         )
                         # Try to identify which market lost balance by checking
                         # if any previously tracked orders disappeared
@@ -4241,13 +4309,13 @@ class PolyLPSMulti:
             return -1.0
         except Exception as e:
             log(f"[unwind] position check failed token={token_id} err={e}")
-            return -1.0  # unknown 闂?don't act on error
+            return -1.0  # unknown — don't act on error
 
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
-        - If position is 0 闂?already sold (manually or filled), cancel residual order, remove.
-        - If the order is no longer in live orders 闂?assume filled, remove.
-        - If age > unwind_max_age_sec and still open 闂?Discord alert for manual review.
+        - If position is 0 — already sold (manually or filled), cancel residual order, remove.
+        - If the order is no longer in live orders — assume filled, remove.
+        - If age > unwind_max_age_sec and still open — Discord alert for manual review.
         """
         while self._running:
             await asyncio.sleep(self._unwind_check_interval_sec)
@@ -4273,7 +4341,7 @@ class PolyLPSMulti:
                     # Check if position has been closed (manually sold or filled)
                     position = await self._get_token_position(token_id)
                     if position == 0.0:
-                        # Position gone 闂?cancel any residual sell order and clear
+                        # Position gone — cancel any residual sell order and clear
                         if oid and oid in live_ids:
                             try:
                                 await asyncio.to_thread(self.client.cancel, oid)
@@ -4284,12 +4352,12 @@ class PolyLPSMulti:
                         continue
 
                     if oid and oid not in live_ids:
-                        # Order no longer open 闂?filled or externally cancelled; consider done
+                        # Order no longer open — filled or externally cancelled; consider done
                         log(f"[unwind] completed token={token_id} order_id={oid} age={age:.0f}s")
                         continue
 
                     if age > self._unwind_max_age_sec:
-                        # Timed out 闂?notify via Discord for manual review, keep order alive
+                        # Timed out — notify via Discord for manual review, keep order alive
                         hours = age / 3600
                         msg = (
                             f"[UNWIND ALERT] Unwind order not filled after {hours:.1f}h\n"
