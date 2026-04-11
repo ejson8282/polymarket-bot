@@ -12,17 +12,20 @@ LOG_PATH = BASE / "data/engine.log"
 
 env = os.environ.copy()
 
-# Route traffic through local Clash proxy when proxy_pool is disabled
-env.setdefault("HTTP_PROXY", "http://127.0.0.1:7890")
-env.setdefault("HTTPS_PROXY", "http://127.0.0.1:7890")
+# Route traffic through a local proxy only when explicitly requested.
+local_proxy = env.get("POLY_LOCAL_PROXY_URL", "").strip()
+if local_proxy:
+    env["HTTP_PROXY"] = local_proxy
+    env["HTTPS_PROXY"] = local_proxy
 
 key = env.get("POLY_PRIVATE_KEY", "").strip()
-signer_server_url = ""
+signer_server_url = env.get("POLY_SIGNER_SERVER_URL", "").strip()
 try:
     cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    signer_server_url = str((cfg.get("account") or {}).get("signer_server_url", "")).strip()
+    if not signer_server_url:
+        signer_server_url = str((cfg.get("account") or {}).get("signer_server_url", "")).strip()
 except Exception:
-    signer_server_url = ""
+    signer_server_url = signer_server_url
 
 has_local_key = bool(key and "REDACTED" not in key and "REPLACE" not in key)
 has_remote_signer = bool(signer_server_url)
@@ -30,7 +33,7 @@ has_remote_signer = bool(signer_server_url)
 if not has_local_key and not has_remote_signer:
     print(
         "ERROR: No valid signer configured. "
-        "Set POLY_PRIVATE_KEY or configure account.signer_server_url in config.json."
+        "Set POLY_PRIVATE_KEY or POLY_SIGNER_SERVER_URL."
     )
     sys.exit(1)
 

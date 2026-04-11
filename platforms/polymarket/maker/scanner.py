@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -24,6 +25,34 @@ def pick_first(d: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
             return d[k]
     return default
 
+
+def parse_ts(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            x = float(value)
+            return x / 1000.0 if x > 10_000_000_000 else x
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.isdigit():
+            x = float(s)
+            return x / 1000.0 if x > 10_000_000_000 else x
+        s = s.replace('Z', '+00:00')
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
+
+
+def is_in_play_market(m: Dict[str, Any]) -> bool:
+    # Only use actual game/event start time fields — NOT startDate/startDateIso,
+    # which are market creation timestamps and would falsely mark all
+    # non-sports markets as "in play".
+    game_start = parse_ts(pick_first(m, ['gameStartTime', 'game_start_time']))
+    if game_start is None:
+        return False
+    return datetime.now(timezone.utc).timestamp() >= game_start
 
 def parse_slug(value: str) -> str:
     """Accept raw slug or full polymarket URL."""
@@ -95,6 +124,29 @@ def first_token_id(m: Dict[str, Any]) -> str:
     return str(pick_first(m, ["tokenId", "token_id"], ""))
 
 
+def parse_token_ids(m: Dict[str, Any]) -> List[str]:
+    ids = m.get("clobTokenIds")
+    if isinstance(ids, str):
+        try:
+            arr = json.loads(ids)
+            if isinstance(arr, list):
+                return [str(x) for x in arr if str(x)]
+        except Exception:
+            return []
+    if isinstance(ids, list):
+        return [str(x) for x in ids if str(x)]
+    single = str(pick_first(m, ["tokenId", "token_id"], "") or "")
+    return [single] if single else []
+
+
+def infer_tick_size(best_bid: float, best_ask: float) -> float:
+    for px in (best_bid, best_ask):
+        s = f"{px}"
+        if "." in s and len(s.split(".", 1)[1].rstrip("0")) >= 3:
+            return 0.001
+    return 0.01
+
+
 def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
     volume = to_float(pick_first(m, ["volume24hr", "volume24h", "volume", "vol24h"], 0.0))
     spread_limit = to_float(pick_first(m, ["rewardsMaxSpread", "maxIncentiveSpread", "incentiveSpread", "spread"], 0.02), 0.02)
@@ -103,9 +155,13 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
 
     reward_fields = extract_reward_fields(m)
     reward = reward_fields["reward"]
+    token_ids = parse_token_ids(m)
+    token_id = token_ids[0] if token_ids else ""
+    paired_token_id = token_ids[1] if len(token_ids) > 1 else ""
 
     mid = (best_bid + best_ask) / 2 if (best_bid > 0 and best_ask > 0) else 0.0
     quoted_spread = (best_ask - best_bid) if (best_bid > 0 and best_ask > 0) else 0.0
+    tick_size_hint = infer_tick_size(best_bid, best_ask)
 
     # Stability proxies (24h / 1h price change magnitude).
     # Lower absolute change => more stable daily curve => better LP candidate.
@@ -156,6 +212,15 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
     # after all markets are collected. Store raw here; dashboard uses final values.
 
     open_interest = to_float(pick_first(m, ["openInterest", "open_interest"], 0.0))
+    condition_id = str(pick_first(m, ["market", "conditionId", "condition_id"], ""))
+    has_valid_book = best_bid > 0 and best_ask > 0 and best_ask >= best_bid
+    is_placeholder_book = best_bid <= 0.02 and best_ask >= 0.98 if has_valid_book else False
+    if not has_valid_book:
+        book_integrity = "crossed_or_empty"
+    elif is_placeholder_book:
+        book_integrity = "placeholder"
+    else:
+        book_integrity = "healthy"
 
     # extract parent event slug for accurate URL construction
     market_slug = str(pick_first(m, ["slug"], ""))
@@ -177,12 +242,16 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
     else:
         market_url = f"https://polymarket.com/event/{market_slug}"
 
+    game_start_ts = parse_ts(pick_first(m, ["gameStartTime", "game_start_time", "startDate"]))
+
     return {
         "id": str(pick_first(m, ["id", "marketId", "slug"], "")),
         "question": str(pick_first(m, ["question", "title", "name"], "")),
         "slug": market_slug,
         "market_url": market_url,
-        "token_id": first_token_id(m),
+        "token_id": token_id,
+        "paired_token_id": paired_token_id,
+        "condition_id": condition_id,
         "volume24h": volume,
         "openInterest": open_interest,
         "reward": reward,
@@ -194,6 +263,8 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
         "bestAsk": best_ask,
         "mid": mid,
         "quotedSpread": quoted_spread,
+        "tickSizeHint": tick_size_hint,
+        "bookIntegrity": book_integrity,
         "oneDayPriceChange": one_day_change,
         "oneHourPriceChange": one_hour_change,
         "stabilityPenalty": stability_penalty,
@@ -206,6 +277,8 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
         "fill_risk": 0.0,
         "quadrant": "",
         "crowd": crowd_level,
+        "gameStartTs": game_start_ts,
+        "isInPlay": is_in_play_market(m),
     }
 
 
@@ -316,10 +389,65 @@ def resolve_by_slug(markets: List[Dict[str, Any]], slug: str) -> Optional[Dict[s
     return fetch_market_by_slug(slug)
 
 
+CLOB_BOOK_URL = "https://clob.polymarket.com/book"
+
+
+def fetch_bid_depth(token_id: str, timeout: float = 8.0) -> float:
+    """Fetch the total bid-side notional (USDC) from the CLOB order book.
+
+    Returns sum(price * size) for all bid levels, or 0.0 on failure.
+    """
+    if not token_id:
+        return 0.0
+    try:
+        r = requests.get(CLOB_BOOK_URL, params={"token_id": token_id}, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        bids = data.get("bids") or []
+        total = 0.0
+        for level in bids:
+            price = to_float(level.get("price"), 0.0)
+            size = to_float(level.get("size"), 0.0)
+            total += price * size
+        return total
+    except Exception:
+        return 0.0
+
+
+def enrich_book_depth(
+    markets: List[Dict[str, Any]],
+    min_bid_depth: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """Fetch bid-side depth for each market and filter by minimum.
+
+    Adds 'bidDepth' field to each market dict.
+    """
+    import sys
+    result = []
+    for idx, m in enumerate(markets):
+        tid = m.get("token_id", "")
+        depth = fetch_bid_depth(tid)
+        m["bidDepth"] = round(depth, 2)
+        slug = m.get("slug", "")[:30]
+        print(
+            f"  [{idx + 1}/{len(markets)}] {slug:<30s} bid_depth=${depth:>12,.2f}"
+            f"{'  ✗ SKIP' if min_bid_depth > 0 and depth < min_bid_depth else ''}",
+            file=sys.stderr, flush=True,
+        )
+        if min_bid_depth > 0 and depth < min_bid_depth:
+            continue
+        result.append(m)
+    return result
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Scan Polymarket markets and rank candidates.")
     ap.add_argument("--min-volume", type=float, default=0, help="Minimum 24h volume filter (default: 0 = no filter)")
-    ap.add_argument("--min-reward", type=float, default=20, help="Minimum daily reward ($) filter")
+    ap.add_argument("--min-reward", type=float, default=0, help="Minimum daily reward ($) filter")
+    ap.add_argument("--max-reward", type=float, default=0, help="Maximum daily reward ($) filter (0 = no limit)")
+    ap.add_argument("--min-spread", type=float, default=0, help="Minimum maxIncentiveSpread filter (0 = no filter)")
+    ap.add_argument("--max-spread", type=float, default=0, help="Maximum maxIncentiveSpread filter (0 = no limit)")
+    ap.add_argument("--min-bid-depth", type=float, default=0, help="Minimum bid-side book depth in USDC (0 = no filter)")
     ap.add_argument("--sort-by", choices=["reward", "volume", "score", "reward_score"], default="reward")
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--market", action="append", default=[], help="Market URL or slug; repeatable")
@@ -353,6 +481,10 @@ def main() -> None:
         m for m in normalized
         if m["volume24h"] >= args.min_volume
         and m["reward"] >= args.min_reward
+        and (args.max_reward <= 0 or m["reward"] <= args.max_reward)
+        and (args.min_spread <= 0 or m["maxIncentiveSpread"] >= args.min_spread)
+        and (args.max_spread <= 0 or m["maxIncentiveSpread"] <= args.max_spread)
+        and not m.get("isInPlay", False)
     ]
 
     key_map = {
@@ -364,6 +496,19 @@ def main() -> None:
     markets.sort(key=key_map[args.sort_by], reverse=True)
     topn = markets[: args.top]
 
+    # ── Book depth filter: fetch CLOB order book for shortlisted markets ──
+    min_depth = args.min_bid_depth
+    if min_depth > 0:
+        import sys
+        print(f"\nFetching bid-side depth for {len(topn)} candidates (min ${min_depth:,.0f}) ...", file=sys.stderr, flush=True)
+        topn = enrich_book_depth(topn, min_bid_depth=min_depth)
+        print(f"Passed depth filter: {len(topn)} markets\n", file=sys.stderr, flush=True)
+    else:
+        # Still enrich with depth info for display, but don't filter
+        import sys
+        print(f"\nFetching bid-side depth for {len(topn)} candidates ...", file=sys.stderr, flush=True)
+        topn = enrich_book_depth(topn, min_bid_depth=0)
+
     # JSON mode: used by dashboard scatter plot
     if args.json:
         safe = [{k: v for k, v in m.items() if not k.startswith("_")} for m in topn]
@@ -371,12 +516,15 @@ def main() -> None:
         return
 
     # Text mode
-    print(f"Found {len(markets)} markets (min_volume={args.min_volume:.0f}), showing top {len(topn)} by {args.sort_by}\n")
+    depth_label = f", min_bid_depth=${min_depth:,.0f}" if min_depth > 0 else ""
+    print(f"Found {len(markets)} markets (min_volume={args.min_volume:.0f}{depth_label}), showing top {len(topn)} by {args.sort_by}\n")
     for i, m in enumerate(topn, 1):
         q = (m["question"][:90] + "...") if len(m["question"]) > 93 else m["question"]
+        bid_depth = m.get("bidDepth", 0.0)
         print(
             f"{i:02d}. reward_score={m['reward_score']:.1f} fill_risk={m['fill_risk']:.1f} [{m['quadrant'][0]}] | "
             f"reward={m['reward']:.2f} | vol24h={m['volume24h']:.0f} | "
+            f"bid_depth=${bid_depth:,.0f} | "
             f"inc_spread={m['maxIncentiveSpread']:.4f}\n"
             f"    token_id={m['token_id']} slug={m['slug']}\n"
             f"    {q}\n"

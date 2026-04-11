@@ -11,10 +11,13 @@ import logging
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from requests.exceptions import ConnectionError, ReadTimeout
+from requests.exceptions import ConnectionError, HTTPError, ReadTimeout
 from http.client import RemoteDisconnected
 
 logger = logging.getLogger(__name__)
+
+# HTTP status codes that are transient and worth retrying.
+_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 # Transient exceptions that justify an application-level retry with backoff.
 _TRANSIENT_EXCEPTIONS = (ConnectionError, ReadTimeout, RemoteDisconnected, OSError)
@@ -126,32 +129,36 @@ class RemoteSignerClient:
                 resp = self._session.request(method, url, **kwargs)
                 resp.raise_for_status()
                 return resp
+            except HTTPError as exc:
+                if exc.response is None or exc.response.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise  # 4xx errors (auth, bad request) are not retryable
+                last_exc = exc
             except _TRANSIENT_EXCEPTIONS as exc:
                 last_exc = exc
-                if attempt < self._max_retries:
-                    # Exponential backoff: base * 2^(attempt-1), plus jitter
-                    delay = self._base_delay * (2 ** (attempt - 1))
-                    jitter = random.uniform(0, delay * 0.5)
-                    sleep_time = delay + jitter
-                    logger.warning(
-                        "RemoteSignerClient: transient error on attempt %d/%d "
-                        "(%s: %s) — retrying in %.2fs",
-                        attempt,
-                        self._max_retries,
-                        type(exc).__name__,
-                        exc,
-                        sleep_time,
-                    )
-                    time.sleep(sleep_time)
-                    # Recreate session to drop potentially stale connections
-                    self._reset_session()
-                else:
-                    logger.error(
-                        "RemoteSignerClient: all %d attempts exhausted (%s: %s)",
-                        self._max_retries,
-                        type(exc).__name__,
-                        exc,
-                    )
+
+            # Shared retry logic for all transient errors
+            if attempt < self._max_retries:
+                delay = self._base_delay * (2 ** (attempt - 1))
+                jitter = random.uniform(0, delay * 0.5)
+                sleep_time = delay + jitter
+                logger.warning(
+                    "RemoteSignerClient: transient error on attempt %d/%d "
+                    "(%s: %s) — retrying in %.2fs",
+                    attempt,
+                    self._max_retries,
+                    type(last_exc).__name__,
+                    last_exc,
+                    sleep_time,
+                )
+                time.sleep(sleep_time)
+                self._reset_session()
+            else:
+                logger.error(
+                    "RemoteSignerClient: all %d attempts exhausted (%s: %s)",
+                    self._max_retries,
+                    type(last_exc).__name__,
+                    last_exc,
+                )
 
         # Re-raise the last transient exception so callers see the real error
         raise last_exc  # type: ignore[misc]

@@ -1,0 +1,39 @@
+# OS / editor
+.DS_Store
+*.log
+*.pid
+*.pyc
+__pycache__/
+
+# Local state / secrets / notes
+.openclaw/
+.claude/
+memory/
+KEYS.md
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+role.txt
+*.txt
+
+# Runtime data
+data/
+!data/.gitkeep
+
+# Python env / caches
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local dumps / debug
+proxy_nodes_dump.json
+proxy_selector_dump.json
+
+# Misc local launchers
+*.bat

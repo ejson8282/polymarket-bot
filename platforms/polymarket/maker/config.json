@@ -1,490 +1,644 @@
 {
-    "ws_url":  "wss://clob.polymarket.com/ws/v1",
-    "rest_base_url":  "https://clob.polymarket.com",
-    "account":  {
-                    "private_key":  "REDACTED",
-                    "chain_id":  137,
-                    "signature_type":  2,
-                    "funder":  "0x33179aAdFdfB68cdbD665ca58c91dF2a5672AB0C",
-                    "signer_server_url":  "http://100.91.159.54:8420",
-                    "signer_token":  "Qz8yoj4Obb4nWYHj888fLgrFhIcDYVfU0nCWjv6xizY"
-                },
-    "markets":  [
-                    {
-                        "token_id":  "95949957895141858444199258452803633110472396604599808168788254125381075552218",
-                        "side":  "NO",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "38397507750621893057346880033441136112987238933685677349709401910643842844855"
-                    },
-                    {
-                        "token_id":  "110540225177219524039862595475289990032643955968401089134377304882717624846278",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "54062452792656591940498333119952225497035882944827198088651910072416401737992"
-                    },
-                    {
-                        "token_id":  "90772332434487149264114862115632028379978765245278600275169585501290867536237",
-                        "side":  "NO",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "94559586571241563470235664821564670251180951772614764383113614156422396181162"
-                    },
-                    {
-                        "token_id":  "64706035347482993104399772555177879877574275930031570104391724786902103307827",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "105405518749794585659920802334065784844421595560299264393991543592561093487351"
-                    },
-                    {
-                        "token_id":  "106181075047366745139197108801635573283215248045056329679360376976893016488727",
-                        "side":  "NO",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "10991849228756847439673778874175365458450913336396982752046655649803657501964"
-                    },
-                    {
-                        "token_id":  "48607836776010408589162615918906955599242525948965233425351898173465088494889",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "86360200996780455499773209261407613523056787953594017233767492644207734939820"
-                    },
-                    {
-                        "token_id":  "21712452774938486579405065503390580825770961329526390262641406320650803998687",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "78928252893152259332935466909421487285533294573837569253651119145991676150228"
-                    },
-                    {
-                        "token_id":  "30767812841387255642892182147223249245545002662653079696958384408588201824258",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "40302938956091099752849867077837976978448552504757012372843872340644441002059"
-                    },
-                    {
-                        "token_id":  "77200405920919406047222396714341713902953085905930865032809647038536176521469",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "66500024135235000549118614260312981646687207894420706648599952387153386959248"
-                    },
-                    {
-                        "token_id":  "94476829201604408463453426454480212459887267917122244941405244686637914508323",
-                        "side":  "NO",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  false,
-                        "paired_token_id":  "16040015440196279900485035793550429453516625694844857319147506590755961451627"
-                    },
-                    {
-                        "token_id":  "2849827372590072151380088930233312280478318575453624773762283369907909283027",
-                        "side":  "NO",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "59252515735652674747158950210016502214756531287333895140318848923768750410355"
-                    },
-                    {
-                        "token_id":  "51545532861486385873692934524720384955493736271416969951012544640145812214434",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "93039777634964888056094358760934471653366558776013103218493141116582260206427"
-                    },
-                    {
-                        "token_id":  "8128945458646698903806569632554420186698498029234030899768687922863618111402",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "56747118227334252583511882180251579619525123181561585731533380533045271258105"
-                    },
-                    {
-                        "token_id":  "54533043819946592547517511176940999955633860128497669742211153063842200957669",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "87854174148074652060467921081181402357467303721471806610111179101805869578687"
-                    },
-                    {
-                        "token_id":  "111988618077786263362718284278451225707405623288593888751575373086664059387290",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "42006549920912635238720143234628794318400295281074422564226738635663399130499"
-                    },
-                    {
-                        "token_id":  "40081275558852222228080198821361202017557872256707631666334039001378518619916",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "78633590736077251574794513664747155551297291244492840448622550955320930591622"
-                    },
-                    {
-                        "token_id":  "94192784911459194325909253314484842244405314804074606736702592885535642919725",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "114802065330196313748583636362219556679241104184345158405411161275523811071216"
-                    },
-                    {
-                        "token_id":  "107505882767731489358349912513945399560393482969656700824895970500493757150417",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "7305630249804085635496399869905769372294302716159034447326228509068694952392"
-                    },
-                    {
-                        "token_id":  "31335564527155177318544135513783493075328451393660649396114225549873718295223",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "999431386086915652803375764895435840752699372365775899613514207437695781135"
-                    },
-                    {
-                        "token_id":  "1291454874125024564913411658636854434792972068510027777552181749936579562639",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "46036307473347147486878725188057240439237346445231099615680388314304154599904"
-                    },
-                    {
-                        "token_id":  "91234452361450605263734013436205650165110345459845371466629272470861583403438",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "11578806222441353507719115176638735578970248989819859302635595162497755626384"
-                    },
-                    {
-                        "token_id":  "61963573353880265694358880181512412652951688509792017552668784297365342759317",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "111152780649996205982553203207944259422420032287038821800558281705730727362744"
-                    },
-                    {
-                        "token_id":  "104731530598978202925563656323694933154318837341770296468059903473029914991939",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "26798608841678284263513558861747103463247414957168104276155722105431981754185"
-                    },
-                    {
-                        "token_id":  "97390751868769233430161550786035197721004217118584051662030655361575807718008",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "35501529638864997295617415678543053873295823444029641313951781455412631628785"
-                    },
-                    {
-                        "token_id":  "30630994248667897740988010928640156931882346081873066002335460180076741328029",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "79191939610100241429039499950443680906623179487184628479206155805558220344190"
-                    },
-                    {
-                        "token_id":  "24403333663857542318749963185881540287132775184421001118083997035290758448042",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "70938218905946709041826637754079973011181439383787262223683303851797228749109"
-                    },
-                    {
-                        "token_id":  "113287701564209339913693347405685749986285999146352375265161592243948562084773",
-                        "side":  "YES",
-                        "max_incentive_spread":  3.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "107118433685650702332040991454078902188473746599223732907923581436160160612542"
-                    },
-                    {
-                        "token_id":  "19426830997860641827867742428794225516264548638293070052741093336218482490309",
-                        "side":  "YES",
-                        "max_incentive_spread":  4.5,
-                        "price_tick":  0.01,
-                        "min_distance_from_best_bid":  0.01,
-                        "quote_size":  100.0,
-                        "risk":  "mid",
-                        "enabled":  true,
-                        "paired_token_id":  "31869663470674113137413574637244458645080626094263106105850314096988098095887"
-                    }
-                ],
-    "strategy":  {
-                     "default_price_tick":  0.01,
-                     "default_quote_size":  100.0,
-                     "quote_size_mode":  "balance_pct",
-                     "quote_balance_pct_min":  0.9,
-                     "quote_balance_pct_max":  0.99,
-                     "requote_interval_ms":  500,
-                     "default_min_distance_from_best_bid":  0.01,
-                     "max_order_age_sec":  300,
-                     "post_only":  true,
-                     "auto_tick":  true,
-                     "min_order_size":  5.0,
-                     "quote_balance_pct_min_low":  0.95,
-                     "quote_balance_pct_max_low":  0.99,
-                     "quote_balance_pct_min_mid":  0.8,
-                     "quote_balance_pct_max_mid":  0.95,
-                     "quote_balance_pct_min_high":  0.5,
-                     "quote_balance_pct_max_high":  0.7,
-                     "fine_tick_max_legs":  5,
-                     "fine_tick_retreat_pct":  0.35,
-                     "fine_tick_zone_use_pct":  0.5,
-                     "dual_side":  {
-                                       "enabled":  true,
-                                       "max_mid":  0.1,
-                                       "no_side_risk":  "low",
-                                       "min_book_depth_usdc":  10000
-                                   },
-                     "max_reward_levels":  12,
-                     "level_weight_decay":  0.82,
-                     "level_distance_penalty":  0.08,
-                     "level_depth_bonus_cap":  0.25,
-                     "level_depth_bonus_scale":  0.1,
-                     "level_bba_penalty":  0.12,
-                     "level_defense_storm_penalty":  0.18,
-                     "repeat_defense_ban_count":  3,
-                     "defense_requote_block_sec":  15
-                 },
-    "risk":  {
-                 "kill_switch_on_fill":  true,
-                 "cooldown_seconds":  60,
-                 "start_freeze_seconds":  14400,
-                 "max_notional_usdc_per_order":  510.0,
-                 "max_balance_fail_streak":  9,
-                 "event_ban_ttl_sec":  600
-             },
-    "tick_validation":  {
-                            "enabled":  false,
-                            "strict":  false
-                        },
-    "reporting":  {
-                      "discord_webhook":  "https://discord.com/api/webhooks/1480756020232847504/4oqGgKbZ6HrsfDgMcKt7u1DY-jC4_2npVlND_FYSlQJ_RDGAMtdBYWskISVcWKAFGxU1",
-                      "fill_discord_webhook":  "",
-                      "hourly_summary":  true
-                  },
-    "dashboard":  {
-                      "scan_defaults":  {
-                                            "min_reward":  10,
-                                            "max_reward":  8888,
-                                            "min_spread":  1,
-                                            "max_spread":  10,
-                                            "min_volume":  10000,
-                                            "min_bid_depth":  100000,
-                                            "sort_by":  "reward_score",
-                                            "top_n":  500
-                                        }
-                  },
-    "proxy_pool":  {
-                       "enabled":  false,
-                       "use_for_reads":  true,
-                       "use_for_ws":  true,
-                       "max_ws_per_proxy":  3,
-                       "items":  [
-
-                                 ],
-                       "proxies":  [
-
-                                   ]
-                   },
-    "execution":  {
-                      "batch_size":  8,
-                      "batch_interval_sec":  30,
-                      "amount_jitter_pct":  0.08,
-                      "enable_order_rotation":  true,
-                      "rotation_interval_min":  60,
-                      "skip_stable_live_orders":  true,
-                      "book_loop_concurrency":  2,
-                      "post_delay_min_sec":  10,
-                      "post_delay_max_sec":  20,
-                      "signer_max_concurrency":  1,
-                      "signer_requote_gap_sec":  1.2,
-                      "balance_cache_ttl_sec":  3,
-                      "health_near_expiry_hours":  0
-                  },
-    "volatility":  {
-                       "front_notional_drop_pct":  0.3,
-                       "bba_jump_ticks":  2,
-                       "defense_action_window_sec":  60,
-                       "defense_action_threshold":  2,
-                       "watch_duration_sec":  120,
-                       "quarantine_duration_sec":  300
-                   },
-    "exit_strategy":  {
-                          "exit_delay_sec":  5,
-                          "exit_timeout_sec":  300,
-                          "retry_count":  2
-                      },
-    "session":  {
-                    "enabled":  true,
-                    "night_start":  "00:00",
-                    "night_end":  "06:00",
-                    "tz":  "Asia/Shanghai",
-                    "switch_gap_sec":  5
-                },
-    "proxy_failover":  {
-                           "enabled":  true,
-                           "controller_url":  "http://127.0.0.1:9097",
-                           "group_name":  "GLOBAL",
-                           "allowed_keywords":  [
-                                                    "HONG KONG",
-                                                    "JAPAN"
-                                                ],
-                           "request_exception_count":  3,
-                           "request_exception_window_sec":  60,
-                           "ws_handshake_fail_count":  3,
-                           "ws_down_trigger_sec":  30,
-                           "observe_sec":  120,
-                           "min_switch_gap_sec":  180,
-                           "max_switches_per_burst":  2,
-                           "max_switches_per_window":  2,
-                           "switch_window_sec":  600,
-                           "bad_node_ttl_sec":  600,
-                           "req_exc_window_sec":  120
-                       },
-    "night_markets":  [
-                          {
-                              "token_id":  "90772332434487149264114862115632028379978765245278600275169585501290867536237",
-                              "side":  "NO",
-                              "max_incentive_spread":  4.5,
-                              "price_tick":  0.01,
-                              "min_distance_from_best_bid":  0.02,
-                              "quote_size":  80.0,
-                              "risk":  "low",
-                              "enabled":  true,
-                              "paired_token_id":  "94559586571241563470235664821564670251180951772614764383113614156422396181162"
-                          },
-                          {
-                              "token_id":  "106181075047366745139197108801635573283215248045056329679360376976893016488727",
-                              "side":  "NO",
-                              "max_incentive_spread":  3.5,
-                              "price_tick":  0.01,
-                              "min_distance_from_best_bid":  0.02,
-                              "quote_size":  80.0,
-                              "risk":  "low",
-                              "enabled":  true,
-                              "paired_token_id":  "10991849228756847439673778874175365458450913336396982752046655649803657501964"
-                          },
-                          {
-                              "token_id":  "107505882767731489358349912513945399560393482969656700824895970500493757150417",
-                              "side":  "YES",
-                              "max_incentive_spread":  3.5,
-                              "price_tick":  0.01,
-                              "min_distance_from_best_bid":  0.02,
-                              "quote_size":  80.0,
-                              "risk":  "low",
-                              "enabled":  true,
-                              "paired_token_id":  "7305630249804085635496399869905769372294302716159034447326228509068694952392"
-                          }
-                      ]
+  "ws_url": "wss://clob.polymarket.com/ws/v1",
+  "rest_base_url": "https://clob.polymarket.com",
+  "account": {
+    "private_key": "REDACTED",
+    "chain_id": 137,
+    "signature_type": 2,
+    "funder": "0x33179aAdFdfB68cdbD665ca58c91dF2a5672AB0C",
+    "signer_server_url": "http://100.91.159.54:8420",
+    "signer_token": "Qz8yoj4Obb4nWYHj888fLgrFhIcDYVfU0nCWjv6xizY"
+  },
+  "markets": [
+    {
+      "token_id": "44766497521417298224542775684305151578865412839932497569295014747238754685930",
+      "side": "YES",
+      "max_incentive_spread": 1.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "20996999543007691583276658905733278225425842004273126945333981068139574656671"
+    },
+    {
+      "token_id": "106447153859732581858501981152769526846682415971322752215765883552796092631383",
+      "side": "YES",
+      "max_incentive_spread": 1.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "23687598488518037874835412353696130311925096871264558838732323936801045523249"
+    },
+    {
+      "token_id": "56231474151770057648855426299021396541474371449092934400587810748856711049761",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "77893140510362582253172593084218413010407941075415081594586195705930819989216"
+    },
+    {
+      "token_id": "82192875338543444321050059158489019675098254652958667767854340749139444164787",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "104843058660950376380723861571450239193841790194474890622661228053834376067728"
+    },
+    {
+      "token_id": "95949957895141858444199258452803633110472396604599808168788254125381075552218",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "38397507750621893057346880033441136112987238933685677349709401910643842844855"
+    },
+    {
+      "token_id": "31335564527155177318544135513783493075328451393660649396114225549873718295223",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "999431386086915652803375764895435840752699372365775899613514207437695781135"
+    },
+    {
+      "token_id": "110540225177219524039862595475289990032643955968401089134377304882717624846278",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992"
+    },
+    {
+      "token_id": "90772332434487149264114862115632028379978765245278600275169585501290867536237",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "94559586571241563470235664821564670251180951772614764383113614156422396181162"
+    },
+    {
+      "token_id": "64706035347482993104399772555177879877574275930031570104391724786902103307827",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "105405518749794585659920802334065784844421595560299264393991543592561093487351"
+    },
+    {
+      "token_id": "30767812841387255642892182147223249245545002662653079696958384408588201824258",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "40302938956091099752849867077837976978448552504757012372843872340644441002059"
+    },
+    {
+      "token_id": "93730658350732768649834008472861182019192630377489777653117511245710309885595",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "92338023949892178944669766466918011858071833335063600591564160751176113496073"
+    },
+    {
+      "token_id": "106181075047366745139197108801635573283215248045056329679360376976893016488727",
+      "side": "NO",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "10991849228756847439673778874175365458450913336396982752046655649803657501964"
+    },
+    {
+      "token_id": "18823838997443878656879952590502524526556504037944392973476854588563571859850",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false,
+      "paired_token_id": "98250445447699368679516529207365255018790721464590833209064266254238063117329"
+    },
+    {
+      "token_id": "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": false,
+      "paired_token_id": "16040015440196279900485035793550429453516625694844857319147506590755961451627"
+    },
+    {
+      "token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "7305630249804085635496399869905769372294302716159034447326228509068694952392"
+    },
+    {
+      "token_id": "75720156002519829912361786945091022242706922246722836126941546028340974330171",
+      "side": "NO",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "13565458761220145250977753098276900790902214604876327357986816739576288755859"
+    },
+    {
+      "token_id": "94192784911459194325909253314484842244405314804074606736702592885535642919725",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "114802065330196313748583636362219556679241104184345158405411161275523811071216"
+    },
+    {
+      "token_id": "54533043819946592547517511176940999955633860128497669742211153063842200957669",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "87854174148074652060467921081181402357467303721471806610111179101805869578687"
+    },
+    {
+      "token_id": "83247781037352156539108067944461291821683755894607244160607042790356561625563",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "33156410999665902694791064431724433042010245771106314074312009703157423879038"
+    },
+    {
+      "token_id": "17371217118862125782438074585166210555214661810823929795910191856905580975576",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "65139230827417363158752884968303867495725894165574887635816574090175320800482"
+    },
+    {
+      "token_id": "104895545296438735617666172336621441242754294947987367085791779928220778311973",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "60745476350338574489643206785963608049827415658137795738920858026399504782388"
+    },
+    {
+      "token_id": "8128945458646698903806569632554420186698498029234030899768687922863618111402",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "56747118227334252583511882180251579619525123181561585731533380533045271258105"
+    },
+    {
+      "token_id": "60429181916537414977280644869591198674637927849363751739424668129720113189410",
+      "side": "NO",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "81548019791840902517287112193384358135389303980460339107425376112037459333655"
+    },
+    {
+      "token_id": "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "78633590736077251574794513664747155551297291244492840448622550955320930591622"
+    },
+    {
+      "token_id": "27911616648163853231017805596118911526202185567944724228908312975649746722206",
+      "side": "NO",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "104071616575689490708756996503755160411785604144351427331378560378097635400347"
+    },
+    {
+      "token_id": "2849827372590072151380088930233312280478318575453624773762283369907909283027",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "59252515735652674747158950210016502214756531287333895140318848923768750410355"
+    },
+    {
+      "token_id": "51545532861486385873692934524720384955493736271416969951012544640145812214434",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "93039777634964888056094358760934471653366558776013103218493141116582260206427"
+    },
+    {
+      "token_id": "24403333663857542318749963185881540287132775184421001118083997035290758448042",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "70938218905946709041826637754079973011181439383787262223683303851797228749109"
+    },
+    {
+      "token_id": "104731530598978202925563656323694933154318837341770296468059903473029914991939",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "26798608841678284263513558861747103463247414957168104276155722105431981754185"
+    },
+    {
+      "token_id": "111988618077786263362718284278451225707405623288593888751575373086664059387290",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "42006549920912635238720143234628794318400295281074422564226738635663399130499"
+    },
+    {
+      "token_id": "61963573353880265694358880181512412652951688509792017552668784297365342759317",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "111152780649996205982553203207944259422420032287038821800558281705730727362744"
+    },
+    {
+      "token_id": "97390751868769233430161550786035197721004217118584051662030655361575807718008",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "35501529638864997295617415678543053873295823444029641313951781455412631628785"
+    },
+    {
+      "token_id": "70364657290228044448461397404440906092275799648915793839023224483022545171360",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "109716724019363983618880291507628426436817303220087305938342349144073848356715"
+    },
+    {
+      "token_id": "109876868437950584369987384406356259939519193117253465815665152916226511121427",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "38310927461258927563020508025396887688249787380193911540547071417200646834355"
+    },
+    {
+      "token_id": "55782999195478978645683058282751482473275270795090145277907596121415418369349",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "91347242536105459969213788769929618447748782724898414007495579710952664644740"
+    },
+    {
+      "token_id": "29048360022556021389805670398008888482908398853670829781367251641936311260707",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "114528627098181527180076013437205839368323282497361602702800503052375432480589"
+    },
+    {
+      "token_id": "55115078421062885512539156303747803058407616201213034911037320915726138659123",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "1910830010387565971650098373488592514702818137344973088263643820608151819241"
+    },
+    {
+      "token_id": "30630994248667897740988010928640156931882346081873066002335460180076741328029",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "79191939610100241429039499950443680906623179487184628479206155805558220344190"
+    },
+    {
+      "token_id": "16311944706191305816071520861077507821456813114461319780607894968964186520747",
+      "side": "YES",
+      "max_incentive_spread": 1.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "44123031886073813548608558044834178582268648486159611914584411032087658810605"
+    },
+    {
+      "token_id": "60499458684380641857666641513383149627633695110197406276308452075860198022694",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "18652479948917565296149340091675894865339012333173025944893512396354173886674"
+    },
+    {
+      "token_id": "77200405920919406047222396714341713902953085905930865032809647038536176521469",
+      "side": "YES",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "66500024135235000549118614260312981646687207894420706648599952387153386959248"
+    },
+    {
+      "token_id": "114694726451307654528948558967898493662917070661203465131156925998487819889437",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.01,
+      "quote_size": 100.0,
+      "risk": "mid",
+      "enabled": true,
+      "paired_token_id": "66255671088804707681511323064315150986307471908131081808279119719218775249892"
+    }
+  ],
+  "strategy": {
+    "default_price_tick": 0.01,
+    "default_quote_size": 100.0,
+    "quote_size_mode": "balance_pct",
+    "quote_balance_pct_min": 0.9,
+    "quote_balance_pct_max": 0.99,
+    "requote_interval_ms": 500,
+    "default_min_distance_from_best_bid": 0.01,
+    "max_order_age_sec": 300,
+    "post_only": true,
+    "auto_tick": true,
+    "min_order_size": 5.0,
+    "quote_balance_pct_min_low": 0.95,
+    "quote_balance_pct_max_low": 0.99,
+    "quote_balance_pct_min_mid": 0.8,
+    "quote_balance_pct_max_mid": 0.95,
+    "quote_balance_pct_min_high": 0.5,
+    "quote_balance_pct_max_high": 0.7,
+    "fine_tick_max_legs": 5,
+    "fine_tick_retreat_pct": 0.35,
+    "fine_tick_zone_use_pct": 0.5,
+    "dual_side": {
+      "enabled": true,
+      "max_mid": 0.1,
+      "no_side_risk": "low",
+      "min_book_depth_usdc": 10000
+    },
+    "max_reward_levels": 12,
+    "level_weight_decay": 0.82,
+    "level_distance_penalty": 0.08,
+    "level_depth_bonus_cap": 0.25,
+    "level_depth_bonus_scale": 0.1,
+    "level_bba_penalty": 0.12,
+    "level_defense_storm_penalty": 0.18,
+    "repeat_defense_ban_count": 3,
+    "defense_requote_block_sec": 15
+  },
+  "risk": {
+    "kill_switch_on_fill": true,
+    "cooldown_seconds": 60,
+    "start_freeze_seconds": 14400,
+    "max_notional_usdc_per_order": 510.0,
+    "max_balance_fail_streak": 9,
+    "event_ban_ttl_sec": 600
+  },
+  "tick_validation": {
+    "enabled": false,
+    "strict": false
+  },
+  "reporting": {
+    "discord_webhook": "https://discord.com/api/webhooks/1480756020232847504/4oqGgKbZ6HrsfDgMcKt7u1DY-jC4_2npVlND_FYSlQJ_RDGAMtdBYWskISVcWKAFGxU1",
+    "fill_discord_webhook": "",
+    "hourly_summary": true
+  },
+  "dashboard": {
+    "scan_defaults": {
+      "min_reward": 10,
+      "max_reward": 8888,
+      "min_spread": 1,
+      "max_spread": 10,
+      "min_volume": 10000,
+      "min_bid_depth": 100000,
+      "sort_by": "reward_score",
+      "top_n": 500
+    }
+  },
+  "proxy_pool": {
+    "enabled": false,
+    "use_for_reads": true,
+    "use_for_ws": true,
+    "max_ws_per_proxy": 3,
+    "items": [],
+    "proxies": []
+  },
+  "execution": {
+    "batch_size": 8,
+    "batch_interval_sec": 30,
+    "amount_jitter_pct": 0.08,
+    "enable_order_rotation": true,
+    "rotation_interval_min": 60,
+    "skip_stable_live_orders": true,
+    "book_loop_concurrency": 2,
+    "post_delay_min_sec": 10,
+    "post_delay_max_sec": 20,
+    "signer_max_concurrency": 1,
+    "signer_requote_gap_sec": 1.2,
+    "balance_cache_ttl_sec": 3,
+    "health_near_expiry_hours": 0
+  },
+  "volatility": {
+    "front_notional_drop_pct": 0.3,
+    "bba_jump_ticks": 2,
+    "defense_action_window_sec": 60,
+    "defense_action_threshold": 2,
+    "watch_duration_sec": 120,
+    "quarantine_duration_sec": 300
+  },
+  "exit_strategy": {
+    "exit_delay_sec": 5,
+    "exit_timeout_sec": 300,
+    "retry_count": 2
+  },
+  "session": {
+    "enabled": true,
+    "night_start": "00:00",
+    "night_end": "06:00",
+    "tz": "Asia/Shanghai",
+    "switch_gap_sec": 5
+  },
+  "proxy_failover": {
+    "enabled": true,
+    "controller_url": "http://127.0.0.1:9097",
+    "group_name": "GLOBAL",
+    "allowed_keywords": [
+      "HONG KONG",
+      "JAPAN"
+    ],
+    "request_exception_count": 3,
+    "request_exception_window_sec": 60,
+    "ws_handshake_fail_count": 3,
+    "ws_down_trigger_sec": 30,
+    "observe_sec": 120,
+    "min_switch_gap_sec": 180,
+    "max_switches_per_burst": 2,
+    "max_switches_per_window": 2,
+    "switch_window_sec": 600,
+    "bad_node_ttl_sec": 600,
+    "req_exc_window_sec": 120
+  },
+  "night_markets": [
+    {
+      "token_id": "90772332434487149264114862115632028379978765245278600275169585501290867536237",
+      "side": "NO",
+      "max_incentive_spread": 4.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true,
+      "paired_token_id": "94559586571241563470235664821564670251180951772614764383113614156422396181162"
+    },
+    {
+      "token_id": "106181075047366745139197108801635573283215248045056329679360376976893016488727",
+      "side": "NO",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true,
+      "paired_token_id": "10991849228756847439673778874175365458450913336396982752046655649803657501964"
+    },
+    {
+      "token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
+      "side": "YES",
+      "max_incentive_spread": 3.5,
+      "price_tick": 0.01,
+      "min_distance_from_best_bid": 0.02,
+      "quote_size": 80.0,
+      "risk": "low",
+      "enabled": true,
+      "paired_token_id": "7305630249804085635496399869905769372294302716159034447326228509068694952392"
+    }
+  ],
+  "event_bus": {
+    "enabled": true,
+    "redis_url": "redis://localhost:6379"
+  }
 }

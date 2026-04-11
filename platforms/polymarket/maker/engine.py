@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -23,6 +24,7 @@ WS_PROXY = None
 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+from event_bus import EventBus
 
 
 @dataclass
@@ -75,6 +77,56 @@ def log(msg: str) -> None:
     except UnicodeEncodeError:
         safe = line.encode("gbk", errors="ignore").decode("gbk", errors="ignore")
         print(safe, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Discord webhook notification system (fire-and-forget, rate-limited)
+# ---------------------------------------------------------------------------
+_notify_cooldowns: dict[str, float] = {}
+_NOTIFY_COOLDOWN_SEC = 60  # max 1 message per event type per 60s
+_discord_webhook_url: str = ""  # set once during engine init
+
+
+def _discord_embed_color(level: str) -> int:
+    return {"info": 0x2ECC71, "warning": 0xF1C40F, "danger": 0xE74C3C}.get(level, 0x95A5A6)
+
+
+def _send_discord_webhook(url: str, title: str, message: str, level: str) -> None:
+    """Blocking HTTP POST to Discord webhook — runs in daemon thread."""
+    try:
+        payload = {
+            "embeds": [{
+                "title": title,
+                "description": message,
+                "color": _discord_embed_color(level),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }]
+        }
+        requests.post(url, json=payload, timeout=10)
+    except Exception:
+        pass  # silently ignore — never disrupt the engine
+
+
+def notify_discord(title: str, message: str, level: str = "info") -> None:
+    """Fire-and-forget Discord notification with per-event-type rate limiting.
+
+    Safe to call from anywhere — instant no-op if webhook is not configured
+    or if the same event type was notified within the cooldown window.
+    """
+    if not _discord_webhook_url:
+        return
+    now = time.time()
+    cooldown_key = f"{title}:{level}"
+    last_sent = _notify_cooldowns.get(cooldown_key, 0.0)
+    if now - last_sent < _NOTIFY_COOLDOWN_SEC:
+        return
+    _notify_cooldowns[cooldown_key] = now
+    t = threading.Thread(
+        target=_send_discord_webhook,
+        args=(_discord_webhook_url, title, message, level),
+        daemon=True,
+    )
+    t.start()
 
 
 def _format_exc(exc: Exception, limit: int = 220) -> str:
@@ -296,6 +348,14 @@ class PolyLPSMulti:
         self.post_only = bool(strategy.get("post_only", True))
         self.auto_tick = bool(strategy.get("auto_tick", True))
 
+        # --- Dynamic budget allocation ---
+        self._dynamic_budget_enabled = bool(strategy.get("dynamic_budget_enabled", False))
+        self._budget_rebalance_interval_sec = float(strategy.get("budget_rebalance_interval_sec", 60))
+        self._budget_min_pct = Decimal(str(strategy.get("budget_min_pct", 0.02)))
+        self._budget_max_pct = Decimal(str(strategy.get("budget_max_pct", 0.25)))
+        self._last_budget_rebalance_ts: float = 0.0
+        self._dynamic_budget_scores: Dict[str, float] = {}
+
         self.kill_switch_on_fill = bool(risk.get("kill_switch_on_fill", True))
         self.cooldown_seconds = int(risk.get("cooldown_seconds", 60))
         self.start_freeze_seconds = int(risk.get("start_freeze_seconds", 120))
@@ -304,6 +364,14 @@ class PolyLPSMulti:
         self.discord_webhook = os.getenv("POLY_DISCORD_WEBHOOK", "").strip() or str(reporting.get("discord_webhook", "")).strip()
         self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
         self.hourly_summary = bool(reporting.get("hourly_summary", True))
+
+        # Initialise global Discord embed-notification webhook
+        global _discord_webhook_url
+        _discord_webhook_url = (
+            os.getenv("POLY_DISCORD_NOTIFY_WEBHOOK", "").strip()
+            or str(self.cfg.get("discord_webhook_url", "")).strip()
+            or self.discord_webhook  # fall back to existing webhook
+        )
 
         self.market_cfg: Dict[str, Dict[str, Any]] = {}
         for m in self.cfg.get("markets", []):
@@ -363,7 +431,7 @@ class PolyLPSMulti:
         self._dual_side_enabled = bool(dual.get("enabled", False))
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))
         self._dual_side_no_risk = str(dual.get("no_side_risk", "low")).lower()
-        self._dual_side_min_book_depth = Decimal(str(dual.get("min_book_depth_usdc", "10000")))
+        self._dual_side_min_book_depth = Decimal(str(dual.get("min_book_depth_usdc", "5000")))
         self._dual_side_injected: set[str] = set()  # NO tokens auto-added
 
         # execution pacing: risk actions immediate, normal posting lightly paced
@@ -410,7 +478,7 @@ class PolyLPSMulti:
         # market reward-health auto offlining
         self.health_check_interval_sec = int(execution.get("health_check_interval_sec", 600))
         self.health_fail_threshold = int(execution.get("health_fail_threshold", 2))
-        self.health_near_expiry_hours = int(execution.get("health_near_expiry_hours", 24))
+        self.health_near_expiry_hours = int(execution.get("health_near_expiry_hours", 12))
         self._health_fail_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self._book_req_exc_streak: Dict[str, int] = {tid: 0 for tid in self.market_cfg}
         self.net_degraded_fail_threshold = int(execution.get("net_degraded_fail_threshold", 10))
@@ -436,9 +504,6 @@ class PolyLPSMulti:
         self._book_loop_concurrency: int = int(execution.get("book_loop_concurrency", 5))
         self.blocked_slug_keywords = [
             "crude-oil-cl-hit",
-            "presidential-election-winner-2028",
-            "2028-us-presidential-election",
-            "democratic-presidential-nominee-2028",
         ]
         self._token_slug_cache: Dict[str, str] = {}
         # {token_id: (meta_dict, timestamp)} — TTL prevents stale reward/spread data
@@ -464,6 +529,7 @@ class PolyLPSMulti:
         self._seen_trade_ids_order: list[str] = []
         # pending unwind SELL orders: [{token_id, fill_price, fill_size, order_id, placed_at}]
         self._pending_unwinds: list[dict] = []
+        self._active_exit_orders: Dict[str, str] = {}  # {token_id: order_id} — protected from cancel_all
         self._unwind_check_interval_sec: int = int(execution.get("unwind_check_interval_sec", 300))
         self._unwind_max_age_sec: int = int(execution.get("unwind_max_age_sec", 14400))
 
@@ -525,6 +591,9 @@ class PolyLPSMulti:
         self._session_night_end: str = str(session_cfg.get("night_end", "06:00"))
         self._session_tz: str = str(session_cfg.get("tz", "Asia/Shanghai"))
         self._session_switch_gap_sec: float = float(session_cfg.get("switch_gap_sec", 5))
+        self._session_confirm_required: bool = bool(session_cfg.get("confirm_required", True))
+        self._session_confirm_ttl_sec: int = int(session_cfg.get("confirm_ttl_sec", 86400))  # 24h
+        self._session_confirm_path: Path = Path(config_path).resolve().parent.parent.parent.parent / "data" / "session_confirm.json"
         self._last_session: str = "unknown"  # track session transitions
 
         # night_markets config: separate market list for night session
@@ -543,7 +612,7 @@ class PolyLPSMulti:
             }
 
         # state writer
-        self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 5))
+        self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 3))
         _maker_dir = Path(config_path).resolve().parent
         _cfg_stem = Path(config_path).stem  # "config", "config_1", "config_2", ...
         if _cfg_stem.startswith("config_") and _cfg_stem[7:].isdigit():
@@ -574,6 +643,15 @@ class PolyLPSMulti:
         # multi-account cycle sleep (random interval between full book-loop cycles)
         self._multi_cycle_sleep_min: float = float(execution.get("multi_cycle_sleep_min_sec", 3.0))
         self._multi_cycle_sleep_max: float = float(execution.get("multi_cycle_sleep_max_sec", 20.0))
+
+        # --- Redis event bus ---
+        bus_cfg = self.cfg.get("event_bus", {})
+        self._event_bus = EventBus(
+            redis_url=os.getenv("POLY_REDIS_URL", "").strip() or str(bus_cfg.get("redis_url", "")).strip(),
+            enabled=bool(bus_cfg.get("enabled", False)),
+        )
+        if self._event_bus.is_enabled:
+            log("[init] Redis event bus enabled")
 
     @staticmethod
     def _floor_to_tick(px: Decimal, tick: Decimal) -> Decimal:
@@ -641,6 +719,9 @@ class PolyLPSMulti:
             return
         entry.update({"state": state, "reason": reason, "updated_at": time.time()})
         log(f"[event-state] token={token_id} {prev}->{state} reason={reason}")
+        self._event_bus.publish("state_change", {
+            "token_id": token_id, "prev": prev, "state": state, "reason": reason,
+        })
 
     def _is_sports_market(self, meta: Optional[Dict[str, Any]] = None) -> bool:
         info = meta or {}
@@ -989,6 +1070,9 @@ class PolyLPSMulti:
         return True, "ok"
 
     def _market_quote_budget_pct(self, token_id: str, market_risk: str) -> Decimal:
+        # When dynamic budget is enabled, trigger periodic rebalance before lookup.
+        if self._dynamic_budget_enabled:
+            self._rebalance_market_budgets()
         cached = self._market_budget_pct.get(token_id)
         if cached is not None and cached > 0:
             return cached
@@ -998,6 +1082,156 @@ class PolyLPSMulti:
         pct = Decimal(str(random.uniform(float(lo), float(hi))))
         self._market_budget_pct[token_id] = pct
         return pct
+
+    # ------------------------------------------------------------------
+    # Dynamic budget scoring & rebalancing
+    # ------------------------------------------------------------------
+
+    def _compute_market_score(self, token_id: str) -> float:
+        """Score a market from 0.0 to 1.0 for dynamic budget allocation.
+
+        Components (weights sum to 1.0):
+        - reward_score  (0.4): higher rewardsMaxSpread = more attractive
+        - depth_score   (0.3): lower front depth (less competition) = better
+        - fill_risk     (0.2): defensive/watch/quarantine/cooldown or recent fills penalised
+        - event_state   (0.1): only ACTIVE markets get full bonus
+        """
+        score = 0.0
+
+        # -- Reward rate component (0..0.4) --
+        reward_weight = 0.0
+        meta_entry = self._market_meta_cache.get(token_id)
+        if meta_entry:
+            meta_dict = meta_entry[0] if isinstance(meta_entry, tuple) else meta_entry
+            spread_raw = meta_dict.get("maxIncentiveSpread") or meta_dict.get("rewardsMaxSpread")
+            if spread_raw is not None:
+                try:
+                    spread_val = float(spread_raw)
+                except (TypeError, ValueError):
+                    spread_val = 0.0
+                # Typical rewardsMaxSpread: 0.01 - 0.10.  Map to 0..1 linearly, clamp.
+                reward_weight = min(1.0, max(0.0, spread_val / 0.10))
+        score += reward_weight * 0.4
+
+        # -- Depth / crowding component (0..0.3) --
+        depth_score = 0.5  # neutral default when no data
+        tracker = self._volatility_tracker.get(token_id)
+        if tracker:
+            history = tracker.get("front_notional_history", [])
+            if history:
+                latest_notional = history[-1][1]
+                # Lower front notional = less competition = higher score.
+                # Typical range: 0 - 500 USDC.  Map inversely.
+                if latest_notional <= 0:
+                    depth_score = 1.0
+                elif latest_notional >= 500:
+                    depth_score = 0.0
+                else:
+                    depth_score = 1.0 - (latest_notional / 500.0)
+        score += depth_score * 0.3
+
+        # -- Fill risk component (0..0.2) --
+        fill_penalty = 0.0
+        state = self._event_state_name(token_id)
+        if state in (EVENT_WATCH, EVENT_QUARANTINE, EVENT_COOLDOWN):
+            fill_penalty = 0.8
+        elif state in (EVENT_CANCELING, EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA):
+            fill_penalty = 1.0
+        elif state == EVENT_DEFENSIVE:
+            fill_penalty = 0.4
+        # Penalise markets with recent fills (last 120s)
+        now = time.time()
+        recent_fill_count = 0
+        for fr in self._fills_record:
+            if fr.get("token_id") == token_id and (now - fr.get("ts", 0)) < 120:
+                recent_fill_count += 1
+        if recent_fill_count > 0:
+            fill_penalty = max(fill_penalty, min(1.0, recent_fill_count * 0.3))
+        score += (1.0 - fill_penalty) * 0.2
+
+        # -- Event state component (0..0.1) --
+        if state == EVENT_ACTIVE:
+            score += 0.1
+        elif state == EVENT_DEFENSIVE:
+            score += 0.05
+
+        return min(1.0, max(0.0, score))
+
+    def _rebalance_market_budgets(self) -> None:
+        """Recompute dynamic budget percentages for all enabled markets.
+
+        Each market gets a score, scores are normalized into budget pct values,
+        then clamped to [budget_min_pct, budget_max_pct].
+
+        The resulting percentages are written into ``_market_budget_pct`` so that
+        ``_market_quote_budget_pct()`` picks them up on the next quote cycle.
+
+        Paired markets (YES/NO on the same event) share a single score — the max
+        of both sides — so their budgets stay aligned.
+        """
+        if not self._dynamic_budget_enabled:
+            return
+        now = time.time()
+        if now - self._last_budget_rebalance_ts < self._budget_rebalance_interval_sec:
+            return
+        self._last_budget_rebalance_ts = now
+
+        token_ids = list(self.market_cfg.keys())
+        if not token_ids:
+            return
+
+        # Step 1: compute raw scores
+        raw_scores: Dict[str, float] = {}
+        for tid in token_ids:
+            raw_scores[tid] = self._compute_market_score(tid)
+        self._dynamic_budget_scores = dict(raw_scores)
+
+        # Step 2: unify paired markets — both sides get the max score of the pair
+        for tid in token_ids:
+            paired = self._paired_token_cache.get(tid) or str(
+                self.market_cfg[tid].get("paired_token_id", "") or ""
+            ).strip()
+            if paired and paired in raw_scores:
+                unified = max(raw_scores[tid], raw_scores[paired])
+                raw_scores[tid] = unified
+                raw_scores[paired] = unified
+
+        # Step 3: weight scores by risk tier baseline so risk tier C still gets less
+        weighted: Dict[str, float] = {}
+        for tid in token_ids:
+            risk = str(self.market_cfg[tid].get("risk", "mid")).lower()
+            lo, hi = self.quote_balance_pct_ranges.get(
+                risk, (self.quote_balance_pct_min, self.quote_balance_pct_max)
+            )
+            tier_midpoint = float((lo + hi) / Decimal("2"))
+            weighted[tid] = raw_scores[tid] * tier_midpoint
+
+        # Step 4: normalize to sum ~ 1, then clamp
+        total_weight = sum(weighted.values())
+        if total_weight <= 0:
+            return  # all scores zero — keep previous budgets
+
+        min_pct = float(self._budget_min_pct)
+        max_pct = float(self._budget_max_pct)
+
+        new_pcts: Dict[str, Decimal] = {}
+        for tid in token_ids:
+            raw_pct = weighted[tid] / total_weight
+            clamped = max(min_pct, min(max_pct, raw_pct))
+            new_pcts[tid] = Decimal(str(round(clamped, 6)))
+
+        # Step 5: rescale so total doesn't exceed 1.0
+        pct_sum = sum(new_pcts.values())
+        if pct_sum > Decimal("1"):
+            for tid in new_pcts:
+                new_pcts[tid] = max(
+                    self._budget_min_pct,
+                    (new_pcts[tid] / pct_sum).quantize(Decimal("0.000001")),
+                )
+
+        # Step 6: write into the budget cache
+        for tid, pct in new_pcts.items():
+            self._market_budget_pct[tid] = pct
 
     def _paired_budget_key(self, token_id: str, paired_token: Optional[str] = None) -> str:
         other = str(paired_token or self._paired_token_cache.get(token_id) or "")
@@ -1280,51 +1514,96 @@ class PolyLPSMulti:
     async def _delayed_balance_drop_reconcile(self, token_id: str, reason: str, delay_sec: float = 30.0) -> None:
         await asyncio.sleep(delay_sec)
         try:
-            state = self._event_state_name(token_id)
-            if state not in {EVENT_HALTED_ON_FILL, EVENT_PENDING_MANUAL_EXIT, EVENT_EXIT_PENDING}:
+            # Check if exit is already in progress
+            if token_id in self._active_exit_orders:
+                log(f"[balance-drop-reconcile] token={token_id} exit already in progress, skipping")
                 return
-            pos = self._get_position_size(token_id)
-            if pos is None or pos <= 0:
+            all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+            found_tid, pos = await self._scan_for_position(all_tokens)
+            if not found_tid:
+                log(f"[balance-drop-reconcile] no position found on any token, skipping")
                 return
-            try:
-                price = self._book(token_id).best_bid if self._book(token_id) else Decimal("0")
-            except Exception:
-                price = Decimal("0")
+            # Get best ask for sell price
+            price = Decimal("0")
+            snap = self._market_snapshots.get(found_tid)
+            if snap and snap.best_ask > 0:
+                price = snap.best_ask
             if price <= 0:
-                price = self._get_mcfg(token_id).get("mid", Decimal("0")) if isinstance(self._get_mcfg(token_id), dict) else Decimal("0")
-            log(f"[balance-drop-reconcile] token={token_id} pos={pos} retry_exit_after={delay_sec}s")
-            self._spawn_bg(self._attempt_exit_sell(token_id, Decimal(str(price or 0)), Decimal(str(pos)), f"balance_drop_reconcile:{reason}"), name=f"balance_drop_reconcile:{token_id}")
+                tob = self.market_states.get(found_tid)
+                if tob and tob.best_ask > 0:
+                    price = tob.best_ask
+            log(f"[balance-drop-reconcile] token={found_tid} pos={pos} price={price} retry_exit_after={delay_sec}s")
+            self._spawn_bg(self._attempt_exit_sell(found_tid, Decimal(str(price or 0)), Decimal(str(pos)), f"balance_drop_reconcile:{reason}"), name=f"balance_drop_reconcile:{found_tid}")
         except Exception as e:
             log(f"[balance-drop-reconcile] token={token_id} err={e}")
 
     async def _attempt_exit_sell(self, token_id: str, fill_price: Decimal, fill_size: Decimal, reason: str) -> None:
-        """After fill halt completes, wait then place a limit SELL order at >= fill_price."""
-        await asyncio.sleep(self._exit_delay_sec)
+        """After fill detected:
+        1. Cancel all BUY orders for this token (keep only the upcoming SELL)
+        2. Place a SELL order at fill_price to recover position
+        3. Monitor until sold, then resume normal quoting
+        """
+        # Brief delay to let fill-ws / trade-poll settle
+        await asyncio.sleep(max(1, self._exit_delay_sec))
 
+        # Allow exit from multiple states (kill switch may change state concurrently)
         state = self._event_state_name(token_id)
-        if state != EVENT_HALTED_ON_FILL:
-            log(f"[exit] token={token_id} skip exit, state changed to {state}")
+        _exit_allowed_states = {EVENT_HALTED_ON_FILL, EVENT_CANCELING, EVENT_COOLDOWN, EVENT_ACTIVE}
+        if state not in _exit_allowed_states:
+            log(f"[exit] token={token_id} skip exit, state={state} not in allowed states")
             return
 
         self._set_event_state(token_id, EVENT_EXIT_PENDING, f"exit_sell:{reason}")
 
-        position = await self._get_token_position(token_id)
-        if position <= 0:
-            log(f"[exit] token={token_id} no position to sell, position={position}")
-            self._set_event_state(token_id, EVENT_COOLDOWN, "exit_no_position")
-            return
+        # Step 1: Cancel all existing orders for this specific token
+        try:
+            await self._cancel_token_orders(token_id)
+            log(f"[exit] token={token_id} canceled all BUY orders")
+        except Exception as e:
+            log(f"[exit] token={token_id} cancel orders warning: {e}")
 
-        sell_size = Decimal(str(position)) if position > 0 else fill_size
+        # Step 2: Check actual position — scan all tokens if the attributed one has none
+        position = await self._get_token_position(token_id)
+        if position is not None and position <= 0:
+            log(f"[exit] token={token_id} position={position}, scanning all tokens...")
+            all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+            found_tid, found_pos = await self._scan_for_position([t for t in all_tokens if t != token_id])
+            if found_tid:
+                log(f"[exit] found position={found_pos} on token={found_tid} (was attributed to {token_id})")
+                token_id = found_tid
+                position = found_pos
+            else:
+                # Keep scanning until found
+                scan_attempt = 0
+                while self._running:
+                    scan_attempt += 1
+                    log(f"[exit] scan attempt {scan_attempt}: no position found, retrying in 60s...")
+                    await asyncio.sleep(60)
+                    found_tid, found_pos = await self._scan_for_position(all_tokens)
+                    if found_tid:
+                        log(f"[exit] found position={found_pos} on token={found_tid} after {scan_attempt} retries")
+                        token_id = found_tid
+                        position = found_pos
+                        break
+                    if scan_attempt >= 10:
+                        self.send_fill_discord(f"[EXIT] Still scanning for position (attempt {scan_attempt})...")
+                if not position or position <= 0:
+                    return
+
+        sell_size = Decimal(str(position)) if position and position > 0 else fill_size
         sell_price = fill_price
         if sell_price <= 0:
             sell_price = Decimal("0.01")
 
+        # Step 3: Place SELL order
         for attempt in range(1, self._exit_retry_count + 1):
             try:
                 log(f"[exit] token={token_id} placing SELL attempt={attempt} price={sell_price} size={sell_size}")
                 resp = await self._place_sell_order(token_id, sell_price, sell_size)
                 order_id = str((resp or {}).get("orderID") or (resp or {}).get("id") or "")
                 log(f"[exit] token={token_id} SELL order placed order_id={order_id}")
+                # Track the exit sell order so kill switch won't cancel it
+                self._active_exit_orders[token_id] = order_id
                 self._pending_unwinds.append({
                     "token_id": token_id,
                     "fill_price": float(fill_price),
@@ -1340,7 +1619,8 @@ class PolyLPSMulti:
                     f"fill_price={fill_price} sell_price={sell_price} size={sell_size}\n"
                     f"order_id={order_id}"
                 )
-                # start monitoring the sell order
+                notify_discord("Exit Sell Placed", f"token={token_id}\nprice={sell_price}\nsize={sell_size}", "warning")
+                # Step 4: Monitor until sold, then resume
                 self._spawn_bg(self._monitor_exit_order(token_id, order_id, sell_price, sell_size, reason), name=f"monitor_exit:{token_id}")
                 return
             except Exception as e:
@@ -1356,6 +1636,24 @@ class PolyLPSMulti:
             f"fill_price={fill_price} size={fill_size}\n"
             f"ACTION REQUIRED: manual exit"
         )
+
+    async def _cancel_token_orders(self, token_id: str) -> None:
+        """Cancel all live orders for a specific token_id (BUY side cleanup before exit sell)."""
+        try:
+            orders = await asyncio.to_thread(self.client.get_orders)
+            if not isinstance(orders, list):
+                return
+            for o in orders:
+                oid = str(o.get("id") or o.get("orderID") or "")
+                asset = str(o.get("asset_id") or o.get("token_id") or "")
+                status = str(o.get("status", "")).lower()
+                if asset == token_id and status in ("live", "open", "active") and oid:
+                    try:
+                        await asyncio.to_thread(self.client.cancel, oid)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log(f"[exit] _cancel_token_orders error: {e}")
 
     async def _place_sell_order(self, token_id: str, price: Decimal, size: Decimal) -> Any:
         """Place a SELL limit order."""
@@ -1376,8 +1674,24 @@ class PolyLPSMulti:
         resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
         return resp
 
+    def _resume_all_markets(self, trigger: str) -> None:
+        """Resume all halted markets after exit sell completes."""
+        all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+        resumed = 0
+        for tid in all_tokens:
+            st = self._event_state_name(tid)
+            if st in {EVENT_HALTED_ON_FILL, EVENT_COOLDOWN}:
+                # Don't resume if there's still an active exit order on this token
+                if tid in self._active_exit_orders:
+                    continue
+                self._set_event_state(tid, EVENT_ACTIVE, trigger)
+                resumed += 1
+        log(f"[exit] resumed {resumed} markets after {trigger}")
+
     async def _monitor_exit_order(self, token_id: str, order_id: str, sell_price: Decimal, sell_size: Decimal, reason: str) -> None:
-        """Monitor the exit SELL order until filled or timeout."""
+        """Monitor the exit SELL order until filled or timeout.
+        On success: resume ALL markets (not just this token).
+        """
         deadline = time.time() + self._exit_timeout_sec
         check_interval = 15
         while self._running and time.time() < deadline:
@@ -1385,9 +1699,12 @@ class PolyLPSMulti:
             try:
                 position = await self._get_token_position(token_id)
                 if position == 0.0:
-                    log(f"[exit] token={token_id} position=0 exit complete")
-                    self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
-                    self._notify_fill("Exit complete", token=token_id, status="position sold")
+                    log(f"[exit] token={token_id} position=0 exit complete — resuming all markets")
+                    self._active_exit_orders.pop(token_id, None)
+                    self._resume_all_markets("exit_complete_resume")
+                    self._notify_fill("Exit complete", token=token_id, status="position sold, all markets resumed")
+                    notify_discord("Exit Complete", f"token={token_id}\nposition sold — all markets resumed", "info")
+                    self.send_fill_discord(f"[EXIT COMPLETE] token={token_id} position sold — all markets resumed")
                     return
 
                 orders = await asyncio.to_thread(self.client.get_orders)
@@ -1399,23 +1716,27 @@ class PolyLPSMulti:
                 if order_id and order_id not in live_ids:
                     new_position = await self._get_token_position(token_id)
                     if new_position == 0.0:
-                        log(f"[exit] token={token_id} order gone + position=0, exit complete")
-                        self._set_event_state(token_id, EVENT_COOLDOWN, "exit_complete")
-                        self.send_fill_discord(f"[EXIT COMPLETE] token={token_id} position sold")
+                        log(f"[exit] token={token_id} order gone + position=0, exit complete — resuming all markets")
+                        self._active_exit_orders.pop(token_id, None)
+                        self._resume_all_markets("exit_complete_resume")
+                        self.send_fill_discord(f"[EXIT COMPLETE] token={token_id} position sold — all markets resumed")
                         return
                     else:
-                        log(f"[exit] token={token_id} order gone but position={new_position}, needs manual review")
-                        self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, "exit_order_gone_position_remains")
-                        self.send_fill_discord(
-                            f"[EXIT ALERT] SELL order disappeared but position remains\n"
-                            f"token={token_id} position={new_position}\n"
-                            f"ACTION REQUIRED: manual exit"
-                        )
-                        return
+                        # Order disappeared (maybe cancel_all hit it) — re-place
+                        log(f"[exit] token={token_id} SELL order disappeared, position={new_position}, re-placing")
+                        try:
+                            resp = await self._place_sell_order(token_id, sell_price, Decimal(str(new_position)))
+                            new_oid = str((resp or {}).get("orderID") or (resp or {}).get("id") or "")
+                            order_id = new_oid  # track the new order
+                            self._active_exit_orders[token_id] = new_oid
+                            log(f"[exit] token={token_id} SELL re-placed order_id={new_oid}")
+                        except Exception as e2:
+                            log(f"[exit] token={token_id} SELL re-place failed: {e2}")
             except Exception as e:
                 log(f"[exit] token={token_id} monitor error: {e}")
 
-        # timeout
+        # timeout — clean up and flag for manual review
+        self._active_exit_orders.pop(token_id, None)
         log(f"[exit] token={token_id} SELL order timeout after {self._exit_timeout_sec}s")
         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_timeout:{reason}")
         self.send_discord(
@@ -1479,6 +1800,30 @@ class PolyLPSMulti:
             return True
         return token_id in self._active_market_cfg()
 
+    def _is_session_confirmed(self) -> bool:
+        """Check if session_confirm.json exists and hasn't expired."""
+        try:
+            if not self._session_confirm_path.exists():
+                return False
+            data = json.loads(self._session_confirm_path.read_text())
+            expires_at = float(data.get("expires_at", 0))
+            return time.time() < expires_at
+        except Exception as e:
+            log(f"[session] error reading session confirmation: {e}")
+            return False
+
+    async def _session_confirm_halt(self) -> None:
+        """Session confirmation expired — cancel all orders and stop engine."""
+        log("[session] *** SESSION CONFIRMATION EXPIRED — halting engine ***")
+        self.send_fill_discord("[SESSION] 24小时确认已过期，撤销所有挂单并停止引擎。请在 Dashboard Scan 页面重新确认后再启动。")
+        notify_discord("Session Confirm Expired", "24h confirmation expired — canceling all orders and stopping engine", "danger")
+        try:
+            await asyncio.to_thread(self.client.cancel_all)
+            log("[session] cancel_all done (confirmation expired)")
+        except Exception as e:
+            log(f"[session] cancel_all error during confirmation halt: {e}")
+        self._running = False
+
     async def _session_switch_cleanup(self) -> None:
         """Cancel ALL orders when session switches, wait gap, then let new session start."""
         current = self._current_session()
@@ -1489,27 +1834,45 @@ class PolyLPSMulti:
         self._last_session = current
         if prev == "unknown":
             log(f"[session] initial session: {current}")
+            # Check confirmation on engine start too
+            if self._session_confirm_required and not self._is_session_confirmed():
+                log("[session] no valid session confirmation on startup — halting")
+                await self._session_confirm_halt()
+            return
+
+        # Check session confirmation before allowing switch
+        if self._session_confirm_required and not self._is_session_confirmed():
+            log(f"[session] session switch {prev} → {current} BLOCKED — no valid confirmation")
+            await self._session_confirm_halt()
             return
 
         log(f"[session] === SESSION SWITCH: {prev} — {current} ===")
         self._notify_status("Session switch", previous=prev, current=current)
         self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
 
-        # Cancel all orders from the previous session's markets
+        # Cancel ALL orders globally first (fast, reliable), then set states
+        try:
+            await self._cancel_all_except_exit()
+            log(f"[session] cancel_all done (protecting {len(self._active_exit_orders)} exit orders)")
+        except Exception as e:
+            log(f"[session] cancel_all error: {e}, falling back to per-token cancel")
+            # Fallback: cancel per-token
+            prev_markets = self._night_market_cfg if prev == "night" else self.market_cfg
+            for token_id in list(prev_markets.keys()):
+                try:
+                    live = await self._get_live_orders_fast(token_id)
+                    ids = [self._order_id(o) for o in live]
+                    if ids:
+                        await self._cancel_order_ids(token_id, ids, "session_switch")
+                except Exception:
+                    pass
+
+        # Set all previous session's markets to COOLDOWN
         prev_markets = self._night_market_cfg if prev == "night" else self.market_cfg
         for token_id in list(prev_markets.keys()):
             state = self._event_state_name(token_id)
-            if state in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
-                continue
-            try:
-                live = await self._get_live_orders_fast(token_id)
-                ids = [self._order_id(o) for o in live]
-                if ids:
-                    await self._cancel_order_ids(token_id, ids, "session_switch")
-                    log(f"[session] token={token_id} cancelled {len(ids)} orders for session switch")
+            if state not in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
                 self._set_event_state(token_id, EVENT_COOLDOWN, "session_switch")
-            except Exception as e:
-                log(f"[session] error cancelling token={token_id}: {e}")
 
         # Gap period before starting new session
         gap = self._session_switch_gap_sec
@@ -2028,7 +2391,7 @@ class PolyLPSMulti:
         """
         strategy = self.cfg.get("strategy", {})
         max_legs = int(strategy.get("fine_tick_max_legs", 5))
-        retreat_pct = Decimal(str(strategy.get("fine_tick_retreat_pct", "0.35")))
+        retreat_pct = Decimal(str(strategy.get("fine_tick_retreat_pct", "0.15")))
         zone_use_pct = Decimal(str(strategy.get("fine_tick_zone_use_pct", "0.50")))
 
         # Clamp config values to sane ranges
@@ -2158,12 +2521,13 @@ class PolyLPSMulti:
 
         avail = self._last_balance
         if avail is not None and avail > 0:
-            # Per-event budgeting only: do NOT deduct active orders from other
-            # markets. Cross-event capital is intentionally reusable. The shared
-            # cap applies only inside this paired event (YES+NO combined).
-            active_reserved = Decimal("0")
+            # Polymarket API enforces global: balance >= sum(ALL active orders) + new.
+            # Exclude this event's own tokens since they'll be re-planned.
+            other_reserved = self._calc_active_orders_reserved(
+                exclude_tokens={token_id, paired_token}
+            )
             safety_buffer = avail * Decimal("0.02")  # 2% safety cushion
-            real_avail = max(Decimal("0"), avail - safety_buffer)
+            real_avail = max(Decimal("0"), avail - other_reserved - safety_buffer)
 
             pair_risk = str(self._get_mcfg(paired_token).get("risk", "mid")).lower()
             pair_pct = self._market_quote_budget_pct(paired_token, pair_risk)
@@ -2616,7 +2980,8 @@ class PolyLPSMulti:
         return v
 
     def _to_end_ts(self, m: dict) -> Optional[float]:
-        keys = ["endDate", "end_date", "endTime", "end_time", "expiration", "resolveBy", "endTimestamp", "end_timestamp"]
+        # Prefer gameStartTime for sports markets (actual game start, more accurate than endDate)
+        keys = ["gameStartTime", "endDate", "end_date", "endTime", "end_time", "expiration", "resolveBy", "endTimestamp", "end_timestamp"]
         for k in keys:
             v = m.get(k)
             if v is None:
@@ -2754,13 +3119,16 @@ class PolyLPSMulti:
             log(f"[health] config disable fail token={token_id} err={e}")
 
         slug = self._token_slug_cache.get(token_id, token_id[:16])
-        msg = f"鐢倸婧€瀹歌弓绗呯痪绺梟鐢倸婧€: {slug}\n閸樼喎娲? {reason}"
+        msg = f"Health check failed: {slug}\nReason: {reason}"
         log(f"[health] {msg}")
+        notify_discord("Health Check Failure", f"market={slug}\ntoken={token_id}\nreason={reason}", "warning")
+        self._event_bus.publish("health_fail", {"token_id": token_id, "slug": slug, "reason": reason})
         self._notify_status("Message", text=msg)
 
     async def market_health_loop(self) -> None:
         while self._running:
-            for token_id in list(self.market_cfg.keys()):
+            all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+            for token_id in all_tokens:
                 if self._event_is_banned(token_id):
                     continue
 
@@ -2775,7 +3143,9 @@ class PolyLPSMulti:
                 else:
                     self._health_fail_streak[token_id] = self._health_fail_streak.get(token_id, 0) + 1
                     log(f"[health] token={token_id} fail={self._health_fail_streak[token_id]} reason={reason}")
-                    if self._health_fail_streak[token_id] >= self.health_fail_threshold:
+                    # Near-expiry is definitive — deactivate immediately, don't wait for streak
+                    immediate = reason.startswith("near_expiry")
+                    if immediate or self._health_fail_streak[token_id] >= self.health_fail_threshold:
                         await self._deactivate_market(token_id, reason)
                         self._health_fail_streak[token_id] = 0
             await asyncio.sleep(max(60, self.health_check_interval_sec))
@@ -2831,6 +3201,11 @@ class PolyLPSMulti:
         matched_price: Optional[Decimal] = None,
     ) -> None:
         log(f"[risk] FILL_HALT token={token_id} reason={reason} size={matched_size} price={matched_price}")
+        notify_discord("Fill Detected", f"token={token_id}\nreason={reason}\nsize={matched_size}\nprice={matched_price}", "danger")
+        self._event_bus.publish("fill", {
+            "token_id": token_id, "reason": reason,
+            "size": str(matched_size), "price": str(matched_price),
+        })
         await self.trigger_global_kill_switch(f"fill_detected token={token_id} reason={reason}")
         await self._request_event_halt(
             token_id,
@@ -2843,8 +3218,23 @@ class PolyLPSMulti:
         # --- P1: auto exit sell after fill halt ---
         fill_price = matched_price if matched_price is not None and matched_price > 0 else Decimal("0")
         fill_size = matched_size if matched_size is not None and matched_size > 0 else Decimal("0")
-        if fill_price > 0:
-            self._spawn_bg(self._attempt_exit_sell(token_id, fill_price, fill_size, reason), name=f"attempt_exit_sell:{token_id}")
+        # Determine best_ask from snapshot
+        _best_ask = Decimal("0")
+        snap = self._market_snapshots.get(token_id)
+        if snap and snap.best_ask > 0:
+            _best_ask = snap.best_ask
+        else:
+            tob = self.market_states.get(token_id)
+            if tob and tob.best_ask > 0:
+                _best_ask = tob.best_ask
+        # SELL price = max(fill_price, best_ask) — protect against loss, but take higher price if available
+        if fill_price <= 0:
+            fill_price = _best_ask if _best_ask > 0 else Decimal("0.01")
+            log(f"[exit] token={token_id} no fill price, using best_ask={fill_price}")
+        elif _best_ask > fill_price:
+            log(f"[exit] token={token_id} best_ask={_best_ask} > fill_price={fill_price}, using best_ask")
+            fill_price = _best_ask
+        self._spawn_bg(self._attempt_exit_sell(token_id, fill_price, fill_size, reason), name=f"attempt_exit_sell:{token_id}")
 
     async def _get_collateral_available(self, force_refresh: bool = False) -> Optional[Decimal]:
         """Best-effort fetch of available collateral (normalized to USDC units)."""
@@ -2911,6 +3301,11 @@ class PolyLPSMulti:
             return None
 
     async def run(self) -> None:
+        n_markets = len(self._active_market_cfg())
+        log(f"[engine] starting with {n_markets} active markets")
+        notify_discord("Engine Started", f"Markets: {n_markets}", "info")
+        self._event_bus.publish("engine_start", {"n_markets": n_markets})
+
         # Inject paired NO tokens before any task starts (so WS subscribes to them)
         try:
             self._maybe_inject_dual_side_tokens()
@@ -3155,9 +3550,21 @@ class PolyLPSMulti:
                     else:
                         self._book_req_exc_streak[token_id] = 0
 
+        _last_confirm_check = 0.0
         while self._running:
             # P2: check for session switch and handle cleanup/gap
             await self._session_switch_cleanup()
+            if not self._running:
+                break
+            # Periodic session confirmation check (every 60s)
+            if self._session_confirm_required and self._session_enabled:
+                _now = time.time()
+                if _now - _last_confirm_check >= 60:
+                    _last_confirm_check = _now
+                    if not self._is_session_confirmed():
+                        log("[session] confirmation expired mid-session — halting")
+                        await self._session_confirm_halt()
+                        break
             active_cfg = self._active_market_cfg()
             token_ids = list(active_cfg.keys())
             random.shuffle(token_ids)
@@ -3344,7 +3751,9 @@ class PolyLPSMulti:
         async with lock:
             now_ts = time.time()
             if now_ts < self._cooldown_until:
-                self._set_event_state(token_id, EVENT_COOLDOWN, "global_cooldown")
+                # Don't downgrade HALTED_ON_FILL to COOLDOWN during active exit
+                if self._event_state_name(token_id) != EVENT_HALTED_ON_FILL or not self._active_exit_orders:
+                    self._set_event_state(token_id, EVENT_COOLDOWN, "global_cooldown")
                 return
             if self._require_recovery_gate:
                 if not self._recovery_ready():
@@ -3384,28 +3793,29 @@ class PolyLPSMulti:
             #    Case B: YES price >= 1 - max_mid — NO is cheap (~1-YES <= max_mid)
             mcfg = self._get_mcfg(token_id)
             if mcfg.get("_dual_side_auto"):
-                yes_tid = mcfg.get("paired_token_id", "")
-                yes_snap = self._market_snapshots.get(yes_tid)
-                if yes_snap is not None:
-                    yes_tob = TopOfBook(best_bid=yes_snap.best_bid, best_ask=yes_snap.best_ask)
-                    yes_meta = await self._get_market_meta(yes_tid)
-                    yes_live_spread_raw = yes_meta.get("maxIncentiveSpread") or yes_meta.get("rewardsMaxSpread") if yes_meta else None
-                    yes_live_spread = Decimal(str(yes_live_spread_raw)) if yes_live_spread_raw is not None else None
-                    yes_prices = self._build_price_legs(yes_tid, yes_tob, live_spread=yes_live_spread)
-                    yes_top_price = yes_prices[0] if yes_prices else yes_snap.best_bid
-                    # Either side must be below threshold for dual-side to activate:
-                    #   YES cheap: yes_top_price <= max_mid
-                    #   NO cheap:  yes_top_price >= 1 - max_mid  (i.e. NO — 1-YES <= max_mid)
-                    yes_is_low = yes_top_price <= self._dual_side_max_mid
-                    no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
-                    if not yes_is_low and not no_is_low:
+                paired_tid = mcfg.get("paired_token_id", "")
+                paired_snap = self._market_snapshots.get(paired_tid)
+                my_snap = self._market_snapshots.get(token_id)
+                if paired_snap is not None:
+                    paired_bid = paired_snap.best_bid
+                    my_bid = my_snap.best_bid if my_snap else Decimal("0")
+                    # Either this token or paired token must be cheap (<= max_mid)
+                    my_is_cheap = my_bid <= self._dual_side_max_mid
+                    paired_is_cheap = paired_bid <= self._dual_side_max_mid
+                    if not my_is_cheap and not paired_is_cheap:
                         return  # Neither side is below threshold; skip paired quoting
+                    # For depth gate, determine which is the cheap side
+                    # Use paired price as proxy for YES price (may be YES or NO)
+                    if my_is_cheap:
+                        yes_top_price = my_bid
+                    else:
+                        yes_top_price = Decimal("1") - paired_bid
                     # Depth gate: cheap side must have >= min_book_depth_usdc
                     depth_ok, depth_val, depth_reason = self._cheap_side_depth_ok(
-                        yes_top_price, yes_tid, token_id,
+                        yes_top_price, paired_tid, token_id,
                     )
                     if not depth_ok:
-                        slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
+                        slug = self._token_slug_cache.get(paired_tid, paired_tid[:16])
                         if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
                             log(
                                 f"[dual-side-skip] slug={slug} token={token_id[:16]} "
@@ -3413,16 +3823,16 @@ class PolyLPSMulti:
                                 f"min={self._dual_side_min_book_depth}"
                             )
                         return
-                    slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
+                    slug = self._token_slug_cache.get(paired_tid, paired_tid[:16])
                     if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
-                        side_label = "YES_low" if yes_is_low else "NO_low"
+                        side_label = "self_cheap" if my_is_cheap else "paired_cheap"
                         log(
-                            f"[dual-side-active] slug={slug} yes_top_price={yes_top_price} "
+                            f"[dual-side-active] slug={slug} my_bid={my_bid} paired_bid={paired_bid} "
                             f"max_mid={self._dual_side_max_mid} side={side_label} "
                             f"depth={depth_val} — paired mode active"
                         )
                 else:
-                    return  # No snapshot for YES side yet; wait
+                    return  # No snapshot for paired side yet; wait
 
             now = time.time()
             if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
@@ -3633,12 +4043,12 @@ class PolyLPSMulti:
                 and current_top_price_for_budget > 0
                 and current_top_price_for_budget <= self._dual_side_max_mid
             )
-            # Per-event budgeting only: do NOT deduct active orders from other
-            # markets. Capital is reusable across events; only this event's paired
-            # sides should share the same envelope.
-            active_order_reserved = Decimal("0")
+            # Polymarket API enforces: balance >= sum(ALL active orders) + new order.
+            # We must respect this global constraint. Exclude this token's own
+            # existing orders (they'll be replaced by the new plan).
+            other_orders_reserved = self._calc_active_orders_reserved(exclude_tokens={token_id})
             safety_buffer = avail * Decimal("0.02")
-            real_avail = max(Decimal("0"), avail - safety_buffer)
+            real_avail = max(Decimal("0"), avail - other_orders_reserved - safety_buffer)
 
             # # Step 2: compute this side's budget
             raw_event_budget = min(avail * pct, avail * Decimal("0.98")) * size_cap
@@ -3934,6 +4344,37 @@ class PolyLPSMulti:
             return False
         return True
 
+    async def _cancel_all_except_exit(self) -> bool:
+        """Cancel all live orders EXCEPT active exit SELL orders.
+        Returns True if all non-exit orders were successfully canceled.
+        """
+        protected_ids = set(self._active_exit_orders.values())
+        if not protected_ids:
+            # No exit orders to protect — use fast cancel_all
+            await asyncio.to_thread(self.client.cancel_all)
+            return True
+
+        # Selective cancel: skip protected exit SELL orders
+        orders = await asyncio.to_thread(self.client.get_orders)
+        if not isinstance(orders, list):
+            return False
+        for o in orders:
+            oid = str(o.get("id") or o.get("orderID") or "")
+            status = str(o.get("status", "")).lower()
+            if status in ("live", "open", "active") and oid and oid not in protected_ids:
+                try:
+                    await asyncio.to_thread(self.client.cancel, oid)
+                except Exception:
+                    pass
+        # Verify: only protected orders remain
+        remaining = await asyncio.to_thread(self.client.get_orders)
+        live_non_exit = [
+            o for o in (remaining if isinstance(remaining, list) else [])
+            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            and str(o.get("id") or o.get("orderID") or "") not in protected_ids
+        ]
+        return len(live_non_exit) == 0
+
     async def trigger_global_kill_switch(self, reason: str) -> None:
         async with self._kill_switch_lock:
             now = time.time()
@@ -3941,26 +4382,30 @@ class PolyLPSMulti:
                 log(f"[kill-switch] already active reason={reason}")
                 return
 
+            protected = set(self._active_exit_orders.values())
+            if protected:
+                log(f"[kill-switch] protecting {len(protected)} exit SELL order(s)")
+
             deadline = time.time() + self.cancel_retry_window_sec
             canceled_ok = False
             while time.time() < deadline:
                 try:
-                    await asyncio.to_thread(self.client.cancel_all)
-                    orders = await asyncio.to_thread(self.client.get_orders)
-                    if self._count_live_orders(orders if isinstance(orders, list) else []) == 0:
-                        canceled_ok = True
+                    canceled_ok = await self._cancel_all_except_exit()
+                    if canceled_ok:
                         break
                 except Exception as e:
-                    log(f"[kill-switch] cancel_all failed: {e}")
+                    log(f"[kill-switch] cancel failed: {e}")
                 await asyncio.sleep(max(1, self.cancel_retry_step_sec))
 
             if not canceled_ok:
-                log("[kill-switch] cancel_all retry window ended; live orders may remain")
+                log("[kill-switch] cancel retry window ended; live orders may remain")
 
             self._cooldown_until = time.time() + self.cooldown_seconds
             self._require_recovery_gate = True
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
+            notify_discord("Kill Switch Activated", f"reason={reason}\ncooldown={self.cooldown_seconds}s", "danger")
+            self._event_bus.publish("kill_switch", {"reason": reason, "cooldown_seconds": self.cooldown_seconds})
             self._notify_status("Message", text=msg)
 
     async def _ws_user_watch(self) -> None:
@@ -4254,22 +4699,43 @@ class PolyLPSMulti:
                             f"[balance-drop] ALERT prev={prev_balance} now={avail} "
                             f"drop={drop} pct={drop_pct:.2%} — possible undetected fill"
                         )
-                        # Try to identify which market lost balance by checking
-                        # if any previously tracked orders disappeared
+                        notify_discord("Balance Drop", f"prev={prev_balance}\nnow={avail}\ndrop={drop}\npct={drop_pct:.2%}", "warning")
+                        self._event_bus.publish("balance_drop", {
+                            "prev": str(prev_balance), "now": str(avail),
+                            "drop": str(drop), "drop_pct": f"{drop_pct:.4f}",
+                        })
+                        # Step 1: CANCEL ALL orders immediately
                         if self._fills_seen == 0 or drop > BALANCE_DROP_ABS:
-                            # Trigger global defensive: cancel all and investigate
-                            for token_id in list(self.market_cfg.keys()):
-                                if self._allow_signal(token_id, f"balance_drop:{prev_balance}->{avail}"):
-                                    self._fills_seen += 1
-                                    reason = f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}"
-                                    await self._trigger_event_offline(
-                                        token_id,
-                                        reason,
-                                        drop,
-                                        Decimal("0"),
-                                    )
-                                    self._spawn_bg(self._delayed_balance_drop_reconcile(token_id, reason, delay_sec=30.0), name=f"balance_drop_reconcile:{token_id}")
-                                    break  # one trigger is enough to halt
+                            reason = f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}"
+                            try:
+                                await self._cancel_all_except_exit()
+                                log(f"[balance-drop] cancel_all done first")
+                            except Exception as ce:
+                                log(f"[balance-drop] cancel_all error: {ce}")
+                            # Halt ALL markets — no quoting until exit sell completes
+                            for tid in list(self._active_market_cfg().keys()):
+                                st = self._event_state_name(tid)
+                                if st not in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
+                                    self._set_event_state(tid, EVENT_HALTED_ON_FILL, "balance_drop_global_halt")
+
+                            # Step 2: Scan ALL tokens to find which one has position (loop until found)
+                            self._fills_seen += 1
+                            all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+                            filled_token, filled_pos = None, 0.0
+                            scan_attempt = 0
+                            while self._running and not filled_token:
+                                scan_attempt += 1
+                                filled_token, filled_pos = await self._scan_for_position(all_tokens)
+                                if filled_token:
+                                    break
+                                log(f"[balance-drop] scan attempt {scan_attempt}: no position found, retrying in 60s...")
+                                if scan_attempt >= 10:
+                                    self.send_fill_discord(f"[BALANCE DROP] ${drop} drop — still scanning for position (attempt {scan_attempt})...")
+                                await asyncio.sleep(60)
+                            if filled_token:
+                                log(f"[balance-drop] found filled token={filled_token} pos={filled_pos} after {scan_attempt} scan(s)")
+                                self._set_event_state(filled_token, EVENT_HALTED_ON_FILL, reason)
+                                self._spawn_bg(self._attempt_exit_sell(filled_token, Decimal("0"), Decimal(str(filled_pos)), reason), name=f"balance_drop_exit:{filled_token}")
                 if avail is not None:
                     prev_balance = avail
                 await asyncio.sleep(10)
@@ -4310,6 +4776,17 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[unwind] position check failed token={token_id} err={e}")
             return -1.0  # unknown — don't act on error
+
+    async def _scan_for_position(self, token_ids: list[str]) -> tuple[str | None, float]:
+        """Scan a list of tokens and return the first one with position > 0."""
+        for tid in token_ids:
+            try:
+                pos = await self._get_token_position(tid)
+                if pos is not None and pos > 0:
+                    return tid, pos
+            except Exception:
+                pass
+        return None, 0.0
 
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
@@ -4485,6 +4962,7 @@ class PolyLPSMulti:
                 tmp = self._state_path.with_suffix(".tmp")
                 tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
                 tmp.replace(self._state_path)
+                self._event_bus.set_state(state)
             except Exception as e:
                 log(f"[state-writer] error: {e}")
             await asyncio.sleep(self._state_write_interval_sec)

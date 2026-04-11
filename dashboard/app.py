@@ -39,6 +39,7 @@ PID_PATH            = DATA_DIR / ".engine.pid"
 LOG_PATH            = DATA_DIR / "engine.log"
 NOTIFY_PATH         = DATA_DIR / "notifications.json"
 ENGINE_STATE_PATH   = DATA_DIR / "engine_state.json"
+SESSION_CONFIRM_PATH = DATA_DIR / "session_confirm.json"
 MULTI_RUNNER_PATH   = MAKER_DIR / "multi_runner.py"
 
 # legacy alias — some helpers still use BASE_DIR for cwd
@@ -331,7 +332,10 @@ def engine_running() -> bool:
 def start_engine() -> str:
     if engine_running():
         return "Engine already running."
-    _, _, _, _, signer_error = _build_remote_signer_client()
+    try:
+        _, _, _, _, signer_error = _build_remote_signer_client()
+    except Exception as exc:
+        return f"Engine start blocked: signer server error — {exc}"
     if signer_error:
         return "Engine start blocked: configure the remote signer first."
     LOG_PATH.touch(exist_ok=True)
@@ -491,7 +495,37 @@ def test_proxy(proxy_str: str) -> bool:
 
 # ── engine state (written by engine in future) ─────────────────────────────────
 
+def _try_redis_state() -> dict | None:
+    """Try to load engine state from Redis event bus (faster than file I/O)."""
+    try:
+        sys.path.insert(0, str(MAKER_DIR))
+        from event_bus import EventBus
+        cfg_path = CONFIG_PATH
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            bus_cfg = cfg.get("event_bus", {})
+            redis_url = os.environ.get("POLY_REDIS_URL", "").strip() or str(bus_cfg.get("redis_url", "")).strip()
+            if redis_url and bus_cfg.get("enabled"):
+                bus = EventBus(redis_url=redis_url, connect_timeout=1.0)
+                return bus.get_state()
+    except Exception:
+        pass
+    return None
+
+
 def load_engine_state() -> dict:
+    redis_state = _try_redis_state()
+    if redis_state:
+        redis_state["_loaded_at"] = time.time()
+        redis_state["_source"] = "redis"
+        markets = redis_state.get("markets", {}) if isinstance(redis_state.get("markets"), dict) else {}
+        global_protection_active = bool(redis_state.get("cooldown_active")) or any(
+            str(m.get("event_state", "")).upper() == "HALTED_ON_FILL"
+            for m in markets.values() if isinstance(m, dict)
+        )
+        redis_state["global_protection_active"] = global_protection_active
+        redis_state["global_trading_enabled"] = not global_protection_active
+        return redis_state
     if ENGINE_STATE_PATH.exists():
         try:
             s = json.loads(ENGINE_STATE_PATH.read_text(encoding="utf-8"))
@@ -998,22 +1032,85 @@ with col_stop:
 _show_flash()
 st.divider()
 
-# ── metric cards ───────────────────────────────────────────────────────────────
+# ── metric cards (auto-refresh fragment — only this section re-renders) ────────
 engine_state = load_engine_state()
-_now_unix = time.time()
 
-# Prefer engine_state.json (written every 5s by engine) over slow subprocess calls.
-# Only fall back to CLOB API subprocess when engine state is missing.
+@st.fragment(run_every=timedelta(seconds=5))
+def _status_bar():
+    _es = load_engine_state()
+    _now = time.time()
+    _es_balance = _es.get("balance")
+    _es_markets = _es.get("markets", {})
+    _es_has_data = _es_balance is not None and bool(_es_markets)
+
+    if _es_has_data:
+        _balance_raw = float(_es_balance)
+        _open_orders = []
+        _total_order_notional = 0.0
+        _total_order_count = 0
+        for _ms in _es_markets.values():
+            for _o in _ms.get("orders", []):
+                _total_order_notional += float(_o.get("price", 0) or 0) * float(_o.get("size", 0) or 0)
+                _total_order_count += 1
+        _order_size_sum = _total_order_notional
+        _utilization = (_order_size_sum / _balance_raw * 100) if _balance_raw > 0 else 0.0
+    elif has_key:
+        _bal_info = fetch_balance_info(host, active_key, chain_id, sig_type, funder)
+        _open_orders = fetch_open_orders(host, active_key, chain_id, sig_type, funder)
+        _balance_raw = float(_bal_info.get("balance") or 0) / 1e6
+        _allowance_raw = float(_bal_info.get("allowance") or 0) / 1e6
+        _order_size_sum = sum(float(o.get("size_matched", 0) or 0) * float(o.get("price", 0) or 0)
+                              for o in _open_orders)
+        _utilization = (_order_size_sum / _allowance_raw * 100) if _allowance_raw > 0 else 0.0
+        _total_order_count = len(_open_orders)
+        _es_has_data = False
+    else:
+        _open_orders = []
+        _balance_raw = 0.0
+        _order_size_sum = 0.0
+        _utilization = 0.0
+        _total_order_count = 0
+
+    _fills_today = [f for f in _es.get("fills", [])
+                    if _now - float(f.get("ts", 0) or 0) < 86400]
+    _unwinds = _es.get("pending_unwinds", [])
+    _overdue_unwinds = [u for u in _unwinds
+                        if _now - float(u.get("placed_at", _now) or _now) > 4 * 3600]
+
+    _show_bal = _es_has_data or has_key
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.metric("USDC Balance",
+                  f"${_balance_raw:,.2f}" if _show_bal else "—",
+                  help="Polygon USDC collateral balance")
+    with m2:
+        st.metric("Order Utilization",
+                  f"{_utilization:.1f}%" if _show_bal else "—",
+                  delta=f"${_order_size_sum:,.0f} deployed" if _show_bal else None)
+    with m3:
+        st.metric("Open Orders",
+                  str(_total_order_count) if _show_bal else "—",
+                  help="All live BUY limit orders")
+    with m4:
+        st.metric("Fills Today", str(len(_fills_today)))
+    with m5:
+        _overdue_label = f"{len(_overdue_unwinds)} overdue" if _overdue_unwinds else "clear"
+        st.metric("Pending Unwinds", str(len(_unwinds)),
+                  delta=_overdue_label if _overdue_unwinds else None,
+                  delta_color="inverse" if _overdue_unwinds else "off")
+    st.caption(f"状态更新: {datetime.now(_BJT).strftime('%H:%M:%S')} 北京时间")
+
+_status_bar()
+
+# Provide variables needed by tabs below (from initial engine_state load)
+_now_unix = time.time()
 _es_balance = engine_state.get("balance")
 _es_markets = engine_state.get("markets", {})
 _es_has_data = _es_balance is not None and bool(_es_markets)
-
 if _es_has_data:
-    # Fast path: all data from engine_state.json — no subprocess needed
     balance_raw = float(_es_balance)
     bal_info = {"balance": None, "allowance": None}
     open_orders = []
-    # Compute order stats from engine_state markets
     _total_order_notional = 0.0
     _total_order_count = 0
     for _ms in _es_markets.values():
@@ -1021,52 +1118,27 @@ if _es_has_data:
             _total_order_notional += float(_o.get("price", 0) or 0) * float(_o.get("size", 0) or 0)
             _total_order_count += 1
     order_size_sum = _total_order_notional
-    allowance_raw = 0.0
     utilization = (order_size_sum / balance_raw * 100) if balance_raw > 0 else 0.0
 elif has_key:
-    # Slow path: engine not running or no state file, use subprocess
-    bal_info   = fetch_balance_info(host, active_key, chain_id, sig_type, funder)
+    bal_info = fetch_balance_info(host, active_key, chain_id, sig_type, funder)
     open_orders = fetch_open_orders(host, active_key, chain_id, sig_type, funder)
     balance_raw = float(bal_info.get("balance") or 0) / 1e6
-    allowance_raw = float(bal_info.get("allowance") or 0) / 1e6
     order_size_sum = sum(float(o.get("size_matched", 0) or 0) * float(o.get("price", 0) or 0)
                          for o in open_orders)
-    utilization = (order_size_sum / allowance_raw * 100) if allowance_raw > 0 else 0.0
+    _total_order_count = len(open_orders)
+    utilization = 0.0
 else:
-    bal_info   = {"balance": None, "allowance": None}
+    bal_info = {"balance": None, "allowance": None}
     open_orders = []
     balance_raw = 0.0
-    allowance_raw = 0.0
     order_size_sum = 0.0
+    _total_order_count = 0
     utilization = 0.0
-
-fills_today  = [f for f in engine_state.get("fills", [])
-                if _now_unix - float(f.get("ts", 0) or 0) < 86400]
-unwinds      = engine_state.get("pending_unwinds", [])
+fills_today = [f for f in engine_state.get("fills", [])
+               if _now_unix - float(f.get("ts", 0) or 0) < 86400]
+unwinds = engine_state.get("pending_unwinds", [])
 overdue_unwinds = [u for u in unwinds
                    if _now_unix - float(u.get("placed_at", _now_unix) or _now_unix) > 4 * 3600]
-
-m1, m2, m3, m4, m5 = st.columns(5)
-with m1:
-    _show_bal = _es_has_data or has_key
-    st.metric("USDC Balance",
-              f"${balance_raw:,.2f}" if _show_bal else "—",
-              help="Polygon USDC collateral balance")
-with m2:
-    st.metric("Order Utilization",
-              f"{utilization:.1f}%" if _show_bal else "—",
-              delta=f"${order_size_sum:,.0f} deployed" if _show_bal else None)
-with m3:
-    _order_count = _total_order_count if _es_has_data else len(open_orders)
-    st.metric("Open Orders",
-              str(_order_count) if _show_bal else "—",
-              help="All live BUY limit orders")
-with m4:
-    st.metric("Fills Today", str(len(fills_today)))
-with m5:
-    overdue_label = f"{len(overdue_unwinds)} overdue" if overdue_unwinds else "clear"
-    st.metric("Pending Unwinds", str(len(unwinds)), delta=overdue_label if overdue_unwinds else None,
-              delta_color="inverse" if overdue_unwinds else "off")
 
 st.markdown("")
 
@@ -1367,6 +1439,44 @@ with tab_fills:
 # ══ TAB: SCAN ════════════════════════════════════════════════════════════════
 with tab_scan:
     st.markdown('<p class="section-title">Market Scanner</p>', unsafe_allow_html=True)
+
+    # ── Session Confirmation ──────────────────────────────────────────────────
+    _confirm_data = {}
+    _confirm_active = False
+    _confirm_ttl = int(cfg.get("session", {}).get("confirm_ttl_sec", 86400))
+    try:
+        if SESSION_CONFIRM_PATH.exists():
+            _confirm_data = json.loads(SESSION_CONFIRM_PATH.read_text())
+            _confirm_active = time.time() < float(_confirm_data.get("expires_at", 0))
+    except Exception:
+        pass
+
+    _confirm_col1, _confirm_col2 = st.columns([1, 3])
+    with _confirm_col1:
+        if st.button(
+            "✅ 确认 Session 切换（24h）" if not _confirm_active else "🔄 重新确认（续期24h）",
+            type="primary" if not _confirm_active else "secondary",
+            use_container_width=True,
+        ):
+            _now = time.time()
+            _confirm_payload = {
+                "confirmed_at": _now,
+                "confirmed_at_human": datetime.fromtimestamp(_now, tz=_BJT).strftime("%Y-%m-%d %H:%M:%S CST"),
+                "expires_at": _now + _confirm_ttl,
+                "expires_at_human": datetime.fromtimestamp(_now + _confirm_ttl, tz=_BJT).strftime("%Y-%m-%d %H:%M:%S CST"),
+            }
+            SESSION_CONFIRM_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SESSION_CONFIRM_PATH.write_text(json.dumps(_confirm_payload, indent=2))
+            st.success(f"已确认！有效期至 {_confirm_payload['expires_at_human']}。引擎可自动切换日盘/夜盘。")
+            st.rerun()
+    with _confirm_col2:
+        if _confirm_active:
+            _exp_str = _confirm_data.get("expires_at_human", "")
+            _conf_str = _confirm_data.get("confirmed_at_human", "")
+            st.success(f"Session 切换已授权 — 确认于 {_conf_str}，有效至 {_exp_str}")
+        else:
+            st.error("⚠️ Session 切换未授权 — 引擎将在下次切换时自动撤单并停止。请 Scan 后点击确认按钮。")
+    st.markdown("---")
 
     row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
     scan_min_reward = int(scan_defaults.get("min_reward", 10) or 0)
@@ -2084,8 +2194,8 @@ with tab_accounts:
         st.info("No config*.json files found.")
 
 
-# ── auto-refresh disabled ──────────────────────────────────────────────────────
-# st_autorefresh(interval=10000, key="auto_refresh")
+# ── auto-refresh disabled (status bar uses st.fragment for partial refresh) ────
+# st_autorefresh(interval=5000, key="auto_refresh")
 
 st.markdown(
     "<p style='color:#30363d; font-size:11px; text-align:right; margin-top:24px;'>"
