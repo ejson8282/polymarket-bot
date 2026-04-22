@@ -32,7 +32,7 @@ BEARER_TOKEN = os.environ.get("SIGNER_TOKEN", "").strip()
 ALLOWED_IPS = [ip.strip() for ip in os.environ.get("SIGNER_ALLOWED_IPS", "").split(",") if ip.strip()]
 
 # Rate-limit / circuit-breaker
-MAX_AMOUNT_PER_ORDER = float(os.environ.get("SIGNER_MAX_AMOUNT", "500"))
+MAX_AMOUNT_PER_ORDER = float(os.environ.get("SIGNER_MAX_AMOUNT", "2000"))
 MAX_REQUESTS_PER_MINUTE = int(os.environ.get("SIGNER_MAX_RPM", "100"))
 
 # ---------------------------------------------------------------------------
@@ -55,8 +55,7 @@ _lock_reason = ""
 
 
 def _check_rate_limit():
-    """Raise if rate-limited or locked."""
-    global _locked
+    """Reject if manually locked or over rpm. Never auto-locks."""
     if _locked:
         raise HTTPException(status_code=423, detail=f"Service locked: {_lock_reason}. Manual unlock required.")
     now = time.time()
@@ -64,18 +63,14 @@ def _check_rate_limit():
         cutoff = now - 60
         _request_timestamps[:] = [t for t in _request_timestamps if t > cutoff]
         if len(_request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            _locked = True
-            raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({MAX_REQUESTS_PER_MINUTE}/min). Service locked.")
+            raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({MAX_REQUESTS_PER_MINUTE}/min)")
         _request_timestamps.append(now)
 
 
 def _check_amount(amount: float):
-    """Lock service if single order exceeds max amount."""
-    global _locked, _lock_reason
+    """Reject single order over max amount. Never auto-locks."""
     if amount > MAX_AMOUNT_PER_ORDER:
-        _locked = True
-        _lock_reason = f"Order amount ${amount} exceeds limit ${MAX_AMOUNT_PER_ORDER}"
-        raise HTTPException(status_code=403, detail=_lock_reason)
+        raise HTTPException(status_code=403, detail=f"Order amount ${amount} exceeds limit ${MAX_AMOUNT_PER_ORDER}")
 
 # ---------------------------------------------------------------------------
 # Auth + IP whitelist
