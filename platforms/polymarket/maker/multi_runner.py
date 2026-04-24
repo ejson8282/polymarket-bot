@@ -30,6 +30,9 @@ _MAKER_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_MAKER_DIR))
 
 from engine import PolyLPSMulti, log  # noqa: E402
+from rewards_snapshot import rewards_snapshot_loop  # noqa: E402
+
+from py_clob_client.clob_types import BookParams  # noqa: E402
 
 
 # ── Shared book cache ──────────────────────────────────────────────────────────
@@ -57,22 +60,81 @@ class SharedBookCache:
         return None
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Detect Cloudflare 429 / rate-limit responses by best-effort string match."""
+    s = f"{type(exc).__name__}: {exc}".lower()
+    return "429" in s or "too many requests" in s or "rate limit" in s
+
+
 async def _shared_book_fetcher(
     primary_engine: PolyLPSMulti,
-    all_token_ids: List[str],
+    get_token_ids,
     cache: SharedBookCache,
     fetch_interval_sec: float = 0.3,
 ) -> None:
-    """Continuously fetch all market books using the primary account's client."""
-    log(f"[book-fetcher] started for {len(all_token_ids)} token(s)")
+    """Continuously fetch all market books via batch POST /books.
+
+    One batch request replaces N per-token GET /book calls, cutting request
+    volume ~55× and staying well clear of Cloudflare's per-IP throttle. On
+    429 the fetcher backs off exponentially (1→2→4→8s, capped at 30s).
+    If the batch endpoint itself fails, falls back to per-token fetches.
+
+    `get_token_ids` is a zero-arg callable returning the current list of
+    token ids — supports runtime market changes (auto-curator add/remove).
+    """
+    initial_tokens = get_token_ids()
+    log(f"[book-fetcher] started for {len(initial_tokens)} token(s) (batch mode)")
+    prev_tokens: Optional[List[str]] = None
+    params: List[BookParams] = []
+    backoff = 0.0
+    consecutive_errors = 0
+
     while primary_engine._running:
-        for tid in all_token_ids:
-            try:
-                book = await asyncio.to_thread(primary_engine.client.get_order_book, tid)
-                if book and getattr(book, "bids", None) and getattr(book, "asks", None):
+        current_tokens = list(get_token_ids())
+        if current_tokens != prev_tokens:
+            params = [BookParams(token_id=tid) for tid in current_tokens]
+            prev_tokens = current_tokens
+            if not params:
+                await asyncio.sleep(fetch_interval_sec)
+                continue
+
+        if backoff > 0:
+            await asyncio.sleep(backoff)
+
+        try:
+            books = await asyncio.to_thread(primary_engine.client.get_order_books, params)
+            stored = 0
+            for book in books or []:
+                if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                    continue
+                tid = getattr(book, "asset_id", None)
+                if tid:
                     cache.put(tid, book)
-            except Exception as e:
-                log(f"[book-fetcher] token={tid} err={e}")
+                    stored += 1
+            if stored == 0 and books:
+                log(f"[book-fetcher] batch returned {len(books)} book(s), 0 stored (empty bids/asks)")
+            consecutive_errors = 0
+            backoff = 0.0
+        except Exception as e:
+            consecutive_errors += 1
+            if _is_rate_limit_error(e):
+                backoff = min(30.0, max(1.0, backoff * 2 if backoff else 1.0))
+                log(f"[book-fetcher] batch 429 — backoff {backoff:.1f}s (consecutive={consecutive_errors})")
+            else:
+                log(f"[book-fetcher] batch err={type(e).__name__}: {e} — falling back to per-token")
+                for tid in current_tokens:
+                    try:
+                        book = await asyncio.to_thread(primary_engine.client.get_order_book, tid)
+                        if book and getattr(book, "bids", None) and getattr(book, "asks", None):
+                            cache.put(tid, book)
+                    except Exception as e2:
+                        if _is_rate_limit_error(e2):
+                            backoff = min(30.0, max(1.0, backoff * 2 if backoff else 1.0))
+                            log(f"[book-fetcher] per-token 429 token={tid} — backoff {backoff:.1f}s")
+                            break
+                        log(f"[book-fetcher] token={tid} err={e2}")
+                backoff = max(backoff, 0.0)
+
         await asyncio.sleep(fetch_interval_sec)
 
 
@@ -159,11 +221,18 @@ async def multi_run(config_dir: Path) -> None:
     # Primary engine provides the shared book fetcher (uses first account's client)
     primary_engine = engines[0][1]
 
+    def _all_tokens_fn() -> List[str]:
+        return list({tid for _, eng in engines for tid in eng.market_cfg.keys()})
+
     tasks = [
         asyncio.create_task(
-            _shared_book_fetcher(primary_engine, all_token_ids, cache),
+            _shared_book_fetcher(primary_engine, _all_tokens_fn, cache),
             name="shared_book_fetcher",
-        )
+        ),
+        asyncio.create_task(
+            rewards_snapshot_loop(list(config_files), data_dir),
+            name="rewards_snapshot",
+        ),
     ]
 
     # Stagger account startups: 0s for first, then random 3-20s gaps

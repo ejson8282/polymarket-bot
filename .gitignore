@@ -37,3 +37,11 @@ proxy_selector_dump.json
 
 # Misc local launchers
 *.bat
+
+# Live secrets (do not commit)
+platforms/polymarket/maker/config.json
+platforms/polymarket/maker/config_*.json
+signer_server/config.yml
+signer_server/*.key
+data/
+*.paused

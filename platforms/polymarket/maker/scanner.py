@@ -208,6 +208,22 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
     else:
         crowd_level = "high"
 
+    # ── Dimension 3: Share Balance Score ────────────────────────────────────────
+    # Favors markets where dual-side quoting is easy:
+    #   - mid near 0.5 → balanced collateral (YES+NO ≈ $1 per share pair)
+    #   - low rewardsMinSize → easier to meet minimum threshold
+    #   - must have paired_token_id for dual-side to work
+    if paired_token_id and mid > 0:
+        # Balance factor: 1.0 at mid=0.5, drops toward 0 at extremes
+        # Using 1 - 2*|mid-0.5| gives linear dropoff; square for sharper penalty
+        balance = 1.0 - 2.0 * abs(mid - 0.5)
+        balance_factor = max(balance, 0.0) ** 0.5  # sqrt to soften the curve
+        # MinSize penalty: lower is better; use 200 as reference baseline
+        min_size_factor = min(200.0 / max(min_size, 1.0), 1.0)
+        share_balance_raw = balance_factor * min_size_factor
+    else:
+        share_balance_raw = 0.0
+
     # Raw scores are normalised to 0-100 percentile ranks by score_markets()
     # after all markets are collected. Store raw here; dashboard uses final values.
 
@@ -242,7 +258,10 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
     else:
         market_url = f"https://polymarket.com/event/{market_slug}"
 
-    game_start_ts = parse_ts(pick_first(m, ["gameStartTime", "game_start_time", "startDate"]))
+    # Only use actual game/event start time fields — NOT startDate/startDateIso,
+    # which are market creation timestamps and would falsely mark non-sports
+    # markets as having a "game start" time.
+    game_start_ts = parse_ts(pick_first(m, ["gameStartTime", "game_start_time"]))
 
     return {
         "id": str(pick_first(m, ["id", "marketId", "slug"], "")),
@@ -269,12 +288,14 @@ def normalize_market(m: Dict[str, Any]) -> Dict[str, Any]:
         "oneHourPriceChange": one_hour_change,
         "stabilityPenalty": stability_penalty,
         "score": score,
-        # two-dimension scores (raw, pre-normalisation)
+        # dimension scores (raw, pre-normalisation)
         "_reward_score_raw": reward_score_raw,
         "_fill_risk_raw": fill_risk_raw,
+        "_share_balance_raw": share_balance_raw,
         # final 0-100 values filled in by score_markets()
         "reward_score": 0.0,
         "fill_risk": 0.0,
+        "share_balance": 0.0,
         "quadrant": "",
         "crowd": crowd_level,
         "gameStartTs": game_start_ts,
@@ -289,9 +310,11 @@ def score_markets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     raws_r = [m["_reward_score_raw"] for m in markets]
     raws_f = [m["_fill_risk_raw"]    for m in markets]
+    raws_s = [m["_share_balance_raw"] for m in markets]
 
     min_r, max_r = min(raws_r), max(raws_r)
     min_f, max_f = min(raws_f), max(raws_f)
+    min_s, max_s = min(raws_s), max(raws_s)
 
     def norm(v: float, lo: float, hi: float) -> float:
         if hi == lo:
@@ -301,8 +324,10 @@ def score_markets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for m in markets:
         r = norm(m["_reward_score_raw"], min_r, max_r)
         f = norm(m["_fill_risk_raw"],    min_f, max_f)
-        m["reward_score"] = r
-        m["fill_risk"]    = f
+        s = norm(m["_share_balance_raw"], min_s, max_s)
+        m["reward_score"]   = r
+        m["fill_risk"]      = f
+        m["share_balance"]  = s
         # Quadrant: reward >= 50 is "high", fill_risk < 50 is "safe"
         if r >= 50 and f < 50:
             m["quadrant"] = "A: high reward, low risk"

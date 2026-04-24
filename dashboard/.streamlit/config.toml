@@ -5,6 +5,8 @@ headless = true
 enableCORS = false
 enableXsrfProtection = false
 enableStaticServing = false
+enableWebsocketCompression = true
+maxUploadSize = 5
 
 [browser]
 gatherUsageStats = false

@@ -234,7 +234,12 @@ def _load_account_config() -> tuple[dict, dict]:
     return cfg, cfg.get("account", {})
 
 
+@st.cache_resource(ttl=600)
 def _build_remote_signer_client():
+    """Cached (10 min) — building this does a Tailscale-round-trip to the Mac
+    Mini signer for `derive_creds`, adding ~100-300 ms to every call that
+    needs a ClobClient (balance, orders, rewards). Caching across reruns keeps
+    the dashboard snappy from remote devices."""
     cfg, acc = _load_account_config()
     signer_server_url = (
         os.getenv("POLY_SIGNER_SERVER_URL", "").strip()
@@ -273,10 +278,11 @@ def _build_remote_signer_client():
 
 
 def _clear_runtime_caches() -> None:
-    for fn in (fetch_balance_info, fetch_open_orders, load_engine_state, load_all_engine_states):
+    for fn in (fetch_balance_info, fetch_open_orders, load_engine_state, load_all_engine_states, _fetch_rewards_for_account):
         clear = getattr(fn, "clear", None)
         if callable(clear):
             clear()
+    st.session_state.pop("_rewards_loaded", None)
 
 
 def _decode_log_bytes(raw: bytes) -> str:
@@ -389,6 +395,118 @@ def stop_engine() -> str:
     return f"Engine stopped. {msg}"
 
 
+def _is_multi_mode() -> bool:
+    """Detect multi-account mode: True if config_1.json or higher exists."""
+    import glob as _g
+    multi_cfgs = _g.glob(str(MAKER_DIR / "config_*.json"))
+    return len(multi_cfgs) > 0
+
+
+# ── Per-account pause flag (Phase B soft-pause) ────────────────────────────────
+# A flag file `.account_N.paused` in data/ signals the engine to cancel open
+# orders and skip quoting for account N without stopping the process.
+
+def _pause_flag_path(acc_id: int) -> Path:
+    return DATA_DIR / f".account_{acc_id}.paused"
+
+
+def _is_account_paused(acc_id: int) -> bool:
+    return _pause_flag_path(acc_id).exists()
+
+
+def _set_account_paused(acc_id: int, paused: bool) -> None:
+    p = _pause_flag_path(acc_id)
+    if paused:
+        p.touch(exist_ok=True)
+    else:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _configured_account_ids(max_n: int = 30) -> list[int]:
+    return [i for i in range(1, max_n + 1) if (MAKER_DIR / f"config_{i}.json").exists()]
+
+
+def _multi_runner_pid() -> int | None:
+    p = DATA_DIR / ".multi_runner.pid"
+    if not p.exists():
+        return None
+    try:
+        return int(p.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _multi_runner_running() -> bool:
+    pid = _multi_runner_pid()
+    return bool(pid and _pid_alive(pid))
+
+
+def start_multi_runner() -> str:
+    if _multi_runner_running():
+        return "Multi-runner already running."
+    if not MULTI_RUNNER_PATH.exists():
+        return "multi_runner.py not found."
+    multi_log = DATA_DIR / "multi_runner.log"
+    multi_log.touch(exist_ok=True)
+    multi_pid_path = DATA_DIR / ".multi_runner.pid"
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    with multi_log.open("a", encoding="utf-8") as lf:
+        proc = subprocess.Popen(
+            [sys.executable, "-X", "utf8", str(MULTI_RUNNER_PATH)],
+            cwd=str(BASE_DIR),
+            stdout=lf, stderr=lf,
+            creationflags=flags,
+            env=env,
+        )
+    multi_pid_path.write_text(str(proc.pid), encoding="utf-8")
+    _clear_runtime_caches()
+    return f"Multi-runner started — PID {proc.pid}"
+
+
+def stop_multi_runner() -> str:
+    # Cancel each account's open orders FIRST (the engine process is about to
+    # be killed, so it won't get a chance to clean up via its own pause/exit
+    # handlers). Do this best-effort per-account — one failure doesn't block
+    # the others or the process kill.
+    cancel_summary: list[str] = []
+    for _acc_id in _configured_account_ids():
+        _cfg_path = MAKER_DIR / f"config_{_acc_id}.json"
+        if not _cfg_path.exists():
+            continue
+        try:
+            _client, _addr, _err = _build_client_for_config(_cfg_path)
+            if _err:
+                cancel_summary.append(f"acc{_acc_id}:skip({_err[:40]})")
+                continue
+            _client.cancel_all()
+            cancel_summary.append(f"acc{_acc_id}:cancelled")
+        except Exception as _exc:
+            cancel_summary.append(f"acc{_acc_id}:fail({type(_exc).__name__})")
+
+    pid = _multi_runner_pid()
+    if pid:
+        if platform.system() == "Windows":
+            # Kill process tree to stop all child engines
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, check=False)
+        else:
+            import signal as _signal
+            os.kill(pid, _signal.SIGTERM)
+        multi_pid_path = DATA_DIR / ".multi_runner.pid"
+        multi_pid_path.unlink(missing_ok=True)
+        _clear_runtime_caches()
+        _cancel_line = " | ".join(cancel_summary) if cancel_summary else "no accounts"
+        return f"Multi-runner PID {pid} stopped. Orders: {_cancel_line}"
+    _cancel_line = " | ".join(cancel_summary) if cancel_summary else "no accounts"
+    return f"No multi-runner PID found. Orders: {_cancel_line}"
+
+
 def emergency_cancel_all() -> str:
     try:
         client, _, _, _, err = _build_remote_signer_client()
@@ -401,7 +519,7 @@ def emergency_cancel_all() -> str:
         return f"cancel_all failed: {exc.__class__.__name__}: {exc}"
 
 
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=15)
 def fetch_balance_info(host: str, key: str, chain_id: int, sig_type: int, funder: str | None) -> dict:
     """Returns {balance, allowance, error}."""
     del host, key, chain_id, sig_type, funder
@@ -418,7 +536,7 @@ def fetch_balance_info(host: str, key: str, chain_id: int, sig_type: int, funder
         return {"balance": None, "allowance": None, "error": f"{exc.__class__.__name__}: {exc}"}
 
 
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=15)
 def fetch_open_orders(host: str, key: str, chain_id: int, sig_type: int, funder: str | None) -> list[dict]:
     del host, key, chain_id, sig_type, funder
     try:
@@ -465,15 +583,159 @@ def resolve_market_names_batch(token_ids: tuple) -> dict[str, str]:
     return result
 
 
+def _all_config_token_ids() -> tuple[str, ...]:
+    """Union of token_ids across config.json + config_1..30.json + every
+    engine_state_*.json. Engine state is included because auto_curator runtime
+    additions and dual-side NO-token injections never land in config files,
+    so names would otherwise fall back to the raw 70-digit id on the Markets
+    tab.
+    """
+    tids: set[str] = set()
+    for p in [CONFIG_PATH] + [MAKER_DIR / f"config_{i}.json" for i in range(1, 31)]:
+        if not p.exists():
+            continue
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for m in cfg.get("markets", []) or []:
+            tid = str(m.get("token_id", "") or "")
+            if tid:
+                tids.add(tid)
+            ptid = str(m.get("paired_token_id", "") or "")
+            if ptid:
+                tids.add(ptid)
+    # Pull in tokens the engine knows about at runtime (dual-side injects,
+    # auto_curator runtime adds, etc.) via engine_state_*.json.
+    for i in range(0, 31):
+        p = DATA_DIR / ("engine_state.json" if i == 0 else f"engine_state_{i}.json")
+        if not p.exists():
+            continue
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for tid in (s.get("markets", {}) or {}).keys():
+            if tid:
+                tids.add(str(tid))
+    return tuple(sorted(tids))
+
+
 def resolve_market_name(token_id: str) -> str:
     """Single token lookup — uses batch cache internally."""
-    cfg_tids = tuple(
-        str(m.get("token_id", ""))
-        for m in load_config().get("markets", [])
-        if m.get("token_id")
-    )
+    cfg_tids = _all_config_token_ids()
+    if token_id and token_id not in cfg_tids:
+        cfg_tids = tuple(sorted(set(cfg_tids) | {token_id}))
     names = resolve_market_names_batch(cfg_tids)
     return names.get(token_id, token_id[:16] + "...")
+
+
+@st.cache_resource(ttl=600)
+def _build_client_for_config(config_path: Path):
+    """Build a ClobClient + address from any config_N.json file.
+    Returns (client, address, error_str).
+
+    Cached per config path (10 min) to avoid the Tailscale signer round-trip
+    on every render — that's ~100-300 ms per account that was stacking up on
+    the Control tab (rewards fetch + stop handler + status bar).
+    """
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return None, None, f"Cannot read {config_path.name}: {e}"
+    acc = cfg.get("account", {})
+    signer_url = str(acc.get("signer_server_url", "")).strip()
+    signer_token = str(acc.get("signer_token", "")).strip()
+    if not signer_url or not signer_token:
+        return None, None, f"{config_path.name}: no signer configured"
+
+    if str(REPO_DIR) not in sys.path:
+        sys.path.insert(0, str(REPO_DIR))
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds
+    from platforms.polymarket.maker.remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+
+    host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
+    chain_id = int(acc.get("chain_id", 137))
+    sig_type = int(acc.get("signature_type", 0))
+    funder = acc.get("funder")
+
+    # Pass funder so the multi-key signer routes the request to the right key
+    # — without it the signer would 400 whenever more than one funder is loaded.
+    signer = RemoteSignerClient(signer_url, signer_token, funder=funder or None)
+    creds = signer.derive_creds()
+    address = creds["address"]
+    client = ClobClient(host=host, chain_id=chain_id)
+    client.signer = AddressStub(address, chain_id)
+    client.builder = BuilderStub(sig_type=sig_type, funder=funder)
+    client.set_api_creds(ApiCreds(
+        api_key=creds["api_key"],
+        api_secret=creds["api_secret"],
+        api_passphrase=creds["api_passphrase"],
+    ))
+    return client, address, None
+
+
+@st.cache_data(ttl=120)
+def _fetch_rewards_for_account(config_name: str, date_str: str) -> dict:
+    """Fetch rewards data for one account. Returns dict with earnings, totals, percentages."""
+    config_path = MAKER_DIR / config_name
+    client, address, err = _build_client_for_config(config_path)
+    if err:
+        return {"error": err, "address": None}
+
+    from py_clob_client.headers.headers import create_level_2_headers
+    from py_clob_client.clob_types import RequestArgs
+    from py_clob_client.http_helpers.helpers import get as clob_get
+
+    host = client.host
+    sig_type = int(json.loads(config_path.read_text(encoding="utf-8")).get("account", {}).get("signature_type", 0))
+    result = {"address": address, "error": None}
+
+    # 1) Total earnings for date
+    try:
+        req = RequestArgs(method="GET", request_path="/rewards/user/total")
+        headers = create_level_2_headers(client.signer, client.creds, req)
+        url = f"{host}/rewards/user/total?date={date_str}&signature_type={sig_type}"
+        resp = clob_get(url, headers=headers)
+        result["totals"] = resp if isinstance(resp, list) else []
+    except Exception as e:
+        result["totals"] = []
+        result["totals_error"] = str(e)
+
+    # 2) Per-market earnings
+    try:
+        req = RequestArgs(method="GET", request_path="/rewards/user/markets")
+        headers = create_level_2_headers(client.signer, client.creds, req)
+        all_market_earnings = []
+        cursor = "MA=="
+        for _ in range(10):  # max 10 pages
+            url = f"{host}/rewards/user/markets?date={date_str}&signature_type={sig_type}&next_cursor={cursor}&page_size=500"
+            resp = clob_get(url, headers=headers)
+            if isinstance(resp, dict):
+                all_market_earnings.extend(resp.get("data", []))
+                cursor = resp.get("next_cursor", "LTE=")
+                if cursor == "LTE=":
+                    break
+            else:
+                break
+        result["markets"] = all_market_earnings
+    except Exception as e:
+        result["markets"] = []
+        result["markets_error"] = str(e)
+
+    # 3) Reward percentages
+    try:
+        req = RequestArgs(method="GET", request_path="/rewards/user/percentages")
+        headers = create_level_2_headers(client.signer, client.creds, req)
+        url = f"{host}/rewards/user/percentages?signature_type={sig_type}"
+        resp = clob_get(url, headers=headers)
+        result["percentages"] = resp if isinstance(resp, dict) else {}
+    except Exception as e:
+        result["percentages"] = {}
+        result["percentages_error"] = str(e)
+
+    return result
 
 
 def test_proxy(proxy_str: str) -> bool:
@@ -513,6 +775,7 @@ def _try_redis_state() -> dict | None:
     return None
 
 
+@st.cache_data(ttl=5)
 def load_engine_state() -> dict:
     redis_state = _try_redis_state()
     if redis_state:
@@ -553,6 +816,7 @@ def load_engine_state() -> dict:
         "global_trading_enabled": True,
     }
 
+@st.cache_data(ttl=5)
 def load_all_engine_states() -> dict[int, dict]:
     """Load engine_state_N.json for N=1..30, plus engine_state.json as account 0."""
     result: dict[int, dict] = {}
@@ -1018,15 +1282,14 @@ with col_title:
     st.markdown("## Latitude Alpha")
     st.caption(f"{nav_platform}  /  {nav_feature}")
 with col_status:
-    running = engine_running()
+    running = _multi_runner_running()
     badge = '<span class="pill-green">● RUNNING</span>' if running else '<span class="pill-red">● STOPPED</span>'
     key_badge = '<span class="pill-green">KEY OK</span>' if has_key else '<span class="pill-yellow">NO KEY</span>'
     st.markdown(f"{badge}&nbsp;&nbsp;{key_badge}", unsafe_allow_html=True)
     st.caption(f"Refresh: {datetime.now(_BJT).strftime('%H:%M:%S')} 北京时间")
 with col_stop:
     if st.button("EMERGENCY STOP", type="primary", use_container_width=True):
-        msg = stop_engine()
-        _flash(msg, "error")
+        _flash(stop_multi_runner(), "error")
         st.rerun()
 
 _show_flash()
@@ -1037,24 +1300,39 @@ engine_state = load_engine_state()
 
 @st.fragment(run_every=timedelta(seconds=5))
 def _status_bar():
-    _es = load_engine_state()
     _now = time.time()
-    _es_balance = _es.get("balance")
-    _es_markets = _es.get("markets", {})
-    _es_has_data = _es_balance is not None and bool(_es_markets)
+    # Aggregate across every engine_state_N.json that exists (multi-account
+    # view). Falls back to single engine_state.json when multi-runner isn't
+    # active so the status bar still works standalone.
+    _all_states = load_all_engine_states()
+    _running_states = {k: v for k, v in _all_states.items() if k > 0 and v.get("balance") is not None}
+    if not _running_states and _all_states.get(0) and _all_states[0].get("balance") is not None:
+        _running_states = {0: _all_states[0]}
 
-    if _es_has_data:
-        _balance_raw = float(_es_balance)
-        _open_orders = []
-        _total_order_notional = 0.0
-        _total_order_count = 0
-        for _ms in _es_markets.values():
-            for _o in _ms.get("orders", []):
-                _total_order_notional += float(_o.get("price", 0) or 0) * float(_o.get("size", 0) or 0)
+    _balance_raw = 0.0
+    _order_size_sum = 0.0
+    _total_order_count = 0
+    _fills_today: list = []
+    _unwinds: list = []
+    _es_has_data = False
+    for _acc_id, _es in _running_states.items():
+        _es_has_data = True
+        _balance_raw += float(_es.get("balance") or 0)
+        for _ms in (_es.get("markets", {}) or {}).values():
+            for _o in _ms.get("orders", []) or []:
+                _order_size_sum += float(_o.get("price", 0) or 0) * float(_o.get("size", 0) or 0)
                 _total_order_count += 1
-        _order_size_sum = _total_order_notional
-        _utilization = (_order_size_sum / _balance_raw * 100) if _balance_raw > 0 else 0.0
-    elif has_key:
+        _fills_today.extend(
+            f for f in (_es.get("fills", []) or [])
+            if _now - float(f.get("ts", 0) or 0) < 86400
+        )
+        _unwinds.extend(_es.get("pending_unwinds", []) or [])
+
+    _utilization = (_order_size_sum / _balance_raw * 100) if _balance_raw > 0 else 0.0
+
+    if not _es_has_data and has_key:
+        # No engine state files yet — fall back to a direct CLOB read for the
+        # config.json account so the status bar has something to show pre-start.
         _bal_info = fetch_balance_info(host, active_key, chain_id, sig_type, funder)
         _open_orders = fetch_open_orders(host, active_key, chain_id, sig_type, funder)
         _balance_raw = float(_bal_info.get("balance") or 0) / 1e6
@@ -1063,41 +1341,38 @@ def _status_bar():
                               for o in _open_orders)
         _utilization = (_order_size_sum / _allowance_raw * 100) if _allowance_raw > 0 else 0.0
         _total_order_count = len(_open_orders)
-        _es_has_data = False
-    else:
-        _open_orders = []
-        _balance_raw = 0.0
-        _order_size_sum = 0.0
-        _utilization = 0.0
-        _total_order_count = 0
 
-    _fills_today = [f for f in _es.get("fills", [])
-                    if _now - float(f.get("ts", 0) or 0) < 86400]
-    _unwinds = _es.get("pending_unwinds", [])
     _overdue_unwinds = [u for u in _unwinds
                         if _now - float(u.get("placed_at", _now) or _now) > 4 * 3600]
+    _n_accounts = len(_running_states)
 
     _show_bal = _es_has_data or has_key
+    _acc_suffix = (
+        f" ({_n_accounts} 账号合计)" if _n_accounts > 1
+        else (" (1 账号)" if _n_accounts == 1 else "")
+    )
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        st.metric("USDC Balance",
+        st.metric(f"USDC Balance{_acc_suffix}",
                   f"${_balance_raw:,.2f}" if _show_bal else "—",
-                  help="Polygon USDC collateral balance")
+                  help="所有在跑账号 collateral USDC 总和")
     with m2:
-        st.metric("Order Utilization",
+        st.metric(f"Order Utilization{_acc_suffix}",
                   f"{_utilization:.1f}%" if _show_bal else "—",
                   delta=f"${_order_size_sum:,.0f} deployed" if _show_bal else None)
     with m3:
-        st.metric("Open Orders",
+        st.metric(f"Open Orders{_acc_suffix}",
                   str(_total_order_count) if _show_bal else "—",
-                  help="All live BUY limit orders")
+                  help="所有在跑账号的 live BUY limit orders 合计")
     with m4:
-        st.metric("Fills Today", str(len(_fills_today)))
+        st.metric(f"Fills Today{_acc_suffix}", str(len(_fills_today)),
+                  help="过去 24h 内所有账号的 fill 事件合计")
     with m5:
-        _overdue_label = f"{len(_overdue_unwinds)} overdue" if _overdue_unwinds else "clear"
-        st.metric("Pending Unwinds", str(len(_unwinds)),
-                  delta=_overdue_label if _overdue_unwinds else None,
-                  delta_color="inverse" if _overdue_unwinds else "off")
+        _overdue_label = f"{len(_overdue_unwinds)} overdue" if _overdue_unwinds else None
+        st.metric(f"Pending Unwinds{_acc_suffix}", str(len(_unwinds)),
+                  delta=_overdue_label,
+                  delta_color="inverse" if _overdue_unwinds else "off",
+                  help="所有在跑账号的 pending_unwinds 合计")
     st.caption(f"状态更新: {datetime.now(_BJT).strftime('%H:%M:%S')} 北京时间")
 
 _status_bar()
@@ -1143,8 +1418,8 @@ overdue_unwinds = [u for u in unwinds
 st.markdown("")
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
-tab_control, tab_markets, tab_fills, tab_scan, tab_proxy, tab_accounts = st.tabs(
-    ["Control", "Markets", "Fill / Unwind", "Scan", "Proxy", "Accounts"]
+tab_control, tab_markets, tab_fills, tab_scan, tab_proxy = st.tabs(
+    ["Control", "Markets", "Fill / Unwind", "Scan", "Proxy"]
 )
 
 
@@ -1256,6 +1531,13 @@ with tab_markets:
                 status = "active"
                 event_state = status
 
+        # Q_min data from engine state
+        q_eff = ms.get("q_min_efficiency", 0) if has_engine_state and tid in es_markets else 0
+        q_bid_sh = ms.get("q_bid_shares", 0) if has_engine_state and tid in es_markets else 0
+        q_ask_sh = ms.get("q_ask_shares", 0) if has_engine_state and tid in es_markets else 0
+        rw_min_sz = ms.get("rewards_min_size", 0) if has_engine_state and tid in es_markets else 0
+        has_dual = ms.get("has_dual_side", False) if has_engine_state and tid in es_markets else False
+
         rows.append({
             "#":          _i,
             "Market":     name,
@@ -1273,6 +1555,11 @@ with tab_markets:
             "Orders":     n_orders,
             "Avg Price":  f"{avg_price:.4f}" if avg_price else "—",
             "Size":       f"{total_size:.0f}",
+            "Bid Sh":     f"{q_bid_sh:.0f}" if q_bid_sh else "—",
+            "Ask Sh":     f"{q_ask_sh:.0f}" if q_ask_sh else "—",
+            "MinSh":      f"{rw_min_sz:.0f}" if rw_min_sz else "—",
+            "Q Eff":      f"{q_eff:.0%}" if q_eff else "—",
+            "Dual":       "✓" if has_dual else "—",
             "Risk":       risk,
             "Last Quote": last_quote,
         })
@@ -1370,6 +1657,116 @@ with tab_markets:
         else:
             st.info("No night markets configured.")
 
+    # ── 自动扫入事件 (auto_curator additions, last 48h, day + night) ────────
+    st.divider()
+    st.markdown('<p class="section-title">🤖 自动扫入事件 — 最近 48 小时 Auto Curator 加入的 markets（日盘 + 夜盘）</p>',
+                unsafe_allow_html=True)
+
+    _ne_all = load_all_engine_states()
+    _ne_merged: dict[str, dict] = {}
+    for _acc_id, _acc_state in _ne_all.items():
+        # New key `curator_events` (both sessions); fallback to legacy `night_events`.
+        _events = _acc_state.get("curator_events")
+        if _events is None:
+            _events = _acc_state.get("night_events") or []
+        for _ev in (_events or []):
+            tid = str(_ev.get("token_id", ""))
+            if not tid:
+                continue
+            existing = _ne_merged.get(tid)
+            if existing is None:
+                _ne_merged[tid] = {**_ev, "accounts": [_acc_id]}
+            else:
+                if _acc_id not in existing["accounts"]:
+                    existing["accounts"].append(_acc_id)
+                # Keep earliest added_at, latest live_status priority: started > in_pool > removed
+                if float(_ev.get("added_at", 0) or 0) < float(existing.get("added_at", 0) or 0):
+                    existing["added_at"] = _ev.get("added_at")
+                _priority = {"started": 2, "in_pool": 1, "removed": 0}
+                if _priority.get(_ev.get("live_status"), 0) > _priority.get(existing.get("live_status"), 0):
+                    existing["live_status"] = _ev.get("live_status")
+                    existing["in_pool"] = _ev.get("in_pool")
+
+    # Session filter (All / Day / Night)
+    _ne_filter = st.radio(
+        "过滤",
+        options=["全部", "日盘", "夜盘"],
+        horizontal=True,
+        key="curator_events_filter",
+    )
+    _filter_map = {"日盘": "day", "夜盘": "night"}
+    _filter_session = _filter_map.get(_ne_filter)
+    _ne_view = {
+        tid: ev for tid, ev in _ne_merged.items()
+        if (_filter_session is None) or (ev.get("session") == _filter_session)
+    }
+
+    if not _ne_view:
+        if not _ne_merged:
+            st.caption("尚无自动扫入事件记录。Auto Curator 启用后，每次加入 market（日盘或夜盘）都会在这里显示，保留 48h。")
+        else:
+            st.caption(f"当前过滤 ({_ne_filter}) 下无记录。")
+    else:
+        _now_ts = time.time()
+        ne_rows = []
+        for tid, ev in _ne_view.items():
+            gst = float(ev.get("game_start_ts", 0) or 0)
+            added_at = float(ev.get("added_at", 0) or 0)
+            if gst > 0:
+                gst_bjt = datetime.fromtimestamp(gst, tz=_BJT).strftime("%m-%d %H:%M")
+                delta_h = (gst - _now_ts) / 3600.0
+                if delta_h > 0:
+                    delta_str = f"T-{delta_h:.1f}h"
+                else:
+                    delta_str = f"已开 {abs(delta_h):.1f}h"
+            else:
+                gst_bjt = "—"
+                delta_str = "—"
+            added_bjt = datetime.fromtimestamp(added_at, tz=_BJT).strftime("%m-%d %H:%M") if added_at else "—"
+            accs = sorted(ev.get("accounts", []))
+            acc_label = f"{len(accs)} ({','.join(str(a) for a in accs[:5])}{'...' if len(accs) > 5 else ''})"
+            _sess = str(ev.get("session", "")).lower()
+            sess_badge = "🌙 夜盘" if _sess == "night" else ("☀️ 日盘" if _sess == "day" else "—")
+            ne_rows.append({
+                "盘": sess_badge,
+                "Slug": (ev.get("slug") or "")[:48],
+                "Question": (ev.get("question") or "")[:40],
+                "League": (ev.get("league") or "")[:24],
+                "开赛 BJT": gst_bjt,
+                "距开赛": delta_str,
+                "加入时间": added_bjt,
+                "状态": ev.get("live_status", "—"),
+                "账户": acc_label,
+                "Token": tid[:12],
+            })
+        # Sort by game start time ascending (next games first)
+        ne_rows.sort(key=lambda r: r["开赛 BJT"] if r["开赛 BJT"] != "—" else "9999")
+        df_ne = pd.DataFrame(ne_rows)
+        NE_STATUS_COLORS = {
+            "in_pool": "color:#3fb950; font-weight:600",
+            "started": "color:#8b949e",
+            "removed": "color:#d29922",
+        }
+        NE_SESSION_COLORS = {
+            "☀️ 日盘": "color:#d29922; font-weight:600",
+            "🌙 夜盘": "color:#58a6ff; font-weight:600",
+        }
+        styled_ne = (
+            df_ne.style
+            .map(lambda v: NE_STATUS_COLORS.get(v, ""), subset=["状态"])
+            .map(lambda v: NE_SESSION_COLORS.get(v, ""), subset=["盘"])
+            .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"})
+        )
+        st.dataframe(styled_ne, use_container_width=True, hide_index=True)
+        _day_n  = sum(1 for e in _ne_view.values() if e.get("session") == "day")
+        _night_n = sum(1 for e in _ne_view.values() if e.get("session") == "night")
+        st.caption(
+            f"合计 {len(_ne_view)} 个事件（日盘 {_day_n} · 夜盘 {_night_n}） · "
+            f"在池中 {sum(1 for e in _ne_view.values() if e.get('live_status') == 'in_pool')} · "
+            f"已开赛 {sum(1 for e in _ne_view.values() if e.get('live_status') == 'started')} · "
+            f"已移出 {sum(1 for e in _ne_view.values() if e.get('live_status') == 'removed')}"
+        )
+
     if st.button("Refresh Markets", key="refresh_markets"):
         fetch_balance_info.clear()
         fetch_open_orders.clear()
@@ -1440,54 +1837,143 @@ with tab_fills:
 with tab_scan:
     st.markdown('<p class="section-title">Market Scanner</p>', unsafe_allow_html=True)
 
+    # Replay toast(s) queued by the previous "应用选择" submission (the rerun
+    # wipes any in-flight st.success, so we use session_state as a mailbox).
+    for _ic, _msg in st.session_state.pop("_scan_toasts", []):
+        st.toast(_msg, icon=_ic)
+        if _ic == "✅":
+            st.success(_msg)
+        else:
+            st.warning(_msg)
+
     # ── Session Confirmation ──────────────────────────────────────────────────
     _confirm_data = {}
     _confirm_active = False
-    _confirm_ttl = int(cfg.get("session", {}).get("confirm_ttl_sec", 86400))
     try:
         if SESSION_CONFIRM_PATH.exists():
             _confirm_data = json.loads(SESSION_CONFIRM_PATH.read_text())
-            _confirm_active = time.time() < float(_confirm_data.get("expires_at", 0))
+            _confirmed_at = float(_confirm_data.get("confirmed_at", 0) or 0)
+            _expires_at = float(_confirm_data.get("expires_at", 0) or 0)
+            if _confirmed_at > 0 and (not _expires_at or time.time() < _expires_at):
+                _confirmed_dt = datetime.fromtimestamp(_confirmed_at, tz=_BJT)
+                _now_dt = datetime.now(_BJT)
+                _confirm_active = (_confirmed_dt.date() == _now_dt.date())
     except Exception:
         pass
 
     _confirm_col1, _confirm_col2 = st.columns([1, 3])
     with _confirm_col1:
         if st.button(
-            "✅ 确认 Session 切换（24h）" if not _confirm_active else "🔄 重新确认（续期24h）",
+            "✅ 确认今晚切盘（覆盖夜盘+次日日盘）" if not _confirm_active else "🔄 重新确认今晚切盘",
             type="primary" if not _confirm_active else "secondary",
             use_container_width=True,
         ):
-            _now = time.time()
+            _now_dt = datetime.now(_BJT)
+            _next_midnight = (_now_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             _confirm_payload = {
-                "confirmed_at": _now,
-                "confirmed_at_human": datetime.fromtimestamp(_now, tz=_BJT).strftime("%Y-%m-%d %H:%M:%S CST"),
-                "expires_at": _now + _confirm_ttl,
-                "expires_at_human": datetime.fromtimestamp(_now + _confirm_ttl, tz=_BJT).strftime("%Y-%m-%d %H:%M:%S CST"),
+                "confirmed_at": _now_dt.timestamp(),
+                "confirmed_at_human": _now_dt.strftime("%Y-%m-%d %H:%M:%S 北京时间"),
+                "confirm_date": _now_dt.strftime("%Y-%m-%d"),
+                "expires_at": _next_midnight.timestamp(),
+                "expires_at_human": _next_midnight.strftime("%Y-%m-%d %H:%M:%S 北京时间"),
+                "scope": "night_and_next_day",
             }
             SESSION_CONFIRM_PATH.parent.mkdir(parents=True, exist_ok=True)
             SESSION_CONFIRM_PATH.write_text(json.dumps(_confirm_payload, indent=2))
-            st.success(f"已确认！有效期至 {_confirm_payload['expires_at_human']}。引擎可自动切换日盘/夜盘。")
+            st.success(f"已确认！本次确认覆盖今晚夜盘和次日日盘，有效至 {_confirm_payload['expires_at_human']}。")
             st.rerun()
     with _confirm_col2:
         if _confirm_active:
             _exp_str = _confirm_data.get("expires_at_human", "")
             _conf_str = _confirm_data.get("confirmed_at_human", "")
-            st.success(f"Session 切换已授权 — 确认于 {_conf_str}，有效至 {_exp_str}")
+            st.success(f"今晚切盘已授权 — 确认于 {_conf_str}，覆盖夜盘+次日日盘，有效至 {_exp_str}")
         else:
-            st.error("⚠️ Session 切换未授权 — 引擎将在下次切换时自动撤单并停止。请 Scan 后点击确认按钮。")
+            st.error("⚠️ 今晚切盘未授权 — 到 00:00 后若无今日确认，引擎将撤单并停止；次日日盘也不会自动恢复。请 Scan 后点击确认按钮。")
+    st.markdown("---")
+
+    # ── Auto Curator (自动扫入体育赛事) ──────────────────────────────────────
+    st.markdown('<p class="section-title">🤖 Auto Curator — 自动扫入体育赛事（日盘）</p>', unsafe_allow_html=True)
+    try:
+        _ac_cfg_cur = load_config()
+        _ac_enabled_cur = bool((_ac_cfg_cur.get("auto_curator") or {}).get("enabled", False))
+        _ac_interval_cur = int((_ac_cfg_cur.get("auto_curator") or {}).get("interval_sec", 900))
+    except Exception:
+        _ac_enabled_cur = False
+        _ac_interval_cur = 900
+
+    _ac_state: dict = {}
+    _ac_state_path = DATA_DIR / "auto_curator_state.json"
+    if _ac_state_path.exists():
+        try:
+            _ac_state = json.loads(_ac_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            _ac_state = {}
+
+    _ac_col_toggle, _ac_col_interval, _ac_col_status = st.columns([1, 1, 3])
+    with _ac_col_toggle:
+        _ac_new_enabled = st.toggle(
+            "启用自动扫入",
+            value=_ac_enabled_cur,
+            key="auto_curator_enabled_toggle",
+            help="开启后每 interval_sec 自动扫 Polymarket 体育赛事并热加入日盘 market_cfg。撤单由 T-2h 开赛守护完成。",
+        )
+    with _ac_col_interval:
+        _ac_new_interval = st.number_input(
+            "扫描间隔 (秒)",
+            min_value=60,
+            max_value=3600,
+            value=_ac_interval_cur,
+            step=60,
+            key="auto_curator_interval_input",
+            help="默认 900s (15分钟)。修改后下次重启生效；enable 切换无需重启。",
+        )
+    with _ac_col_status:
+        if _ac_state:
+            _last_scan = float(_ac_state.get("last_scan_ts") or 0)
+            _last_scan_str = (
+                datetime.fromtimestamp(_last_scan, tz=_BJT).strftime("%m-%d %H:%M:%S")
+                if _last_scan > 0 else "尚未扫描"
+            )
+            _ac_status_color = "🟢" if _ac_state.get("enabled") else "⚪"
+            st.markdown(
+                f"{_ac_status_color} **状态**: {'启用' if _ac_state.get('enabled') else '停用'} &nbsp;|&nbsp; "
+                f"**上次扫描**: {_last_scan_str} &nbsp;|&nbsp; "
+                f"**累计扫描**: {_ac_state.get('scans', 0)} 次 &nbsp;|&nbsp; "
+                f"**累计加入**: {_ac_state.get('added_total', 0)} 市场 &nbsp;|&nbsp; "
+                f"**拒绝**: {_ac_state.get('rejected_total', 0)} &nbsp;|&nbsp; "
+                f"**当前运行态加入**: {_ac_state.get('runtime_added_count', 0)}",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("引擎尚未写入 auto_curator_state.json — 启动引擎并等一个扫描周期后会出现。")
+
+    # Persist toggle / interval changes back to config.json
+    if (_ac_new_enabled != _ac_enabled_cur) or (int(_ac_new_interval) != _ac_interval_cur):
+        try:
+            _ac_cfg_save = load_config()
+            _ac_cfg_save.setdefault("auto_curator", {})
+            _ac_cfg_save["auto_curator"]["enabled"] = bool(_ac_new_enabled)
+            _ac_cfg_save["auto_curator"]["interval_sec"] = int(_ac_new_interval)
+            save_config(_ac_cfg_save)
+            if _ac_new_enabled != _ac_enabled_cur:
+                st.success(f"Auto Curator {'已启用' if _ac_new_enabled else '已停用'}（下次扫描周期内生效，最多等 {_ac_interval_cur}s）")
+            else:
+                st.info("扫描间隔已保存（需重启引擎生效）")
+        except Exception as _ac_save_err:
+            st.error(f"保存失败: {_ac_save_err}")
+
     st.markdown("---")
 
     row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
     scan_min_reward = int(scan_defaults.get("min_reward", 10) or 0)
-    scan_max_reward = int(scan_defaults.get("max_reward", 8888) or 0)
+    scan_max_reward = int(scan_defaults.get("max_reward", 88888) or 0)
     scan_min_spread = int(scan_defaults.get("min_spread", 1) or 0)
     scan_max_spread = int(scan_defaults.get("max_spread", 10) or 0)
     scan_min_vol = int(scan_defaults.get("min_volume", 10_000) or 0)
-    scan_min_bid_depth = int(scan_defaults.get("min_bid_depth", 100_000) or 0)
+    scan_min_bid_depth = int(scan_defaults.get("min_bid_depth", 10_000) or 0)
     scan_sort_by = str(scan_defaults.get("sort_by", "reward_score") or "reward_score")
     scan_top_n = int(scan_defaults.get("top_n", 50) or 50)
-    sort_options = ["reward", "reward_score", "volume", "score"]
+    sort_options = ["reward", "reward_score", "share_balance", "volume", "score"]
     sort_index = sort_options.index(scan_sort_by) if scan_sort_by in sort_options else 1
 
     with row1_c1:
@@ -1587,6 +2073,7 @@ with tab_scan:
                     "volume24h": ":,.0f",
                     "fill_risk": ":.1f",
                     "reward_score": ":.1f",
+                    "share_balance": ":.1f",
                     "size_marker": False,
                 },
                 labels={
@@ -1657,20 +2144,40 @@ with tab_scan:
                     return "NO"
                 return existing_sides.get(item.get("token_id", ""), "YES")
 
+            def _fmt_start_time(it: dict) -> str:
+                ts = it.get("gameStartTs")
+                if not ts:
+                    return "—"
+                try:
+                    return datetime.fromtimestamp(float(ts), _BJT).strftime("%m-%d %H:%M")
+                except Exception:
+                    return "—"
+
+            def _is_sport_item(it: dict) -> str:
+                # Match engine.py _is_sports_market secondary check:
+                # gameStartTs populated AND slug contains an explicit YYYY-MM-DD
+                # (rules out non-sports markets like geopolitical resolution dates
+                # that also have gameStartTime set, e.g. "...-before-2027").
+                if not it.get("gameStartTs"):
+                    return "—"
+                slug = str(it.get("slug") or "")
+                return "✓" if _re.search(r"\b\d{4}-\d{2}-\d{2}\b", slug) else "—"
+
             df_edit = pd.DataFrame([{
                 "#":         idx + 1,
                 "In Config": _detect_in_config(item),
                 "夜盘":      _detect_in_night(item),
-                "Side":      _detect_side(item),
                 "Market":    item.get("question", "")[:60],
-                "Zone":      item.get("quadrant", "?")[0],
+                "打开链接":   item.get("market_url", f"https://polymarket.com/event/{item.get('slug','')}"),
+                "是否体育":  _is_sport_item(item),
+                "开赛时间":  _fmt_start_time(item),
                 "Daily $":   round(item.get("reward", 0), 0),
                 "Risk":      round(item.get("fill_risk", 0), 1),
+                "Bal":       round(item.get("share_balance", 0), 1),
                 "Crowd":     item.get("crowd", "?"),
                 "Vol 24h":   round(item.get("volume24h", 0), 0),
                 "Bid Depth": round(item.get("bidDepth", 0), 0),
                 "Spread":    round(item.get("maxIncentiveSpread", 0), 3),
-                "打开链接":   item.get("market_url", f"https://polymarket.com/event/{item.get('slug','')}"),
                 "_token_id": item.get("token_id", ""),
                 "_item":     json.dumps({k: v for k, v in item.items()
                                          if not k.startswith("_")}),
@@ -1691,20 +2198,17 @@ with tab_scan:
                         "夜盘": st.column_config.CheckboxColumn(
                             "夜盘", help="勾选添加到夜盘 config", width="small"
                         ),
-                        "Side": st.column_config.SelectboxColumn(
-                            "Side", options=["YES", "NO"], default="YES", width="small",
-                            help="YES = 买入 YES token, NO = 买入 NO token",
-                        ),
                         "Market":  st.column_config.TextColumn("Market", width="large"),
                         "打开链接": st.column_config.LinkColumn("打开链接", display_text="打开链接", width="small"),
-                        "Zone":    st.column_config.TextColumn("Zone", width="small"),
+                        "是否体育": st.column_config.TextColumn("是否体育", width="small", help="✓ = 体育赛事（会触发赛前 freeze/sweep）"),
+                        "开赛时间": st.column_config.TextColumn("开赛时间", width="small", help="北京时间，体育赛事才会有"),
                         "Daily $": st.column_config.NumberColumn("Daily $", format="$%.0f"),
                         "Risk":    st.column_config.NumberColumn("Risk",    format="%.1f"),
                         "Vol 24h":   st.column_config.NumberColumn("Vol 24h", format="$%,.0f"),
                         "Bid Depth": st.column_config.NumberColumn("Bid Depth", format="$%,.0f", help="Bid-side order book total USDC"),
                         "Spread":    st.column_config.NumberColumn("Spread",  format="%.3f"),
                     },
-                    disabled=["#", "Market", "Zone", "Daily $", "Risk", "Crowd", "Vol 24h", "Bid Depth", "Spread", "打开链接"],
+                    disabled=["#", "Market", "是否体育", "开赛时间", "Daily $", "Risk", "Crowd", "Vol 24h", "Bid Depth", "Spread", "打开链接"],
                     key=f"scan_editor_{len(scan_results)}_{_cfg_sig}",
                 )
 
@@ -1721,7 +2225,9 @@ with tab_scan:
                     no_tid = item.get("paired_token_id", "")
                     if not yes_tid:
                         continue
-                    side = str(row.get("Side", "YES")).upper()
+                    # Side column removed from UI (dual-side always injected).
+                    # Preserve existing side for markets already in config; default YES for new.
+                    side = _detect_side(item)
                     tid = no_tid if side == "NO" and no_tid else yes_tid
                     # Determine paired token for dual-side injection
                     paired = no_tid if side == "YES" else yes_tid
@@ -1756,7 +2262,47 @@ with tab_scan:
                 cfg["markets"] = new_markets
                 cfg["night_markets"] = checked_night
                 save_config(cfg)
-                st.success(f"已保存：日盘 {len(new_markets)} 个市场，夜盘 {len(checked_night)} 个市场。")
+
+                # In multi-account mode, propagate the markets/night_markets
+                # sections to every config_N.json so the running engines pick up
+                # the change. Without this, the scanner save would only touch
+                # config.json (which multi_runner never reads), silently doing
+                # nothing to live quoting.
+                synced_configs: list[str] = ["config.json"]
+                failed_configs: list[tuple[str, str]] = []
+                for _i in range(1, 31):
+                    _multi_cfg_path = MAKER_DIR / f"config_{_i}.json"
+                    if not _multi_cfg_path.exists():
+                        continue
+                    try:
+                        _mc = json.loads(_multi_cfg_path.read_text(encoding="utf-8"))
+                        _mc["markets"] = new_markets
+                        _mc["night_markets"] = checked_night
+                        _multi_cfg_path.write_text(
+                            json.dumps(_mc, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        synced_configs.append(_multi_cfg_path.name)
+                    except Exception as _mcerr:
+                        failed_configs.append((_multi_cfg_path.name, str(_mcerr)[:80]))
+
+                # Persist success toast across the rerun below (otherwise the
+                # message vanishes the moment the page reloads).
+                _msg_parts = [
+                    f"✅ 已保存：日盘 {len(new_markets)} 个，夜盘 {len(checked_night)} 个",
+                    f"同步到 {len(synced_configs)} 个 config 文件: {', '.join(synced_configs)}",
+                ]
+                if failed_configs:
+                    _msg_parts.append(
+                        f"⚠️ {len(failed_configs)} 个 config 写入失败: "
+                        + "; ".join(f"{n}({e})" for n, e in failed_configs)
+                    )
+                if len(synced_configs) > 1:  # multi-mode
+                    _msg_parts.append("⚠️ engine 需要 Stop+Start 重启才会读取新 markets 列表")
+                st.session_state.setdefault("_scan_toasts", []).append((
+                    "✅" if not failed_configs else "⚠️",
+                    " | ".join(_msg_parts),
+                ))
                 st.rerun()
 
             # ── Night market summary ───────────────────────────────────────────
@@ -1843,210 +2389,254 @@ with tab_proxy:
 # ══ TAB: CONTROL ═════════════════════════════════════════════════════════════
 with tab_control:
     _show_flash()
-    col_eng, col_key = st.columns([1, 1])
 
-    with col_eng:
-        st.markdown('<p class="section-title">Engine Control</p>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("Start", use_container_width=True):
-                _flash(start_engine(), "info")
-                st.rerun()
-        with c2:
-            if st.button("Stop", use_container_width=True):
-                _flash(stop_engine(), "info")
-                st.rerun()
-        with c3:
-            if st.button("Reload", use_container_width=True):
-                stop_engine()
-                time.sleep(0.5)
-                _flash(start_engine(), "info")
-                st.rerun()
-
-        st.markdown("")
-        pid = engine_pid()
-        st.markdown(
-            f"PID: `{pid}`  |  Status: "
-            + ('<span class="pill-green">RUNNING</span>' if running else '<span class="pill-red">STOPPED</span>'),
-            unsafe_allow_html=True,
-        )
-
-    with col_key:
-        st.markdown('<p class="section-title">Test Mode — Local Private Key</p>', unsafe_allow_html=True)
-        st.caption("Stored in session memory only. Never written to disk. For testing without Mac Mini signer.")
-
-        key_input = st.text_input(
-            "Private Key (0x...)",
-            value=st.session_state.get("test_private_key", ""),
-            type="password",
-            placeholder="0x...",
-            key="key_input_field",
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Set Key (session)", use_container_width=True):
-                st.session_state["test_private_key"] = key_input.strip()
-                st.success("Key loaded into session.")
-        with c2:
-            if st.button("Clear Key", use_container_width=True):
-                st.session_state["test_private_key"] = ""
-                st.success("Key cleared.")
-
-        if st.session_state.get("test_private_key"):
-            st.markdown('<span class="pill-green">LOCAL KEY ACTIVE</span>', unsafe_allow_html=True)
-        elif os.getenv("POLY_PRIVATE_KEY"):
-            st.markdown('<span class="pill-yellow">ENV KEY ACTIVE</span>', unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="pill-gray">NO KEY — API calls disabled</span>', unsafe_allow_html=True)
-
-        # remote signer status (reads env var + config, calls /health which needs no auth)
-        st.markdown("")
-        signer_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or acc.get("signer_server_url", "")
-        signer_token = os.getenv("SIGNER_TOKEN", "").strip() or acc.get("signer_token", "")
-        if signer_url:
-            try:
-                import requests as _req
-                _headers = {"Authorization": f"Bearer {signer_token}"} if signer_token else {}
-                _resp = _req.get(f"{signer_url.rstrip('/')}/health", headers=_headers, timeout=3)
-                _resp.raise_for_status()
-                _hdata = _resp.json()
-                _locked = _hdata.get("locked", False)
-                if _locked:
-                    st.markdown(
-                        f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
-                        f'<span class="pill-yellow">● LOCKED</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
-                        f'<span class="pill-green">● ONLINE</span>',
-                        unsafe_allow_html=True,
-                    )
-            except Exception as e:
-                st.markdown(
-                    f'Remote Signer: <span class="pill-gray">{signer_url}</span> '
-                    f'<span class="pill-red">● OFFLINE ({e})</span>',
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.markdown('<span class="pill-gray">Remote Signer: not configured</span>',
-                        unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Log Monitor Panel (auto-refreshing fragment) ──────────────────────────
-    st.markdown(
-        '<p class="section-title">'
-        '<span class="live-dot"></span>实时日志监控'
-        '</p>',
-        unsafe_allow_html=True,
-    )
-
-    # Controls row (outside fragment so they don't flicker)
-    log_c1, log_c2, log_c3, log_c4 = st.columns([2, 1, 1, 1])
-    with log_c1:
-        log_filter = st.selectbox(
-            "日志筛选",
-            ["全部", "仅异常", "仅撤单", "仅冷却/跳过", "仅恢复", "仅信息"],
-            label_visibility="collapsed",
-            key="log_filter",
-        )
-    with log_c2:
-        log_count = st.selectbox(
-            "显示条数", [50, 100, 200, 500],
-            index=1,
-            label_visibility="collapsed",
-            key="log_count",
-        )
-    with log_c3:
-        refresh_interval = st.selectbox(
-            "刷新频率",
-            [("3秒", 3), ("5秒", 5), ("10秒", 10), ("暂停", 0)],
-            index=1,
-            format_func=lambda x: x[0],
-            label_visibility="collapsed",
-            key="log_refresh_interval",
-        )
-    with log_c4:
-        if st.button("⟳ 手动刷新", use_container_width=True, key="refresh_log"):
-            st.session_state.pop("_log_prev_key", None)  # reset diff tracking
-            st.rerun()
-
-    _interval_sec = refresh_interval[1] if isinstance(refresh_interval, tuple) else 5
-    _run_every = timedelta(seconds=_interval_sec) if _interval_sec > 0 else None
-
-    @st.fragment(run_every=_run_every)
-    def _live_log_panel():
-        """Auto-refreshing log fragment — only this block re-runs."""
-        _n = st.session_state.get("log_count", 100)
-        all_entries = tail_log_parsed(_n)
-
-        # Detect new entries since last render
-        if all_entries:
-            current_key = f'{all_entries[-1]["time"]}_{len(all_entries)}'
-        else:
-            current_key = ""
-        prev_key = st.session_state.get("_log_prev_key", "")
-        prev_len = st.session_state.get("_log_prev_len", 0)
-
-        new_count = 0
-        if prev_key and current_key != prev_key and len(all_entries) > 0:
-            new_count = max(0, len(all_entries) - prev_len)
-            # Cap to avoid animating everything on first load
-            new_count = min(new_count, 20)
-
-        st.session_state["_log_prev_key"] = current_key
-        st.session_state["_log_prev_len"] = len(all_entries)
-
-        # Filter
-        _FILTER_MAP = {
-            "全部": None,
-            "仅异常": ["异常"],
-            "仅撤单": ["撤单"],
-            "仅冷却/跳过": ["冷却", "跳过"],
-            "仅恢复": ["恢复"],
-            "仅信息": ["信息"],
-        }
-        _flt = st.session_state.get("log_filter", "全部")
-        active_cats = _FILTER_MAP.get(_flt)
-        if active_cats:
-            filtered = [e for e in all_entries if e["category"] in active_cats]
-        else:
-            filtered = all_entries
-
-        # Summary bar
-        st.markdown(_render_log_summary(all_entries), unsafe_allow_html=True)
-
-        # Log entries
-        st.markdown(_render_log_html(filtered, new_count=new_count), unsafe_allow_html=True)
-
-        _int_label = f"每 {_interval_sec}s 自动刷新" if _interval_sec > 0 else "自动刷新已暂停"
-        st.caption(f"共 {len(filtered)} 条 / 最近 {len(all_entries)} 条 · {_int_label}")
-
-    _live_log_panel()
-
-# ══ TAB: ACCOUNTS (D-6 multi-account aggregated view) ════════════════════════
-with tab_accounts:
+    # ── Engine Control & Accounts (merged) ────────────────────────────────────
     all_states = load_all_engine_states()
     alive_map  = multi_engine_running()
 
-    st.markdown('<p class="section-title">Multi-Account Status</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">Engine Control & Accounts</p>', unsafe_allow_html=True)
 
-    if not all_states:
-        st.info(
-            "No engine state files found. "
-            "Start multi_runner.py with config_1.json, config_2.json, ... "
-            "or start a single-account engine to see state here."
-        )
+    _configured_ids = _configured_account_ids()
+    _mr_running = _multi_runner_running()
+    _mr_pid = _multi_runner_pid()
+    _GRID_N = 10  # always render a 10-row planning grid for accounts 1..10
+
+    # Read the data_editor's current "Selected" column from session_state.
+    # Users check rows in the grid *without* triggering any action; the Start /
+    # Stop buttons up top then apply to whatever is currently checked.
+    def _selected_account_ids() -> list[int]:
+        delta = st.session_state.get("multi_account_editor") or {}
+        edited = delta.get("edited_rows", {}) if isinstance(delta, dict) else {}
+        out: list[int] = []
+        for idx in range(_GRID_N):
+            acc_id = idx + 1
+            if acc_id not in _configured_ids:
+                continue
+            if isinstance(edited, dict) and idx in edited and "Selected" in edited[idx]:
+                if bool(edited[idx]["Selected"]):
+                    out.append(acc_id)
+        return out
+
+    # Toolbar: Start / Stop apply to the rows you've checked (explicit — the
+    # checkboxes themselves no longer auto-fire). Reload restarts the whole
+    # multi_runner process. Load Rewards forces a rewards-cache refresh.
+    _b1, _b2, _b3, _bspacer, _b6 = st.columns([1, 1, 1, 0.2, 1])
+    with _b1:
+        if st.button("Start", use_container_width=True, key="mr_start"):
+            _sel = _selected_account_ids()
+            if not _sel:
+                # No rows checked → runner-level Start (bring the process up).
+                _flash(start_multi_runner(), "info")
+            else:
+                # "Preserve current state of unselected" semantic (Kevin's
+                # 2026-04-23 refinement):
+                #   - selected         → unpause (will start quoting)
+                #   - unselected + running now → leave alone (stay running)
+                #   - unselected + not running → pause (stay down; matters
+                #       when runner is about to be started, so the default
+                #       "all accounts active" doesn't silently revive them)
+                for _i in _sel:
+                    _set_account_paused(_i, False)
+                _others = [i for i in _configured_ids if i not in _sel]
+                _newly_paused: list[int] = []
+                for _i in _others:
+                    already_running = _mr_running and not _is_account_paused(_i)
+                    if not already_running and not _is_account_paused(_i):
+                        _set_account_paused(_i, True)
+                        _newly_paused.append(_i)
+                _extra = ""
+                if not _mr_running:
+                    _extra = " | " + start_multi_runner()
+                _msg = f"▶️ 启动 {len(_sel)} 个: {_sel}"
+                if _newly_paused:
+                    _msg += f" · 锁定停止 {_newly_paused}（避免 runner 启动时自动跑起来）"
+                _msg += f"{_extra}"
+                st.session_state.setdefault("_pause_toasts", []).append(("▶️", _msg))
+            st.rerun()
+    with _b2:
+        if st.button("Stop", use_container_width=True, key="mr_stop"):
+            _sel = _selected_account_ids()
+            if not _sel:
+                # No rows checked → runner-level Stop (kill process + cancel all).
+                _flash(stop_multi_runner(), "info")
+            else:
+                # Stop only acts on selected accounts (asymmetric with Start —
+                # Start declares the desired active set, Stop only disables the
+                # checked ones without touching others).
+                for _i in _sel:
+                    _set_account_paused(_i, True)
+                st.session_state.setdefault("_pause_toasts", []).append((
+                    "⏸️",
+                    f"⏸ 已停止 {len(_sel)} 个账号: {_sel}（engine ~3 秒内撤单）",
+                ))
+            st.rerun()
+    with _b3:
+        if st.button("Reload", use_container_width=True, key="mr_reload"):
+            stop_multi_runner()
+            time.sleep(1)
+            _flash(start_multi_runner(), "info")
+            st.rerun()
+    with _b6:
+        _load_rewards = st.button("📊 Load Rewards", key="load_rewards_btn", use_container_width=True)
+
+    # Status line — engine + signer + account roster, all one row.
+    # Cache signer /health for 15 s so every rerun doesn't do a Tailscale RTT.
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _signer_health(signer_url: str, signer_token: str) -> dict:
+        import requests as _req
+        _headers = {"Authorization": f"Bearer {signer_token}"} if signer_token else {}
+        r = _req.get(f"{signer_url.rstrip('/')}/health", headers=_headers, timeout=3)
+        r.raise_for_status()
+        return r.json()
+
+    signer_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or acc.get("signer_server_url", "")
+    signer_token = os.getenv("SIGNER_TOKEN", "").strip() or acc.get("signer_token", "")
+    if signer_url:
+        try:
+            _hdata = _signer_health(signer_url, signer_token)
+            _signer_locked = _hdata.get("locked", False)
+            if _signer_locked:
+                _signer_pill = '<span class="pill-yellow">● LOCKED</span>'
+            else:
+                _funders_n = _hdata.get("funders_configured", 0)
+                _signer_pill = f'<span class="pill-green">● ONLINE</span> <span class="pill-gray">{_funders_n} keys</span>'
+        except Exception as _sigerr:
+            _signer_pill = f'<span class="pill-red">● OFFLINE ({str(_sigerr)[:40]})</span>'
     else:
+        _signer_pill = '<span class="pill-gray">not configured</span>'
+
+    _engine_pill = ('<span class="pill-green">● RUNNING</span>' if _mr_running
+                    else '<span class="pill-red">● STOPPED</span>')
+    _roster_text = (
+        f"{len(_configured_ids)} 个账号：config_{', config_'.join(str(i) for i in _configured_ids)}.json"
+        if _configured_ids else "⚠️ 未检测到 config_N.json"
+    )
+    st.markdown(
+        f"Engine {_engine_pill} PID `{_mr_pid}`  &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Signer {_signer_pill}  &nbsp;&nbsp;|&nbsp;&nbsp; {_roster_text}",
+        unsafe_allow_html=True,
+    )
+
+    if not _configured_ids:
+        st.warning(
+            "未检测到任何 `config_N.json`——请先在终端跑："
+            "`python scripts/generate_configs.py`（需要 `scripts/accounts.json`）"
+        )
+
+    if _load_rewards:
+        st.caption("Loading rewards data...")
+
+    # Dummy placeholder kept to minimise diff vs the old `_ctl1..4` block; the
+    # real button wiring is in the single toolbar row above.
+    if True:
+        # Rewards: opt-in. Fetching is expensive (3 signed REST calls × N
+        # accounts, each going through the Mac Mini signer over Tailscale), so
+        # we only hit the API after the user clicks 📊 Load Rewards. Once
+        # loaded, subsequent renders within 120 s cache hit instantly. Clicking
+        # the button again forces a cache bust for a fresh fetch.
+        _today_str = datetime.now(_BJT).strftime("%Y-%m-%d")
+        _rewards_by_acc: dict[int, dict] = {}
+        _rewards_ids = _configured_account_ids()
+        if _load_rewards:
+            try:
+                _fetch_rewards_for_account.clear()
+            except Exception:
+                pass
+            st.session_state["_rewards_loaded"] = True
+        if st.session_state.get("_rewards_loaded"):
+            for acc_id in _rewards_ids:
+                cfg_name = f"config_{acc_id}.json" if acc_id > 0 else "config.json"
+                cfg_path = MAKER_DIR / cfg_name
+                if cfg_path.exists():
+                    try:
+                        rw = _fetch_rewards_for_account(cfg_name, _today_str)
+                        _rewards_by_acc[acc_id] = rw
+                    except Exception:
+                        _rewards_by_acc[acc_id] = {"error": "fetch failed"}
+
+        # Load cumulative rewards (snapshotted 07:50 BJT daily by multi_runner).
+        # We merge per-address so the pre-multi-mode "0" snapshot is rolled into
+        # whichever multi-mode slot (1..10) now owns that wallet. Without this
+        # the cumulative restarts from 0 the day multi_runner first boots.
+        _cum_path = DATA_DIR / "rewards_cumulative.json"
+        _cum_state: dict = {}
+        try:
+            if _cum_path.exists():
+                _cum_state = json.loads(_cum_path.read_text(encoding="utf-8"))
+        except Exception:
+            _cum_state = {}
+        _cum_accounts_raw = _cum_state.get("accounts", {}) if isinstance(_cum_state, dict) else {}
+
+        # Build address -> merged daily map, then we'll look up per-account by addr.
+        _cum_by_address: dict[str, dict[str, float]] = {}
+        for _ak, _av in (_cum_accounts_raw or {}).items():
+            if not isinstance(_av, dict):
+                continue
+            _addr = str(_av.get("address", "") or "").lower()
+            if not _addr:
+                continue
+            _daily = _cum_by_address.setdefault(_addr, {})
+            for _d, _usd in (_av.get("daily", {}) or {}).items():
+                try:
+                    _v = float(_usd)
+                except Exception:
+                    _v = 0.0
+                # If the same date appears in both "0" and "N", prefer the larger
+                # (full-day snapshot beats a partial single-mode sample).
+                if _v > _daily.get(_d, 0.0):
+                    _daily[_d] = _v
+
+        def _cum_usd_for_account(acc_id: int) -> tuple[float, int]:
+            entry = _cum_accounts_raw.get(str(acc_id)) if isinstance(_cum_accounts_raw, dict) else None
+            if not isinstance(entry, dict):
+                return 0.0, 0
+            addr = str(entry.get("address", "") or "").lower()
+            daily = _cum_by_address.get(addr, {}) if addr else (entry.get("daily") or {})
+            total = 0.0
+            try:
+                total = sum(float(v) for v in daily.values())
+            except Exception:
+                total = float(entry.get("cumulative_usd", 0) or 0)
+            return round(total, 6), len(daily)
+
+        # Always render the full 10-row planning grid (account slots 1..10).
+        # Single-mode account 0 is surfaced in the caption above, not in the grid.
+        _iter_ids = list(range(1, _GRID_N + 1))
+
         acc_rows = []
-        for acc_id in sorted(all_states.keys()):
-            s = all_states[acc_id]
+        _grand_rewards = 0.0
+        _grand_fill_loss = 0.0
+        _grand_fill_benefit = 0.0
+        _grand_cumulative = 0.0
+        for acc_id in _iter_ids:
+            cfg_exists = (MAKER_DIR / (f"config_{acc_id}.json" if acc_id > 0 else "config.json")).exists()
+            s = all_states.get(acc_id, {}) or {}
             label = f"Account {acc_id}" if acc_id > 0 else "Account (single)"
-            cfg_name = f"config_{acc_id}.json" if acc_id > 0 else "config.json"
+
+            # NOT CONFIGURED: placeholder row — checkbox ignored by Start/Stop handlers.
+            if not cfg_exists and not s:
+                acc_rows.append({
+                    "Selected":     False,
+                    "Account":      label,
+                    "Status":       "NOT CONFIGURED",
+                    "Balance $":    "—",
+                    "Rewards $":    "—",
+                    "Benefit $":    "—",
+                    "Loss $":       "—",
+                    "Total P&L $":  "—",
+                    "累计 $":       "—",
+                    "Markets":      0,
+                    "Active":       0,
+                    "Orders":       0,
+                    "Fills 24h":    0,
+                    "Unwinds":      0,
+                    "Cooldown":     "—",
+                    "State TS":     "—",
+                })
+                continue
 
             is_running = alive_map.get(acc_id, False)
+            is_paused = _is_account_paused(acc_id) if acc_id > 0 else False
             _raw_ts = s.get("ts", "—")
             try:
                 if _raw_ts and _raw_ts != "—":
@@ -2067,132 +2657,142 @@ with tab_accounts:
                 if ms.get("status") == "active"
             )
             n_banned   = len(s.get("banned_tokens", []))
-            fills_24h  = sum(
-                1 for f in s.get("fills", [])
-                if _now_unix - float(f.get("ts", 0) or 0) < 86400
-            )
+            # Fill P&L (24h window). Split into benefit (profitable exits) and
+            # loss (unprofitable exits) so the dashboard can show them separately.
+            # Data sources:
+            #   1. `exit_records` are completed exits — their signed `loss` is the
+            #      truth: positive = loss, negative = benefit.
+            #   2. `pending_unwinds` are still unresolved; only their worst-case
+            #      LOSS is surfaced (max(0, fp-sp)*sz). Unrealized benefit is NOT
+            #      counted so we don't credit profit that hasn't settled yet.
+            # Dedup by token_id so an unwind still in-flight isn't double-counted
+            # once a matching exit_record is written for the same fill.
+            fill_loss_24h = 0.0
+            fill_benefit_24h = 0.0
+            fills_24h_count = 0
+            _counted_tokens: set[str] = set()
+            for f in s.get("fills", []):
+                if _now_unix - float(f.get("ts", 0) or 0) < 86400:
+                    fills_24h_count += 1
+            for ex in s.get("exit_records", []):
+                if _now_unix - float(ex.get("ts", 0) or 0) < 86400:
+                    _loss = float(ex.get("loss", 0) or 0)
+                    if _loss > 0:
+                        fill_loss_24h += _loss
+                    elif _loss < 0:
+                        fill_benefit_24h += -_loss  # benefit = |negative loss|
+                    tid = str(ex.get("token_id", "") or "")
+                    if tid:
+                        _counted_tokens.add(tid)
+            for uw in s.get("pending_unwinds", []):
+                if _now_unix - float(uw.get("placed_at", 0) or 0) < 86400:
+                    tid = str(uw.get("token_id", "") or "")
+                    if tid and tid in _counted_tokens:
+                        continue  # already reflected in exit_records
+                    fp = float(uw.get("fill_price", 0) or 0)
+                    sp = float(uw.get("sell_price", 0) or 0)
+                    sz = float(uw.get("fill_size", 0) or 0)
+                    if fp > 0 and sp > 0 and sz > 0:
+                        fill_loss_24h += max(0.0, (fp - sp) * sz)
             pending_uw = len(s.get("pending_unwinds", []))
             cooldown   = s.get("cooldown_active", False)
 
-            status_str = "RUNNING" if is_running else "STOPPED"
+            # Rewards data
+            rw = _rewards_by_acc.get(acc_id, {})
+            today_rewards = sum(
+                float(t.get("earnings", 0) or 0) * float(t.get("asset_rate", 1) or 1)
+                for t in rw.get("totals", [])
+            ) if not rw.get("error") else 0.0
+            n_reward_markets = len(rw.get("markets", []))
+
+            _grand_rewards += today_rewards
+            _grand_fill_loss += fill_loss_24h
+            _grand_fill_benefit += fill_benefit_24h
+            # Total P&L = passive rewards + realized exit benefit − realized exit loss
+            net_pnl = today_rewards + fill_benefit_24h - fill_loss_24h
+
+            # Cumulative rewards snapshot (from rewards_cumulative.json). Uses
+            # the per-address merge so the pre-multi-mode history is included.
+            cumulative_usd, _cum_days = _cum_usd_for_account(acc_id)
+            _grand_cumulative += cumulative_usd
+
+            # Two-state UX per Kevin's ask: STOPPED if not actively quoting
+            # (either runner is down or the account has its pause flag set),
+            # else RUNNING. The internal "pause flag" mechanism stays as-is —
+            # just the label in the Status column merges both "flag set" and
+            # "runner not running" into STOPPED so the button (Stop) matches
+            # the status text (STOPPED) instead of confusing PAUSED.
+            status_str = "RUNNING" if (is_running and not is_paused) else "STOPPED"
             acc_rows.append({
-                "Account":     label,
-                "Config":      cfg_name,
-                "Status":      status_str,
-                "Balance $":   f"{balance:,.2f}" if balance is not None else "—",
-                "Markets":     n_markets,
-                "Active":      n_active,
-                "Orders":      n_orders,
-                "Fills 24h":   fills_24h,
-                "Unwinds":     pending_uw,
-                "Banned":      n_banned,
-                "Cooldown":    "YES" if cooldown else "—",
-                "State TS":    state_ts,
+                # Checkbox is pure selection — default False every render so it
+                # stays a deliberate user action. Current running state is
+                # shown in the Status column (RUNNING / STOPPED).
+                "Selected":     False,
+                "Account":      label,
+                "Status":       status_str,
+                "Balance $":    f"{balance:,.2f}" if balance is not None else "—",
+                "Rewards $":    f"{today_rewards:,.4f}" if today_rewards > 0 else "—",
+                "Benefit $":    f"{fill_benefit_24h:,.2f}" if fill_benefit_24h > 0 else "—",
+                "Loss $":       f"{fill_loss_24h:,.2f}" if fill_loss_24h > 0 else "—",
+                "Total P&L $":  f"{net_pnl:+,.4f}" if (today_rewards > 0 or fill_loss_24h > 0 or fill_benefit_24h > 0) else "—",
+                "累计 $":       f"{cumulative_usd:,.4f}" if cumulative_usd > 0 else "—",
+                "Markets":      n_markets,
+                "Active":       n_active,
+                "Orders":       n_orders,
+                "Fills 24h":    fills_24h_count,
+                "Unwinds":      pending_uw,
+                "Cooldown":     "YES" if cooldown else "—",
+                "State TS":     state_ts,
             })
 
         df_acc = pd.DataFrame(acc_rows)
 
-        def acc_color_status(val: str) -> str:
-            return "color:#3fb950; font-weight:600" if val == "RUNNING" else "color:#f85149"
-
-        def acc_color_cooldown(val: str) -> str:
-            return "color:#d29922; font-weight:600" if val == "YES" else ""
-
-        st.dataframe(
-            df_acc.style
-                .map(acc_color_status, subset=["Status"])
-                .map(acc_color_cooldown, subset=["Cooldown"])
-                .set_properties(**{"background-color": "#0d1117", "color": "#e6edf3"}),
-            use_container_width=True,
+        # 10-row grid with a "Selected" checkbox column. **The checkbox is
+        # passive** — ticking it doesn't start/stop anything on its own; the
+        # top Start/Stop buttons apply to whichever rows are currently checked.
+        # Live account state (RUNNING / PAUSED / STOPPED) is in the Status col.
+        st.data_editor(
+            df_acc,
+            column_config={
+                "Selected": st.column_config.CheckboxColumn(
+                    "Selected",
+                    help="勾选要批量操作的账号；再按顶部 Start / Stop 按钮才真正执行。"
+                         " Start/Stop 不选任何行 = 作用于整个 multi_runner 进程。",
+                    default=False,
+                ),
+            },
+            disabled=[c for c in df_acc.columns if c != "Selected"],
             hide_index=True,
+            use_container_width=True,
+            key="multi_account_editor",
         )
 
-    # Multi-runner control
-    st.markdown('<p class="section-title" style="margin-top:24px">Multi-Runner Control</p>',
-                unsafe_allow_html=True)
+        # Replay toasts queued by Start/Stop button handlers (they run before
+        # the editor on rerun, so toasts live in session_state until this point).
+        for _ic, _msg in st.session_state.pop("_pause_toasts", []):
+            st.toast(_msg, icon=_ic)
 
-    st.caption(
-        "multi_runner.py auto-discovers config_1.json ... config_30.json in the maker directory. "
-        "Copy config.json to config_1.json, config_2.json, etc. and set different private_key per file."
-    )
+        # Grand totals row. Streamlit's markdown parser treats paired `$` as
+        # LaTeX math and eats content between them; that's why the previous
+        # `<span>` showed up as raw text (reported 2026-04-23 and 2026-04-24).
+        # Escape every dollar sign as the `&#36;` HTML entity so the parser
+        # leaves the row alone.
+        _grand_net = _grand_rewards + _grand_fill_benefit - _grand_fill_loss
+        _pnl_color = "#3fb950" if _grand_net >= 0 else "#f85149"
+        _usd = "&#36;"
+        st.markdown(
+            f'<b>Total: Rewards {_usd}{_grand_rewards:,.4f} | '
+            f'Benefit {_usd}{_grand_fill_benefit:,.2f} | '
+            f'Loss {_usd}{_grand_fill_loss:,.2f} | '
+            f'当日总和 <span style="color:{_pnl_color}">'
+            f'{_usd}{_grand_net:+,.4f}</span> | '
+            f'累计 {_usd}{_grand_cumulative:,.4f}</b>',
+            unsafe_allow_html=True,
+        )
 
-    col_mr1, col_mr2 = st.columns(2)
-    with col_mr1:
-        if st.button("Start Multi-Runner", use_container_width=True):
-            if not MULTI_RUNNER_PATH.exists():
-                st.error("multi_runner.py not found.")
-            else:
-                multi_log = DATA_DIR / "multi_runner.log"
-                multi_log.touch(exist_ok=True)
-                multi_pid_path = DATA_DIR / ".multi_runner.pid"
-                flags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
-                env = os.environ.copy()
-                env["PYTHONIOENCODING"] = "utf-8"
-                env["PYTHONUTF8"] = "1"
-                test_key = st.session_state.get("test_private_key", "").strip()
-                if test_key:
-                    env["POLY_PRIVATE_KEY"] = test_key
-                with multi_log.open("a", encoding="utf-8") as lf:
-                    proc = subprocess.Popen(
-                        [sys.executable, "-X", "utf8", str(MULTI_RUNNER_PATH)],
-                        cwd=str(BASE_DIR),
-                        stdout=lf, stderr=lf,
-                        creationflags=flags,
-                        env=env,
-                    )
-                multi_pid_path.write_text(str(proc.pid), encoding="utf-8")
-                _flash(f"Multi-runner started — PID {proc.pid}", "success")
-                st.rerun()
-
-    with col_mr2:
-        if st.button("Stop Multi-Runner", use_container_width=True):
-            multi_pid_path = DATA_DIR / ".multi_runner.pid"
-            if multi_pid_path.exists():
-                try:
-                    pid = int(multi_pid_path.read_text(encoding="utf-8").strip())
-                    if platform.system() == "Windows":
-                        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                                       capture_output=True, check=False)
-                    else:
-                        import signal as _signal
-                        os.kill(pid, _signal.SIGTERM)
-                    multi_pid_path.unlink(missing_ok=True)
-                    _flash(f"Multi-runner PID {pid} stopped.", "success")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Stop failed: {e}")
-            else:
-                st.warning("No multi-runner PID file found.")
-
-    # Multi-runner log tail (read only tail of file)
-    multi_log_path = DATA_DIR / "multi_runner.log"
-    if multi_log_path.exists():
-        with st.expander("Multi-Runner Log (last 40 lines)"):
-            try:
-                _ml_size = multi_log_path.stat().st_size
-                _ml_chunk = min(_ml_size, 40 * 300)
-                with multi_log_path.open("rb") as _mlf:
-                    if _ml_size > _ml_chunk:
-                        _mlf.seek(_ml_size - _ml_chunk)
-                    _ml_raw = _mlf.read().decode("utf-8", errors="replace")
-                _ml_lines = _ml_raw.splitlines()
-                if _ml_size > _ml_chunk and len(_ml_lines) > 1:
-                    _ml_lines = _ml_lines[1:]
-                st.code("\n".join(_ml_lines[-40:]), language="text")
-            except Exception:
-                st.code("(error reading log)", language="text")
-
-    # Config file setup helper
-    st.markdown('<p class="section-title" style="margin-top:24px">Config Setup</p>',
-                unsafe_allow_html=True)
-    st.caption("Existing config files in maker directory:")
-    import glob as _glob
-    cfgs_found = sorted(_glob.glob(str(MAKER_DIR / "config*.json")))
-    if cfgs_found:
-        st.code("\n".join(Path(p).name for p in cfgs_found), language="text")
-    else:
-        st.info("No config*.json files found.")
-
+    # Real-time log monitor removed 2026-04-23 — Kevin: "不发挥作用，不如看 discord log"
+    # Engine logs still go to data/engine.log; Discord webhook delivers the
+    # important events with [N号] prefix.
 
 # ── auto-refresh disabled (status bar uses st.fragment for partial refresh) ────
 # st_autorefresh(interval=5000, key="auto_refresh")

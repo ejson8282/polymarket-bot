@@ -64,11 +64,15 @@ class RemoteSignerClient:
         token: str | None = None,
         max_retries: int = 3,
         base_delay: float = 0.5,
+        funder: str | None = None,
     ):
         self.server_url = server_url.rstrip("/")
         self.token = token or os.getenv("SIGNER_TOKEN", "").strip()
         if not self.token:
             raise ValueError("Signer token not provided. Set SIGNER_TOKEN env var.")
+        # Funder address routes the request to the right key on the multi-key
+        # signer. Empty string ⇒ legacy single-key mode on the server.
+        self.funder = (funder or "").strip().lower() or None
         self._max_retries = max_retries
         self._base_delay = base_delay
         self._session = self._build_session()
@@ -173,7 +177,14 @@ class RemoteSignerClient:
         """
         Returns: {api_key, api_secret, api_passphrase, address}
         """
-        resp = self._request_with_retry("POST", f"{self.server_url}/derive-creds")
+        payload: dict = {}
+        if self.funder:
+            payload["funder"] = self.funder
+        resp = self._request_with_retry(
+            "POST",
+            f"{self.server_url}/derive-creds",
+            json=payload,
+        )
         return resp.json()
 
     def sign_order(self, token_id: str, price: float, size: float, side: str) -> dict:
@@ -187,6 +198,8 @@ class RemoteSignerClient:
             "size": size,
             "side": side,
         }
+        if self.funder:
+            payload["funder"] = self.funder
         resp = self._request_with_retry(
             "POST",
             f"{self.server_url}/sign-order",
