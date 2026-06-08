@@ -1553,6 +1553,22 @@ def _vd_db_path(cfg: dict) -> Path:
     return path if path.is_absolute() else VAR_DECIBEL_DIR / path
 
 
+def _vd_control_file(raw_path: Any, default_name: str = "KILL_SWITCH") -> Path:
+    base = VAR_DECIBEL_DIR.resolve()
+    raw = str(raw_path or default_name).strip()
+    candidate = Path(raw)
+    if raw in {".", "./"} or candidate.name in {"", ".", ".."}:
+        raise ValueError("kill switch path must name a file")
+    if candidate.is_absolute():
+        raise ValueError("kill switch path must be relative to the Var/Decibel project directory")
+    resolved = (base / candidate).resolve()
+    if resolved != base and base not in resolved.parents:
+        raise ValueError("kill switch path must stay inside the Var/Decibel project directory")
+    if resolved.exists() and resolved.is_dir():
+        raise ValueError("kill switch path points to a directory")
+    return resolved
+
+
 def _vd_fetch_rows(db_path: Path, table: str, order_col: str, limit: int = 250) -> list[dict[str, Any]]:
     if table not in {"trades", "market_snapshots"} or not db_path.exists():
         return []
@@ -1564,7 +1580,8 @@ def _vd_fetch_rows(db_path: Path, table: str, order_col: str, limit: int = 250) 
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
-    except Exception:
+    except Exception as exc:
+        st.warning(f"Could not read Var/Decibel `{table}` from `{db_path}`: {type(exc).__name__}: {exc}")
         return []
 
 
@@ -1782,9 +1799,14 @@ def _render_airdrop_farming_dashboard() -> None:
     project_ok = VAR_DECIBEL_DIR.exists()
     config_ok = VAR_DECIBEL_CONFIG_PATH.exists()
     db_path = _vd_db_path(cfg)
-    kill_switch = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("risk", "kill_switch_file"), "KILL_SWITCH"))
-    live_enabled = _vd_live_enabled(cfg)
-    status = _vd_bot_status(cfg, kill_switch)
+    kill_switch_error = ""
+    try:
+        kill_switch = _vd_control_file(_vd_nested_get(cfg, ("risk", "kill_switch_file"), "KILL_SWITCH"))
+    except ValueError as exc:
+        kill_switch = VAR_DECIBEL_DIR / "KILL_SWITCH"
+        kill_switch_error = str(exc)
+    live_enabled = _vd_live_enabled(cfg) and not kill_switch_error
+    status = "HALTED" if kill_switch_error else _vd_bot_status(cfg, kill_switch)
 
     trades = pd.DataFrame(_vd_fetch_rows(db_path, "trades", "id", 100))
     snapshots = pd.DataFrame(_vd_fetch_rows(db_path, "market_snapshots", "id", 500))
@@ -1816,6 +1838,11 @@ def _render_airdrop_farming_dashboard() -> None:
     if not project_ok or not config_ok:
         st.warning(f"Var/Decibel project or config not found. Expected `{VAR_DECIBEL_CONFIG_PATH}`.")
         return
+    if kill_switch_error:
+        st.error(f"Invalid Var/Decibel kill switch config: {kill_switch_error}")
+        return
+    if not db_path.exists():
+        st.warning(f"Var/Decibel SQLite DB not found at `{db_path}`. Live dashboard data will stay empty until the bot writes this database.")
 
     st.markdown("")
     tabs = st.tabs(["Daily Run", "Hedge Health", "Setup / Debug"])
@@ -1946,6 +1973,7 @@ def _render_airdrop_farming_dashboard() -> None:
             st.write(f"`{kill_switch}`")
             st.write("Active" if kill_switch.exists() else "Inactive")
             if st.button("Create Var/Decibel kill switch", use_container_width=True, key="vd_create_kill"):
+                kill_switch.parent.mkdir(parents=True, exist_ok=True)
                 kill_switch.write_text("stop\n", encoding="utf-8")
                 st.rerun()
             if kill_switch.exists() and st.button("Remove Var/Decibel kill switch", use_container_width=True, key="vd_remove_kill"):
