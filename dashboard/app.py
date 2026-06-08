@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import platform
+import ast
+import sqlite3
 import subprocess
 import sys
 import time
@@ -42,6 +44,8 @@ ENGINE_STATE_PATH   = DATA_DIR / "engine_state.json"
 SESSION_CONFIRM_PATH = DATA_DIR / "session_confirm.json"
 MULTI_RUNNER_PATH   = MAKER_DIR / "multi_runner.py"
 REMOTE_ACCOUNTS_PATH = REPO_DIR / "dashboard" / "remote_accounts.json"
+VAR_DECIBEL_DIR      = Path(os.getenv("VAR_DECIBEL_HEDGE_BOT_DIR", str(REPO_DIR.parent / "var_decibel_hedge_bot")))
+VAR_DECIBEL_CONFIG_PATH = VAR_DECIBEL_DIR / "config.yaml"
 
 # legacy alias — some helpers still use BASE_DIR for cwd
 BASE_DIR            = MAKER_DIR
@@ -87,6 +91,29 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
 
 /* section headers */
 .section-title { color:#8b949e; font-size:11px; letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px; }
+.muted-note { color:#8b949e; font-size:12px; line-height:1.55; }
+.var-panel {
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:8px;
+    padding:14px 16px;
+    min-height:92px;
+}
+.var-panel-title {
+    color:#8b949e;
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    margin-bottom:6px;
+}
+.var-panel-value { color:#e6edf3; font-size:20px; font-weight:650; }
+.var-panel-small { color:#8b949e; font-size:12px; margin-top:4px; }
+.var-block {
+    border:1px solid #30363d;
+    border-radius:8px;
+    padding:14px 16px;
+    background:#0d1117;
+}
 
 /* emergency button */
 div[data-testid="stButton"] button[kind="primary"] {
@@ -1460,6 +1487,305 @@ def _render_log_summary(entries: list[dict]) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# AIRDROP FARMING / VAR-DECIBEL HEDGE LAB
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _vd_nested_get(data: dict, path: tuple[str, ...], default: Any = None) -> Any:
+    cur: Any = data
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def _vd_parse_scalar(value: str) -> Any:
+    value = value.strip()
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    if value in ('""', "''"):
+        return ""
+    if value.startswith("[") or value.startswith("{"):
+        try:
+            return ast.literal_eval(value)
+        except Exception:
+            return value
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _vd_load_config() -> dict:
+    if not VAR_DECIBEL_CONFIG_PATH.exists():
+        return {}
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw_line in VAR_DECIBEL_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        key, sep, raw_value = raw_line.strip().partition(":")
+        if not sep:
+            continue
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        value = raw_value.strip()
+        if value == "":
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _vd_parse_scalar(value)
+    return root
+
+
+def _vd_db_path(cfg: dict) -> Path:
+    raw = str(cfg.get("database_url") or "sqlite:///data/hedge_bot.sqlite3")
+    if raw.startswith("sqlite:///"):
+        raw = raw[len("sqlite:///"):]
+    path = Path(raw)
+    return path if path.is_absolute() else VAR_DECIBEL_DIR / path
+
+
+def _vd_fetch_rows(db_path: Path, table: str, order_col: str, limit: int = 250) -> list[dict[str, Any]]:
+    if table not in {"trades", "market_snapshots"} or not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"select * from {table} order by {order_col} desc limit ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def _vd_fmt_bool(value: Any) -> str:
+    return "true" if bool(value) else "false"
+
+
+def _vd_live_enabled(cfg: dict) -> bool:
+    return (
+        not bool(cfg.get("dry_run", True))
+        and bool(cfg.get("live_trading", False))
+        and str(cfg.get("confirm_live_trading_text", "")) == "I_UNDERSTAND_THIS_CAN_LOSE_MONEY"
+    )
+
+
+def _vd_bot_status(cfg: dict, kill_switch: Path) -> str:
+    if kill_switch.exists():
+        return "HALTED"
+    if _vd_live_enabled(cfg):
+        return "LIVE ARMED"
+    if bool(cfg.get("live_trading", False)):
+        return "LIVE LOCKED"
+    return "MONITOR / DRY-RUN"
+
+
+def _vd_latest_snapshot(snapshots: pd.DataFrame, symbol: str) -> dict[str, Any]:
+    if snapshots.empty or "symbol" not in snapshots:
+        return {}
+    matched = snapshots[snapshots["symbol"].astype(str) == symbol]
+    if matched.empty:
+        return {}
+    order_col = "timestamp" if "timestamp" in matched else "id"
+    return dict(matched.sort_values(order_col).iloc[-1])
+
+
+def _vd_mid(row: dict[str, Any]) -> str:
+    try:
+        bid = float(row.get("decibel_bid"))
+        ask = float(row.get("decibel_ask"))
+    except (TypeError, ValueError):
+        return "—"
+    return f"{(bid + ask) / 2:.4f}"
+
+
+def _vd_capture_row(label: str, path: Path, kind: str) -> dict[str, str]:
+    return {
+        "Item": label,
+        "Status": "present" if path.exists() else "missing",
+        "Kind": kind,
+        "Path": str(path),
+    }
+
+
+def _vd_panel(title: str, value: str, detail: str, color_class: str = "pill-gray") -> None:
+    st.markdown(
+        f"""
+        <div class="var-panel">
+          <div class="var-panel-title">{title}</div>
+          <div class="var-panel-value">{value}</div>
+          <div class="var-panel-small"><span class="{color_class}">{detail}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_airdrop_farming_dashboard() -> None:
+    cfg = _vd_load_config()
+    project_ok = VAR_DECIBEL_DIR.exists()
+    config_ok = VAR_DECIBEL_CONFIG_PATH.exists()
+    db_path = _vd_db_path(cfg)
+    kill_switch = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("risk", "kill_switch_file"), "KILL_SWITCH"))
+    live_enabled = _vd_live_enabled(cfg)
+    status = _vd_bot_status(cfg, kill_switch)
+
+    trades = pd.DataFrame(_vd_fetch_rows(db_path, "trades", "id", 100))
+    snapshots = pd.DataFrame(_vd_fetch_rows(db_path, "market_snapshots", "id", 500))
+
+    st.markdown('<p class="section-title">Airdrop Farming / Hedge Research</p>', unsafe_allow_html=True)
+    st.markdown("## Var/Decibel Hedge Lab")
+    st.caption("Small-notional Variational Omni + Decibel delta-neutral experimenter. This panel is embedded in Latitude Alpha and stays monitor/dry-run first.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        _vd_panel("Bot status", status, "kill switch active" if kill_switch.exists() else "research mode", "pill-red" if kill_switch.exists() else "pill-yellow")
+    with c2:
+        _vd_panel("Live gate", "ARMED" if live_enabled else "LOCKED", f"dry_run={_vd_fmt_bool(cfg.get('dry_run', True))}", "pill-green" if live_enabled else "pill-yellow")
+    with c3:
+        _vd_panel("Data store", "READY" if db_path.exists() else "EMPTY", db_path.name, "pill-green" if db_path.exists() else "pill-gray")
+    with c4:
+        _vd_panel("Project", "FOUND" if project_ok else "MISSING", str(VAR_DECIBEL_DIR), "pill-green" if project_ok else "pill-red")
+
+    if not project_ok or not config_ok:
+        st.warning(f"Var/Decibel project or config not found. Expected `{VAR_DECIBEL_CONFIG_PATH}`.")
+        return
+
+    st.markdown("")
+    tabs = st.tabs(["Overview", "Monitor", "Cost Model", "Risk", "RFQ Captures", "Replay"])
+
+    with tabs[0]:
+        left, right = st.columns([1.2, 1])
+        with left:
+            st.markdown('<p class="section-title">Scope</p>', unsafe_allow_html=True)
+            auto = _vd_nested_get(cfg, ("symbols", "auto_trade_whitelist"), ["BTC", "ETH"])
+            monitor_only = _vd_nested_get(cfg, ("symbols", "monitor_only"), ["AAPL", "QQQ", "XAU", "CL", "SPCX"])
+            st.markdown(
+                f"""
+                <div class="var-block">
+                  <div class="muted-note">Default flow: monitor → dry-run → very-small live-run. No live order controls are exposed here yet.</div>
+                  <br>
+                  <span class="pill-green">Auto whitelist: {", ".join(map(str, auto))}</span>
+                  <span class="pill-yellow">Monitor-only: {", ".join(map(str, monitor_only))}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with right:
+            summary = pd.DataFrame(
+                [
+                    {"Metric": "Recent trades", "Value": str(len(trades))},
+                    {"Metric": "Market snapshots", "Value": str(len(snapshots))},
+                    {"Metric": "Decibel network", "Value": str(_vd_nested_get(cfg, ("decibel", "network"), "testnet"))},
+                    {"Metric": "Variational API", "Value": str(_vd_nested_get(cfg, ("variational", "readonly_base_url"), "—"))},
+                ]
+            )
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    with tabs[1]:
+        st.markdown('<p class="section-title">Opportunity Matrix</p>', unsafe_allow_html=True)
+        rows = []
+        for symbol in _vd_nested_get(cfg, ("symbols", "auto_trade_whitelist"), ["BTC", "ETH"]):
+            latest = _vd_latest_snapshot(snapshots, str(symbol))
+            rows.append(
+                {
+                    "Symbol": symbol,
+                    "Var mark": latest.get("var_mark", "—") if latest else "—",
+                    "Decibel mid": _vd_mid(latest) if latest else "—",
+                    "Basis bp": latest.get("basis_bp", "—") if latest else "—",
+                    "Var funding": latest.get("var_funding", "—") if latest else "—",
+                    "Decibel funding": latest.get("decibel_funding", "—") if latest else "—",
+                    "Quote state": "no snapshot" if not latest else "freshness unknown",
+                    "Decision": "locked" if not live_enabled else "eligible",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.markdown('<p class="muted-note">Live values will appear after the monitor process writes snapshots into the Var/Decibel SQLite database.</p>', unsafe_allow_html=True)
+
+    with tabs[2]:
+        st.markdown('<p class="section-title">Expected Cost</p>', unsafe_allow_html=True)
+        max_notional = float(_vd_nested_get(cfg, ("risk", "max_order_notional"), "25"))
+        max_expected = float(_vd_nested_get(cfg, ("risk", "max_expected_cost_bp"), "45"))
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            notional = st.number_input("Notional USDC", min_value=1.0, max_value=max_notional, value=min(10.0, max_notional), step=1.0, key="vd_notional")
+            var_slippage = st.number_input("Var slippage bp", min_value=0.0, value=5.0, step=0.5, key="vd_var_slippage")
+        with col_b:
+            decibel_spread = st.number_input("Decibel spread bp", min_value=0.0, value=6.0, step=0.5, key="vd_decibel_spread")
+            close_cost = st.number_input("Close cost bp", min_value=0.0, value=8.0, step=0.5, key="vd_close_cost")
+        with col_c:
+            funding_cost = st.number_input("Funding cost bp", value=0.0, step=0.5, key="vd_funding_cost")
+            risk_buffer = st.number_input("Risk buffer bp", min_value=0.0, value=10.0, step=0.5, key="vd_risk_buffer")
+        total = var_slippage + decibel_spread + close_cost + funding_cost + risk_buffer
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Target notional", f"{notional:.2f} U")
+        m2.metric("Total expected cost", f"{total:.2f} bp")
+        m3.metric("Configured max", f"{max_expected:.2f} bp")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Direction": "Var long + Decibel short", "Expected cost bp": total, "Decision": "blocked" if total >= max_expected or not live_enabled else "eligible"},
+                    {"Direction": "Var short + Decibel long", "Expected cost bp": total, "Decision": "blocked" if total >= max_expected or not live_enabled else "eligible"},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with tabs[3]:
+        st.markdown('<p class="section-title">Risk Controls</p>', unsafe_allow_html=True)
+        risk = cfg.get("risk", {}) if isinstance(cfg.get("risk"), dict) else {}
+        risk_rows = [{"Limit": k, "Value": str(v)} for k, v in risk.items()]
+        left, right = st.columns([1.2, 1])
+        with left:
+            st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+        with right:
+            st.markdown("Kill switch")
+            st.write(f"`{kill_switch}`")
+            st.write("Active" if kill_switch.exists() else "Inactive")
+            if st.button("Create Var/Decibel kill switch", use_container_width=True, key="vd_create_kill"):
+                kill_switch.write_text("stop\n", encoding="utf-8")
+                st.rerun()
+            if kill_switch.exists() and st.button("Remove Var/Decibel kill switch", use_container_width=True, key="vd_remove_kill"):
+                kill_switch.unlink()
+                st.rerun()
+
+    with tabs[4]:
+        st.markdown('<p class="section-title">Variational RFQ Captures</p>', unsafe_allow_html=True)
+        rfq_local = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("variational", "rfq_request_capture_path"), "captures/variational_rfq_request.local.json"))
+        accept_local = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("variational", "accept_quote_capture_path"), "captures/variational_accept_quote.local.json"))
+        rows = [
+            _vd_capture_row("RFQ request local", rfq_local, "ignored local template"),
+            _vd_capture_row("Accept quote local", accept_local, "ignored local template"),
+            _vd_capture_row("RFQ request example", VAR_DECIBEL_DIR / "captures/variational_rfq_request.example.json", "tracked example"),
+            _vd_capture_row("Accept quote example", VAR_DECIBEL_DIR / "captures/variational_accept_quote.example.json", "tracked example"),
+            _vd_capture_row("Last schema mismatch", VAR_DECIBEL_DIR / "captures/schema_change_response.redacted.json", "redacted artifact"),
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.warning("Never upload real cookies, bearer tokens, wallet signatures, private keys, or session tokens. Local capture files stay git-ignored.")
+
+    with tabs[5]:
+        st.markdown('<p class="section-title">Replay</p>', unsafe_allow_html=True)
+        if snapshots.empty:
+            st.info("No market snapshots yet.")
+        else:
+            ordered = snapshots.sort_values("timestamp" if "timestamp" in snapshots else "id")
+            if "basis_bp" in ordered:
+                st.line_chart(ordered.set_index("timestamp" if "timestamp" in ordered else "id")[["basis_bp"]])
+        st.dataframe(trades, use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1553,6 +1879,7 @@ _show_flash()
 st.divider()
 
 if nav_platform == "airdrop_farming":
+    _render_airdrop_farming_dashboard()
     st.stop()
 
 # ── metric cards (auto-refresh fragment — only this section re-renders) ────────
