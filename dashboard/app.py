@@ -1631,6 +1631,152 @@ def _vd_panel(title: str, value: str, detail: str, color_class: str = "pill-gray
     )
 
 
+def _vd_number(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _vd_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
+    if df.empty or col not in df:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+
+def _vd_time_ordered(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    ordered = df.copy()
+    if time_col in ordered:
+        ordered[time_col] = pd.to_datetime(ordered[time_col], errors="coerce")
+        ordered = ordered.sort_values(time_col)
+    elif "id" in ordered:
+        ordered = ordered.sort_values("id")
+    return ordered
+
+
+def _vd_today_trades(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty or "timestamp_open" not in trades:
+        return trades
+    frame = trades.copy()
+    opened = pd.to_datetime(frame["timestamp_open"], errors="coerce")
+    today = datetime.now(_BJT).date()
+    return frame[opened.dt.date == today]
+
+
+def _vd_cost_usdc(trades: pd.DataFrame) -> float:
+    if trades.empty:
+        return 0.0
+    notional = _vd_numeric_series(trades, "target_notional")
+    cost_bp = _vd_numeric_series(trades, "realized_cost_bp")
+    if cost_bp.empty or float(cost_bp.abs().sum()) == 0.0:
+        cost_bp = _vd_numeric_series(trades, "estimated_cost_bp")
+    return float((notional * cost_bp / 10000.0).sum())
+
+
+def _vd_mean_cost_bp(trades: pd.DataFrame) -> float:
+    if trades.empty:
+        return 0.0
+    cost_bp = _vd_numeric_series(trades, "realized_cost_bp")
+    if cost_bp.empty or float(cost_bp.abs().sum()) == 0.0:
+        cost_bp = _vd_numeric_series(trades, "estimated_cost_bp")
+    valid = cost_bp[cost_bp != 0]
+    return float(valid.mean()) if not valid.empty else 0.0
+
+
+def _vd_side_sign(side: Any) -> float:
+    normalized = str(side or "").lower()
+    if normalized in {"short", "sell", "ask"}:
+        return -1.0
+    if normalized in {"long", "buy", "bid"}:
+        return 1.0
+    return 0.0
+
+
+def _vd_signed_position(row: dict[str, Any], size_col: str, side_col: str) -> float:
+    return _vd_number(row.get(size_col)) * _vd_side_sign(row.get(side_col))
+
+
+def _vd_latest_open_rows(trades: pd.DataFrame) -> list[dict[str, Any]]:
+    if trades.empty or "symbol" not in trades:
+        return []
+    frame = trades.copy()
+    if "status" in frame:
+        closed = frame["status"].astype(str).str.lower().isin({"closed", "done", "settled"})
+        frame = frame[~closed]
+    if frame.empty:
+        return []
+    order_col = "timestamp_open" if "timestamp_open" in frame else "id"
+    return [dict(row) for _, row in frame.sort_values(order_col).groupby("symbol").tail(1).iterrows()]
+
+
+def _vd_net_delta(trades: pd.DataFrame) -> float:
+    total = 0.0
+    for row in _vd_latest_open_rows(trades):
+        total += _vd_signed_position(row, "var_position_size", "var_side")
+        total += _vd_signed_position(row, "decibel_position_size", "decibel_side")
+    return total
+
+
+def _vd_anomaly_count(trades: pd.DataFrame) -> int:
+    if trades.empty:
+        return 0
+    rescue = trades.get("rescue_action", pd.Series(dtype=str)).fillna("").astype(str).str.len() > 0
+    errors = trades.get("error_message", pd.Series(dtype=str)).fillna("").astype(str).str.len() > 0
+    failed = trades.get("status", pd.Series(dtype=str)).fillna("").astype(str).str.lower().isin({"failed", "error", "halted", "rescue"})
+    return int((rescue | errors | failed).sum())
+
+
+def _vd_cost_chart(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame()
+    ordered = _vd_time_ordered(trades, "timestamp_open")
+    index_col = "timestamp_open" if "timestamp_open" in ordered else "id"
+    notional = _vd_numeric_series(ordered, "target_notional")
+    cost_bp = _vd_numeric_series(ordered, "realized_cost_bp")
+    if cost_bp.empty or float(cost_bp.abs().sum()) == 0.0:
+        cost_bp = _vd_numeric_series(ordered, "estimated_cost_bp")
+    chart = pd.DataFrame(
+        {
+            "cumulative_volume": notional.cumsum(),
+            "cumulative_cost_usdc": (notional * cost_bp / 10000.0).cumsum(),
+            "cost_bp": cost_bp,
+        }
+    )
+    chart[index_col] = ordered[index_col].values if index_col in ordered else ordered.index
+    return chart.set_index(index_col)
+
+
+def _vd_hedge_chart(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame()
+    ordered = _vd_time_ordered(trades, "timestamp_open")
+    index_col = "timestamp_open" if "timestamp_open" in ordered else "id"
+    rows = []
+    for _, row in ordered.iterrows():
+        var_pos = _vd_signed_position(dict(row), "var_position_size", "var_side")
+        decibel_pos = _vd_signed_position(dict(row), "decibel_position_size", "decibel_side")
+        rows.append(
+            {
+                index_col: row[index_col] if index_col in ordered else row.name,
+                "net_delta": var_pos + decibel_pos,
+                "hedge_ratio": abs(decibel_pos) / abs(var_pos) if abs(var_pos) > 0 else 0.0,
+            }
+        )
+    return pd.DataFrame(rows).set_index(index_col) if rows else pd.DataFrame()
+
+
+def _vd_status_text(status: str, live_enabled: bool, kill_switch: Path) -> tuple[str, str]:
+    if kill_switch.exists():
+        return "HALTED", "pill-red"
+    if live_enabled:
+        return "LIVE ARMED", "pill-red"
+    if "LOCKED" in status:
+        return "LIVE LOCKED", "pill-yellow"
+    return "DRY-RUN", "pill-yellow"
+
+
 def _render_airdrop_farming_dashboard() -> None:
     cfg = _vd_load_config()
     project_ok = VAR_DECIBEL_DIR.exists()
@@ -1643,57 +1789,122 @@ def _render_airdrop_farming_dashboard() -> None:
     trades = pd.DataFrame(_vd_fetch_rows(db_path, "trades", "id", 100))
     snapshots = pd.DataFrame(_vd_fetch_rows(db_path, "market_snapshots", "id", 500))
 
-    st.markdown('<p class="section-title">Airdrop Farming / Hedge Research</p>', unsafe_allow_html=True)
-    st.markdown("## Var/Decibel Hedge Lab")
-    st.caption("Small-notional Variational Omni + Decibel delta-neutral experimenter. This panel is embedded in Latitude Alpha and stays monitor/dry-run first.")
+    today_trades = _vd_today_trades(trades)
+    target_volume = float(st.session_state.get("vd_daily_target_volume", 1000.0))
+    today_volume = float(_vd_numeric_series(today_trades, "target_notional").sum())
+    today_cost = _vd_cost_usdc(today_trades)
+    avg_cost_bp = _vd_mean_cost_bp(today_trades)
+    completion = (today_volume / target_volume * 100.0) if target_volume > 0 else 0.0
+    net_delta = _vd_net_delta(trades)
+    anomaly_count = _vd_anomaly_count(today_trades)
+    run_label, run_class = _vd_status_text(status, live_enabled, kill_switch)
+
+    st.markdown('<p class="section-title">Airdrop Farming / Hedge Execution</p>', unsafe_allow_html=True)
+    st.markdown("## Var/Decibel Hedge Volume")
+    st.caption("Simple hedged volume farming: keep delta flat, control per-round cost, and stop fast on single-leg or API risk.")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        _vd_panel("Bot status", status, "kill switch active" if kill_switch.exists() else "research mode", "pill-red" if kill_switch.exists() else "pill-yellow")
+        _vd_panel("Run state", run_label, "kill switch active" if kill_switch.exists() else f"dry_run={_vd_fmt_bool(cfg.get('dry_run', True))}", run_class)
     with c2:
-        _vd_panel("Live gate", "ARMED" if live_enabled else "LOCKED", f"dry_run={_vd_fmt_bool(cfg.get('dry_run', True))}", "pill-green" if live_enabled else "pill-yellow")
+        _vd_panel("Today volume", f"{today_volume:,.2f} U", f"{completion:.1f}% of target", "pill-green" if completion >= 100 else "pill-yellow")
     with c3:
-        _vd_panel("Data store", "READY" if db_path.exists() else "EMPTY", db_path.name, "pill-green" if db_path.exists() else "pill-gray")
+        _vd_panel("Today cost", f"{today_cost:,.4f} U", f"avg {avg_cost_bp:.2f} bp", "pill-red" if avg_cost_bp > _vd_number(_vd_nested_get(cfg, ("risk", "max_expected_cost_bp"), 45)) else "pill-gray")
     with c4:
-        _vd_panel("Project", "FOUND" if project_ok else "MISSING", str(VAR_DECIBEL_DIR), "pill-green" if project_ok else "pill-red")
+        _vd_panel("Net delta", f"{net_delta:.6f}", f"{anomaly_count} execution alerts today", "pill-red" if abs(net_delta) > 0.0001 or anomaly_count else "pill-green")
 
     if not project_ok or not config_ok:
         st.warning(f"Var/Decibel project or config not found. Expected `{VAR_DECIBEL_CONFIG_PATH}`.")
         return
 
     st.markdown("")
-    tabs = st.tabs(["Overview", "Monitor", "Cost Model", "Risk", "RFQ Captures", "Replay"])
+    tabs = st.tabs(["Daily Run", "Hedge Health", "Setup / Debug"])
 
     with tabs[0]:
-        left, right = st.columns([1.2, 1])
+        left, right = st.columns([0.9, 1.35])
         with left:
-            st.markdown('<p class="section-title">Scope</p>', unsafe_allow_html=True)
-            auto = _vd_nested_get(cfg, ("symbols", "auto_trade_whitelist"), ["BTC", "ETH"])
-            monitor_only = _vd_nested_get(cfg, ("symbols", "monitor_only"), ["AAPL", "QQQ", "XAU", "CL", "SPCX"])
+            st.markdown('<p class="section-title">Daily Volume Plan</p>', unsafe_allow_html=True)
+            target_volume = st.number_input(
+                "Today target volume (USDC)",
+                min_value=0.0,
+                value=target_volume,
+                step=100.0,
+                key="vd_daily_target_volume",
+            )
+            completion = (today_volume / target_volume * 100.0) if target_volume > 0 else 0.0
+            st.progress(min(completion / 100.0, 1.0), text=f"{today_volume:,.2f} / {target_volume:,.2f} U")
+            max_round_notional = _vd_number(_vd_nested_get(cfg, ("risk", "max_order_notional"), 25))
+            max_expected_cost = _vd_number(_vd_nested_get(cfg, ("risk", "max_expected_cost_bp"), 45))
             st.markdown(
                 f"""
                 <div class="var-block">
-                  <div class="muted-note">Default flow: monitor → dry-run → very-small live-run. No live order controls are exposed here yet.</div>
+                  <div class="muted-note">Main job: repeat small hedged rounds, keep exposure close to zero, and stop when cost or execution quality gets worse.</div>
                   <br>
-                  <span class="pill-green">Auto whitelist: {", ".join(map(str, auto))}</span>
-                  <span class="pill-yellow">Monitor-only: {", ".join(map(str, monitor_only))}</span>
+                  <span class="pill-green">Whitelist: {", ".join(map(str, _vd_nested_get(cfg, ("symbols", "auto_trade_whitelist"), ["BTC", "ETH"])))}</span>
+                  <span class="pill-yellow">Max round: {max_round_notional:.2f} U</span>
+                  <span class="pill-yellow">Max cost: {max_expected_cost:.2f} bp</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
         with right:
-            summary = pd.DataFrame(
-                [
-                    {"Metric": "Recent trades", "Value": str(len(trades))},
-                    {"Metric": "Market snapshots", "Value": str(len(snapshots))},
-                    {"Metric": "Decibel network", "Value": str(_vd_nested_get(cfg, ("decibel", "network"), "testnet"))},
-                    {"Metric": "Variational API", "Value": str(_vd_nested_get(cfg, ("variational", "readonly_base_url"), "—"))},
-                ]
-            )
-            st.dataframe(summary, use_container_width=True, hide_index=True)
+            st.markdown('<p class="section-title">Volume And Cost Curves</p>', unsafe_allow_html=True)
+            chart = _vd_cost_chart(today_trades if not today_trades.empty else trades)
+            if chart.empty:
+                st.info("No hedge rounds recorded yet. Curves will appear after dry-run or monitor writes trade rows.")
+            else:
+                volume_cols = [c for c in ["cumulative_volume", "cumulative_cost_usdc"] if c in chart]
+                st.line_chart(chart[volume_cols])
+                st.line_chart(chart[["cost_bp"]])
+
+        if not trades.empty:
+            display_cols = [
+                c for c in [
+                    "timestamp_open",
+                    "symbol",
+                    "target_notional",
+                    "estimated_cost_bp",
+                    "realized_cost_bp",
+                    "var_slippage_bp",
+                    "decibel_slippage_bp",
+                    "status",
+                    "error_message",
+                ] if c in trades
+            ]
+            st.markdown('<p class="section-title">Recent Hedge Rounds</p>', unsafe_allow_html=True)
+            st.dataframe(_vd_time_ordered(trades, "timestamp_open").tail(20)[display_cols], use_container_width=True, hide_index=True)
 
     with tabs[1]:
-        st.markdown('<p class="section-title">Opportunity Matrix</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title">Hedge Health</p>', unsafe_allow_html=True)
+        left, right = st.columns([1.2, 1])
+        with left:
+            open_rows = []
+            for row in _vd_latest_open_rows(trades):
+                var_pos = _vd_signed_position(row, "var_position_size", "var_side")
+                decibel_pos = _vd_signed_position(row, "decibel_position_size", "decibel_side")
+                open_rows.append(
+                    {
+                        "Symbol": row.get("symbol", ""),
+                        "Var side": row.get("var_side", ""),
+                        "Var pos": var_pos,
+                        "Decibel side": row.get("decibel_side", ""),
+                        "Decibel pos": decibel_pos,
+                        "Net delta": var_pos + decibel_pos,
+                        "Status": row.get("status", ""),
+                    }
+                )
+            if open_rows:
+                st.dataframe(pd.DataFrame(open_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No open hedge rows detected.")
+        with right:
+            hedge_chart = _vd_hedge_chart(trades)
+            if hedge_chart.empty:
+                st.info("Net delta and hedge ratio curves will appear after executions are logged.")
+            else:
+                st.line_chart(hedge_chart[[c for c in ["net_delta", "hedge_ratio"] if c in hedge_chart]])
+
+        st.markdown('<p class="section-title">Market Context</p>', unsafe_allow_html=True)
         rows = []
         for symbol in _vd_nested_get(cfg, ("symbols", "auto_trade_whitelist"), ["BTC", "ETH"]):
             latest = _vd_latest_snapshot(snapshots, str(symbol))
@@ -1706,50 +1917,31 @@ def _render_airdrop_farming_dashboard() -> None:
                     "Var funding": latest.get("var_funding", "—") if latest else "—",
                     "Decibel funding": latest.get("decibel_funding", "—") if latest else "—",
                     "Quote state": "no snapshot" if not latest else "freshness unknown",
-                    "Decision": "locked" if not live_enabled else "eligible",
                 }
             )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.markdown('<p class="muted-note">Live values will appear after the monitor process writes snapshots into the Var/Decibel SQLite database.</p>', unsafe_allow_html=True)
+        if not snapshots.empty:
+            ordered = _vd_time_ordered(snapshots, "timestamp")
+            if "basis_bp" in ordered:
+                index_col = "timestamp" if "timestamp" in ordered else "id"
+                st.line_chart(ordered.set_index(index_col)[["basis_bp"]])
 
     with tabs[2]:
-        st.markdown('<p class="section-title">Expected Cost</p>', unsafe_allow_html=True)
-        max_notional = float(_vd_nested_get(cfg, ("risk", "max_order_notional"), "25"))
-        max_expected = float(_vd_nested_get(cfg, ("risk", "max_expected_cost_bp"), "45"))
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            notional = st.number_input("Notional USDC", min_value=1.0, max_value=max_notional, value=min(10.0, max_notional), step=1.0, key="vd_notional")
-            var_slippage = st.number_input("Var slippage bp", min_value=0.0, value=5.0, step=0.5, key="vd_var_slippage")
-        with col_b:
-            decibel_spread = st.number_input("Decibel spread bp", min_value=0.0, value=6.0, step=0.5, key="vd_decibel_spread")
-            close_cost = st.number_input("Close cost bp", min_value=0.0, value=8.0, step=0.5, key="vd_close_cost")
-        with col_c:
-            funding_cost = st.number_input("Funding cost bp", value=0.0, step=0.5, key="vd_funding_cost")
-            risk_buffer = st.number_input("Risk buffer bp", min_value=0.0, value=10.0, step=0.5, key="vd_risk_buffer")
-        total = var_slippage + decibel_spread + close_cost + funding_cost + risk_buffer
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Target notional", f"{notional:.2f} U")
-        m2.metric("Total expected cost", f"{total:.2f} bp")
-        m3.metric("Configured max", f"{max_expected:.2f} bp")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"Direction": "Var long + Decibel short", "Expected cost bp": total, "Decision": "blocked" if total >= max_expected or not live_enabled else "eligible"},
-                    {"Direction": "Var short + Decibel long", "Expected cost bp": total, "Decision": "blocked" if total >= max_expected or not live_enabled else "eligible"},
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    with tabs[3]:
-        st.markdown('<p class="section-title">Risk Controls</p>', unsafe_allow_html=True)
-        risk = cfg.get("risk", {}) if isinstance(cfg.get("risk"), dict) else {}
-        risk_rows = [{"Limit": k, "Value": str(v)} for k, v in risk.items()]
-        left, right = st.columns([1.2, 1])
-        with left:
+        setup_left, setup_right = st.columns([1, 1])
+        with setup_left:
+            st.markdown('<p class="section-title">Stops And Limits</p>', unsafe_allow_html=True)
+            risk = cfg.get("risk", {}) if isinstance(cfg.get("risk"), dict) else {}
+            show_keys = [
+                "max_order_notional",
+                "max_daily_loss",
+                "max_expected_cost_bp",
+                "max_consecutive_failures",
+                "max_open_positions",
+                "auto_rescue_notional_limit",
+                "kill_switch_file",
+            ]
+            risk_rows = [{"Limit": key, "Value": str(risk.get(key, "—"))} for key in show_keys]
             st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
-        with right:
             st.markdown("Kill switch")
             st.write(f"`{kill_switch}`")
             st.write("Active" if kill_switch.exists() else "Inactive")
@@ -1760,8 +1952,8 @@ def _render_airdrop_farming_dashboard() -> None:
                 kill_switch.unlink()
                 st.rerun()
 
-    with tabs[4]:
-        st.markdown('<p class="section-title">Variational RFQ Captures</p>', unsafe_allow_html=True)
+        with setup_right:
+            st.markdown('<p class="section-title">RFQ Captures And Data</p>', unsafe_allow_html=True)
         rfq_local = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("variational", "rfq_request_capture_path"), "captures/variational_rfq_request.local.json"))
         accept_local = VAR_DECIBEL_DIR / str(_vd_nested_get(cfg, ("variational", "accept_quote_capture_path"), "captures/variational_accept_quote.local.json"))
         rows = [
@@ -1773,16 +1965,7 @@ def _render_airdrop_farming_dashboard() -> None:
         ]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.warning("Never upload real cookies, bearer tokens, wallet signatures, private keys, or session tokens. Local capture files stay git-ignored.")
-
-    with tabs[5]:
-        st.markdown('<p class="section-title">Replay</p>', unsafe_allow_html=True)
-        if snapshots.empty:
-            st.info("No market snapshots yet.")
-        else:
-            ordered = snapshots.sort_values("timestamp" if "timestamp" in snapshots else "id")
-            if "basis_bp" in ordered:
-                st.line_chart(ordered.set_index("timestamp" if "timestamp" in ordered else "id")[["basis_bp"]])
-        st.dataframe(trades, use_container_width=True, hide_index=True)
+        st.markdown('<p class="muted-note">Debug details live here so the default screen stays focused on farming progress, hedge cleanliness, and cost control.</p>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
