@@ -1517,11 +1517,6 @@ with st.sidebar:
 # MAIN RENDER
 # ══════════════════════════════════════════════════════════════════════════════
 
-if nav_platform == "airdrop_farming":
-    st.markdown("## Latitude Alpha")
-    st.caption("airdrop_farming")
-    st.stop()
-
 cfg = load_config()
 acc = cfg.get("account", {})
 host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
@@ -1556,6 +1551,9 @@ with col_stop:
 
 _show_flash()
 st.divider()
+
+if nav_platform == "airdrop_farming":
+    st.stop()
 
 # ── metric cards (auto-refresh fragment — only this section re-renders) ────────
 engine_state = load_engine_state()
