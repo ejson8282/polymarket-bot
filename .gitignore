@@ -1,0 +1,52 @@
+# OS / editor
+.DS_Store
+*.log
+*.pid
+*.pyc
+__pycache__/
+
+# Local state / secrets / notes
+.openclaw/
+.claude/
+memory/
+KEYS.md
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+role.txt
+*.txt
+
+# Runtime data
+data/
+!data/.gitkeep
+
+# Python env / caches
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local dumps / debug
+proxy_nodes_dump.json
+proxy_selector_dump.json
+
+# Misc local launchers
+*.bat
+dashboard/remote_accounts.json
+scripts/accounts.json
+platforms/polymarket/maker/config_1.json
+platforms/polymarket/maker/config_2.json
+platforms/polymarket/maker/config.json
+platforms/polymarket/maker/config_1.json.bak_20260429_0048
+platforms/polymarket/maker/config_2.json.bak_20260429_0048
+platforms/polymarket/maker/config_1.json.preMerge_1777385928
+platforms/polymarket/maker/engine.py.preGetOrders
+platforms/polymarket/maker/engine.py.preSigterm
+platforms/polymarket/maker/remote_signer.py.preBumppool
+platforms/polymarket/maker/remote_signer.py.preTimeout
+.git.openclaw-bad-20260608143122/

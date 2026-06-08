@@ -1,0 +1,12 @@
+[
+  { "funder": "0xREPLACE_WITH_FUNDER_1",  "private_key": "0xREPLACE_WITH_KEY_1" },
+  { "funder": "0xREPLACE_WITH_FUNDER_2",  "private_key": "0xREPLACE_WITH_KEY_2" },
+  { "funder": "0xREPLACE_WITH_FUNDER_3",  "private_key": "0xREPLACE_WITH_KEY_3" },
+  { "funder": "0xREPLACE_WITH_FUNDER_4",  "private_key": "0xREPLACE_WITH_KEY_4" },
+  { "funder": "0xREPLACE_WITH_FUNDER_5",  "private_key": "0xREPLACE_WITH_KEY_5" },
+  { "funder": "0xREPLACE_WITH_FUNDER_6",  "private_key": "0xREPLACE_WITH_KEY_6" },
+  { "funder": "0xREPLACE_WITH_FUNDER_7",  "private_key": "0xREPLACE_WITH_KEY_7" },
+  { "funder": "0xREPLACE_WITH_FUNDER_8",  "private_key": "0xREPLACE_WITH_KEY_8" },
+  { "funder": "0xREPLACE_WITH_FUNDER_9",  "private_key": "0xREPLACE_WITH_KEY_9" },
+  { "funder": "0xREPLACE_WITH_FUNDER_10", "private_key": "0xREPLACE_WITH_KEY_10" }
+]
