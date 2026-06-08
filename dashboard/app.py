@@ -1468,7 +1468,8 @@ with st.sidebar:
     st.markdown("---")
 
     PLATFORMS = {
-        "Polymarket": ["Market Making"],
+        "Market Making": ["Polymarket"],
+        "airdrop_farming": [],
         # future: "Hyperliquid": ["Perps", "Vaults"],
     }
 
@@ -1476,6 +1477,16 @@ with st.sidebar:
     nav_feature = None
     for p, features in PLATFORMS.items():
         st.markdown(f"<span style='color:#8b949e; font-size:11px; letter-spacing:.08em; text-transform:uppercase'>{p}</span>", unsafe_allow_html=True)
+        if not features:
+            if st.button(
+                f"  {p}",
+                key=f"nav_{p}",
+                use_container_width=True,
+            ):
+                st.session_state["nav_feature"] = f"{p}/{p}"
+            if nav_platform is None:
+                nav_platform = p
+                nav_feature = p
         for f in features:
             if st.button(
                 f"  {f}",
@@ -1488,7 +1499,10 @@ with st.sidebar:
                 nav_feature = f
 
     # default selection
-    _nav = st.session_state.get("nav_feature", "Polymarket/Market Making")
+    _nav = st.session_state.get("nav_feature", "Market Making/Polymarket")
+    if _nav == "Polymarket/Market Making":
+        _nav = "Market Making/Polymarket"
+        st.session_state["nav_feature"] = _nav
     nav_platform, nav_feature = _nav.split("/", 1)
 
     st.markdown("---")
