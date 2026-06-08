@@ -1473,6 +1473,10 @@ with st.sidebar:
         # future: "Hyperliquid": ["Perps", "Vaults"],
     }
 
+    def _select_nav(value: str) -> None:
+        st.session_state["nav_feature"] = value
+        st.rerun()
+
     nav_platform = None
     nav_feature = None
     for p, features in PLATFORMS.items():
@@ -1483,7 +1487,7 @@ with st.sidebar:
                 key=f"nav_{p}",
                 use_container_width=True,
             ):
-                st.session_state["nav_feature"] = f"{p}/{p}"
+                _select_nav(f"{p}/{p}")
             if nav_platform is None:
                 nav_platform = p
                 nav_feature = p
@@ -1493,7 +1497,7 @@ with st.sidebar:
                 key=f"nav_{p}_{f}",
                 use_container_width=True,
             ):
-                st.session_state["nav_feature"] = f"{p}/{f}"
+                _select_nav(f"{p}/{f}")
             if nav_platform is None:
                 nav_platform = p
                 nav_feature = f
@@ -1512,6 +1516,11 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN RENDER
 # ══════════════════════════════════════════════════════════════════════════════
+
+if nav_platform == "airdrop_farming":
+    st.markdown("## Latitude Alpha")
+    st.caption("airdrop_farming")
+    st.stop()
 
 cfg = load_config()
 acc = cfg.get("account", {})
