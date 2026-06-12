@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import ast
+import importlib.util
 import sqlite3
 import subprocess
 import sys
@@ -65,6 +66,38 @@ VAR_DECIBEL_CONFIG_PATH = VAR_DECIBEL_DIR / "config.yaml"
 
 # legacy alias — some helpers still use BASE_DIR for cwd
 BASE_DIR            = MAKER_DIR
+
+
+def _render_var_decibel_embedded_dashboard() -> None:
+    app_path = VAR_DECIBEL_DIR / "src" / "dashboard" / "app.py"
+    if not app_path.exists():
+        st.error(f"Var/Decibel dashboard app not found at `{app_path}`.")
+        return
+
+    module_name = "_latitude_var_decibel_dashboard_app"
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    if spec is None or spec.loader is None:
+        st.error(f"Could not load Var/Decibel dashboard module from `{app_path}`.")
+        return
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        render_dashboard = getattr(module, "render_dashboard")
+    except Exception as exc:
+        st.error(f"Could not import Var/Decibel dashboard: {type(exc).__name__}: {exc}")
+        return
+
+    try:
+        render_dashboard(
+            config_path=VAR_DECIBEL_CONFIG_PATH,
+            db="sqlite:///data/hedge_bot.sqlite3",
+            base_dir=VAR_DECIBEL_DIR,
+            embedded=True,
+        )
+    except Exception as exc:
+        st.error(f"Var/Decibel dashboard failed to render: {type(exc).__name__}: {exc}")
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1816,6 +1849,9 @@ def _vd_status_text(status: str, live_enabled: bool, kill_switch: Path) -> tuple
 
 
 def _render_airdrop_farming_dashboard() -> None:
+    _render_var_decibel_embedded_dashboard()
+    return
+
     cfg = _vd_load_config()
     project_ok = VAR_DECIBEL_DIR.exists()
     config_ok = VAR_DECIBEL_CONFIG_PATH.exists()
