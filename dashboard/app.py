@@ -44,7 +44,23 @@ ENGINE_STATE_PATH   = DATA_DIR / "engine_state.json"
 SESSION_CONFIRM_PATH = DATA_DIR / "session_confirm.json"
 MULTI_RUNNER_PATH   = MAKER_DIR / "multi_runner.py"
 REMOTE_ACCOUNTS_PATH = REPO_DIR / "dashboard" / "remote_accounts.json"
-VAR_DECIBEL_DIR      = Path(os.getenv("VAR_DECIBEL_HEDGE_BOT_DIR", str(REPO_DIR.parent / "var_decibel_hedge_bot")))
+
+
+def _resolve_var_decibel_dir() -> Path:
+    override = os.getenv("VAR_DECIBEL_HEDGE_BOT_DIR", "").strip()
+    if override:
+        return Path(override)
+    candidates = [
+        REPO_DIR.parent / "varia-decibel-farming-live",
+        REPO_DIR.parent / "var_decibel_hedge_bot",
+    ]
+    for candidate in candidates:
+        if (candidate / "config.yaml").exists():
+            return candidate
+    return candidates[0]
+
+
+VAR_DECIBEL_DIR      = _resolve_var_decibel_dir()
 VAR_DECIBEL_CONFIG_PATH = VAR_DECIBEL_DIR / "config.yaml"
 
 # legacy alias — some helpers still use BASE_DIR for cwd
@@ -1590,10 +1606,15 @@ def _vd_fmt_bool(value: Any) -> str:
 
 
 def _vd_live_enabled(cfg: dict) -> bool:
+    expected_confirm = str(_vd_nested_get(
+        cfg,
+        ("execution", "live_confirm_text"),
+        "I_UNDERSTAND_THIS_CAN_PLACE_REAL_ORDERS",
+    ))
     return (
         not bool(cfg.get("dry_run", True))
         and bool(cfg.get("live_trading", False))
-        and str(cfg.get("confirm_live_trading_text", "")) == "I_UNDERSTAND_THIS_CAN_LOSE_MONEY"
+        and str(cfg.get("confirm_live_trading_text", "")) == expected_confirm
     )
 
 
@@ -2006,7 +2027,7 @@ with st.sidebar:
 
     PLATFORMS = {
         "Market Making": ["Polymarket"],
-        "airdrop_farming": [],
+        "Airdrop Farming": ["Var/Decibel"],
         # future: "Hyperliquid": ["Perps", "Vaults"],
     }
 
@@ -2089,7 +2110,7 @@ with col_stop:
 _show_flash()
 st.divider()
 
-if nav_platform == "airdrop_farming":
+if nav_platform == "Airdrop Farming":
     _render_airdrop_farming_dashboard()
     st.stop()
 
