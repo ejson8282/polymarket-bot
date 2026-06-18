@@ -17,6 +17,7 @@ import importlib.util
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 # Beijing timezone (UTC+8)
@@ -61,9 +62,45 @@ def _resolve_var_decibel_dir() -> Path:
 
 VAR_DECIBEL_DIR      = _resolve_var_decibel_dir()
 VAR_DECIBEL_CONFIG_PATH = VAR_DECIBEL_DIR / "config.yaml"
+VAR_DECIBEL_SRC_DIR  = VAR_DECIBEL_DIR / "src"
 
 # legacy alias — some helpers still use BASE_DIR for cwd
 BASE_DIR            = MAKER_DIR
+
+
+@contextmanager
+def _var_decibel_import_context():
+    previous_path = list(sys.path)
+    previous_modules = {
+        name: sys.modules.get(name)
+        for name in (
+            "config",
+            "errors",
+            "exchanges",
+            "local_secrets",
+            "models",
+            "ops",
+            "signer",
+            "storage",
+            "strategy",
+            "tools",
+            "utils",
+        )
+    }
+    for name in list(sys.modules):
+        if name in previous_modules or any(name.startswith(f"{prefix}.") for prefix in previous_modules):
+            sys.modules.pop(name, None)
+    sys.path.insert(0, str(VAR_DECIBEL_SRC_DIR))
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name in previous_modules or any(name.startswith(f"{prefix}.") for prefix in previous_modules):
+                sys.modules.pop(name, None)
+        for name, module in previous_modules.items():
+            if module is not None:
+                sys.modules[name] = module
+        sys.path[:] = previous_path
 
 
 def _render_var_decibel_embedded_dashboard() -> None:
@@ -80,22 +117,23 @@ def _render_var_decibel_embedded_dashboard() -> None:
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-        render_dashboard = getattr(module, "render_dashboard")
-    except Exception as exc:
-        st.error(f"Could not import Var/Decibel dashboard: {type(exc).__name__}: {exc}")
-        return
+    with _var_decibel_import_context():
+        try:
+            spec.loader.exec_module(module)
+            render_dashboard = getattr(module, "render_dashboard")
+        except Exception as exc:
+            st.error(f"Could not import Var/Decibel dashboard: {type(exc).__name__}: {exc}")
+            return
 
-    try:
-        render_dashboard(
-            config_path=VAR_DECIBEL_CONFIG_PATH,
-            db="sqlite:///data/hedge_bot.sqlite3",
-            base_dir=VAR_DECIBEL_DIR,
-            embedded=True,
-        )
-    except Exception as exc:
-        st.error(f"Var/Decibel dashboard failed to render: {type(exc).__name__}: {exc}")
+        try:
+            render_dashboard(
+                config_path=VAR_DECIBEL_CONFIG_PATH,
+                db="sqlite:///data/hedge_bot.sqlite3",
+                base_dir=VAR_DECIBEL_DIR,
+                embedded=True,
+            )
+        except Exception as exc:
+            st.error(f"Var/Decibel dashboard failed to render: {type(exc).__name__}: {exc}")
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
