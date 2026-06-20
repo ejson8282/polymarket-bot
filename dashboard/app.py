@@ -16,6 +16,7 @@ import platform
 import importlib.util
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -63,6 +64,9 @@ def _resolve_var_decibel_dir() -> Path:
 VAR_DECIBEL_DIR      = _resolve_var_decibel_dir()
 VAR_DECIBEL_CONFIG_PATH = VAR_DECIBEL_DIR / "config.yaml"
 VAR_DECIBEL_SRC_DIR  = VAR_DECIBEL_DIR / "src"
+VAR_DECIBEL_DASHBOARD_MODULE_NAME = "_latitude_var_decibel_dashboard_app"
+_VAR_DECIBEL_IMPORT_LOCK = threading.RLock()
+_VAR_DECIBEL_DASHBOARD_MODULE = None
 
 # legacy alias — some helpers still use BASE_DIR for cwd
 BASE_DIR            = MAKER_DIR
@@ -104,36 +108,55 @@ def _var_decibel_import_context():
 
 
 def _render_var_decibel_embedded_dashboard() -> None:
+    try:
+        module = _load_var_decibel_dashboard_module()
+        render_dashboard = getattr(module, "render_dashboard")
+    except Exception as exc:
+        st.error(f"Could not import Var/Decibel dashboard: {type(exc).__name__}: {exc}")
+        return
+
+    try:
+        render_dashboard(
+            config_path=VAR_DECIBEL_CONFIG_PATH,
+            db="sqlite:///data/hedge_bot.sqlite3",
+            base_dir=VAR_DECIBEL_DIR,
+            embedded=True,
+        )
+    except Exception as exc:
+        st.error(f"Var/Decibel dashboard failed to render: {type(exc).__name__}: {exc}")
+
+
+def _load_var_decibel_dashboard_module():
+    global _VAR_DECIBEL_DASHBOARD_MODULE
+    if _VAR_DECIBEL_DASHBOARD_MODULE is not None:
+        return _VAR_DECIBEL_DASHBOARD_MODULE
+
     app_path = VAR_DECIBEL_DIR / "src" / "dashboard" / "app.py"
     if not app_path.exists():
-        st.error(f"Var/Decibel dashboard app not found at `{app_path}`.")
-        return
+        raise FileNotFoundError(f"Var/Decibel dashboard app not found at {app_path}")
 
-    module_name = "_latitude_var_decibel_dashboard_app"
-    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    with _VAR_DECIBEL_IMPORT_LOCK:
+        if _VAR_DECIBEL_DASHBOARD_MODULE is not None:
+            return _VAR_DECIBEL_DASHBOARD_MODULE
+        module = _import_var_decibel_dashboard_module(app_path)
+        _VAR_DECIBEL_DASHBOARD_MODULE = module
+        return module
+
+
+def _import_var_decibel_dashboard_module(app_path: Path):
+    spec = importlib.util.spec_from_file_location(VAR_DECIBEL_DASHBOARD_MODULE_NAME, app_path)
     if spec is None or spec.loader is None:
-        st.error(f"Could not load Var/Decibel dashboard module from `{app_path}`.")
-        return
+        raise ImportError(f"Could not load Var/Decibel dashboard module from {app_path}")
 
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    with _var_decibel_import_context():
-        try:
+    sys.modules[VAR_DECIBEL_DASHBOARD_MODULE_NAME] = module
+    try:
+        with _var_decibel_import_context():
             spec.loader.exec_module(module)
-            render_dashboard = getattr(module, "render_dashboard")
-        except Exception as exc:
-            st.error(f"Could not import Var/Decibel dashboard: {type(exc).__name__}: {exc}")
-            return
-
-        try:
-            render_dashboard(
-                config_path=VAR_DECIBEL_CONFIG_PATH,
-                db="sqlite:///data/hedge_bot.sqlite3",
-                base_dir=VAR_DECIBEL_DIR,
-                embedded=True,
-            )
-        except Exception as exc:
-            st.error(f"Var/Decibel dashboard failed to render: {type(exc).__name__}: {exc}")
+        return module
+    except Exception:
+        sys.modules.pop(VAR_DECIBEL_DASHBOARD_MODULE_NAME, None)
+        raise
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
