@@ -1,0 +1,88 @@
+{
+  "environment": "testnet",
+  "base_url": "https://api-testnet.predict.fun",
+  "ws_url": "wss://ws.predict.fun/ws",
+  "api_key_env": "PREDICTFUN_API_KEY",
+  "scan": {
+    "max_markets": 20,
+    "first": 50,
+    "has_active_rewards": true,
+    "min_hourly_rate": "0",
+    "include_crypto_updown": false
+  },
+  "strategy": {
+    "quote_size_pct_of_share_threshold": "1.00",
+    "min_quote_size": "10",
+    "edge_ticks": 1,
+    "backoff_ticks": 2,
+    "max_quote_levels": 2,
+    "seed_empty_books": true,
+    "seed_mid_price": "0.50",
+    "seed_distance_ticks": 5
+  },
+  "accounts": {
+    "enabled": true,
+    "assignment": "round_robin",
+    "max_active_accounts": 10,
+    "ids": [
+      "acct01",
+      "acct02",
+      "acct03",
+      "acct04",
+      "acct05",
+      "acct06",
+      "acct07",
+      "acct08",
+      "acct09",
+      "acct10"
+    ]
+  },
+  "inventory": {
+    "enabled": true,
+    "max_long_size_per_outcome": "100",
+    "exit_quote_size_pct_of_position": "1.00",
+    "min_exit_size": "1",
+    "exit_edge_ticks": 1
+  },
+  "data": {
+    "use_ws_orderbook_cache": true,
+    "ws_state_max_age_sec": 120
+  },
+  "risk": {
+    "min_seconds_to_expiry": 3600,
+    "avoid_mid_band_low": "0.35",
+    "avoid_mid_band_high": "0.65",
+    "max_plan_state_age_sec": 180,
+    "max_ws_state_age_sec": 180,
+    "warn_on_stale_ws_state": false,
+    "max_total_desired_notional": "2500",
+    "max_active_accounts": 10,
+    "max_account_desired_notional": "250",
+    "max_account_market_desired_notional": "100",
+    "max_market_desired_notional": "100",
+    "max_market_position_size": "300",
+    "max_account_market_position_size": "100",
+    "max_runner_errors": 3
+  },
+  "simulation": {
+    "enabled": true,
+    "max_fill_size": "10"
+  },
+  "runner": {
+    "interval_sec": 30,
+    "fast_requote_after_fill_sec": 2
+  },
+  "output": {
+    "state_path": "../../../data/predictfun_testnet_state.json",
+    "ws_state_path": "../../../data/predictfun_ws_state.json",
+    "intents_path": "../../../data/predictfun_desired_orders.json",
+    "execution_report_path": "../../../data/predictfun_execution_report.json",
+    "runner_state_path": "../../../data/predictfun_runner_state.json",
+    "simulation_state_path": "../../../data/predictfun_simulation_state.json",
+    "risk_state_path": "../../../data/predictfun_risk_state.json",
+    "kill_switch_path": "../../../data/predictfun_kill_switch.json",
+    "research_state_path": "../../../data/predictfun_market_research.json",
+    "pid_path": "../../../data/predictfun_dry_run.pid",
+    "log_path": "../../../data/predictfun_dry_run.log"
+  }
+}

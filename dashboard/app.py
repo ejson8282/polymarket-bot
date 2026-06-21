@@ -1588,7 +1588,7 @@ with st.sidebar:
     st.markdown("---")
 
     PLATFORMS = {
-        "Market Making": ["Polymarket"],
+        "Market Making": ["Polymarket", "Predict.fun"],
         "Airdrop Farming": ["Var/Decibel"],
         # future: "Hyperliquid": ["Perps", "Vaults"],
     }
@@ -1634,6 +1634,16 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+
+if nav_platform == "Market Making" and nav_feature == "Predict.fun":
+    try:
+        from dashboard.predictfun_view import render_predictfun_dashboard
+    except ModuleNotFoundError:
+        from predictfun_view import render_predictfun_dashboard
+
+    render_predictfun_dashboard(embedded=True)
+    st.stop()
+
 # MAIN RENDER
 # ══════════════════════════════════════════════════════════════════════════════
 
