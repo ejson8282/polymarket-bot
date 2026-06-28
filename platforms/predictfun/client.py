@@ -10,6 +10,7 @@ import requests
 
 PREDICT_MAINNET_BASE = "https://api.predict.fun"
 PREDICT_TESTNET_BASE = "https://api-testnet.predict.fun"
+PREDICT_USER_AGENT = "predictfun-maker/0.1"
 
 
 class PredictFunError(RuntimeError):
@@ -22,9 +23,10 @@ class PredictFunClient:
     api_key: str = ""
     timeout: float = 15.0
     retries: int = 3
+    user_agent: str = PREDICT_USER_AGENT
 
     def _headers(self, *, jwt: str = "") -> dict[str, str]:
-        headers = {"accept": "application/json"}
+        headers = {"accept": "application/json", "user-agent": self.user_agent}
         if self.api_key:
             headers["x-api-key"] = self.api_key
         if jwt:
