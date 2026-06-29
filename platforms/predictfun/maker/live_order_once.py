@@ -141,7 +141,7 @@ def main() -> None:
         "size": args.size,
         "response": payload,
     }
-    if args.live and args.remove_after and payload.get("order_hash"):
+    if args.live and args.remove_after and result["ok"] and payload.get("order_hash"):
         remove_resp = requests.post(
             f"{signer_url}/predictfun/accounts/{args.account}/remove-order-by-hash",
             json={"remove": True, "confirm": "REMOVE_PREDICTFUN_ORDER", "hash": payload["order_hash"]},
