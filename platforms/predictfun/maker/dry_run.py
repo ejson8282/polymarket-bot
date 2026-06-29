@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -384,6 +385,71 @@ def main() -> None:
         time.sleep(max(1.0, args.interval_sec))
 
 
+def _configured_account_ids(raw: dict[str, Any] | list[Any] | None) -> list[str]:
+    if isinstance(raw, list):
+        rows = raw
+        max_active = len(rows) or 1
+    elif isinstance(raw, dict):
+        if raw.get("enabled") is False:
+            return []
+        rows = raw.get("ids") or raw.get("account_ids") or raw.get("accounts") or []
+        max_active = int(as_decimal(raw.get("max_active_accounts"), "10") or Decimal("10"))
+        if not rows:
+            rows = [f"account_{i:02d}" for i in range(1, max_active + 1)]
+    else:
+        return []
+
+    account_ids: list[str] = []
+    seen: set[str] = set()
+    for item in rows:
+        account_id = ""
+        if isinstance(item, dict):
+            account_id = str(item.get("account_id") or item.get("id") or item.get("name") or "").strip()
+        else:
+            account_id = str(item or "").strip()
+        if not account_id or account_id in seen:
+            continue
+        account_ids.append(account_id)
+        seen.add(account_id)
+        if len(account_ids) >= max(1, max_active):
+            break
+    return account_ids
+
+
+def _check_auth_accounts(cfg: dict[str, Any], accounts_cfg: dict[str, Any] | list[Any]) -> dict[str, Any]:
+    signer_cfg = cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}
+    if not signer_cfg or signer_cfg.get("enabled") is False:
+        return {"enabled": False}
+    base_url = str(signer_cfg.get("base_url") or cfg.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return {"enabled": True, "ok": False, "error": "missing_signer_base_url", "accounts": []}
+    path_template = str(signer_cfg.get("auth_check_path") or "/predictfun/accounts/{account_id}/auth-check")
+    timeout = float(signer_cfg.get("timeout_sec") or 10)
+    accounts = _configured_account_ids(accounts_cfg)
+    results: list[dict[str, Any]] = []
+    for account_id in accounts:
+        path = path_template.format(account_id=account_id)
+        url = base_url + (path if path.startswith("/") else "/" + path)
+        try:
+            resp = requests.post(url, timeout=timeout)
+            payload = resp.json() if resp.content else {}
+        except Exception as exc:
+            results.append({"account_id": account_id, "ok": False, "error": type(exc).__name__})
+            continue
+        if not isinstance(payload, dict):
+            payload = {}
+        results.append(
+            {
+                "account_id": account_id,
+                "ok": bool(payload.get("ok")),
+                "status": payload.get("status") or resp.status_code,
+                "signer": payload.get("signer"),
+                "token_present": bool(payload.get("token_present")),
+                "error": payload.get("error"),
+            }
+        )
+    return {"enabled": True, "ok": bool(results) and all(row.get("ok") for row in results), "accounts": results}
+
 def run_once(
     client: PredictFunClient,
     cfg: dict[str, Any],
@@ -449,12 +515,15 @@ def run_once(
             )
         )
 
+    auth_check = _check_auth_accounts(cfg, accounts_cfg)
     state = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "environment": cfg.get("environment", "testnet"),
         "base_url": cfg.get("base_url"),
         "plans": [plan_to_jsonable(plan) for plan in plans],
     }
+    if auth_check.get("enabled"):
+        state["auth"] = auth_check
 
     state_path_raw = str(out_cfg.get("state_path") or "").strip()
     if state_path_raw:
@@ -496,6 +565,15 @@ def _print_state(state: dict[str, Any]) -> None:
             f"cancel={summary.get('cancel', 0)} "
             f"notional={summary.get('total_notional', '0')}"
         )
+    if state.get("auth"):
+        auth = state["auth"]
+        accounts = auth.get("accounts") if isinstance(auth.get("accounts"), list) else []
+        details = ", ".join(
+            f"{row.get('account_id')}={'ok' if row.get('ok') else row.get('error') or 'failed'}"
+            for row in accounts
+            if isinstance(row, dict)
+        )
+        print(f"auth ok={auth.get('ok')} {details}")
     for plan in state["plans"]:
         status = "QUOTE" if plan["can_quote"] else f"SKIP {plan['skip_reason']}"
         market = plan["market"]

@@ -75,5 +75,11 @@
     "research_state_path": "../../../data/predictfun_mainnet_market_research.json",
     "pid_path": "../../../data/predictfun_mainnet_dry_run.pid",
     "log_path": "../../../data/predictfun_mainnet_dry_run.log"
+  },
+  "signer": {
+    "enabled": true,
+    "base_url": "http://100.91.159.54:8791",
+    "auth_check_path": "/predictfun/accounts/{account_id}/auth-check",
+    "timeout_sec": 10
   }
 }
