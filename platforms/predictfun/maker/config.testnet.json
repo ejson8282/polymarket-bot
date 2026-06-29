@@ -23,18 +23,9 @@
   "accounts": {
     "enabled": true,
     "assignment": "round_robin",
-    "max_active_accounts": 10,
+    "max_active_accounts": 1,
     "ids": [
-      "account_01",
-      "account_02",
-      "account_03",
-      "account_04",
-      "account_05",
-      "account_06",
-      "account_07",
-      "account_08",
-      "account_09",
-      "account_10"
+      "account_01"
     ]
   },
   "inventory": {
