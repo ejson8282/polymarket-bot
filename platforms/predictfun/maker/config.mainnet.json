@@ -18,7 +18,9 @@
     "max_quote_levels": 2,
     "seed_empty_books": true,
     "seed_mid_price": "0.50",
-    "seed_distance_ticks": 5
+    "seed_distance_ticks": 5,
+    "min_order_notional": "0.90",
+    "max_order_notional": "8.00"
   },
   "accounts": {
     "enabled": true,
@@ -46,11 +48,11 @@
     "max_plan_state_age_sec": 180,
     "max_ws_state_age_sec": 180,
     "warn_on_stale_ws_state": false,
-    "max_total_desired_notional": "2500",
-    "max_active_accounts": 10,
-    "max_account_desired_notional": "250",
-    "max_account_market_desired_notional": "100",
-    "max_market_desired_notional": "100",
+    "max_total_desired_notional": "18",
+    "max_active_accounts": 1,
+    "max_account_desired_notional": "18",
+    "max_account_market_desired_notional": "8",
+    "max_market_desired_notional": "8",
     "max_market_position_size": "300",
     "max_account_market_position_size": "100",
     "max_runner_errors": 3
@@ -81,5 +83,10 @@
     "base_url": "http://100.91.159.54:8791",
     "auth_check_path": "/predictfun/accounts/{account_id}/auth-check",
     "timeout_sec": 10
+  },
+  "liquidity": {
+    "depth_levels": 3,
+    "min_depth_notional": "2.00",
+    "min_depth_shares": "0"
   }
 }

@@ -32,6 +32,7 @@ def build_intents_from_plans(
     accounts_config: dict[str, Any] | list[Any] | None = None,
     inventory_positions: list[dict[str, Any]] | None = None,
     inventory_config: dict[str, Any] | None = None,
+    planner_config: dict[str, Any] | None = None,
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
     accounts = _configured_accounts(accounts_config)
@@ -39,6 +40,11 @@ def build_intents_from_plans(
     positions = _position_map(inventory_positions or [])
     reserved: dict[tuple[str, int, str], Decimal] = {}
     inventory = inventory_config or {}
+    planner = planner_config or {}
+    reserved_notional_by_account: dict[str, Decimal] = {}
+    reserved_notional_by_account_market: dict[tuple[str, int], Decimal] = {}
+    max_account_notional = _dec(planner.get("max_account_notional"))
+    max_account_market_notional = _dec(planner.get("max_account_market_notional"))
     for plan_index, plan in enumerate(plans):
         if not plan.get("can_quote"):
             continue
@@ -70,8 +76,19 @@ def build_intents_from_plans(
                     size=size,
                     reason=str(quote.get("reason") or ""),
                 )
+                if not _can_add_notional(
+                    reserved_notional_by_account,
+                    reserved_notional_by_account_market,
+                    account_id=account_id,
+                    market_id=market_id,
+                    notional=intent.notional,
+                    max_account_notional=max_account_notional,
+                    max_account_market_notional=max_account_market_notional,
+                ):
+                    continue
                 intents.append(intent)
                 _reserve_buy_inventory(reserved, intent)
+                _reserve_notional(reserved_notional_by_account, reserved_notional_by_account_market, intent)
             intents.extend(
                 _inventory_exit_intents(
                     plan,
@@ -116,12 +133,14 @@ def build_intent_state(
     accounts_config: dict[str, Any] | list[Any] | None = None,
     inventory_positions: list[dict[str, Any]] | None = None,
     inventory_config: dict[str, Any] | None = None,
+    planner_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     intents = build_intents_from_plans(
         plans,
         accounts_config=accounts_config,
         inventory_positions=inventory_positions,
         inventory_config=inventory_config,
+        planner_config=planner_config,
     )
     desired = [intent_to_jsonable(intent) for intent in intents]
     previous_by_id = {
@@ -268,6 +287,34 @@ def _accounts_for_plan(accounts: list[dict[str, Any]], plan_index: int, assignme
     if assignment == "all":
         return accounts
     return [accounts[plan_index % len(accounts)]]
+
+
+def _can_add_notional(
+    by_account: dict[str, Decimal],
+    by_account_market: dict[tuple[str, int], Decimal],
+    *,
+    account_id: str,
+    market_id: int,
+    notional: Decimal,
+    max_account_notional: Decimal,
+    max_account_market_notional: Decimal,
+) -> bool:
+    if max_account_notional > 0 and by_account.get(account_id, Decimal("0")) + notional > max_account_notional:
+        return False
+    key = (account_id, market_id)
+    if max_account_market_notional > 0 and by_account_market.get(key, Decimal("0")) + notional > max_account_market_notional:
+        return False
+    return True
+
+
+def _reserve_notional(
+    by_account: dict[str, Decimal],
+    by_account_market: dict[tuple[str, int], Decimal],
+    intent: OrderIntent,
+) -> None:
+    by_account[intent.account_id] = by_account.get(intent.account_id, Decimal("0")) + intent.notional
+    key = (intent.account_id, intent.market_id)
+    by_account_market[key] = by_account_market.get(key, Decimal("0")) + intent.notional
 
 
 def _position_map(positions: list[dict[str, Any]]) -> dict[tuple[str, int, str], Decimal]:

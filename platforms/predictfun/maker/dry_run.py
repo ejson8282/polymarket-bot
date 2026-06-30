@@ -8,7 +8,7 @@ import time
 import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +66,11 @@ def build_quote_plan(
     avoid_mid_band_low: Decimal,
     avoid_mid_band_high: Decimal,
     allow_crypto_updown_quotes: bool,
+    min_order_notional: Decimal = Decimal("0"),
+    max_order_notional: Decimal = Decimal("0"),
+    min_depth_notional: Decimal = Decimal("0"),
+    min_depth_shares: Decimal = Decimal("0"),
+    depth_levels: int = 3,
 ) -> DryRunPlan:
     tick = decimal_tick(market.decimal_precision)
     data = orderbook.get("data") if isinstance(orderbook.get("data"), dict) else {}
@@ -79,6 +84,18 @@ def build_quote_plan(
         mid = (best_yes_bid + best_yes_ask) / Decimal("2")
 
     truly_empty_book = not bids and not asks and market.best_yes_bid <= 0 and market.best_yes_ask <= 0
+    if truly_empty_book and (min_depth_notional > 0 or min_depth_shares > 0):
+        return DryRunPlan(
+            market=market,
+            can_quote=False,
+            skip_reason="empty book liquidity guard",
+            orderbook_source=str(orderbook.get("_source") or "unknown"),
+            best_yes_bid=best_yes_bid,
+            best_yes_ask=best_yes_ask,
+            mid=mid,
+            yes_quotes=[],
+            no_quotes=[],
+        )
     if seed_empty_books and truly_empty_book:
         skip = _basic_skip_reason(
             market,
@@ -98,13 +115,17 @@ def build_quote_plan(
                 no_quotes=[],
             )
         seed_mid = min(Decimal("0.95"), max(Decimal("0.05"), seed_mid_price))
-        seed_quotes = _seed_empty_book_quotes(
-            tick=tick,
-            quote_size=quote_size,
-            mid=seed_mid,
-            distance_ticks=seed_distance_ticks,
-            backoff_ticks=backoff_ticks,
-            max_quote_levels=max_quote_levels,
+        seed_quotes = _filter_quotes(
+            _seed_empty_book_quotes(
+                tick=tick,
+                quote_size=quote_size,
+                mid=seed_mid,
+                distance_ticks=seed_distance_ticks,
+                backoff_ticks=backoff_ticks,
+                max_quote_levels=max_quote_levels,
+            ),
+            min_order_notional=min_order_notional,
+            max_order_notional=max_order_notional,
         )
         return DryRunPlan(
             market=market,
@@ -141,7 +162,27 @@ def build_quote_plan(
             no_quotes=[],
         )
 
-    yes_quotes = _bid_ladder(
+    liquidity_skip = _liquidity_skip_reason(
+        bids,
+        asks,
+        depth_levels=depth_levels,
+        min_depth_notional=min_depth_notional,
+        min_depth_shares=min_depth_shares,
+    )
+    if liquidity_skip:
+        return DryRunPlan(
+            market=market,
+            can_quote=False,
+            skip_reason=liquidity_skip,
+            orderbook_source=str(orderbook.get("_source") or "unknown"),
+            best_yes_bid=best_yes_bid,
+            best_yes_ask=best_yes_ask,
+            mid=mid,
+            yes_quotes=[],
+            no_quotes=[],
+        )
+
+    yes_quotes = _filter_quotes(_bid_ladder(
         outcome="YES",
         best_bid=best_yes_bid,
         best_ask=best_yes_ask,
@@ -152,12 +193,12 @@ def build_quote_plan(
         edge_ticks=edge_ticks,
         backoff_ticks=backoff_ticks,
         max_quote_levels=max_quote_levels,
-    )
+    ), min_order_notional=min_order_notional, max_order_notional=max_order_notional)
 
     no_best_bid = _round_price(Decimal("1") - best_yes_ask, tick)
     no_best_ask = _round_price(Decimal("1") - best_yes_bid, tick)
     no_mid = Decimal("1") - mid if mid > 0 else Decimal("0")
-    no_quotes = _bid_ladder(
+    no_quotes = _filter_quotes(_bid_ladder(
         outcome="NO",
         best_bid=no_best_bid,
         best_ask=no_best_ask,
@@ -168,7 +209,7 @@ def build_quote_plan(
         edge_ticks=edge_ticks,
         backoff_ticks=backoff_ticks,
         max_quote_levels=max_quote_levels,
-    )
+    ), min_order_notional=min_order_notional, max_order_notional=max_order_notional)
 
     return DryRunPlan(
         market=market,
@@ -222,6 +263,70 @@ def _bid_ladder(
         )
         price = _round_price(price - step, tick)
     return quotes
+
+
+def _filter_quotes(
+    quotes: list[QuoteLevel],
+    *,
+    min_order_notional: Decimal,
+    max_order_notional: Decimal,
+) -> list[QuoteLevel]:
+    out: list[QuoteLevel] = []
+    for quote in quotes:
+        if quote.price <= 0:
+            continue
+        size = quote.size
+        notional = quote.notional
+        reason = quote.reason
+        if min_order_notional > 0 and notional < min_order_notional:
+            required_size = (min_order_notional / quote.price).quantize(Decimal("0.000001"), rounding=ROUND_UP)
+            if required_size > size:
+                size = required_size
+                notional = quote.price * size
+                reason = f"{reason} min_notional_adjusted={min_order_notional}"
+        if max_order_notional > 0 and notional > max_order_notional:
+            continue
+        out.append(
+            QuoteLevel(
+                outcome=quote.outcome,
+                side=quote.side,
+                price=quote.price,
+                size=size,
+                notional=notional,
+                reason=reason,
+            )
+        )
+    return out
+
+
+def _liquidity_skip_reason(
+    bids: list[tuple[Decimal, Decimal]],
+    asks: list[tuple[Decimal, Decimal]],
+    *,
+    depth_levels: int,
+    min_depth_notional: Decimal,
+    min_depth_shares: Decimal,
+) -> str:
+    if min_depth_notional <= 0 and min_depth_shares <= 0:
+        return ""
+    levels = max(1, depth_levels)
+    bid_notional = _depth_notional(bids, levels)
+    ask_notional = _depth_notional(asks, levels)
+    bid_shares = _depth_shares(bids, levels)
+    ask_shares = _depth_shares(asks, levels)
+    if min_depth_notional > 0 and (bid_notional < min_depth_notional or ask_notional < min_depth_notional):
+        return f"thin book depth_notional bid={bid_notional} ask={ask_notional} min={min_depth_notional}"
+    if min_depth_shares > 0 and (bid_shares < min_depth_shares or ask_shares < min_depth_shares):
+        return f"thin book depth_shares bid={bid_shares} ask={ask_shares} min={min_depth_shares}"
+    return ""
+
+
+def _depth_notional(levels: list[tuple[Decimal, Decimal]], limit: int) -> Decimal:
+    return sum((price * size for price, size in levels[:limit]), Decimal("0"))
+
+
+def _depth_shares(levels: list[tuple[Decimal, Decimal]], limit: int) -> Decimal:
+    return sum((size for _, size in levels[:limit]), Decimal("0"))
 
 
 def _seed_empty_book_quotes(
@@ -462,6 +567,7 @@ def run_once(
     strategy = cfg.get("strategy") or {}
     risk = cfg.get("risk") or {}
     data_cfg = cfg.get("data") or {}
+    liquidity_cfg = cfg.get("liquidity") if isinstance(cfg.get("liquidity"), dict) else {}
     out_cfg = cfg.get("output") or {}
     accounts_cfg = cfg.get("accounts") if isinstance(cfg.get("accounts"), (dict, list)) else {}
     inventory_cfg = cfg.get("inventory") if isinstance(cfg.get("inventory"), dict) else {}
@@ -512,6 +618,11 @@ def run_once(
                 avoid_mid_band_low=as_decimal(risk.get("avoid_mid_band_low"), "0.35"),
                 avoid_mid_band_high=as_decimal(risk.get("avoid_mid_band_high"), "0.65"),
                 allow_crypto_updown_quotes=bool(risk.get("allow_crypto_updown_quotes", False)),
+                min_order_notional=as_decimal(strategy.get("min_order_notional"), "0"),
+                max_order_notional=as_decimal(strategy.get("max_order_notional"), "0"),
+                min_depth_notional=as_decimal(liquidity_cfg.get("min_depth_notional"), "0"),
+                min_depth_shares=as_decimal(liquidity_cfg.get("min_depth_shares"), "0"),
+                depth_levels=int(liquidity_cfg.get("depth_levels") or 3),
             )
         )
 
@@ -547,6 +658,10 @@ def run_once(
             accounts_config=accounts_cfg,
             inventory_positions=inventory_positions,
             inventory_config=inventory_cfg,
+            planner_config={
+                "max_account_notional": risk.get("max_account_desired_notional"),
+                "max_account_market_notional": risk.get("max_account_market_desired_notional"),
+            },
         )
         write_intent_state(intents_path, intent_state)
         state["intents"] = intent_state.get("summary", {})
