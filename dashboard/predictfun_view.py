@@ -79,6 +79,9 @@ div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; 
 }
 .pf-kv { color:#c9d1d9; font-size:13px; line-height:1.7; }
 .pf-kv span { color:#8b949e; display:inline-block; min-width:130px; }
+.section-title { color:#f0f6fc; font-size:18px; font-weight:700; margin:10px 0 8px; }
+.pf-soft { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px 14px; margin-bottom:10px; }
+.pf-small { color:#8b949e; font-size:12px; }
 </style>
 """,
         unsafe_allow_html=True,
@@ -511,10 +514,13 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     cfg = load_config()
     scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
     strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
-    data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
     risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
     liquidity_cfg = cfg.get("liquidity") if isinstance(cfg.get("liquidity"), dict) else {}
     sentinel_cfg = cfg.get("liquidity_sentinel") if isinstance(cfg.get("liquidity_sentinel"), dict) else {}
+    data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
+    simulation_cfg = cfg.get("simulation") if isinstance(cfg.get("simulation"), dict) else {}
+    runner_cfg = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
+
     dry_state_path = _configured_path(cfg, "state_path", DRY_RUN_STATE)
     ws_state_path = _configured_path(cfg, "ws_state_path", WS_STATE)
     intents_state_path = _configured_path(cfg, "intents_path", INTENTS_STATE)
@@ -526,9 +532,6 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     research_state_path = _configured_path(cfg, "research_state_path", RESEARCH_STATE)
     pid_path = _configured_path(cfg, "pid_path", PID_PATH)
     log_path = _configured_path(cfg, "log_path", LOG_PATH)
-    interval_sec = int((cfg.get("runner") or {}).get("interval_sec") or 30)
-    pid = _read_pid(pid_path)
-    loop_running = _pid_running(pid)
 
     dry_state = load_json(dry_state_path)
     ws_state = load_json(ws_state_path)
@@ -540,6 +543,10 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     kill_switch_state = load_json(kill_switch_state_path)
     research_state = load_json(research_state_path)
 
+    interval_sec = int(runner_cfg.get("interval_sec") or 30)
+    pid = _read_pid(pid_path)
+    loop_running = _pid_running(pid)
+
     plans = dry_state.get("plans", []) if isinstance(dry_state.get("plans"), list) else []
     intent_summary = intents_state.get("summary") if isinstance(intents_state.get("summary"), dict) else {}
     exec_summary = execution_report.get("summary") if isinstance(execution_report.get("summary"), dict) else {}
@@ -549,190 +556,155 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     simulation_summary = simulation_state.get("summary") if isinstance(simulation_state.get("summary"), dict) else {}
     research_summary = research_state.get("summary") if isinstance(research_state.get("summary"), dict) else {}
     risk_status = str(risk_state.get("status") or "UNKNOWN")
+    risk_blocked = bool(risk_state.get("blocked"))
+    kill_enabled = bool(kill_switch_state.get("enabled"))
+    ws_ok = bool(ws_state.get("connected") or ws_state.get("last_connected") or ws_state.get("completed"))
+    liquidity_alerts = ws_state.get("liquidity_alerts") if isinstance(ws_state.get("liquidity_alerts"), dict) else {}
+    active_liquidity_alerts = sum(1 for row in liquidity_alerts.values() if isinstance(row, dict) and row.get("active"))
 
-    quotable = sum(1 for p in plans if p.get("can_quote"))
-    quote_legs = sum(len(p.get("yes_quotes", []) or []) + len(p.get("no_quotes", []) or []) for p in plans)
+    quotable = sum(1 for plan in plans if plan.get("can_quote"))
+    quote_legs = sum(len(plan.get("yes_quotes", []) or []) + len(plan.get("no_quotes", []) or []) for plan in plans)
     desired = int(intent_summary.get("desired") or 0)
     total_notional = _as_float(intent_summary.get("total_notional"))
     active_accounts = int(intent_summary.get("accounts") or risk_summary.get("active_accounts") or 0)
     ws_books = len(ws_state.get("orderbooks") or {})
     sim_pnl = _as_float(simulation_summary.get("unrealized_pnl"))
-    risk_blocked = bool(risk_state.get("blocked"))
-    kill_enabled = bool(kill_switch_state.get("enabled"))
 
     if embedded:
-        st.markdown("## Latitude Alpha")
-        st.caption("Market Making / Predict.fun")
+        st.markdown("## Predict.fun Maker")
     else:
         st.title("Predict.fun Maker")
-        st.caption("Market Making / Predict.fun")
+    st.caption("Mainnet maker operations. Same layout as the Polymarket bot: control, markets, orders, scan, settings.")
 
-    ws_ok = bool(ws_state.get("connected") or ws_state.get("last_connected") or ws_state.get("completed"))
     status_html = "".join(
         [
             _pill(str(cfg.get("environment") or "mainnet").upper(), "ok"),
-            _pill("RUNNER ON" if loop_running else "RUNNER OFF", "ok" if loop_running else "gray"),
+            _pill("RUNNING" if loop_running else "STOPPED", "ok" if loop_running else "gray"),
             _pill("WS OK" if ws_ok else "WS IDLE", "ok" if ws_ok else "gray"),
             _pill(f"RISK {risk_status}", "bad" if risk_blocked else "warn" if risk_status == "WARN" else "ok" if risk_status == "OK" else "gray"),
-            _pill("ERROR" if runner_error else "NO ERRORS", "bad" if runner_error else "ok"),
+            _pill("LIQ ALERT" if active_liquidity_alerts else "LIQ CLEAR", "warn" if active_liquidity_alerts else "ok"),
             _pill("CAPITAL REUSE", "ok"),
+            _pill("ERROR" if runner_error else "NO ERRORS", "bad" if runner_error else "ok"),
         ]
     )
     st.markdown(status_html, unsafe_allow_html=True)
-    st.caption(
-        f"PF mainnet maker console | API {cfg.get('base_url', 'n/a')} | "
-        f"runner interval {interval_sec}s | refresh {datetime.now().strftime('%H:%M:%S')}"
-    )
-    st.divider()
 
-    m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
-    m1.metric("Runner", "RUNNING" if loop_running else "STOPPED", f"pid={pid}" if loop_running else None)
-    m2.metric("Cycles", int(runner_state.get("cycle_count") or 0), f"errors={runner_state.get('error_count', 0)}")
-    m3.metric("Markets", len(plans), f"quotable={quotable}")
-    m4.metric("Quote Legs", quote_legs)
-    m5.metric("Desired Orders", desired, f"${total_notional:,.2f}")
-    m6.metric("Accounts", active_accounts, f"ws books={ws_books}")
-    m7.metric("Risk", risk_status, f"blocked={risk_summary.get('blocked', 0)}")
-    m8.metric("Sim uPnL", f"${sim_pnl:,.2f}", f"fills={simulation_summary.get('fills_total', 0)}")
+    if kill_enabled:
+        st.warning(f"Manual halt file is active: {kill_switch_state.get('reason') or 'no reason'}")
+    if runner_error:
+        st.error(runner_error)
 
-    a1, a2, a3, a4 = st.columns([2, 2, 2, 2])
-    with a1:
-        st.markdown(
-            f"""
-<div class="pf-panel">
-  <div class="pf-panel-title">Runner</div>
-  <div class="pf-kv"><span>last cycle</span>{_fmt_ts(str(runner_state.get("last_cycle_finished_at") or ""))}</div>
-  <div class="pf-kv"><span>last plan</span>{runner_plan.get("plans", 0)} markets / {runner_plan.get("quotable", 0)} quotable</div>
-  <div class="pf-kv"><span>fast requote</span>{"yes" if runner_state.get("fast_requote") else "no"}</div>
-  <div class="pf-kv"><span>last error</span>{runner_error or "none"}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-    with a2:
-        st.markdown(
-            f"""
-<div class="pf-panel">
-  <div class="pf-panel-title">Orders</div>
-  <div class="pf-kv"><span>create</span>{intent_summary.get("create", 0)}</div>
-  <div class="pf-kv"><span>keep</span>{intent_summary.get("keep", 0)}</div>
-  <div class="pf-kv"><span>cancel</span>{intent_summary.get("cancel", 0)}</div>
-  <div class="pf-kv"><span>capital cap</span>{_cap_text(risk_cfg.get("max_account_desired_notional"))}</div>
-  <div class="pf-kv"><span>market cap</span>{_cap_text(risk_cfg.get("max_account_market_desired_notional"))}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-    with a3:
-        st.markdown(
-            f"""
-<div class="pf-panel">
-  <div class="pf-panel-title">Execution</div>
-  <div class="pf-kv"><span>actions</span>{exec_summary.get("actions", 0)}</div>
-  <div class="pf-kv"><span>failed</span>{exec_summary.get("failed", 0)}</div>
-  <div class="pf-kv"><span>source</span>{_fmt_ts(str(execution_report.get("source_ts") or ""))}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-    with a4:
-        st.markdown(
-            f"""
-<div class="pf-panel">
-  <div class="pf-panel-title">Inventory</div>
-  <div class="pf-kv"><span>active orders</span>{simulation_summary.get("active_orders", 0)}</div>
-  <div class="pf-kv"><span>position legs</span>{simulation_summary.get("position_legs", 0)}</div>
-  <div class="pf-kv"><span>fills new</span>{simulation_summary.get("fills_new", 0)}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Runner", "ON" if loop_running else "OFF", f"cycle {runner_state.get('cycle_count', 0)}")
+    m2.metric("Markets", len(plans), f"quotable {quotable}")
+    m3.metric("Orders", desired, f"${total_notional:,.2f}")
+    m4.metric("WebSocket", ws_books, f"alerts {active_liquidity_alerts}")
+    m5.metric("Sim PnL", f"${sim_pnl:,.2f}", f"fills {simulation_summary.get('fills_total', 0)}")
 
     _render_command_result()
 
-    tab_control, tab_markets, tab_orders, tab_sim, tab_risk, tab_research, tab_ws, tab_runner, tab_config = st.tabs(
-        ["Control", "Markets", "Orders", "Simulation", "Risk", "Research", "WebSocket", "Runner / Logs", "Config"]
+    tab_control, tab_markets, tab_orders, tab_scan, tab_settings = st.tabs(
+        ["Control", "Markets", "Orders / Fills", "Scan", "Settings"]
     )
 
     with tab_control:
-        st.markdown("#### Control")
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        with c1:
-            if st.button("Start Runner", use_container_width=True, disabled=loop_running):
-                msg = _start_dry_run_loop(CONFIG_PATH, pid_path, log_path, interval_sec)
-                st.session_state["pf_last_command"] = ("start-runner", 0, msg)
-                st.rerun()
-        with c2:
-            if st.button("Stop Runner", use_container_width=True, disabled=not loop_running):
-                msg = _stop_dry_run_loop(pid_path)
-                st.session_state["pf_last_command"] = ("stop-runner", 0, msg)
-                st.rerun()
-        with c3:
-            if st.button("One Cycle", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.maker.runner", "--config", str(CONFIG_PATH), "--once"])
-                st.session_state["pf_last_command"] = ("runner-once", code, output)
-                st.rerun()
-        with c4:
-            if st.button("WS Smoke", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.ws_watch", "--config", str(CONFIG_PATH), "--max-messages", "5", "--timeout-sec", "8"])
-                st.session_state["pf_last_command"] = ("ws-smoke", code, output)
-                st.rerun()
-        with c5:
-            if st.button("Reconcile", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.maker.reconcile", "--config", str(CONFIG_PATH)])
-                st.session_state["pf_last_command"] = ("reconcile", code, output)
-                st.rerun()
-        with c6:
-            if st.button("Self-Test", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.maker.selftest"])
-                st.session_state["pf_last_command"] = ("self-test", code, output)
-                st.rerun()
+        left, right = st.columns([1.05, 1.25])
+        with left:
+            st.markdown('<p class="section-title">Engine Control & Account</p>', unsafe_allow_html=True)
+            b1, b2, b3, b4 = st.columns(4)
+            with b1:
+                if st.button("Start", use_container_width=True, disabled=loop_running):
+                    msg = _start_dry_run_loop(CONFIG_PATH, pid_path, log_path, interval_sec)
+                    st.session_state["pf_last_command"] = ("start-runner", 0, msg)
+                    st.rerun()
+            with b2:
+                if st.button("Stop", use_container_width=True, disabled=not loop_running):
+                    msg = _stop_dry_run_loop(pid_path)
+                    st.session_state["pf_last_command"] = ("stop-runner", 0, msg)
+                    st.rerun()
+            with b3:
+                if st.button("One Cycle", use_container_width=True):
+                    code, output = run_command(["-m", "platforms.predictfun.maker.runner", "--config", str(CONFIG_PATH), "--once"])
+                    st.session_state["pf_last_command"] = ("runner-once", code, output)
+                    st.rerun()
+            with b4:
+                if st.button("WS Check", use_container_width=True):
+                    code, output = run_command(["-m", "platforms.predictfun.ws_watch", "--config", str(CONFIG_PATH), "--max-messages", "5", "--timeout-sec", "8"])
+                    st.session_state["pf_last_command"] = ("ws-check", code, output)
+                    st.rerun()
 
-        if kill_enabled:
-            st.warning(f"Manual halt file is active: {kill_switch_state.get('reason') or 'no reason'}")
+            accounts = accounts_frame(intents_state)
+            if accounts.empty:
+                st.info("No account plan yet. Run One Cycle.")
+            else:
+                st.dataframe(accounts, use_container_width=True, hide_index=True)
 
-        st.markdown("#### State Files")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"Name": "plans", "Path": str(dry_state_path), "Age": state_age(dry_state.get("ts", ""))},
-                    {"Name": "intents", "Path": str(intents_state_path), "Age": state_age(intents_state.get("ts", ""))},
-                    {"Name": "execution", "Path": str(execution_report_path), "Age": state_age(execution_report.get("ts", ""))},
-                    {"Name": "simulation", "Path": str(simulation_state_path), "Age": state_age(simulation_state.get("ts", ""))},
-                    {"Name": "risk", "Path": str(risk_state_path), "Age": state_age(risk_state.get("ts", ""))},
-                    {"Name": "research", "Path": str(research_state_path), "Age": state_age(research_state.get("ts", ""))},
-                    {"Name": "runner", "Path": str(runner_state_path), "Age": state_age(runner_state.get("ts", ""))},
-                    {"Name": "websocket", "Path": str(ws_state_path), "Age": state_age(ws_state.get("ts", ""))},
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+            st.markdown(
+                f"""
+<div class="pf-soft">
+  <div class="pf-kv"><span>capital mode</span>reuse principal across maker orders</div>
+  <div class="pf-kv"><span>account cap</span>{_cap_text(risk_cfg.get('max_account_desired_notional'))}</div>
+  <div class="pf-kv"><span>market cap</span>{_cap_text(risk_cfg.get('max_account_market_desired_notional'))}</div>
+  <div class="pf-kv"><span>single order</span>{_cap_text(strategy_cfg.get('max_order_notional'))}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+        with right:
+            st.markdown('<p class="section-title">Status & Recent Log</p>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Risk", risk_status, f"blocked {risk_summary.get('blocked', 0)}")
+            c2.metric("Execution", exec_summary.get("actions", 0), f"failed {exec_summary.get('failed', 0)}")
+            c3.metric("Freshness", state_age(runner_state.get("ts", "")), f"interval {interval_sec}s")
+            st.markdown(
+                f"""
+<div class="pf-soft">
+  <div class="pf-kv"><span>last cycle</span>{_fmt_ts(str(runner_state.get('last_cycle_finished_at') or ''))}</div>
+  <div class="pf-kv"><span>last plan</span>{runner_plan.get('plans', 0)} markets / {runner_plan.get('quotable', 0)} quotable</div>
+  <div class="pf-kv"><span>fast requote</span>{'yes' if runner_state.get('fast_requote') else 'no'}</div>
+  <div class="pf-kv"><span>ws age</span>{state_age(ws_state.get('ts', ''))}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            st.code(_tail_text(log_path, lines=35) or "No runner log yet.", language="text")
 
     with tab_markets:
+        st.markdown('<p class="section-title">Markets</p>', unsafe_allow_html=True)
         df = plans_frame(dry_state)
         if df.empty:
-            st.info("No PF plan state yet. Run One Cycle.")
+            st.info("No plan state yet. Run One Cycle.")
         else:
-            reason_counts = Counter(df["Reason"].fillna("ok").tolist())
-            r1, r2, r3 = st.columns(3)
-            r1.metric("Skipped", int((df["Status"] == "SKIP").sum()))
-            r2.metric("Quoted Markets", int((df["Status"] == "QUOTE").sum()))
-            r3.metric("Top Skip Reason", reason_counts.most_common(1)[0][0] if reason_counts else "n/a")
+            a, b, c, d = st.columns(4)
+            a.metric("Quoted", int((df["Status"] == "QUOTE").sum()))
+            b.metric("Skipped", int((df["Status"] == "SKIP").sum()))
+            c.metric("Quote Legs", quote_legs)
+            top_reason = Counter(df["Reason"].fillna("ok").tolist()).most_common(1)[0][0]
+            d.metric("Top Skip", top_reason[:28])
+
+            show = df[["Status", "Market ID", "Title", "Hourly", "Mid", "YES Bid", "YES Ask", "YES Quotes", "NO Quotes", "Reason"]]
 
             def status_style(value: str) -> str:
                 if value == "QUOTE":
                     return "color:#3fb950; font-weight:700"
                 return "color:#d29922; font-weight:700"
 
-            st.dataframe(
-                df.style.map(status_style, subset=["Status"]),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(show.style.map(status_style, subset=["Status"]), use_container_width=True, hide_index=True)
+
+        st.markdown('<p class="section-title">Liquidity Watch</p>', unsafe_allow_html=True)
+        alerts_df = liquidity_alerts_frame(ws_state)
+        if alerts_df.empty:
+            st.success("No active liquidity alerts.")
+        else:
+            st.warning("Liquidity alert active: affected markets are paused until cooldown ends.")
+            st.dataframe(alerts_df, use_container_width=True, hide_index=True)
+        liq_df = liquidity_frame(ws_state)
+        if not liq_df.empty:
+            st.dataframe(liq_df, use_container_width=True, hide_index=True)
 
     with tab_orders:
-        st.info("Capital reuse mode: open-order notional is not capped by account principal. Guards focus on per-order size, per-market cap, and book quality.")
+        st.markdown('<p class="section-title">Orders / Fills</p>', unsafe_allow_html=True)
         o1, o2, o3, o4, o5 = st.columns(5)
         o1.metric("Desired", intent_summary.get("desired", 0))
         o2.metric("Create", intent_summary.get("create", 0))
@@ -740,48 +712,11 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
         o4.metric("Cancel", intent_summary.get("cancel", 0))
         o5.metric("Notional", f"${total_notional:,.2f}")
 
-        accounts_df = accounts_frame(intents_state)
-        if not accounts_df.empty:
-            st.markdown("#### Accounts")
-            st.dataframe(accounts_df, use_container_width=True, hide_index=True)
-
-        intents_df = intents_frame(intents_state)
-        if intents_df.empty:
-            st.info("No desired PF orders under current risk rules.")
+        orders_df = intents_frame(intents_state)
+        if orders_df.empty:
+            st.info("No desired orders under current rules.")
         else:
-            st.dataframe(intents_df, use_container_width=True, hide_index=True)
-
-        diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
-        d1, d2 = st.columns(2)
-        with d1:
-            st.markdown("#### Diff")
-            diff_rows = pd.DataFrame(
-                [
-                    {"Action": "create", "Count": len(diff.get("create") or [])},
-                    {"Action": "keep", "Count": len(diff.get("keep") or [])},
-                    {"Action": "cancel", "Count": len(diff.get("cancel") or [])},
-                ]
-            )
-            st.dataframe(diff_rows, use_container_width=True, hide_index=True)
-            with st.expander("Diff detail", expanded=False):
-                st.code(json.dumps(diff, indent=2, ensure_ascii=False), language="json")
-        with d2:
-            st.markdown("#### Execution Report")
-            report_rows = _dict_rows(execution_report)
-            if report_rows.empty:
-                st.info("No execution report yet.")
-            else:
-                st.dataframe(report_rows, use_container_width=True, hide_index=True)
-            with st.expander("Execution report detail", expanded=False):
-                st.code(json.dumps(execution_report, indent=2, ensure_ascii=False), language="json")
-
-    with tab_sim:
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("Active Orders", simulation_summary.get("active_orders", 0))
-        s2.metric("Fills Total", simulation_summary.get("fills_total", 0), f"new={simulation_summary.get('fills_new', 0)}")
-        s3.metric("Position Legs", simulation_summary.get("position_legs", 0))
-        s4.metric("Marked Value", f"${_as_float(simulation_summary.get('marked_value')):,.2f}")
-        s5.metric("Sim uPnL", f"${sim_pnl:,.2f}")
+            st.dataframe(orders_df[["Account", "Market ID", "Outcome", "Side", "Price", "Size", "Notional", "Reason"]], use_container_width=True, hide_index=True)
 
         sim_left, sim_right = st.columns(2)
         with sim_left:
@@ -792,68 +727,27 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
             else:
                 st.dataframe(sim_orders, use_container_width=True, hide_index=True)
         with sim_right:
-            st.markdown("#### Simulated Positions")
-            sim_positions = simulation_positions_frame(simulation_state)
-            if sim_positions.empty:
-                st.info("No simulated positions yet.")
+            st.markdown("#### Simulated Positions / Fills")
+            pos_df = simulation_positions_frame(simulation_state)
+            if pos_df.empty:
+                st.info("No simulated positions.")
             else:
-                st.dataframe(sim_positions, use_container_width=True, hide_index=True)
+                st.dataframe(pos_df, use_container_width=True, hide_index=True)
+            fills = simulation_state.get("fills", []) if isinstance(simulation_state.get("fills"), list) else []
+            if fills:
+                st.dataframe(_list_frame(fills[-30:]), use_container_width=True, hide_index=True)
 
-        st.markdown("#### Recent Simulated Fills")
-        fills_df = _list_frame(simulation_state.get("fills", [])[-50:] if isinstance(simulation_state.get("fills"), list) else [])
-        if fills_df.empty:
-            st.info("No simulated fills yet. Passive orders only fill in the simulator when the book crosses the order price.")
-        else:
-            st.dataframe(fills_df, use_container_width=True, hide_index=True)
-        with st.expander("Simulation detail", expanded=False):
-            st.code(json.dumps(simulation_state, indent=2, ensure_ascii=False), language="json")
-
-    with tab_risk:
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Status", risk_status)
-        r2.metric("Blocked Checks", risk_summary.get("blocked", 0))
-        r3.metric("Warnings", risk_summary.get("warn", 0))
-        r4.metric("Desired Notional", f"${_as_float(risk_summary.get('desired_total_notional')):,.2f}")
-
-        if risk_blocked:
-            st.error("Risk gate is blocking PF execution.")
-        elif risk_status == "WARN":
-            st.warning("Risk gate has warnings, but execution is not blocked.")
-        elif risk_status == "OK":
-            st.success("Risk gate is clear.")
-        else:
-            st.info("No risk state yet. Run One Cycle.")
-
-        risk_df = risk_checks_frame(risk_state)
-        if risk_df.empty:
-            st.info("No risk checks yet.")
-        else:
-            def risk_style(value: str) -> str:
-                if value == "BLOCK":
-                    return "color:#f85149; font-weight:700"
-                if value == "WARN":
-                    return "color:#d29922; font-weight:700"
-                if value == "OK":
-                    return "color:#3fb950; font-weight:700"
-                return ""
-
-            st.dataframe(risk_df.style.map(risk_style, subset=["status"]), use_container_width=True, hide_index=True)
-
-        st.markdown("#### Manual Halt State")
-        st.dataframe(_dict_rows(kill_switch_state), use_container_width=True, hide_index=True)
-        with st.expander("Risk detail", expanded=False):
-            st.code(json.dumps(risk_state, indent=2, ensure_ascii=False), language="json")
-
-    with tab_research:
+    with tab_scan:
+        st.markdown('<p class="section-title">Scan</p>', unsafe_allow_html=True)
         q1, q2, q3, q4 = st.columns(4)
         q1.metric("Markets", research_summary.get("markets", 0))
-        q2.metric("Tradable Now", research_summary.get("tradable_now", 0))
+        q2.metric("Tradable", research_summary.get("tradable_now", 0))
         q3.metric("Watchlist", research_summary.get("watchlist", 0))
         q4.metric("Avoid", research_summary.get("avoid", 0))
 
         research_df = research_frame(research_state)
         if research_df.empty:
-            st.info("No PF market research state yet. Run One Cycle.")
+            st.info("No market research state yet. Run One Cycle.")
         else:
             def bucket_style(value: str) -> str:
                 if value == "tradable":
@@ -864,139 +758,70 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                     return "color:#f85149; font-weight:700"
                 return ""
 
-            st.dataframe(
-                research_df.style.map(bucket_style, subset=["Bucket"]),
-                use_container_width=True,
-                hide_index=True,
-            )
-        with st.expander("Research detail", expanded=False):
-            st.code(json.dumps(research_state, indent=2, ensure_ascii=False), language="json")
+            st.dataframe(research_df.style.map(bucket_style, subset=["Bucket"]), use_container_width=True, hide_index=True)
 
-    with tab_ws:
-        st.markdown(
-            f"Status: {'CONNECTED' if ws_state.get('connected') else 'SUBSCRIBED' if ws_ok else 'IDLE'} | "
-            f"age {state_age(ws_state.get('ts', ''))}"
-        )
-        if ws_state.get("error"):
-            st.error(str(ws_state.get("error")))
-        elif ws_state.get("note"):
-            st.info(str(ws_state.get("note")))
-
-        books_df = ws_books_frame(ws_state)
-        if books_df.empty:
-            st.info("No live WS orderbook payloads captured yet. Subscription ack is still shown in recent messages.")
-        else:
-            st.dataframe(books_df, use_container_width=True, hide_index=True)
-        st.markdown("#### Liquidity Sentinel")
-        liq_alerts = liquidity_alerts_frame(ws_state)
-        if liq_alerts.empty:
-            st.success("No active liquidity alerts.")
-        else:
-            st.warning("Liquidity alerts are active; affected markets are paused by planner until cooldown expires.")
-            st.dataframe(liq_alerts, use_container_width=True, hide_index=True)
-        liq_df = liquidity_frame(ws_state)
-        if not liq_df.empty:
-            st.dataframe(liq_df, use_container_width=True, hide_index=True)
-
-        with st.expander("Recent WS Messages", expanded=False):
-            messages_df = _list_frame(ws_state.get("messages", []))
-            if messages_df.empty:
-                st.info("No recent WS messages.")
+        with st.expander("Risk checks", expanded=False):
+            risk_df = risk_checks_frame(risk_state)
+            if risk_df.empty:
+                st.info("No risk checks yet.")
             else:
-                st.dataframe(messages_df, use_container_width=True, hide_index=True)
-            st.code(json.dumps(ws_state.get("messages", []), indent=2, ensure_ascii=False), language="json")
+                st.dataframe(risk_df, use_container_width=True, hide_index=True)
 
-    with tab_runner:
-        st.markdown("#### Runner State")
-        runner_rows = _dict_rows(runner_state)
-        if runner_rows.empty:
-            st.info("No runner state yet.")
-        else:
-            st.dataframe(runner_rows, use_container_width=True, hide_index=True)
-        with st.expander("Runner state detail", expanded=False):
-            st.code(json.dumps(runner_state, indent=2, ensure_ascii=False), language="json")
-        st.markdown("#### Runner Log")
-        st.code(_tail_text(log_path) or "No runner log yet.", language="text")
-        st.markdown("#### Files")
-        st.code(f"pid: {pid_path}\nlog: {log_path}\nconfig: {CONFIG_PATH}", language="text")
-
-    with tab_config:
-        st.markdown("#### PF Mainnet Config")
-        env = str(cfg.get("environment") or "unknown").upper()
-        api_key_env = str(cfg.get("api_key_env") or "not configured")
-        live_ready = "planner/sim; live executor requires explicit command"
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Environment", env)
-        k2.metric("Live Orders", "MANUAL")
-        k3.metric("API Key Source", api_key_env)
-        k4.metric("Mode", "planner", live_ready)
-
-        st.markdown(
-            f"""
-<div class="pf-panel">
-  <div class="pf-panel-title">Endpoint</div>
-  <div class="pf-kv"><span>REST API</span>{cfg.get("base_url", "n/a")}</div>
-  <div class="pf-kv"><span>WebSocket</span>{cfg.get("ws_url", "n/a")}</div>
-  <div class="pf-kv"><span>API key</span>read from env var <code>{api_key_env}</code>; value hidden</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        simulation_cfg = cfg.get("simulation") if isinstance(cfg.get("simulation"), dict) else {}
-        runner_cfg = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
-
+    with tab_settings:
+        st.markdown('<p class="section-title">Settings</p>', unsafe_allow_html=True)
         cfg_left, cfg_right = st.columns(2)
         with cfg_left:
             st.markdown("#### Market Selection")
             st.dataframe(_config_rows("Scan", scan_cfg), use_container_width=True, hide_index=True)
-            st.markdown("#### Data Source")
-            st.dataframe(_config_rows("Data", data_cfg), use_container_width=True, hide_index=True)
-        with cfg_right:
             st.markdown("#### Quote Strategy")
             st.dataframe(_config_rows("Strategy", strategy_cfg), use_container_width=True, hide_index=True)
-            st.markdown("#### Risk Guardrails")
+            st.markdown("#### Runner")
+            st.dataframe(_config_rows("Runner", runner_cfg), use_container_width=True, hide_index=True)
+        with cfg_right:
+            st.markdown("#### Guardrails")
             st.dataframe(_config_rows("Risk", risk_cfg), use_container_width=True, hide_index=True)
-            st.markdown("#### Liquidity Guards")
+            st.markdown("#### Liquidity")
             st.dataframe(_config_rows("Liquidity", liquidity_cfg), use_container_width=True, hide_index=True)
             st.dataframe(_config_rows("Liquidity Sentinel", sentinel_cfg), use_container_width=True, hide_index=True)
+            st.markdown("#### Data")
+            st.dataframe(_config_rows("Data", data_cfg), use_container_width=True, hide_index=True)
 
-        st.markdown("#### Runner")
-        st.dataframe(_config_rows("Runner", runner_cfg), use_container_width=True, hide_index=True)
-
-        st.markdown("#### Simulation")
-        st.dataframe(_config_rows("Simulation", simulation_cfg), use_container_width=True, hide_index=True)
-
-        st.markdown("#### State Outputs")
-        output_df = _output_rows(cfg)
-        if output_df.empty:
-            st.info("No output paths configured.")
-        else:
-            st.dataframe(output_df, use_container_width=True, hide_index=True)
+        with st.expander("State files", expanded=False):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Name": "plans", "Path": str(dry_state_path), "Age": state_age(dry_state.get("ts", ""))},
+                        {"Name": "intents", "Path": str(intents_state_path), "Age": state_age(intents_state.get("ts", ""))},
+                        {"Name": "execution", "Path": str(execution_report_path), "Age": state_age(execution_report.get("ts", ""))},
+                        {"Name": "simulation", "Path": str(simulation_state_path), "Age": state_age(simulation_state.get("ts", ""))},
+                        {"Name": "risk", "Path": str(risk_state_path), "Age": state_age(risk_state.get("ts", ""))},
+                        {"Name": "research", "Path": str(research_state_path), "Age": state_age(research_state.get("ts", ""))},
+                        {"Name": "runner", "Path": str(runner_state_path), "Age": state_age(runner_state.get("ts", ""))},
+                        {"Name": "websocket", "Path": str(ws_state_path), "Age": state_age(ws_state.get("ts", ""))},
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with st.expander("Debug JSON", expanded=False):
             raw_a, raw_b = st.columns(2)
             with raw_a:
-                st.markdown("Config")
-                st.code(json.dumps(cfg, indent=2, ensure_ascii=False), language="json")
                 st.markdown("Plans")
                 st.code(json.dumps(dry_state, indent=2, ensure_ascii=False), language="json")
                 st.markdown("Intents")
                 st.code(json.dumps(intents_state, indent=2, ensure_ascii=False), language="json")
-            with raw_b:
                 st.markdown("Execution")
                 st.code(json.dumps(execution_report, indent=2, ensure_ascii=False), language="json")
-                st.markdown("Simulation")
-                st.code(json.dumps(simulation_state, indent=2, ensure_ascii=False), language="json")
+            with raw_b:
+                st.markdown("Runner")
+                st.code(json.dumps(runner_state, indent=2, ensure_ascii=False), language="json")
                 st.markdown("Risk")
                 st.code(json.dumps(risk_state, indent=2, ensure_ascii=False), language="json")
-                st.markdown("Research")
-                st.code(json.dumps(research_state, indent=2, ensure_ascii=False), language="json")
                 st.markdown("WebSocket")
                 st.code(json.dumps(ws_state, indent=2, ensure_ascii=False), language="json")
 
     st.markdown(
-        "<p class='pf-muted' style='text-align:right'>Predict.fun maker console - mainnet planner / simulated execution</p>",
+        "<p class='pf-muted' style='text-align:right'>Predict.fun maker console - compact operations layout</p>",
         unsafe_allow_html=True,
     )
