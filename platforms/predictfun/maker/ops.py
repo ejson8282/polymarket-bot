@@ -36,9 +36,9 @@ def _run(name: str, args: list[str], *, timeout: int = 90) -> dict[str, Any]:
     }
 
 
-def _run_runner_once() -> dict[str, Any]:
+def _run_runner_once(config_path: str) -> dict[str, Any]:
     proc = subprocess.run(
-        [sys.executable, "-m", "platforms.predictfun.maker.runner", "--once"],
+        [sys.executable, "-m", "platforms.predictfun.maker.runner", "--config", config_path, "--once"],
         cwd=str(REPO_DIR),
         capture_output=True,
         text=True,
@@ -61,7 +61,7 @@ def _run_runner_once() -> dict[str, Any]:
     }
 
 
-def run_smoke(*, include_ws: bool) -> dict[str, Any]:
+def run_smoke(*, include_ws: bool, config_path: str) -> dict[str, Any]:
     checks = [
         _run(
             "py_compile",
@@ -73,6 +73,7 @@ def run_smoke(*, include_ws: bool) -> dict[str, Any]:
                 "platforms/predictfun/ws_watch.py",
                 "platforms/predictfun/maker/dry_run.py",
                 "platforms/predictfun/maker/executor.py",
+                "platforms/predictfun/maker/liquidity_sentinel.py",
                 "platforms/predictfun/maker/intents.py",
                 "platforms/predictfun/maker/reconcile.py",
                 "platforms/predictfun/maker/runner.py",
@@ -86,13 +87,22 @@ def run_smoke(*, include_ws: bool) -> dict[str, Any]:
             timeout=30,
         ),
         _run("selftest", ["-m", "platforms.predictfun.maker.selftest"], timeout=30),
-        _run_runner_once(),
+        _run_runner_once(config_path),
     ]
     if include_ws:
         checks.append(
             _run(
                 "ws_smoke",
-                ["-m", "platforms.predictfun.ws_watch", "--max-messages", "5", "--timeout-sec", "8"],
+                [
+                    "-m",
+                    "platforms.predictfun.ws_watch",
+                    "--config",
+                    config_path,
+                    "--max-messages",
+                    "5",
+                    "--timeout-sec",
+                    "8",
+                ],
                 timeout=20,
             )
         )
@@ -107,10 +117,11 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     smoke = sub.add_parser("smoke", help="Run PF compile/selftest/runner smoke checks.")
     smoke.add_argument("--include-ws", action="store_true")
+    smoke.add_argument("--config", default="platforms/predictfun/maker/config.mainnet.json")
     args = parser.parse_args()
 
     if args.command == "smoke":
-        result = run_smoke(include_ws=bool(args.include_ws))
+        result = run_smoke(include_ws=bool(args.include_ws), config_path=str(args.config))
         print(json.dumps(result, indent=2))
         if not result["ok"]:
             raise SystemExit(1)
