@@ -589,7 +589,24 @@ def run_once(
     )
 
     plans: list[DryRunPlan] = []
+    liquidity_blocks = _liquidity_blocks_from_ws_state(ws_state)
     for market in markets:
+        block_reason = liquidity_blocks.get(str(market.id))
+        if block_reason:
+            plans.append(
+                DryRunPlan(
+                    market=market,
+                    can_quote=False,
+                    skip_reason=block_reason,
+                    orderbook_source="ws:liquidity_sentinel",
+                    best_yes_bid=market.best_yes_bid,
+                    best_yes_ask=market.best_yes_ask,
+                    mid=market.mid,
+                    yes_quotes=[],
+                    no_quotes=[],
+                )
+            )
+            continue
         cached_book = _book_from_ws_state(ws_state, market.id)
         if cached_book:
             orderbook = cached_book
@@ -721,6 +738,28 @@ def _load_fresh_ws_state(path: Path, *, max_age_sec: float) -> dict[str, Any]:
     if age > max_age_sec:
         return {}
     return data
+
+
+def _liquidity_blocks_from_ws_state(ws_state: dict[str, Any]) -> dict[str, str]:
+    alerts = ws_state.get("liquidity_alerts") if isinstance(ws_state.get("liquidity_alerts"), dict) else {}
+    out: dict[str, str] = {}
+    now = datetime.now(timezone.utc)
+    for market_id, alert in alerts.items():
+        if not isinstance(alert, dict) or not alert.get("active"):
+            continue
+        until_raw = str(alert.get("cooldown_until") or "")
+        if until_raw:
+            try:
+                until = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
+                if until <= now:
+                    continue
+            except Exception:
+                pass
+        side = str(alert.get("side") or "book")
+        pct = str(alert.get("consumed_pct") or "")
+        reason = str(alert.get("reason") or "liquidity_alert")
+        out[str(market_id)] = f"liquidity sentinel {reason} side={side} consumed_pct={pct}"
+    return out
 
 
 def _book_from_ws_state(ws_state: dict[str, Any], market_id: int) -> dict[str, Any]:

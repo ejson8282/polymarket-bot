@@ -88,5 +88,17 @@
     "depth_levels": 3,
     "min_depth_notional": "2.00",
     "min_depth_shares": "0"
+  },
+  "liquidity_sentinel": {
+    "enabled": true,
+    "depth_window_sec": 30,
+    "depth_levels": 3,
+    "min_snaps": 3,
+    "warmup_sec": 5,
+    "max_snap_gap_sec": 10,
+    "min_baseline_notional": "5.00",
+    "depth_consumed_notional": "3.00",
+    "depth_consumed_pct": "0.50",
+    "cooldown_sec": 60
   }
 }

@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import time
 
 import websockets
 
@@ -16,6 +17,7 @@ if __package__ in {None, ""}:
 
 from platforms.predictfun.client import PredictFunClient, PREDICT_TESTNET_BASE
 from platforms.predictfun.scanner import scan_markets
+from platforms.predictfun.maker.liquidity_sentinel import LiquiditySentinel
 
 
 DEFAULT_WS_URL = "wss://ws.predict.fun/ws"
@@ -58,6 +60,7 @@ async def watch_orderbooks(
     state_path: Path,
     max_messages: int = 0,
     timeout_sec: float = 0,
+    sentinel_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "ts": _utc_now(),
@@ -69,11 +72,14 @@ async def watch_orderbooks(
         "error": "",
         "messages": [],
         "orderbooks": {},
+        "liquidity": {},
+        "liquidity_alerts": {},
     }
     _write_state(state_path, state)
 
     received = 0
     request_id = 1
+    sentinel = LiquiditySentinel.from_config(sentinel_config or {})
     try:
         async with await _connect(ws_url, api_key) as ws:
             state["connected"] = True
@@ -100,6 +106,10 @@ async def watch_orderbooks(
                 elif topic.startswith("predictOrderbook/") and isinstance(msg.get("data"), dict):
                     market_id = topic.rsplit("/", 1)[-1]
                     state["orderbooks"][market_id] = msg["data"]
+                    now = time.time()
+                    sentinel.record(market_id, msg["data"], ts=now)
+                    state["liquidity"] = sentinel.metrics_json(now=now)
+                    state["liquidity_alerts"] = sentinel.alerts_json(now=now)
 
                 compact = {
                     "ts": _utc_now(),
@@ -164,6 +174,7 @@ def main() -> None:
             state_path=_state_path(config_path, cfg),
             max_messages=args.max_messages,
             timeout_sec=args.timeout_sec,
+            sentinel_config=(cfg.get("liquidity_sentinel") if isinstance(cfg.get("liquidity_sentinel"), dict) else {}),
         )
     )
     print(json.dumps(state, indent=2))
