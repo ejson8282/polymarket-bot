@@ -11,6 +11,7 @@ PolyMatrix Dashboard v2
 from __future__ import annotations
 
 import json
+import html
 import os
 import platform
 import importlib.util
@@ -45,6 +46,7 @@ ENGINE_STATE_PATH   = DATA_DIR / "engine_state.json"
 SESSION_CONFIRM_PATH = DATA_DIR / "session_confirm.json"
 MULTI_RUNNER_PATH   = MAKER_DIR / "multi_runner.py"
 REMOTE_ACCOUNTS_PATH = REPO_DIR / "dashboard" / "remote_accounts.json"
+SINGLE_ACCOUNT_AUTOMATION_PATH = DATA_DIR / "single_account_automation_draft.json"
 
 
 def _resolve_var_decibel_dir() -> Path:
@@ -310,6 +312,80 @@ div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; 
     animation: livePulse 1.5s ease-in-out infinite;
     margin-right: 6px;
     vertical-align: middle;
+}
+
+/* single-account automation draft */
+.sa-hero {
+    background:#111820;
+    border:1px solid #30363d;
+    border-radius:10px;
+    padding:22px 24px;
+    margin:4px 0 20px 0;
+}
+.sa-hero h2 {
+    color:#e6edf3;
+    margin:0 0 8px 0;
+    font-size:28px;
+    letter-spacing:0;
+}
+.sa-hero p {
+    color:#8b949e;
+    margin:0;
+    font-size:14px;
+    line-height:1.6;
+}
+.sa-grid {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0, 1fr));
+    gap:14px;
+    margin:14px 0 18px 0;
+}
+.sa-card {
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:10px;
+    padding:18px 18px 16px 18px;
+    min-height:188px;
+}
+.sa-card h3 {
+    color:#e6edf3;
+    font-size:18px;
+    margin:0 0 8px 0;
+}
+.sa-card .sa-badge {
+    display:inline-block;
+    color:#58a6ff;
+    background:#102238;
+    border:1px solid #1f6feb;
+    border-radius:999px;
+    padding:2px 9px;
+    font-size:11px;
+    margin-bottom:10px;
+}
+.sa-card p {
+    color:#8b949e;
+    margin:0 0 10px 0;
+    font-size:13px;
+    line-height:1.55;
+}
+.sa-card ul {
+    margin:8px 0 0 18px;
+    padding:0;
+    color:#c9d1d9;
+    font-size:13px;
+    line-height:1.55;
+}
+.sa-note {
+    background:#2d2a1a;
+    color:#d29922;
+    border:1px solid #9e6a03;
+    border-radius:8px;
+    padding:12px 14px;
+    margin:12px 0;
+    font-size:13px;
+}
+@media (max-width: 1100px) {
+    .sa-grid { grid-template-columns:1fr; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1580,6 +1656,251 @@ def _render_airdrop_farming_dashboard() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# AUTOMATED TRADING / SINGLE ACCOUNT DRAFT
+# ══════════════════════════════════════════════════════════════════════════════
+
+SINGLE_ACCOUNT_STRATEGIES = [
+    {
+        "name": "Funding Carry Rotation",
+        "status": "草稿",
+        "objective": "在单号里优先找净资金费率有利、spread 可控、可持仓过夜的品种。",
+        "hold": "8-36 小时",
+        "universe": "BTC / ETH / SOL / 高流动 RWA",
+        "gates": ["funding 新鲜", "spread 低", "强平距离足够", "周损耗预算未超"],
+    },
+    {
+        "name": "Trend / Momentum Breakout",
+        "status": "草稿",
+        "objective": "跟随明确趋势，只在成交量和波动确认后开仓，避免横盘磨损。",
+        "hold": "2-18 小时",
+        "universe": "主流币 + 高成交 RWA/股票映射品种",
+        "gates": ["趋势斜率", "成交量放大", "回撤止损", "冷却期"],
+    },
+    {
+        "name": "Mean Reversion / Range",
+        "status": "草稿",
+        "objective": "只做窄幅震荡后的回归，适合低波动窗口，小仓位高频验证。",
+        "hold": "30 分钟-6 小时",
+        "universe": "BTC / ETH / SOL",
+        "gates": ["波动率低", "偏离均值", "止损很近", "不追单"],
+    },
+    {
+        "name": "RWA / Stock Rotation",
+        "status": "草稿",
+        "objective": "按 RWA、黄金、科技股映射品种的类别强弱轮动，单号低频执行。",
+        "hold": "12-72 小时",
+        "universe": "XAU / QQQ / NVDA / TSLA / RWA 类别",
+        "gates": ["外部趋势确认", "交易所流动性", "隔夜风险", "单品种上限"],
+    },
+    {
+        "name": "Event / New Listing Momentum",
+        "status": "草稿",
+        "objective": "捕捉新币、低 OI 或事件驱动品种，但必须严格限制仓位。",
+        "hold": "15 分钟-4 小时",
+        "universe": "新上市 / 低 OI / 高 multiplier",
+        "gates": ["只小仓", "失败冷却", "快速止损", "不隔夜"],
+    },
+]
+
+
+def _load_single_account_automation_draft() -> dict:
+    if not SINGLE_ACCOUNT_AUTOMATION_PATH.exists():
+        return {}
+    try:
+        return json.loads(SINGLE_ACCOUNT_AUTOMATION_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_single_account_automation_draft(payload: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = dict(payload)
+    payload["updated_at_bjt"] = datetime.now(_BJT).isoformat()
+    SINGLE_ACCOUNT_AUTOMATION_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _single_account_strategy_card(strategy: dict) -> str:
+    gate_items = "".join(
+        f"<li>{html.escape(str(gate))}</li>" for gate in strategy.get("gates", [])
+    )
+    return f"""
+    <div class="sa-card">
+        <span class="sa-badge">{html.escape(str(strategy.get("status", "草稿")))}</span>
+        <h3>{html.escape(str(strategy.get("name", "")))}</h3>
+        <p>{html.escape(str(strategy.get("objective", "")))}</p>
+        <p><b>持仓：</b>{html.escape(str(strategy.get("hold", "")))}<br>
+        <b>范围：</b>{html.escape(str(strategy.get("universe", "")))}</p>
+        <ul>{gate_items}</ul>
+    </div>
+    """
+
+
+def _render_single_account_automation_dashboard() -> None:
+    draft = _load_single_account_automation_draft()
+
+    st.markdown("## Latitude Alpha")
+    st.caption("Automated Trading / Single Account")
+    st.markdown(
+        """
+        <div class="sa-hero">
+            <h2>Single Account Automation</h2>
+            <p>单号自动化交易策略草稿。这里用于配置和研究，不连接私钥，不启动 worker，不下真钱单。
+            后续真钱执行应单独接入后台服务、风控、日志和 Discord 通知。</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 全局草稿配置")
+    with st.form("single_account_automation_draft_form"):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            mode = st.selectbox(
+                "运行模式",
+                ["observe_only", "paper_only", "live_locked"],
+                index=["observe_only", "paper_only", "live_locked"].index(
+                    draft.get("mode", "observe_only")
+                    if draft.get("mode", "observe_only") in ["observe_only", "paper_only", "live_locked"]
+                    else "observe_only"
+                ),
+                help="当前只保存草稿；live_locked 也不会下单。",
+            )
+        with c2:
+            host = st.selectbox(
+                "计划运行位置",
+                ["disabled", "vps1", "vps2", "both"],
+                index=["disabled", "vps1", "vps2", "both"].index(
+                    draft.get("host", "disabled")
+                    if draft.get("host", "disabled") in ["disabled", "vps1", "vps2", "both"]
+                    else "disabled"
+                ),
+            )
+        with c3:
+            weekly_loss_cap = st.number_input(
+                "每周最大损耗 USDC",
+                min_value=0.0,
+                max_value=500.0,
+                value=float(draft.get("weekly_loss_cap_usdc", 10.0)),
+                step=1.0,
+            )
+        with c4:
+            max_positions = st.number_input(
+                "最大同时持仓",
+                min_value=1,
+                max_value=10,
+                value=int(draft.get("max_open_positions", 2)),
+                step=1,
+            )
+
+        c5, c6, c7, c8 = st.columns(4)
+        with c5:
+            max_leverage = st.number_input(
+                "最大杠杆",
+                min_value=1.0,
+                max_value=50.0,
+                value=float(draft.get("max_leverage", 3.0)),
+                step=1.0,
+            )
+        with c6:
+            max_notional = st.number_input(
+                "单笔最大名义额 USDC",
+                min_value=0.0,
+                max_value=10000.0,
+                value=float(draft.get("max_notional_usdc", 100.0)),
+                step=10.0,
+            )
+        with c7:
+            stop_loss = st.number_input(
+                "默认止损 %",
+                min_value=0.1,
+                max_value=50.0,
+                value=float(draft.get("default_stop_loss_pct", 2.0)),
+                step=0.1,
+            )
+        with c8:
+            take_profit = st.number_input(
+                "默认止盈 %",
+                min_value=0.1,
+                max_value=100.0,
+                value=float(draft.get("default_take_profit_pct", 3.0)),
+                step=0.1,
+            )
+
+        selected = st.multiselect(
+            "启用策略草稿",
+            [s["name"] for s in SINGLE_ACCOUNT_STRATEGIES],
+            default=draft.get("enabled_strategies") or [SINGLE_ACCOUNT_STRATEGIES[0]["name"]],
+        )
+        notes = st.text_area(
+            "备注",
+            value=str(draft.get("notes", "")),
+            placeholder="例如：先只观察 BTC/ETH，等数据质量稳定后再 paper。",
+        )
+        submitted = st.form_submit_button("保存草稿", use_container_width=True)
+
+    if submitted:
+        if _is_public_access():
+            st.error("公共入口只读，不能写入自动化草稿。请走 Tailscale 内网入口。")
+        else:
+            _save_single_account_automation_draft(
+                {
+                    "mode": mode,
+                    "host": host,
+                    "weekly_loss_cap_usdc": weekly_loss_cap,
+                    "max_open_positions": max_positions,
+                    "max_leverage": max_leverage,
+                    "max_notional_usdc": max_notional,
+                    "default_stop_loss_pct": stop_loss,
+                    "default_take_profit_pct": take_profit,
+                    "enabled_strategies": selected,
+                    "notes": notes,
+                }
+            )
+            st.success("已保存单号自动化草稿；未启动 worker，未下单。")
+
+    st.markdown(
+        '<div class="sa-note">建议结构：左侧只保留 Automated Trading / Single Account；具体策略在本页管理。这样后续新增策略不会污染总导航，也能和 Var/Decibel 对冲 farming 隔离。</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 策略初稿")
+    st.markdown(
+        '<div class="sa-grid">'
+        + "".join(_single_account_strategy_card(s) for s in SINGLE_ACCOUNT_STRATEGIES)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 后续接入顺序")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "阶段": "1. 只读信号",
+                    "内容": "接入行情、funding、趋势、流动性和数据新鲜度，不交易。",
+                    "真钱风险": "无",
+                },
+                {
+                    "阶段": "2. Paper worker",
+                    "内容": "按策略生成计划、记录胜率/损耗/错过机会，仍不交易。",
+                    "真钱风险": "无",
+                },
+                {
+                    "阶段": "3. 小额 live",
+                    "内容": "单独后台服务，明确最大损耗、最大持仓、止盈止损和 Discord 通知。",
+                    "真钱风险": "低，但必须人工开启",
+                },
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1590,6 +1911,7 @@ with st.sidebar:
     PLATFORMS = {
         "Market Making": ["Polymarket", "Predict.fun"],
         "Airdrop Farming": ["Var/Decibel"],
+        "Automated Trading": ["Single Account"],
         # future: "Hyperliquid": ["Perps", "Vaults"],
     }
 
@@ -1642,6 +1964,10 @@ if nav_platform == "Market Making" and nav_feature == "Predict.fun":
         from predictfun_view import render_predictfun_dashboard
 
     render_predictfun_dashboard(embedded=True)
+    st.stop()
+
+if nav_platform == "Automated Trading" and nav_feature == "Single Account":
+    _render_single_account_automation_dashboard()
     st.stop()
 
 # MAIN RENDER
