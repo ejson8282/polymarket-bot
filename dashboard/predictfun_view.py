@@ -16,18 +16,18 @@ import streamlit as st
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_DIR / "data"
-DRY_RUN_STATE = DATA_DIR / "predictfun_testnet_state.json"
-WS_STATE = DATA_DIR / "predictfun_ws_state.json"
-INTENTS_STATE = DATA_DIR / "predictfun_desired_orders.json"
-EXECUTION_REPORT = DATA_DIR / "predictfun_execution_report.json"
-RUNNER_STATE = DATA_DIR / "predictfun_runner_state.json"
-SIMULATION_STATE = DATA_DIR / "predictfun_simulation_state.json"
-RISK_STATE = DATA_DIR / "predictfun_risk_state.json"
-KILL_SWITCH_STATE = DATA_DIR / "predictfun_kill_switch.json"
-RESEARCH_STATE = DATA_DIR / "predictfun_market_research.json"
-CONFIG_PATH = REPO_DIR / "platforms/predictfun/maker/config.testnet.json"
-PID_PATH = DATA_DIR / "predictfun_dry_run.pid"
-LOG_PATH = DATA_DIR / "predictfun_dry_run.log"
+DRY_RUN_STATE = DATA_DIR / "predictfun_mainnet_state.json"
+WS_STATE = DATA_DIR / "predictfun_mainnet_ws_state.json"
+INTENTS_STATE = DATA_DIR / "predictfun_mainnet_desired_orders.json"
+EXECUTION_REPORT = DATA_DIR / "predictfun_mainnet_execution_report.json"
+RUNNER_STATE = DATA_DIR / "predictfun_mainnet_runner_state.json"
+SIMULATION_STATE = DATA_DIR / "predictfun_mainnet_simulation_state.json"
+RISK_STATE = DATA_DIR / "predictfun_mainnet_risk_state.json"
+KILL_SWITCH_STATE = DATA_DIR / "predictfun_mainnet_kill_switch.json"
+RESEARCH_STATE = DATA_DIR / "predictfun_mainnet_market_research.json"
+CONFIG_PATH = REPO_DIR / "platforms/predictfun/maker/config.mainnet.json"
+PID_PATH = DATA_DIR / "predictfun_mainnet_dry_run.pid"
+LOG_PATH = DATA_DIR / "predictfun_mainnet_dry_run.log"
 
 
 def apply_predictfun_styles() -> None:
@@ -132,7 +132,7 @@ def _pid_running(pid: int | None) -> bool:
         return False
 
 
-def _start_dry_run_loop(pid_path: Path, log_path: Path, interval_sec: int) -> str:
+def _start_dry_run_loop(config_path: Path, pid_path: Path, log_path: Path, interval_sec: int) -> str:
     pid = _read_pid(pid_path)
     if _pid_running(pid):
         return f"PF runner already running pid={pid}"
@@ -148,6 +148,8 @@ def _start_dry_run_loop(pid_path: Path, log_path: Path, interval_sec: int) -> st
             sys.executable,
             "-m",
             "platforms.predictfun.maker.runner",
+            "--config",
+            str(config_path),
             "--interval-sec",
             str(interval_sec),
         ],
@@ -318,6 +320,51 @@ def ws_books_frame(state: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def liquidity_frame(state: dict[str, Any]) -> pd.DataFrame:
+    liquidity = state.get("liquidity") if isinstance(state.get("liquidity"), dict) else {}
+    rows = []
+    for market_id, item in sorted(liquidity.items()):
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "Market ID": market_id,
+                "Bid Depth $": _as_float(item.get("bid_notional")),
+                "Ask Depth $": _as_float(item.get("ask_notional")),
+                "Bid Shares": _as_float(item.get("bid_shares")),
+                "Ask Shares": _as_float(item.get("ask_shares")),
+                "Samples": int(item.get("samples") or 0),
+                "Updated": item.get("updated_at"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def liquidity_alerts_frame(state: dict[str, Any]) -> pd.DataFrame:
+    alerts = state.get("liquidity_alerts") if isinstance(state.get("liquidity_alerts"), dict) else {}
+    rows = []
+    for market_id, item in sorted(alerts.items()):
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "Market ID": market_id,
+                "Active": bool(item.get("active")),
+                "Side": item.get("side"),
+                "Reason": item.get("reason"),
+                "Consumed %": _as_float(item.get("consumed_pct")) * 100,
+                "Consumed $": _as_float(item.get("consumed_notional")),
+                "Current $": _as_float(item.get("current_notional")),
+                "Cooldown Until": item.get("cooldown_until"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _cap_text(value: Any) -> str:
+    amount = _as_float(value)
+    return "unlimited" if amount <= 0 else f"${amount:,.2f}"
+
 def _config_rows(title: str, values: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for key, value in values.items():
@@ -462,21 +509,36 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     apply_predictfun_styles()
 
     cfg = load_config()
+    scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
+    strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
+    data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
+    risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
+    liquidity_cfg = cfg.get("liquidity") if isinstance(cfg.get("liquidity"), dict) else {}
+    sentinel_cfg = cfg.get("liquidity_sentinel") if isinstance(cfg.get("liquidity_sentinel"), dict) else {}
+    dry_state_path = _configured_path(cfg, "state_path", DRY_RUN_STATE)
+    ws_state_path = _configured_path(cfg, "ws_state_path", WS_STATE)
+    intents_state_path = _configured_path(cfg, "intents_path", INTENTS_STATE)
+    execution_report_path = _configured_path(cfg, "execution_report_path", EXECUTION_REPORT)
+    runner_state_path = _configured_path(cfg, "runner_state_path", RUNNER_STATE)
+    simulation_state_path = _configured_path(cfg, "simulation_state_path", SIMULATION_STATE)
+    risk_state_path = _configured_path(cfg, "risk_state_path", RISK_STATE)
+    kill_switch_state_path = _configured_path(cfg, "kill_switch_path", KILL_SWITCH_STATE)
+    research_state_path = _configured_path(cfg, "research_state_path", RESEARCH_STATE)
     pid_path = _configured_path(cfg, "pid_path", PID_PATH)
     log_path = _configured_path(cfg, "log_path", LOG_PATH)
     interval_sec = int((cfg.get("runner") or {}).get("interval_sec") or 30)
     pid = _read_pid(pid_path)
     loop_running = _pid_running(pid)
 
-    dry_state = load_json(DRY_RUN_STATE)
-    ws_state = load_json(WS_STATE)
-    intents_state = load_json(INTENTS_STATE)
-    execution_report = load_json(EXECUTION_REPORT)
-    runner_state = load_json(RUNNER_STATE)
-    simulation_state = load_json(SIMULATION_STATE)
-    risk_state = load_json(RISK_STATE)
-    kill_switch_state = load_json(KILL_SWITCH_STATE)
-    research_state = load_json(RESEARCH_STATE)
+    dry_state = load_json(dry_state_path)
+    ws_state = load_json(ws_state_path)
+    intents_state = load_json(intents_state_path)
+    execution_report = load_json(execution_report_path)
+    runner_state = load_json(runner_state_path)
+    simulation_state = load_json(simulation_state_path)
+    risk_state = load_json(risk_state_path)
+    kill_switch_state = load_json(kill_switch_state_path)
+    research_state = load_json(research_state_path)
 
     plans = dry_state.get("plans", []) if isinstance(dry_state.get("plans"), list) else []
     intent_summary = intents_state.get("summary") if isinstance(intents_state.get("summary"), dict) else {}
@@ -508,18 +570,17 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     ws_ok = bool(ws_state.get("connected") or ws_state.get("last_connected") or ws_state.get("completed"))
     status_html = "".join(
         [
-            _pill("DRY-RUN", "warn"),
+            _pill(str(cfg.get("environment") or "mainnet").upper(), "ok"),
             _pill("RUNNER ON" if loop_running else "RUNNER OFF", "ok" if loop_running else "gray"),
             _pill("WS OK" if ws_ok else "WS IDLE", "ok" if ws_ok else "gray"),
             _pill(f"RISK {risk_status}", "bad" if risk_blocked else "warn" if risk_status == "WARN" else "ok" if risk_status == "OK" else "gray"),
-            _pill("KILL ON" if kill_enabled else "KILL OFF", "bad" if kill_enabled else "gray"),
             _pill("ERROR" if runner_error else "NO ERRORS", "bad" if runner_error else "ok"),
-            _pill("LIVE ORDERS DISABLED", "gray"),
+            _pill("CAPITAL REUSE", "ok"),
         ]
     )
     st.markdown(status_html, unsafe_allow_html=True)
     st.caption(
-        f"PF testnet maker console | API {cfg.get('base_url', 'n/a')} | "
+        f"PF mainnet maker console | API {cfg.get('base_url', 'n/a')} | "
         f"runner interval {interval_sec}s | refresh {datetime.now().strftime('%H:%M:%S')}"
     )
     st.divider()
@@ -556,6 +617,8 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
   <div class="pf-kv"><span>create</span>{intent_summary.get("create", 0)}</div>
   <div class="pf-kv"><span>keep</span>{intent_summary.get("keep", 0)}</div>
   <div class="pf-kv"><span>cancel</span>{intent_summary.get("cancel", 0)}</div>
+  <div class="pf-kv"><span>capital cap</span>{_cap_text(risk_cfg.get("max_account_desired_notional"))}</div>
+  <div class="pf-kv"><span>market cap</span>{_cap_text(risk_cfg.get("max_account_market_desired_notional"))}</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -596,7 +659,7 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
             if st.button("Start Runner", use_container_width=True, disabled=loop_running):
-                msg = _start_dry_run_loop(pid_path, log_path, interval_sec)
+                msg = _start_dry_run_loop(CONFIG_PATH, pid_path, log_path, interval_sec)
                 st.session_state["pf_last_command"] = ("start-runner", 0, msg)
                 st.rerun()
         with c2:
@@ -606,17 +669,17 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                 st.rerun()
         with c3:
             if st.button("One Cycle", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.maker.runner", "--once"])
+                code, output = run_command(["-m", "platforms.predictfun.maker.runner", "--config", str(CONFIG_PATH), "--once"])
                 st.session_state["pf_last_command"] = ("runner-once", code, output)
                 st.rerun()
         with c4:
             if st.button("WS Smoke", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.ws_watch", "--max-messages", "5", "--timeout-sec", "8"])
+                code, output = run_command(["-m", "platforms.predictfun.ws_watch", "--config", str(CONFIG_PATH), "--max-messages", "5", "--timeout-sec", "8"])
                 st.session_state["pf_last_command"] = ("ws-smoke", code, output)
                 st.rerun()
         with c5:
             if st.button("Reconcile", use_container_width=True):
-                code, output = run_command(["-m", "platforms.predictfun.maker.reconcile"])
+                code, output = run_command(["-m", "platforms.predictfun.maker.reconcile", "--config", str(CONFIG_PATH)])
                 st.session_state["pf_last_command"] = ("reconcile", code, output)
                 st.rerun()
         with c6:
@@ -625,35 +688,21 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                 st.session_state["pf_last_command"] = ("self-test", code, output)
                 st.rerun()
 
-        k1, k2, k3 = st.columns([1, 1, 4])
-        with k1:
-            if st.button("Kill Switch ON", use_container_width=True, type="primary"):
-                _write_kill_switch(True, "enabled from dashboard")
-                st.session_state["pf_last_command"] = ("kill-switch", 0, "PF kill switch enabled.")
-                st.rerun()
-        with k2:
-            if st.button("Kill Switch OFF", use_container_width=True):
-                _write_kill_switch(False, "cleared from dashboard")
-                st.session_state["pf_last_command"] = ("kill-switch", 0, "PF kill switch cleared.")
-                st.rerun()
-        with k3:
-            if kill_enabled:
-                st.error(f"Kill switch is active: {kill_switch_state.get('reason') or 'no reason'}")
-            else:
-                st.success("Kill switch is clear.")
+        if kill_enabled:
+            st.warning(f"Manual halt file is active: {kill_switch_state.get('reason') or 'no reason'}")
 
         st.markdown("#### State Files")
         st.dataframe(
             pd.DataFrame(
                 [
-                    {"Name": "plans", "Path": str(DRY_RUN_STATE), "Age": state_age(dry_state.get("ts", ""))},
-                    {"Name": "intents", "Path": str(INTENTS_STATE), "Age": state_age(intents_state.get("ts", ""))},
-                    {"Name": "execution", "Path": str(EXECUTION_REPORT), "Age": state_age(execution_report.get("ts", ""))},
-                    {"Name": "simulation", "Path": str(SIMULATION_STATE), "Age": state_age(simulation_state.get("ts", ""))},
-                    {"Name": "risk", "Path": str(RISK_STATE), "Age": state_age(risk_state.get("ts", ""))},
-                    {"Name": "research", "Path": str(RESEARCH_STATE), "Age": state_age(research_state.get("ts", ""))},
-                    {"Name": "runner", "Path": str(RUNNER_STATE), "Age": state_age(runner_state.get("ts", ""))},
-                    {"Name": "websocket", "Path": str(WS_STATE), "Age": state_age(ws_state.get("ts", ""))},
+                    {"Name": "plans", "Path": str(dry_state_path), "Age": state_age(dry_state.get("ts", ""))},
+                    {"Name": "intents", "Path": str(intents_state_path), "Age": state_age(intents_state.get("ts", ""))},
+                    {"Name": "execution", "Path": str(execution_report_path), "Age": state_age(execution_report.get("ts", ""))},
+                    {"Name": "simulation", "Path": str(simulation_state_path), "Age": state_age(simulation_state.get("ts", ""))},
+                    {"Name": "risk", "Path": str(risk_state_path), "Age": state_age(risk_state.get("ts", ""))},
+                    {"Name": "research", "Path": str(research_state_path), "Age": state_age(research_state.get("ts", ""))},
+                    {"Name": "runner", "Path": str(runner_state_path), "Age": state_age(runner_state.get("ts", ""))},
+                    {"Name": "websocket", "Path": str(ws_state_path), "Age": state_age(ws_state.get("ts", ""))},
                 ]
             ),
             use_container_width=True,
@@ -683,6 +732,7 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
             )
 
     with tab_orders:
+        st.info("Capital reuse mode: open-order notional is not capped by account principal. Guards focus on per-order size, per-market cap, and book quality.")
         o1, o2, o3, o4, o5 = st.columns(5)
         o1.metric("Desired", intent_summary.get("desired", 0))
         o2.metric("Create", intent_summary.get("create", 0))
@@ -789,7 +839,7 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
 
             st.dataframe(risk_df.style.map(risk_style, subset=["status"]), use_container_width=True, hide_index=True)
 
-        st.markdown("#### Kill Switch")
+        st.markdown("#### Manual Halt State")
         st.dataframe(_dict_rows(kill_switch_state), use_container_width=True, hide_index=True)
         with st.expander("Risk detail", expanded=False):
             st.code(json.dumps(risk_state, indent=2, ensure_ascii=False), language="json")
@@ -837,6 +887,17 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
             st.info("No live WS orderbook payloads captured yet. Subscription ack is still shown in recent messages.")
         else:
             st.dataframe(books_df, use_container_width=True, hide_index=True)
+        st.markdown("#### Liquidity Sentinel")
+        liq_alerts = liquidity_alerts_frame(ws_state)
+        if liq_alerts.empty:
+            st.success("No active liquidity alerts.")
+        else:
+            st.warning("Liquidity alerts are active; affected markets are paused by planner until cooldown expires.")
+            st.dataframe(liq_alerts, use_container_width=True, hide_index=True)
+        liq_df = liquidity_frame(ws_state)
+        if not liq_df.empty:
+            st.dataframe(liq_df, use_container_width=True, hide_index=True)
+
         with st.expander("Recent WS Messages", expanded=False):
             messages_df = _list_frame(ws_state.get("messages", []))
             if messages_df.empty:
@@ -860,16 +921,16 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
         st.code(f"pid: {pid_path}\nlog: {log_path}\nconfig: {CONFIG_PATH}", language="text")
 
     with tab_config:
-        st.markdown("#### PF Testnet Config")
+        st.markdown("#### PF Mainnet Config")
         env = str(cfg.get("environment") or "unknown").upper()
         api_key_env = str(cfg.get("api_key_env") or "not configured")
-        live_ready = "disabled" if env == "TESTNET" else "manual review required"
+        live_ready = "planner/sim; live executor requires explicit command"
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Environment", env)
-        k2.metric("Live Orders", "DISABLED")
+        k2.metric("Live Orders", "MANUAL")
         k3.metric("API Key Source", api_key_env)
-        k4.metric("Mode", "dry-run", live_ready)
+        k4.metric("Mode", "planner", live_ready)
 
         st.markdown(
             f"""
@@ -883,10 +944,6 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
             unsafe_allow_html=True,
         )
 
-        scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
-        strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
-        data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
-        risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
         simulation_cfg = cfg.get("simulation") if isinstance(cfg.get("simulation"), dict) else {}
         runner_cfg = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
 
@@ -901,6 +958,9 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
             st.dataframe(_config_rows("Strategy", strategy_cfg), use_container_width=True, hide_index=True)
             st.markdown("#### Risk Guardrails")
             st.dataframe(_config_rows("Risk", risk_cfg), use_container_width=True, hide_index=True)
+            st.markdown("#### Liquidity Guards")
+            st.dataframe(_config_rows("Liquidity", liquidity_cfg), use_container_width=True, hide_index=True)
+            st.dataframe(_config_rows("Liquidity Sentinel", sentinel_cfg), use_container_width=True, hide_index=True)
 
         st.markdown("#### Runner")
         st.dataframe(_config_rows("Runner", runner_cfg), use_container_width=True, hide_index=True)
@@ -937,6 +997,6 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                 st.code(json.dumps(ws_state, indent=2, ensure_ascii=False), language="json")
 
     st.markdown(
-        "<p class='pf-muted' style='text-align:right'>Predict.fun maker console - testnet dry-run / simulated live</p>",
+        "<p class='pf-muted' style='text-align:right'>Predict.fun maker console - mainnet planner / simulated execution</p>",
         unsafe_allow_html=True,
     )
