@@ -29,6 +29,54 @@ def _fmt(value: Decimal, places: int = 3) -> str:
     return str(value.quantize(quant, rounding=ROUND_DOWN).normalize())
 
 
+def _mode_key(*, is_neg_risk: bool, is_yield_bearing: bool) -> str:
+    if is_neg_risk and is_yield_bearing:
+        return "neg_risk_yield_bearing"
+    if is_neg_risk:
+        return "neg_risk"
+    if is_yield_bearing:
+        return "yield_bearing"
+    return "standard"
+
+
+def _buy_notional_usdc(price: str, size: str) -> Decimal:
+    return _dec(price) * _dec(size)
+
+
+def _allowance_preflight(
+    *,
+    signer_url: str,
+    account: str,
+    timeout: float,
+    mode_key: str,
+    required_notional: Decimal,
+) -> dict[str, Any]:
+    url = f"{signer_url}/predictfun/accounts/{account}/allowances"
+    try:
+        resp = requests.post(url, timeout=timeout)
+        payload = resp.json() if resp.content else {}
+    except Exception as exc:
+        return {"ok": False, "error": "allowance_check_failed", "detail": type(exc).__name__}
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return {
+            "ok": False,
+            "error": "allowance_check_failed",
+            "status": resp.status_code,
+            "body": payload if isinstance(payload, dict) else {},
+        }
+    modes = payload.get("modes") if isinstance(payload.get("modes"), dict) else {}
+    row = modes.get(mode_key) if isinstance(modes.get(mode_key), dict) else {}
+    allowance = _dec(row.get("allowance"), "0")
+    return {
+        "ok": allowance >= required_notional,
+        "mode": mode_key,
+        "allowance": str(allowance),
+        "required_notional": str(required_notional),
+        "spender": row.get("spender"),
+        "error": "" if allowance >= required_notional else "collateral_allowance_too_low",
+    }
+
+
 def _pick_market(client: PredictFunClient, cfg: dict[str, Any], market_id: int | None) -> dict[str, Any]:
     if market_id:
         return client.get_market(market_id)["data"]
@@ -118,6 +166,37 @@ def main() -> None:
     if not signer_url:
         raise RuntimeError("missing_signer_base_url")
     if args.live:
+        mode_key = _mode_key(
+            is_neg_risk=bool(market.get("isNegRisk", False)),
+            is_yield_bearing=bool(market.get("isYieldBearing", False)),
+        )
+        required_notional = _buy_notional_usdc(price, args.size) if args.side == "BUY" else Decimal("0")
+        allowance_check = _allowance_preflight(
+            signer_url=signer_url,
+            account=args.account,
+            timeout=float(signer_cfg.get("timeout_sec") or 20),
+            mode_key=mode_key,
+            required_notional=required_notional,
+        )
+        if args.side == "BUY" and not allowance_check.get("ok"):
+            print(json.dumps(
+                {
+                    "ok": False,
+                    "status": 0,
+                    "live": True,
+                    "market_id": market.get("id"),
+                    "market_title": market.get("title"),
+                    "outcome": outcome.get("name"),
+                    "side": args.side,
+                    "price": price,
+                    "size": args.size,
+                    "error": allowance_check.get("error") or "allowance_preflight_failed",
+                    "allowance": allowance_check,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ))
+            return
         body["submit"] = True
         body["confirm"] = args.confirm
         endpoint = "submit-order"

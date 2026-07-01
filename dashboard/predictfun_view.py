@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 import streamlit as st
 
 
@@ -99,6 +100,47 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def load_config() -> dict[str, Any]:
     return load_json(CONFIG_PATH)
+
+
+@st.cache_data(ttl=20)
+def fetch_allowances(base_url: str, account_id: str) -> dict[str, Any]:
+    if not base_url or not account_id:
+        return {"ok": False, "error": "missing_signer_or_account"}
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip()}/predictfun/accounts/{account_id}/allowances",
+            timeout=12,
+        )
+        payload = resp.json() if resp.content else {}
+    except Exception as exc:
+        return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "non_object_response"}
+    payload["status"] = resp.status_code
+    return payload
+
+
+def allowances_frame(payload: dict[str, Any]) -> pd.DataFrame:
+    modes = payload.get("modes") if isinstance(payload.get("modes"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    labels = {
+        "standard": "Standard",
+        "neg_risk": "Neg Risk",
+        "yield_bearing": "Yield Bearing",
+        "neg_risk_yield_bearing": "Neg Risk + Yield",
+    }
+    for key, label in labels.items():
+        row = modes.get(key) if isinstance(modes.get(key), dict) else {}
+        allowance = float(row.get("allowance") or 0)
+        rows.append(
+            {
+                "Mode": label,
+                "Allowance": allowance,
+                "Status": "OK" if allowance > 0 else "Needs approval",
+                "Spender": row.get("spender", ""),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _configured_path(cfg: dict[str, Any], key: str, default: Path) -> Path:
@@ -520,6 +562,14 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
     simulation_cfg = cfg.get("simulation") if isinstance(cfg.get("simulation"), dict) else {}
     runner_cfg = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
+    accounts_cfg = cfg.get("accounts") if isinstance(cfg.get("accounts"), dict) else {}
+    signer_cfg = cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}
+    account_ids = accounts_cfg.get("ids") if isinstance(accounts_cfg.get("ids"), list) else []
+    primary_account = str(account_ids[0] if account_ids else "account_01")
+    allowance_state = fetch_allowances(
+        str(signer_cfg.get("base_url") or cfg.get("base_url") or ""),
+        primary_account,
+    )
 
     dry_state_path = _configured_path(cfg, "state_path", DRY_RUN_STATE)
     ws_state_path = _configured_path(cfg, "ws_state_path", WS_STATE)
@@ -638,6 +688,27 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                 st.info("No account plan yet. Run One Cycle.")
             else:
                 st.dataframe(accounts, use_container_width=True, hide_index=True)
+
+            st.markdown('<p class="section-title">Collateral Allowance</p>', unsafe_allow_html=True)
+            if allowance_state.get("ok"):
+                st.caption(
+                    f"{primary_account} · USDT balance {allowance_state.get('balance', '0')} · "
+                    "live orders only work on modes with allowance."
+                )
+                allowance_df = allowances_frame(allowance_state)
+
+                def allowance_style(value: str) -> str:
+                    if value == "OK":
+                        return "color:#3fb950; font-weight:700"
+                    return "color:#f85149; font-weight:700"
+
+                st.dataframe(
+                    allowance_df.style.map(allowance_style, subset=["Status"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.warning(f"Allowance check failed: {allowance_state.get('error') or allowance_state.get('status')}")
 
             st.markdown(
                 f"""
