@@ -23,6 +23,11 @@ class ExecutableOrder:
     side: str
     price: Decimal
     size: Decimal
+    token_id: str = ""
+    fee_rate_bps: int = 0
+    is_neg_risk: bool = False
+    is_yield_bearing: bool = False
+    market_mode: str = "standard"
 
 
 @dataclass(frozen=True)

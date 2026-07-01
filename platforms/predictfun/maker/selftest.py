@@ -192,6 +192,8 @@ def run_selftest() -> dict:
         "reserved_cap_intent_count": reserved_cap_intents["summary"]["desired"],
         "liquidity_cancel_count": liquidity_cancel_intents["summary"]["cancel"],
         "liquidity_desired_count": liquidity_cancel_intents["summary"]["desired"],
+        "intent_token_id_present": bool(first_intents["intents"][0].get("token_id")),
+        "intent_fee_rate_present": "fee_rate_bps" in first_intents["intents"][0],
     }
     ok = (
         checks["can_quote"]
@@ -207,6 +209,8 @@ def run_selftest() -> dict:
         and checks["reserved_cap_intent_count"] == 2
         and checks["liquidity_cancel_count"] == 2
         and checks["liquidity_desired_count"] == 0
+        and checks["intent_token_id_present"]
+        and checks["intent_fee_rate_present"]
     )
     return {
         "ok": bool(ok),

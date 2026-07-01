@@ -23,6 +23,8 @@ class OrderIntent:
     is_neg_risk: bool = False
     is_yield_bearing: bool = False
     market_mode: str = "standard"
+    token_id: str = ""
+    fee_rate_bps: int = 0
 
 
 def utc_now() -> str:
@@ -54,6 +56,7 @@ def build_intents_from_plans(
         market = plan.get("market") if isinstance(plan.get("market"), dict) else {}
         market_id = int(market.get("id") or 0)
         is_neg_risk, is_yield_bearing, market_mode = _market_flags(market)
+        fee_rate_bps = int(_dec(market.get("fee_rate_bps")))
         for account in _accounts_for_plan(accounts, plan_index, assignment):
             account_id = str(account["account_id"])
             for quote in list(plan.get("yes_quotes") or []) + list(plan.get("no_quotes") or []):
@@ -82,6 +85,8 @@ def build_intents_from_plans(
                     is_neg_risk=is_neg_risk,
                     is_yield_bearing=is_yield_bearing,
                     market_mode=market_mode,
+                    token_id=_token_id_for_outcome(market, outcome),
+                    fee_rate_bps=fee_rate_bps,
                 )
                 if not _can_add_notional(
                     reserved_notional_by_account,
@@ -106,6 +111,7 @@ def build_intents_from_plans(
                     is_neg_risk=is_neg_risk,
                     is_yield_bearing=is_yield_bearing,
                     market_mode=market_mode,
+                    fee_rate_bps=fee_rate_bps,
                 )
             )
     return intents
@@ -255,6 +261,8 @@ def _intent(
     is_neg_risk: bool = False,
     is_yield_bearing: bool = False,
     market_mode: str = "standard",
+    token_id: str = "",
+    fee_rate_bps: int = 0,
 ) -> OrderIntent:
     notional = price * size
     intent_id = stable_intent_id(
@@ -278,6 +286,8 @@ def _intent(
         is_neg_risk=is_neg_risk,
         is_yield_bearing=is_yield_bearing,
         market_mode=market_mode,
+        token_id=token_id,
+        fee_rate_bps=fee_rate_bps,
     )
 
 
@@ -409,6 +419,7 @@ def _inventory_exit_intents(
     is_neg_risk: bool,
     is_yield_bearing: bool,
     market_mode: str,
+    fee_rate_bps: int,
 ) -> list[OrderIntent]:
     if str(inventory.get("enabled", True)).lower() in {"false", "0", "no"}:
         return []
@@ -440,6 +451,8 @@ def _inventory_exit_intents(
                 is_neg_risk=is_neg_risk,
                 is_yield_bearing=is_yield_bearing,
                 market_mode=market_mode,
+                token_id=_token_id_for_outcome(market, outcome),
+                fee_rate_bps=fee_rate_bps,
             )
         )
     return out
@@ -472,6 +485,14 @@ def _bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _token_id_for_outcome(market: dict[str, Any], outcome: str) -> str:
+    if outcome.upper() == "YES":
+        return str(market.get("yes_token_id") or market.get("yesTokenId") or "")
+    if outcome.upper() == "NO":
+        return str(market.get("no_token_id") or market.get("noTokenId") or "")
+    return ""
 
 
 def _exit_price(plan: dict[str, Any], *, outcome: str, tick: Decimal, inventory: dict[str, Any]) -> Decimal:

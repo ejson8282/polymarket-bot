@@ -43,6 +43,11 @@ def _to_order(item: dict[str, Any]) -> ExecutableOrder:
         side=str(item.get("side") or ""),
         price=Decimal(str(item.get("price") or "0")),
         size=Decimal(str(item.get("size") or "0")),
+        token_id=str(item.get("token_id") or ""),
+        fee_rate_bps=int(item.get("fee_rate_bps") or 0),
+        is_neg_risk=bool(item.get("is_neg_risk")),
+        is_yield_bearing=bool(item.get("is_yield_bearing")),
+        market_mode=str(item.get("market_mode") or "standard"),
     )
 
 
