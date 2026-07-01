@@ -15,6 +15,7 @@ import html
 import os
 import platform
 import importlib.util
+import signal
 import subprocess
 import sys
 import threading
@@ -47,6 +48,10 @@ SESSION_CONFIRM_PATH = DATA_DIR / "session_confirm.json"
 MULTI_RUNNER_PATH   = MAKER_DIR / "multi_runner.py"
 REMOTE_ACCOUNTS_PATH = REPO_DIR / "dashboard" / "remote_accounts.json"
 SINGLE_ACCOUNT_AUTOMATION_PATH = DATA_DIR / "single_account_automation_draft.json"
+SINGLE_ACCOUNT_CONFIG_PATH = REPO_DIR / "platforms" / "single_account" / "config.json"
+SINGLE_ACCOUNT_PAPER_STATE_PATH = DATA_DIR / "single_account_paper_state.json"
+SINGLE_ACCOUNT_PAPER_PID_PATH = DATA_DIR / ".single_account_paper.pid"
+SINGLE_ACCOUNT_PAPER_LOG_PATH = DATA_DIR / "single_account_paper_worker.log"
 
 
 def _resolve_var_decibel_dir() -> Path:
@@ -1722,6 +1727,89 @@ def _save_single_account_automation_draft(payload: dict) -> None:
     )
 
 
+def _load_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _single_account_worker_pid() -> int | None:
+    if not SINGLE_ACCOUNT_PAPER_PID_PATH.exists():
+        return None
+    try:
+        pid = int(SINGLE_ACCOUNT_PAPER_PID_PATH.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    return pid
+
+
+def _run_single_account_paper_once() -> tuple[bool, str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "platforms.single_account.paper_worker",
+        "--config",
+        str(SINGLE_ACCOUNT_CONFIG_PATH),
+        "--once",
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=REPO_DIR,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "paper worker failed").strip()
+    return True, "paper worker 已完成一次评分；未下单。"
+
+
+def _start_single_account_paper_worker() -> tuple[bool, str]:
+    pid = _single_account_worker_pid()
+    if pid:
+        return True, f"paper worker 已在运行，pid={pid}"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log_fh = SINGLE_ACCOUNT_PAPER_LOG_PATH.open("a", encoding="utf-8")
+    cmd = [
+        sys.executable,
+        "-m",
+        "platforms.single_account.paper_worker",
+        "--config",
+        str(SINGLE_ACCOUNT_CONFIG_PATH),
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=REPO_DIR,
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
+    )
+    SINGLE_ACCOUNT_PAPER_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
+    return True, f"paper worker 已启动，pid={proc.pid}"
+
+
+def _stop_single_account_paper_worker() -> tuple[bool, str]:
+    pid = _single_account_worker_pid()
+    if not pid:
+        try:
+            SINGLE_ACCOUNT_PAPER_PID_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return True, "paper worker 未运行。"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception as exc:
+        return False, f"停止失败：{exc}"
+    return True, f"paper worker 已发送停止信号，pid={pid}"
+
+
 def _single_account_strategy_card(strategy: dict) -> str:
     gate_items = "".join(
         f"<li>{html.escape(str(gate))}</li>" for gate in strategy.get("gates", [])
@@ -1747,8 +1835,8 @@ def _render_single_account_automation_dashboard() -> None:
         """
         <div class="sa-hero">
             <h2>Single Account Automation</h2>
-            <p>单号自动化交易策略草稿。这里用于配置和研究，不连接私钥，不启动 worker，不下真钱单。
-            后续真钱执行应单独接入后台服务、风控、日志和 Discord 通知。</p>
+            <p>单号自动化交易策略草稿。这里用于配置、只读评分和 paper worker，不连接私钥，不下真钱单。
+            后续真钱执行必须单独接入后台服务、风控、日志和 Discord 通知。</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1861,6 +1949,75 @@ def _render_single_account_automation_dashboard() -> None:
             )
             st.success("已保存单号自动化草稿；未启动 worker，未下单。")
 
+    st.markdown("### Paper worker")
+    worker_pid = _single_account_worker_pid()
+    paper_state = _load_json_file(SINGLE_ACCOUNT_PAPER_STATE_PATH)
+    summary = paper_state.get("summary") if isinstance(paper_state.get("summary"), dict) else {}
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    with pc1:
+        st.metric("状态", "运行中" if worker_pid else "未运行")
+    with pc2:
+        st.metric("候选", int(summary.get("signals") or 0))
+    with pc3:
+        st.metric("可执行 paper", int(summary.get("actionable") or 0))
+    with pc4:
+        st.metric("最高分", float(summary.get("top_score") or 0.0))
+
+    ba, bb, bc = st.columns(3)
+    with ba:
+        if st.button("跑一次评分", use_container_width=True):
+            if _is_public_access():
+                st.error("公共入口只读，不能运行 paper worker。请走 Tailscale 内网入口。")
+            else:
+                ok, msg = _run_single_account_paper_once()
+                getattr(st, "success" if ok else "error")(msg)
+                st.rerun()
+    with bb:
+        if st.button("启动 paper worker", use_container_width=True):
+            if _is_public_access():
+                st.error("公共入口只读，不能启动 worker。请走 Tailscale 内网入口。")
+            else:
+                ok, msg = _start_single_account_paper_worker()
+                getattr(st, "success" if ok else "error")(msg)
+                st.rerun()
+    with bc:
+        if st.button("停止 paper worker", use_container_width=True):
+            if _is_public_access():
+                st.error("公共入口只读，不能停止 worker。请走 Tailscale 内网入口。")
+            else:
+                ok, msg = _stop_single_account_paper_worker()
+                getattr(st, "success" if ok else "error")(msg)
+                st.rerun()
+
+    if paper_state:
+        st.caption(f"最近评分：{paper_state.get('ts', '-')}; 运行模式：paper only，不会下单。")
+        decision_rows = paper_state.get("decisions") if isinstance(paper_state.get("decisions"), list) else []
+        if decision_rows:
+            decision_df = pd.DataFrame(decision_rows)
+            visible_cols = [
+                "decision",
+                "reason",
+                "symbol",
+                "strategy_label",
+                "score",
+                "side",
+                "target_hold_hours",
+                "max_notional_usdc",
+                "max_leverage",
+                "estimated_entry_cost_bps",
+                "expected_funding_bps_8h",
+                "quote_age_seconds",
+                "spread_bps",
+                "data_source",
+            ]
+            st.dataframe(
+                decision_df[[col for col in visible_cols if col in decision_df.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("还没有 paper 评分结果。点击“跑一次评分”会生成只读结果。")
+
     st.markdown(
         '<div class="sa-note">建议结构：左侧只保留 Automated Trading / Single Account；具体策略在本页管理。这样后续新增策略不会污染总导航，也能和 Var/Decibel 对冲 farming 隔离。</div>',
         unsafe_allow_html=True,
@@ -1885,7 +2042,7 @@ def _render_single_account_automation_dashboard() -> None:
                 },
                 {
                     "阶段": "2. Paper worker",
-                    "内容": "按策略生成计划、记录胜率/损耗/错过机会，仍不交易。",
+                    "内容": "已接入初稿：按策略生成 paper 决策、记录跳过原因和候选分数，仍不交易。",
                     "真钱风险": "无",
                 },
                 {

@@ -1,0 +1,73 @@
+{
+  "mode": "paper_only",
+  "runner": {
+    "interval_sec": 300
+  },
+  "input": {
+    "market_snapshot_path": "../../data/single_account_market_snapshot.json"
+  },
+  "output": {
+    "state_path": "../../data/single_account_paper_state.json",
+    "decisions_path": "../../data/single_account_decisions.jsonl",
+    "log_path": "../../data/single_account_paper_worker.log",
+    "pid_path": "../../data/.single_account_paper.pid"
+  },
+  "risk": {
+    "max_weekly_loss_usdc": 10.0,
+    "max_open_positions": 2,
+    "max_notional_usdc": 100.0,
+    "max_leverage": 3.0,
+    "max_quote_age_seconds": 60,
+    "max_spread_bps": 12.0,
+    "min_volume_24h_usdc": 1000000.0,
+    "min_score_to_trade": 65.0
+  },
+  "strategies": {
+    "funding_carry_rotation": {
+      "enabled": true,
+      "label": "Funding Carry Rotation",
+      "target_hold_hours": [8, 36],
+      "preferred_categories": ["major", "rwa", "commodity"],
+      "weight": 1.0
+    },
+    "trend_momentum_breakout": {
+      "enabled": true,
+      "label": "Trend / Momentum Breakout",
+      "target_hold_hours": [2, 18],
+      "preferred_categories": ["major", "rwa", "stock"],
+      "weight": 0.9
+    },
+    "mean_reversion_range": {
+      "enabled": true,
+      "label": "Mean Reversion / Range",
+      "target_hold_hours": [0.5, 6],
+      "preferred_categories": ["major"],
+      "weight": 0.65
+    },
+    "rwa_stock_rotation": {
+      "enabled": true,
+      "label": "RWA / Stock Rotation",
+      "target_hold_hours": [12, 72],
+      "preferred_categories": ["rwa", "stock", "commodity"],
+      "weight": 0.85
+    },
+    "event_new_listing_momentum": {
+      "enabled": true,
+      "label": "Event / New Listing Momentum",
+      "target_hold_hours": [0.25, 4],
+      "preferred_categories": ["new_listing", "low_oi", "alt"],
+      "weight": 0.5
+    }
+  },
+  "universe": [
+    {"symbol": "BTC", "category": "major"},
+    {"symbol": "ETH", "category": "major"},
+    {"symbol": "SOL", "category": "major"},
+    {"symbol": "HYPE", "category": "alt"},
+    {"symbol": "XAU", "category": "commodity"},
+    {"symbol": "QQQ", "category": "stock"},
+    {"symbol": "NVDA", "category": "stock"},
+    {"symbol": "TSLA", "category": "stock"}
+  ]
+}
+
