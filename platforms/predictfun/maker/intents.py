@@ -20,6 +20,9 @@ class OrderIntent:
     size: Decimal
     notional: Decimal
     reason: str
+    is_neg_risk: bool = False
+    is_yield_bearing: bool = False
+    market_mode: str = "standard"
 
 
 def utc_now() -> str:
@@ -50,6 +53,7 @@ def build_intents_from_plans(
             continue
         market = plan.get("market") if isinstance(plan.get("market"), dict) else {}
         market_id = int(market.get("id") or 0)
+        is_neg_risk, is_yield_bearing, market_mode = _market_flags(market)
         for account in _accounts_for_plan(accounts, plan_index, assignment):
             account_id = str(account["account_id"])
             for quote in list(plan.get("yes_quotes") or []) + list(plan.get("no_quotes") or []):
@@ -75,6 +79,9 @@ def build_intents_from_plans(
                     price=price,
                     size=size,
                     reason=str(quote.get("reason") or ""),
+                    is_neg_risk=is_neg_risk,
+                    is_yield_bearing=is_yield_bearing,
+                    market_mode=market_mode,
                 )
                 if not _can_add_notional(
                     reserved_notional_by_account,
@@ -96,6 +103,9 @@ def build_intents_from_plans(
                     market_id=market_id,
                     positions=positions,
                     inventory=inventory,
+                    is_neg_risk=is_neg_risk,
+                    is_yield_bearing=is_yield_bearing,
+                    market_mode=market_mode,
                 )
             )
     return intents
@@ -160,11 +170,25 @@ def build_intent_state(
 
     total_notional = sum(_dec(item.get("notional")) for item in desired)
     by_account: dict[str, dict[str, Any]] = {}
+    by_mode: dict[str, dict[str, Any]] = {}
     for item in desired:
         account_id = str(item.get("account_id") or "acct01")
         row = by_account.setdefault(account_id, {"desired": 0, "total_notional": Decimal("0")})
         row["desired"] += 1
         row["total_notional"] += _dec(item.get("notional"))
+        mode = str(item.get("market_mode") or "standard")
+        mode_row = by_mode.setdefault(
+            mode,
+            {"desired": 0, "buy": 0, "sell": 0, "total_notional": Decimal("0"), "buy_notional": Decimal("0")},
+        )
+        notional = _dec(item.get("notional"))
+        mode_row["desired"] += 1
+        mode_row["total_notional"] += notional
+        if str(item.get("side") or "").upper() == "BUY":
+            mode_row["buy"] += 1
+            mode_row["buy_notional"] += notional
+        else:
+            mode_row["sell"] += 1
     by_account_json = {
         account_id: {
             "desired": row["desired"],
@@ -183,6 +207,16 @@ def build_intent_state(
             "cancel": len(cancels),
             "total_notional": str(total_notional),
             "accounts": len(by_account),
+            "market_modes": {
+                mode: {
+                    "desired": row["desired"],
+                    "buy": row["buy"],
+                    "sell": row["sell"],
+                    "total_notional": str(row["total_notional"]),
+                    "buy_notional": str(row["buy_notional"]),
+                }
+                for mode, row in sorted(by_mode.items())
+            },
         },
         "accounts": by_account_json,
         "diff": {
@@ -218,6 +252,9 @@ def _intent(
     price: Decimal,
     size: Decimal,
     reason: str,
+    is_neg_risk: bool = False,
+    is_yield_bearing: bool = False,
+    market_mode: str = "standard",
 ) -> OrderIntent:
     notional = price * size
     intent_id = stable_intent_id(
@@ -238,6 +275,9 @@ def _intent(
         size=size,
         notional=notional,
         reason=reason,
+        is_neg_risk=is_neg_risk,
+        is_yield_bearing=is_yield_bearing,
+        market_mode=market_mode,
     )
 
 
@@ -366,6 +406,9 @@ def _inventory_exit_intents(
     market_id: int,
     positions: dict[tuple[str, int, str], Decimal],
     inventory: dict[str, Any],
+    is_neg_risk: bool,
+    is_yield_bearing: bool,
+    market_mode: str,
 ) -> list[OrderIntent]:
     if str(inventory.get("enabled", True)).lower() in {"false", "0", "no"}:
         return []
@@ -394,9 +437,41 @@ def _inventory_exit_intents(
                 price=price,
                 size=size,
                 reason=f"inventory_exit position={position}",
+                is_neg_risk=is_neg_risk,
+                is_yield_bearing=is_yield_bearing,
+                market_mode=market_mode,
             )
         )
     return out
+
+
+def _market_flags(market: dict[str, Any]) -> tuple[bool, bool, str]:
+    is_neg_risk = _bool(
+        market.get("is_neg_risk", market.get("isNegRisk", market.get("neg_risk", market.get("negRisk"))))
+    )
+    is_yield_bearing = _bool(
+        market.get(
+            "is_yield_bearing",
+            market.get("isYieldBearing", market.get("yield_bearing", market.get("yieldBearing"))),
+        )
+    )
+    if is_neg_risk and is_yield_bearing:
+        mode = "neg_risk_yield_bearing"
+    elif is_neg_risk:
+        mode = "neg_risk"
+    elif is_yield_bearing:
+        mode = "yield_bearing"
+    else:
+        mode = "standard"
+    return is_neg_risk, is_yield_bearing, mode
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _exit_price(plan: dict[str, Any], *, outcome: str, tick: Decimal, inventory: dict[str, Any]) -> Decimal:

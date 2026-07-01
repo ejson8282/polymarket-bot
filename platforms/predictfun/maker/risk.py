@@ -68,6 +68,7 @@ def evaluate_risk(
         )
 
     total_notional = _dec((intents_state.get("summary") or {}).get("total_notional"))
+    buy_notional_by_mode = _buy_notional_by_mode(intents_state)
     _check_limit(
         checks,
         name="desired_total_notional",
@@ -169,6 +170,7 @@ def evaluate_risk(
             "blocked": sum(1 for row in checks if row["status"] == "BLOCK"),
             "warn": sum(1 for row in checks if row["status"] == "WARN"),
             "desired_total_notional": str(total_notional),
+            "buy_notional_by_mode": {mode: str(value) for mode, value in sorted(buy_notional_by_mode.items())},
             "active_accounts": len(account_ids),
             "sim_positions": len(simulation_state.get("positions") or []),
         },
@@ -255,6 +257,38 @@ def _account_id(item: dict[str, Any]) -> str:
     return str(item.get("account_id") or "acct01")
 
 
+def _buy_notional_by_mode(intents_state: dict[str, Any]) -> dict[str, Decimal]:
+    out: dict[str, Decimal] = {}
+    summary = intents_state.get("summary") if isinstance(intents_state.get("summary"), dict) else {}
+    market_modes = summary.get("market_modes") if isinstance(summary.get("market_modes"), dict) else {}
+    if market_modes:
+        for mode, row in market_modes.items():
+            if isinstance(row, dict):
+                out[str(mode)] = _dec(row.get("buy_notional"))
+        return out
+    for item in intents_state.get("intents") or []:
+        if not isinstance(item, dict) or str(item.get("side") or "").upper() != "BUY":
+            continue
+        mode = _intent_market_mode(item)
+        out[mode] = out.get(mode, Decimal("0")) + _dec(item.get("notional"))
+    return out
+
+
+def _intent_market_mode(item: dict[str, Any]) -> str:
+    mode = str(item.get("market_mode") or "").strip()
+    if mode:
+        return mode
+    neg = _bool(item.get("is_neg_risk"))
+    yb = _bool(item.get("is_yield_bearing"))
+    if neg and yb:
+        return "neg_risk_yield_bearing"
+    if neg:
+        return "neg_risk"
+    if yb:
+        return "yield_bearing"
+    return "standard"
+
+
 def _age_sec(ts: str) -> float | None:
     if not ts:
         return None
@@ -270,6 +304,14 @@ def _dec(value: Any, default: str = "0") -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal(default)
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def main() -> None:

@@ -29,6 +29,12 @@ RESEARCH_STATE = DATA_DIR / "predictfun_mainnet_market_research.json"
 CONFIG_PATH = REPO_DIR / "platforms/predictfun/maker/config.mainnet.json"
 PID_PATH = DATA_DIR / "predictfun_mainnet_dry_run.pid"
 LOG_PATH = DATA_DIR / "predictfun_mainnet_dry_run.log"
+MARKET_MODE_LABELS = {
+    "standard": "Standard",
+    "neg_risk": "Neg Risk",
+    "yield_bearing": "Yield Bearing",
+    "neg_risk_yield_bearing": "Neg Risk + Yield",
+}
 
 
 def apply_predictfun_styles() -> None:
@@ -120,27 +126,73 @@ def fetch_allowances(base_url: str, account_id: str) -> dict[str, Any]:
     return payload
 
 
-def allowances_frame(payload: dict[str, Any]) -> pd.DataFrame:
+def allowances_frame(payload: dict[str, Any], intents_state: dict[str, Any] | None = None) -> pd.DataFrame:
     modes = payload.get("modes") if isinstance(payload.get("modes"), dict) else {}
+    planned = planned_buy_notional_by_mode(intents_state or {})
     rows: list[dict[str, Any]] = []
-    labels = {
-        "standard": "Standard",
-        "neg_risk": "Neg Risk",
-        "yield_bearing": "Yield Bearing",
-        "neg_risk_yield_bearing": "Neg Risk + Yield",
-    }
-    for key, label in labels.items():
+    for key, label in MARKET_MODE_LABELS.items():
         row = modes.get(key) if isinstance(modes.get(key), dict) else {}
         allowance = float(row.get("allowance") or 0)
+        planned_buy = float(planned.get(key) or 0)
+        headroom = allowance - planned_buy
+        if planned_buy <= 0 and allowance <= 0:
+            status = "Idle"
+        elif allowance <= 0:
+            status = "Needs approval"
+        elif planned_buy > allowance:
+            status = "Plan > allowance"
+        else:
+            status = "OK"
         rows.append(
             {
                 "Mode": label,
+                "Planned Buy": planned_buy,
                 "Allowance": allowance,
-                "Status": "OK" if allowance > 0 else "Needs approval",
-                "Spender": row.get("spender", ""),
+                "Headroom": headroom,
+                "Status": status,
             }
         )
     return pd.DataFrame(rows)
+
+
+def planned_buy_notional_by_mode(intents_state: dict[str, Any]) -> dict[str, float]:
+    out = {key: 0.0 for key in MARKET_MODE_LABELS}
+    summary = intents_state.get("summary") if isinstance(intents_state.get("summary"), dict) else {}
+    market_modes = summary.get("market_modes") if isinstance(summary.get("market_modes"), dict) else {}
+    if market_modes:
+        for key in MARKET_MODE_LABELS:
+            row = market_modes.get(key) if isinstance(market_modes.get(key), dict) else {}
+            out[key] = _as_float(row.get("buy_notional"))
+        return out
+    for item in intents_state.get("intents") or []:
+        if not isinstance(item, dict) or str(item.get("side") or "").upper() != "BUY":
+            continue
+        mode = _intent_market_mode(item)
+        out[mode] = out.get(mode, 0.0) + _as_float(item.get("notional"))
+    return out
+
+
+def _intent_market_mode(item: dict[str, Any]) -> str:
+    mode = str(item.get("market_mode") or "").strip()
+    if mode in MARKET_MODE_LABELS:
+        return mode
+    neg = _truthy(item.get("is_neg_risk"))
+    yb = _truthy(item.get("is_yield_bearing"))
+    if neg and yb:
+        return "neg_risk_yield_bearing"
+    if neg:
+        return "neg_risk"
+    if yb:
+        return "yield_bearing"
+    return "standard"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _configured_path(cfg: dict[str, Any], key: str, default: Path) -> Path:
@@ -695,15 +747,19 @@ def render_predictfun_dashboard(*, embedded: bool = False) -> None:
                     f"{primary_account} · USDT balance {allowance_state.get('balance', '0')} · "
                     "live orders only work on modes with allowance."
                 )
-                allowance_df = allowances_frame(allowance_state)
+                allowance_df = allowances_frame(allowance_state, intents_state)
 
                 def allowance_style(value: str) -> str:
                     if value == "OK":
                         return "color:#3fb950; font-weight:700"
+                    if value in {"Idle", "Plan > allowance"}:
+                        return "color:#d29922; font-weight:700"
                     return "color:#f85149; font-weight:700"
 
                 st.dataframe(
-                    allowance_df.style.map(allowance_style, subset=["Status"]),
+                    allowance_df.style.map(allowance_style, subset=["Status"]).format(
+                        {"Planned Buy": "${:,.2f}", "Allowance": "${:,.2f}", "Headroom": "${:,.2f}"}
+                    ),
                     use_container_width=True,
                     hide_index=True,
                 )
