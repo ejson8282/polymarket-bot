@@ -132,6 +132,16 @@ def run_selftest() -> dict:
         previous_intents=[],
         inventory_config={"max_long_size_per_outcome": "10"},
     )
+    liquidity_blocked_plan = dict(plan_json)
+    liquidity_blocked_plan["can_quote"] = False
+    liquidity_blocked_plan["skip_reason"] = "liquidity sentinel depth_depletion side=bid consumed_pct=0.70"
+    liquidity_blocked_plan["yes_quotes"] = []
+    liquidity_blocked_plan["no_quotes"] = []
+    liquidity_cancel_intents = build_intent_state(
+        environment="selftest",
+        plans=[liquidity_blocked_plan],
+        previous_intents=first_intents["intents"],
+    )
     report = reconcile_once(first_intents)
     crossed = dict(first_intents["intents"][0])
     crossed["intent_id"] = "pf-selftest-crossed"
@@ -180,6 +190,8 @@ def run_selftest() -> dict:
         "refill_create_count": refill_after_fill["summary"]["create"],
         "empty_seed_quote_count": len(empty_seed_plan.yes_quotes) + len(empty_seed_plan.no_quotes),
         "reserved_cap_intent_count": reserved_cap_intents["summary"]["desired"],
+        "liquidity_cancel_count": liquidity_cancel_intents["summary"]["cancel"],
+        "liquidity_desired_count": liquidity_cancel_intents["summary"]["desired"],
     }
     ok = (
         checks["can_quote"]
@@ -193,6 +205,8 @@ def run_selftest() -> dict:
         and checks["refill_create_count"] == 2
         and checks["empty_seed_quote_count"] == 4
         and checks["reserved_cap_intent_count"] == 2
+        and checks["liquidity_cancel_count"] == 2
+        and checks["liquidity_desired_count"] == 0
     )
     return {
         "ok": bool(ok),
@@ -206,6 +220,7 @@ def run_selftest() -> dict:
         "refill_after_fill": refill_after_fill,
         "empty_seed_plan": plan_to_jsonable(empty_seed_plan),
         "reserved_cap_intents": reserved_cap_intents,
+        "liquidity_cancel_intents": liquidity_cancel_intents,
         "execution_report": report,
     }
 
