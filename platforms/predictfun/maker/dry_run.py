@@ -51,6 +51,36 @@ def load_config(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _allowed_market_modes(raw: Any) -> set[tuple[bool, bool]]:
+    if not raw:
+        return set()
+    rows = raw if isinstance(raw, list) else [raw]
+    modes: set[tuple[bool, bool]] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            modes.add((bool(row.get("neg_risk")), bool(row.get("yield_bearing"))))
+        elif isinstance(row, str):
+            normalized = row.strip().lower().replace("-", "_").replace(" ", "")
+            if normalized in {"standard", "false_false", "negfalse_yieldfalse"}:
+                modes.add((False, False))
+            elif normalized in {"neg_risk", "true_false", "negtrue_yieldfalse"}:
+                modes.add((True, False))
+            elif normalized in {"yield_bearing", "false_true", "negfalse_yieldtrue"}:
+                modes.add((False, True))
+            elif normalized in {"neg_risk_yield_bearing", "true_true", "negtrue_yieldtrue"}:
+                modes.add((True, True))
+    return modes
+
+
+def _market_mode_skip_reason(market: PredictMarket, allowed_modes: set[tuple[bool, bool]]) -> str:
+    if not allowed_modes or (market.is_neg_risk, market.is_yield_bearing) in allowed_modes:
+        return ""
+    return (
+        "market mode not enabled "
+        f"(neg_risk={market.is_neg_risk}, yield_bearing={market.is_yield_bearing})"
+    )
+
+
 def build_quote_plan(
     market: PredictMarket,
     orderbook: dict[str, Any],
@@ -590,7 +620,24 @@ def run_once(
 
     plans: list[DryRunPlan] = []
     liquidity_blocks = _liquidity_blocks_from_ws_state(ws_state)
+    allowed_market_modes = _allowed_market_modes(risk.get("allowed_market_modes"))
     for market in markets:
+        mode_skip = _market_mode_skip_reason(market, allowed_market_modes)
+        if mode_skip:
+            plans.append(
+                DryRunPlan(
+                    market=market,
+                    can_quote=False,
+                    skip_reason=mode_skip,
+                    orderbook_source="config:market_mode_guard",
+                    best_yes_bid=market.best_yes_bid,
+                    best_yes_ask=market.best_yes_ask,
+                    mid=market.mid,
+                    yes_quotes=[],
+                    no_quotes=[],
+                )
+            )
+            continue
         block_reason = liquidity_blocks.get(str(market.id))
         if block_reason:
             plans.append(
