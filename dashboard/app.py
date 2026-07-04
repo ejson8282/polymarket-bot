@@ -389,8 +389,39 @@ div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; 
     margin:12px 0;
     font-size:13px;
 }
+.kpi-grid {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0, 1fr));
+    gap:14px;
+    margin:8px 0 18px 0;
+}
+.kpi-card {
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:10px;
+    padding:16px 18px;
+    min-height:120px;
+}
+.kpi-label {
+    color:#8b949e;
+    font-size:12px;
+    letter-spacing:.04em;
+    margin-bottom:8px;
+}
+.kpi-value {
+    color:#e6edf3;
+    font-size:24px;
+    font-weight:700;
+    margin-bottom:8px;
+    word-break:break-word;
+}
+.kpi-detail {
+    color:#8b949e;
+    font-size:13px;
+    line-height:1.45;
+}
 @media (max-width: 1100px) {
-    .sa-grid { grid-template-columns:1fr; }
+    .sa-grid, .kpi-grid { grid-template-columns:1fr; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1808,6 +1839,16 @@ def _stop_single_account_paper_worker() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"停止失败：{exc}"
     return True, f"paper worker 已发送停止信号，pid={pid}"
+
+
+def _kpi_card(label: str, value: str, detail: str = "") -> str:
+    return (
+        '<div class="kpi-card">'
+        f'<div class="kpi-label">{html.escape(str(label))}</div>'
+        f'<div class="kpi-value">{html.escape(str(value))}</div>'
+        f'<div class="kpi-detail">{html.escape(str(detail))}</div>'
+        "</div>"
+    )
 
 
 def _render_single_account_paper_result_summary(paper_state: dict) -> None:
