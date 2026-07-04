@@ -1810,6 +1810,48 @@ def _stop_single_account_paper_worker() -> tuple[bool, str]:
     return True, f"paper worker 已发送停止信号，pid={pid}"
 
 
+def _render_single_account_paper_result_summary(paper_state: dict) -> None:
+    summary = paper_state.get("summary") if isinstance(paper_state.get("summary"), dict) else {}
+    decisions = paper_state.get("decisions") if isinstance(paper_state.get("decisions"), list) else []
+    outcomes = paper_state.get("outcomes") if isinstance(paper_state.get("outcomes"), list) else []
+    paper_trades = paper_state.get("paper_trades") if isinstance(paper_state.get("paper_trades"), list) else []
+    result_rows = outcomes or paper_trades
+
+    if result_rows:
+        pnl_values = [
+            float(row.get("pnl_usdc") or row.get("virtual_pnl_usdc") or 0)
+            for row in result_rows
+            if isinstance(row, dict)
+        ]
+        wins = sum(1 for value in pnl_values if value > 0)
+        total_pnl = sum(pnl_values)
+        win_rate = (wins / len(pnl_values) * 100) if pnl_values else 0.0
+        st.markdown(
+            '<div class="kpi-grid">'
+            + _kpi_card("模拟成交", str(len(result_rows)), "paper trades / outcomes")
+            + _kpi_card("模拟胜率", f"{win_rate:.1f}%", f"{wins}/{len(pnl_values)}")
+            + _kpi_card("模拟 PnL", f"${total_pnl:+.2f}", "未扣真实滑点/手续费")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    skip_reasons = summary.get("skip_reasons") if isinstance(summary.get("skip_reasons"), dict) else {}
+    top_reason = "-"
+    if skip_reasons:
+        reason, count = max(skip_reasons.items(), key=lambda item: int(item[1] or 0))
+        top_reason = f"{reason} ({count})"
+    actionable = int(summary.get("actionable") or 0)
+    st.markdown(
+        '<div class="kpi-grid">'
+        + _kpi_card("模拟结果", "暂无成交", "当前只有评分，没有 paper 持仓")
+        + _kpi_card("可执行信号", str(actionable), f"总决策 {len(decisions)}")
+        + _kpi_card("主要原因", top_reason, "为什么没有生成模拟成交")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _single_account_strategy_card(strategy: dict) -> str:
     gate_items = "".join(
         f"<li>{html.escape(str(gate))}</li>" for gate in strategy.get("gates", [])
@@ -1991,8 +2033,11 @@ def _render_single_account_automation_dashboard() -> None:
 
     if paper_state:
         st.caption(f"最近评分：{paper_state.get('ts', '-')}; 运行模式：paper only，不会下单。")
+        st.markdown("### 模拟结果")
+        _render_single_account_paper_result_summary(paper_state)
         decision_rows = paper_state.get("decisions") if isinstance(paper_state.get("decisions"), list) else []
         if decision_rows:
+            st.markdown("### Paper 决策明细")
             decision_df = pd.DataFrame(decision_rows)
             visible_cols = [
                 "decision",
