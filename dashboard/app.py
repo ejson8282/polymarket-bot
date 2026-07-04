@@ -1814,16 +1814,16 @@ def _single_account_strategy_card(strategy: dict) -> str:
     gate_items = "".join(
         f"<li>{html.escape(str(gate))}</li>" for gate in strategy.get("gates", [])
     )
-    return f"""
-    <div class="sa-card">
-        <span class="sa-badge">{html.escape(str(strategy.get("status", "草稿")))}</span>
-        <h3>{html.escape(str(strategy.get("name", "")))}</h3>
-        <p>{html.escape(str(strategy.get("objective", "")))}</p>
-        <p><b>持仓：</b>{html.escape(str(strategy.get("hold", "")))}<br>
-        <b>范围：</b>{html.escape(str(strategy.get("universe", "")))}</p>
-        <ul>{gate_items}</ul>
-    </div>
-    """
+    return (
+        '<div class="sa-card">'
+        f'<span class="sa-badge">{html.escape(str(strategy.get("status", "草稿")))}</span>'
+        f'<h3>{html.escape(str(strategy.get("name", "")))}</h3>'
+        f'<p>{html.escape(str(strategy.get("objective", "")))}</p>'
+        f'<p><b>持仓：</b>{html.escape(str(strategy.get("hold", "")))}<br>'
+        f'<b>范围：</b>{html.escape(str(strategy.get("universe", "")))}</p>'
+        f"<ul>{gate_items}</ul>"
+        "</div>"
+    )
 
 
 def _render_single_account_automation_dashboard() -> None:
