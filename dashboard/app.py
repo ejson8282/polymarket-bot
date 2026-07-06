@@ -1863,6 +1863,20 @@ def _single_account_overview() -> tuple[str, str, str]:
     actionable = summary.get("actionable", "-")
     status = "paper running" if pid else "paper stopped"
     detail = f"signals {signals} · actionable {actionable} · {_short_age(SINGLE_ACCOUNT_PAPER_STATE_PATH)}"
+    # 融合增强:模拟器(施工包01)paper 库存在时,附带最新虚拟权益
+    try:
+        import sqlite3 as _sqlite3
+
+        sim_db = DATA_DIR / "single_account_paper.db"
+        if sim_db.exists():
+            _conn = _sqlite3.connect(f"file:{sim_db}?mode=ro", uri=True)
+            row = _conn.execute(
+                "SELECT equity FROM equity_snapshots ORDER BY ts DESC LIMIT 1").fetchone()
+            _conn.close()
+            if row and row[0] is not None:
+                detail += f" · sim权益 ${row[0]:,.0f}"
+    except Exception:
+        pass
     return status, detail, "ok" if pid else "idle"
 
 
@@ -1877,6 +1891,13 @@ def _research_data_overview() -> tuple[str, str, str]:
 
 def _render_unified_home_dashboard() -> None:
     st_autorefresh(interval=15000, key="unified_home_refresh")
+    # 融合(施工包05·5B × ae12ed5):全局 MAINNET 横幅在统一 Home 也可见。
+    # Home 保持只读(“统一入口只做状态聚合”),EMERGENCY STOP 按钮仍在 Polymarket 视图。
+    try:
+        from dashboard.overview_pm import banner_html as _home_banner_html
+    except ModuleNotFoundError:
+        from overview_pm import banner_html as _home_banner_html
+    st.markdown(_home_banner_html("mainnet"), unsafe_allow_html=True)
     st.markdown("## Latitude Alpha")
     st.caption("Overview / Home")
     st.markdown(
