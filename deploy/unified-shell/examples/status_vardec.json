@@ -1,0 +1,11 @@
+{
+  "version": 1, "ts": "2026-07-06T04:00:00Z", "ok": true, "mode": "live",
+  "summary": {"总权益": "$2,418.62", "今日净损耗": "-$1.84", "今日交易量": "$8,720", "自动化": "运行中"},
+  "alerts": [{"severity": "critical", "message": "VPS2 SOL 单腿", "ts": "2026-07-06T03:58:00Z"}],
+  "events": [
+    {"ts": "2026-07-06T03:58:00Z", "severity": "critical", "kind": "single_leg_risk",
+     "message": "VPS2 · SOL 单腿,Decibel 空腿裸露 $88"},
+    {"ts": "2026-07-06T03:40:00Z", "severity": "info", "kind": "open_success",
+     "message": "VPS1 · ETH 开仓成功,双腿对齐"}
+  ]
+}

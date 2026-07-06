@@ -30,6 +30,7 @@ from py_clob_client_v2.order_builder.constants import BUY, SELL
 from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 from event_bus import EventBus
 from cross_side_sentinel import CrossSideSentinel
+from sibling_registry import SiblingOrderRegistry, resolve_conflict
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -365,6 +366,16 @@ class PolyLPSMulti:
         # distinguish "our maker order matched" from "someone else's order
         # matched in a market we subscribe to".
         self._funder_lc: str = funder.lower()
+
+        # 施工包04:跨账号自成交防线。multi_runner 会用共享实例覆盖此默认值;
+        # 单账号直跑时是自建空注册表(无兄弟订单,行为不变)。
+        _sib_raw = self.cfg.get("sibling_registry") if isinstance(self.cfg.get("sibling_registry"), dict) else {}
+        self._sibling_cfg: Dict[str, Any] = {
+            "enabled": bool(_sib_raw.get("enabled", True)),
+            "mode": str(_sib_raw.get("mode", "observe")).lower(),   # observe|adjust|block
+            "adjust_ticks": int(_sib_raw.get("adjust_ticks", 1)),
+        }
+        self._sibling_registry: SiblingOrderRegistry = SiblingOrderRegistry()
 
         signer_server_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or str(account.get("signer_server_url", "")).strip()
         self.remote_signer: RemoteSignerClient | None = None
@@ -2282,6 +2293,7 @@ class PolyLPSMulti:
             orders = await asyncio.to_thread(self.client.get_open_orders)
             if not isinstance(orders, list):
                 return
+            canceled: list[str] = []
             for o in orders:
                 oid = str(o.get("id") or o.get("orderID") or "")
                 asset = str(o.get("asset_id") or o.get("token_id") or "")
@@ -2289,13 +2301,17 @@ class PolyLPSMulti:
                 if asset == token_id and status in ("live", "open", "active") and oid:
                     try:
                         await asyncio.to_thread(self.client.cancel, oid)
+                        canceled.append(oid)
                     except Exception:
                         pass
+            if canceled:
+                self._sibling_registry.unregister_many(self._funder_lc, canceled)
         except Exception as e:
             log(f"[exit] _cancel_token_orders error: {e}")
 
     async def _place_sell_order(self, token_id: str, price: Decimal, size: Decimal) -> Any:
         """Place a SELL limit order."""
+        price = self._sibling_gate(token_id, "SELL", price, "exit_sell")
         if self.remote_signer:
             try:
                 signed = await asyncio.to_thread(
@@ -2312,6 +2328,7 @@ class PolyLPSMulti:
             signed = await asyncio.to_thread(self.client.create_order, OrderArgs(token_id=token_id, price=float(price), size=float(size), side=SELL))
         resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
         self._invalidate_all_orders_cache()
+        self._sibling_register_resp(token_id, "SELL", price, size, resp)
         return resp
 
     def _resume_halted_markets(self, trigger: str) -> None:
@@ -2687,6 +2704,7 @@ class PolyLPSMulti:
         self.notify_discord("Session Switch Blocked", "No confirmation for session switch — canceling all orders, engine stays alive", "warning")
         try:
             await asyncio.to_thread(self.client.cancel_all)
+            self._sibling_registry.clear_funder(self._funder_lc)
             log("[session] cancel_all done (switch blocked, no confirmation)")
         except Exception as e:
             log(f"[session] cancel_all error during switch halt: {e}")
@@ -2967,7 +2985,30 @@ class PolyLPSMulti:
         ]
         live = self._sorted_live_orders(live)
         self._market_live_orders[token_id] = live
+        self._sibling_sync_token(token_id, live)
         return live
+
+    def _sibling_sync_token(self, token_id: str, live: list) -> None:
+        """施工包04:refresh 对账——注册表与引擎本地清单同点同步(整体重建)。"""
+        registry = getattr(self, "_sibling_registry", None)
+        if registry is None:
+            return
+        entries = []
+        for o in live:
+            oid = self._order_id(o)
+            side = str(o.get("side", "")).upper()
+            if not oid or side not in ("BUY", "SELL"):
+                continue
+            try:
+                price = float(o.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            try:
+                size = float(o.get("original_size") or o.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0.0
+            entries.append((oid, side, price, size))
+        registry.sync_token(self._funder_lc, token_id, entries)
 
     async def _cancel_order_ids(self, token_id: str, ids: list[str], reason: str) -> bool:
         ids = [str(x) for x in ids if x]
@@ -3012,6 +3053,7 @@ class PolyLPSMulti:
         self._market_live_orders[token_id] = [
             o for o in cached if self._order_id(o) not in canceled_set
         ]
+        self._sibling_registry.unregister_many(self._funder_lc, ids)  # 施工包04:与剔除同点
         live = self._market_live_orders[token_id]
         live_ids = {self._order_id(o) for o in live}
         cleared = all(oid not in live_ids for oid in ids)
@@ -3234,6 +3276,7 @@ class PolyLPSMulti:
             ids = [o.get("id") or o.get("orderID") for o in at_risk if (o.get("id") or o.get("orderID"))]
             if ids:
                 await asyncio.to_thread(self.client.cancel_orders, ids)
+                self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
                 log(f"[safety] legal_top_guard cancelled {len(ids)} orders above legal_top={risk_limit} token={token_id}")
                 self._last_plan_sig[token_id] = ""
                 # do not just cancel-and-idle: force next pass to rebuild quote from latest book
@@ -3266,6 +3309,7 @@ class PolyLPSMulti:
                             asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
                         try:
                             await asyncio.to_thread(self.client.cancel_all)
+                            self._sibling_registry.clear_funder(self._funder_lc)
                             log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s — cancelled all orders")
                             self._notify_attention("Market WS down", age_sec=f"{market_ws_age:.0f}", action="cancelled all orders")
                             for tid in self.market_cfg:
@@ -3337,6 +3381,7 @@ class PolyLPSMulti:
                 if cancel_ids:
                     ids = [oid for _, _, oid in cancel_ids]
                     await asyncio.to_thread(self.client.cancel_orders, ids)
+                    self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
 
                     touched_tokens: set[str] = set()
                     for tid, bb, oid in cancel_ids:
@@ -4562,6 +4607,7 @@ class PolyLPSMulti:
             if ids:
                 await self._action_delay(f"health-cancel token={token_id}")
                 await asyncio.to_thread(self.client.cancel_orders, ids)
+                self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
         except Exception as e:
             log(f"[health] cancel fail token={token_id} err={e}")
 
@@ -5894,8 +5940,96 @@ class PolyLPSMulti:
                     return
                 raise
 
+    # ---- 施工包04:跨账号自成交防线(下单前单点检查) -------------------------
+
+    def _sibling_tick(self, token_id: str) -> Decimal:
+        try:
+            return Decimal(str(self._get_mcfg(token_id)["tick"]))
+        except Exception:
+            return Decimal("0.01")
+
+    def _sibling_buy_floor(self, token_id: str) -> Optional[Decimal]:
+        """adjust 模式的买单退让下限:复用 preflight 的 reward_lower 口径
+        (mid − spread,快照不可得则返回 None → 调用方按 skip 处理)。"""
+        try:
+            snap = self._market_snapshots.get(token_id)
+            effective = self._effective_snapshot_for_gate(token_id, snap)
+            if not effective or self._snapshot_is_stale(token_id, effective):
+                return None
+            cfg = self._get_mcfg(token_id)
+            spread = cfg["spread"]
+            if spread > Decimal("1"):
+                spread = spread / Decimal("100")
+            mid = (effective.best_bid + effective.best_ask) / Decimal("2")
+            return max(self._sibling_tick(token_id), mid - spread)
+        except Exception:
+            return None
+
+    def _sibling_gate(self, token_id: str, side: str, price: Decimal, label: str) -> Decimal:
+        """下单前交叉检查。返回(可能退让后的)价格;block/退让越限 → 抛 SoftQuoteSkip。
+        只加防线,不改报价/exit 定价逻辑;observe 模式零干预。"""
+        registry = getattr(self, "_sibling_registry", None)
+        scfg = getattr(self, "_sibling_cfg", None) or {}
+        if registry is None or not scfg.get("enabled", True):
+            return price
+        # §2.3 v1:配对 token 互补 BUY 只观察不拦截
+        if side == "BUY":
+            paired = str(self._paired_token_cache.get(token_id, "") or "")
+            if not paired:
+                try:
+                    paired = str(self._get_mcfg(token_id).get("paired_token_id", "") or "")
+                except Exception:
+                    paired = ""
+            if paired and paired != token_id:
+                matched, comp_hit = registry.complement_would_match(
+                    self._funder_lc, paired, float(price))
+                if matched:
+                    log(f"[sibling_complement_observe] token={token_id[:16]} "
+                        f"my_buy={price} hit={comp_hit}")
+        crossed, hit = registry.would_cross(self._funder_lc, token_id, side, float(price))
+        if not crossed:
+            return price
+        mode = str(scfg.get("mode", "observe"))
+        log(f"[sibling_conflict] mode={mode} side={side} token={token_id[:16]} "
+            f"my_funder={self._funder_lc[:10]} my_price={price} hit={hit} label={label}")
+        if mode == "observe":
+            return price
+        floor = self._sibling_buy_floor(token_id) if side == "BUY" else None
+        if mode == "adjust" and side == "BUY" and floor is None:
+            # 快照不可得 → 无法核对报价下限,保守跳过(等同 block)
+            registry.note_skipped()
+            log(f"[sibling_skip] token={token_id[:16]} side={side} price={price} "
+                f"label={label} reason=no_floor_snapshot")
+            raise SoftQuoteSkip(f"sibling_conflict_no_floor token={token_id[:16]} label={label}")
+        action, new_price = resolve_conflict(
+            mode, side, float(price), float(self._sibling_tick(token_id)),
+            adjust_ticks=int(scfg.get("adjust_ticks", 1)),
+            floor=float(floor) if floor is not None else None)
+        if action == "adjust" and new_price is not None:
+            registry.note_adjusted()
+            adjusted = Decimal(str(new_price))
+            log(f"[sibling_adjust] token={token_id[:16]} side={side} {price} -> {adjusted} label={label}")
+            return adjusted
+        registry.note_skipped()
+        log(f"[sibling_skip] token={token_id[:16]} side={side} price={price} label={label}")
+        raise SoftQuoteSkip(f"sibling_conflict token={token_id[:16]} side={side} label={label}")
+
+    def _sibling_register_resp(self, token_id: str, side: str, price: Decimal,
+                               size: Decimal, resp: Any) -> None:
+        registry = getattr(self, "_sibling_registry", None)
+        if registry is None:
+            return
+        try:
+            oid = str((resp or {}).get("orderID") or (resp or {}).get("id") or "") \
+                if isinstance(resp, dict) else str(getattr(resp, "orderID", "") or getattr(resp, "id", "") or "")
+        except Exception:
+            oid = ""
+        if oid:
+            registry.register(self._funder_lc, token_id, side, float(price), float(size), oid)
+
     async def _submit_post_order(self, token_id: str, price: Decimal, size: Decimal, label: str) -> Any:
         self._ensure_order_path_open(token_id, f"submit_pre_sign:{label}")
+        price = self._sibling_gate(token_id, "BUY", price, label)
         reserve_id = await self._acquire_budget_reserve(token_id, price, size, label)
         try:
             self._mark_latency(token_id, "t_send")
@@ -5914,6 +6048,7 @@ class PolyLPSMulti:
                 signed = await asyncio.to_thread(self.client.create_order, args)
             resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
             self._invalidate_all_orders_cache()
+            self._sibling_register_resp(token_id, "BUY", price, size, resp)
             try:
                 await self._refresh_live_orders(token_id)
             except Exception as refresh_exc:
@@ -6007,6 +6142,7 @@ class PolyLPSMulti:
             await asyncio.to_thread(self.client.cancel_all)
             # Clear cache for all managed tokens
             self._market_live_orders.clear()
+            self._sibling_registry.clear_funder(self._funder_lc)  # 施工包04:与清缓存同点
             remaining = await asyncio.to_thread(self.client.get_open_orders)
             live_remaining = [
                 o for o in (remaining if isinstance(remaining, list) else [])
@@ -6031,6 +6167,8 @@ class PolyLPSMulti:
                     pass
         # Clear cache after canceling
         self._market_live_orders.clear()
+        self._sibling_registry.clear_funder(self._funder_lc,
+                                            keep_order_ids=protected_ids)  # 施工包04
         # Verify: only protected orders remain
         remaining = await asyncio.to_thread(self.client.get_open_orders)
         live_non_exit = [
@@ -6910,7 +7048,23 @@ class PolyLPSMulti:
                         tid for tid in all_markets if self._event_is_banned(tid)
                     ],
                     "latency_records": list(self._latency_records[-50:]),
+                    # 施工包04:跨账号自成交防线统计(§2.5)
+                    "sibling_registry": {
+                        "mode": self._sibling_cfg.get("mode", "observe"),
+                        "enabled": self._sibling_cfg.get("enabled", True),
+                        **self._sibling_registry.stats(),
+                    },
                 }
+                # 心跳日志:统计有变化时记一行(避免每个写周期刷屏)
+                _sib_stats = state["sibling_registry"]
+                _sib_sig = (_sib_stats["checked"], _sib_stats["conflicts_detected"],
+                            _sib_stats["adjusted"], _sib_stats["skipped"],
+                            _sib_stats["complement_observed"])
+                if _sib_sig != getattr(self, "_sibling_last_logged", None):
+                    self._sibling_last_logged = _sib_sig
+                    log(f"[sibling_stats] mode={_sib_stats['mode']} checked={_sib_sig[0]} "
+                        f"conflicts={_sib_sig[1]} adjusted={_sib_sig[2]} skipped={_sib_sig[3]} "
+                        f"complement={_sib_sig[4]} live={_sib_stats['live_orders']}")
 
                 tmp = self._state_path.with_suffix(".tmp")
                 tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -7094,6 +7248,9 @@ async def _main_with_shutdown(_cfg):
             if client is not None:
                 try:
                     await asyncio.wait_for(asyncio.to_thread(client.cancel_all), timeout=15.0)
+                    _sib = getattr(engine, "_sibling_registry", None)
+                    if _sib is not None:
+                        _sib.clear_funder(getattr(engine, "_funder_lc", ""))
                     try: log("[shutdown] cancel_all completed")
                     except Exception: pass
                 except Exception as e:

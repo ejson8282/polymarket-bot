@@ -1,0 +1,15 @@
+[Unit]
+Description=SA kline recorder
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/ubuntu/polymarket-bot
+# 部署时把占位符替换成 VPS 上真实的 venv python 路径(见 recorders/README.md 的 sed 命令)
+ExecStart=<VENV_PYTHON_REPLACE_ME> -m platforms.single_account.recorders.kline_recorder
+# Decibel 只读行情需要网关 key;由部署方自管此环境文件,内容仅一行 DECIBEL_API_BEARER=...
+EnvironmentFile=-/home/ubuntu/polymarket-bot/data/recorders.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

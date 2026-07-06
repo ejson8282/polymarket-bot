@@ -48,11 +48,41 @@ def run_once(config_path: Path) -> dict[str, Any]:
         },
         "decisions": rows[:50],
     }
+    # 施工包01 §B7:state JSON 新增顶层 sim 键(其余输出原样保留,dashboard 不受影响)
+    state["sim"] = {"db": "data/single_account_paper.db", "schema_version": 1}
     state_path = _output_path(config_path, cfg, "state_path", "../../data/single_account_paper_state.json")
     decisions_path = _output_path(config_path, cfg, "decisions_path", "../../data/single_account_decisions.jsonl")
     _write_json(state_path, state)
     _append_jsonl(decisions_path, {"ts": now, "summary": state["summary"], "decisions": rows[:50]})
+    _record_decisions_db(config_path, cfg, rows)  # 施工包01 §B7:decisions 逐行入库
     return state
+
+
+def _record_decisions_db(config_path: Path, cfg: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """把本轮 decisions 写进 sim 库 decisions 表(taken = decision=='allow')。
+    入库失败不影响原有输出与循环(§B7 兼容要求)。"""
+    try:
+        from platforms.single_account.sim import persistence as sim_persistence
+
+        sim_cfg = cfg.get("sim") if isinstance(cfg.get("sim"), dict) else {}
+        db_raw = str(sim_cfg.get("db") or "../../data/single_account_paper.db")
+        conn = sim_persistence.open_paper_db(resolve_path(config_path, db_raw))
+        ts_epoch = int(time.time())
+        with conn:
+            for row in rows:
+                sim_persistence.insert_decision(
+                    conn,
+                    ts_epoch,
+                    str(row.get("strategy") or ""),
+                    str(row.get("symbol") or ""),
+                    str(row.get("side") or ""),
+                    json.dumps(row, ensure_ascii=False),
+                    1 if row.get("decision") == "allow" else 0,
+                    str(row.get("reason") or ""),
+                )
+        conn.close()
+    except Exception:
+        pass
 
 
 def run_loop(config_path: Path, *, interval_sec: float, once: bool = False) -> dict[str, Any]:

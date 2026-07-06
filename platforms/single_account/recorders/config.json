@@ -1,0 +1,15 @@
+{
+  "venue": "decibel",
+  "venue_base_url": "https://api.mainnet.aptoslabs.com/decibel/api/v1",
+  "kline": {"symbols": ["BTC", "ETH", "SOL", "XAU", "QQQ", "NVDA"], "timeframes": ["1m", "15m"], "poll_sec": 60, "backfill_days": 7},
+  "funding": {"symbols": ["BTC", "ETH", "SOL", "XAU", "QQQ", "NVDA"], "poll_sec": 300},
+  "basis": {
+    "symbols": [
+      {"platform": "XAU", "ref": "GC=F", "session": "24h"},
+      {"platform": "QQQ", "ref": "QQQ", "session": "rth"},
+      {"platform": "NVDA", "ref": "NVDA", "session": "rth"}
+    ],
+    "sample_sec": 5,
+    "ref_adapter": "yfinance_delayed"
+  }
+}

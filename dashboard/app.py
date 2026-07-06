@@ -2303,6 +2303,26 @@ def _render_single_account_automation_dashboard() -> None:
                 getattr(st, "success" if ok else "error")(msg)
                 st.rerun()
 
+    # 施工包05·5B:skip 原因分布 + 虚拟权益摘要(模拟器未就绪时渲染「待一期」占位)
+    try:
+        from dashboard.overview_pm import (
+            _paper_db_path as _sa_db_path,
+            equity_summary_html as _sa_equity_html,
+            skip_reason_html as _sa_skip_html,
+        )
+    except ModuleNotFoundError:
+        from overview_pm import (
+            _paper_db_path as _sa_db_path,
+            equity_summary_html as _sa_equity_html,
+            skip_reason_html as _sa_skip_html,
+        )
+
+    _sa_db = _sa_db_path(SINGLE_ACCOUNT_PAPER_STATE_PATH, REPO_DIR)
+    st.markdown("### skip 原因分布(decisions 表)")
+    st.markdown(_sa_skip_html(_sa_db), unsafe_allow_html=True)
+    st.markdown("### 虚拟权益摘要(equity_snapshots)")
+    st.markdown(_sa_equity_html(_sa_db), unsafe_allow_html=True)
+
     if paper_state:
         st.caption(f"最近评分：{paper_state.get('ts', '-')}; 运行模式：paper only，不会下单。")
         st.markdown("### 模拟结果")
@@ -2469,7 +2489,21 @@ sig_type  = int(acc.get("signature_type", 0))
 funder    = acc.get("funder")
 
 # ── header ─────────────────────────────────────────────────────────────────────
-col_title, col_status, col_stop = st.columns([4, 2, 1])
+# 施工包05·5B:MAINNET·LIVE 大色块横幅,EMERGENCY STOP 移到横幅右侧
+try:
+    from dashboard.overview_pm import banner_html as _pm_banner_html
+except ModuleNotFoundError:
+    from overview_pm import banner_html as _pm_banner_html
+
+col_banner, col_stop = st.columns([5, 1])
+with col_banner:
+    st.markdown(_pm_banner_html("mainnet"), unsafe_allow_html=True)
+with col_stop:
+    if st.button("EMERGENCY STOP", type="primary", use_container_width=True):
+        _flash(stop_multi_runner(), "error")
+        st.rerun()
+
+col_title, col_status = st.columns([4, 2])
 with col_title:
     st.markdown("## Latitude Alpha")
     st.caption(f"{nav_platform}  /  {nav_feature}")
@@ -2479,10 +2513,6 @@ with col_status:
     key_badge = '<span class="pill-green">KEY OK</span>' if has_key else '<span class="pill-yellow">NO KEY</span>'
     st.markdown(f"{badge}&nbsp;&nbsp;{key_badge}", unsafe_allow_html=True)
     st.caption(f"Refresh: {datetime.now(_BJT).strftime('%H:%M:%S')} 北京时间")
-with col_stop:
-    if st.button("EMERGENCY STOP", type="primary", use_container_width=True):
-        _flash(stop_multi_runner(), "error")
-        st.rerun()
 
 _show_flash()
 st.divider()
@@ -3620,6 +3650,28 @@ with tab_control:
     # ── Engine Control & Accounts (merged) ────────────────────────────────────
     all_states = load_all_engine_states()
     alive_map  = multi_engine_running()
+
+    # 施工包05·5B:账号矩阵(control tab 顶部,照模板 pm 页;行数随 roster 扩展)
+    try:
+        from dashboard.overview_pm import account_matrix_html, account_matrix_rows
+    except ModuleNotFoundError:
+        from overview_pm import account_matrix_html, account_matrix_rows
+
+    st.markdown('<p class="section-title">账号矩阵</p>', unsafe_allow_html=True)
+    _paused_map = {i: _is_account_paused(i) for i in all_states}
+    _rewards_snapshot = {}
+    try:
+        _rewards_path = DATA_DIR / "rewards_cumulative.json"
+        if _rewards_path.exists():
+            _rewards_snapshot = json.loads(_rewards_path.read_text(encoding="utf-8"))
+    except Exception:
+        _rewards_snapshot = {}
+    st.markdown(
+        account_matrix_html(account_matrix_rows(all_states, alive_map, _paused_map,
+                                                _rewards_snapshot)),
+        unsafe_allow_html=True,
+    )
+    st.caption("暂停(撤单)/恢复操作沿用下方 Engine Control 的现有账号控制;矩阵为只读聚合。")
 
     st.markdown('<p class="section-title">Engine Control & Accounts</p>', unsafe_allow_html=True)
 

@@ -1,0 +1,9 @@
+{
+  "refresh_sec": 15,
+  "systems": [
+    {"name": "Var/Decibel", "kind": "file",
+     "target": "examples/status_vardec.json", "link": "/vardec/"},
+    {"name": "Polymarket", "kind": "file",
+     "target": "examples/status_polymarket.json", "link": "/alpha/"}
+  ]
+}
