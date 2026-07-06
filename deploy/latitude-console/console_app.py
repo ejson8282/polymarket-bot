@@ -193,22 +193,29 @@ def _pos_open(payload: Any) -> bool:
 def _var_decibel() -> Dict[str, Any]:
     peer_dir = VARIA_DIR / "ops_peer_state"
     hosts: Dict[str, dict] = {}
-    sources = []
-    if peer_dir.exists():
-        sources = sorted(peer_dir.glob("*.json"))
-    elif (VARIA_DIR / "ops_state.json").exists():
-        sources = [VARIA_DIR / "ops_state.json"]
+    # 口径同 varia 自家 _state_map:peer 目录打底,本机 ops_state.json 覆盖自己
+    # 那台(peer 副本可能陈旧,本机最了解自己)。四源仍逐 host 逐 venue 独立。
+    by_host: Dict[str, dict] = {}
+    for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
+        state = _read_json(path)
+        if isinstance(state, dict):
+            h = str(state.get("host_id") or path.stem).lower()
+            by_host["vps1" if h.startswith("vm-") else h] = state
+    local = _read_json(VARIA_DIR / "ops_state.json")
+    if isinstance(local, dict) and local.get("host_id"):
+        h = str(local["host_id"]).lower()
+        by_host["vps1" if h.startswith("vm-") else h] = local
+    sources = list(by_host.values())
     equity_total = 0.0
     equity_found = False
     points_dec = points_var = None
     vol_weekly = vol_total = 0.0
     vol_found = False
     single_leg: List[str] = []
-    for path in sources:
-        state = _read_json(path)
+    for state in sources:
         if not isinstance(state, dict):
             continue
-        host = str(state.get("host_id") or path.stem).lower()
+        host = str(state.get("host_id") or "").lower() or "unknown"
         if host.startswith("vm-"):
             host = "vps1"
         age = _iso_age(state.get("generated_at"))
