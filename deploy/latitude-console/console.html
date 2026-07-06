@@ -151,14 +151,14 @@
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
   </nav>
   <div class="status-cluster">
-    <span class="pill danger"><span class="dot"></span>告警 1</span>
-    <span class="pill ok"><span class="dot"></span>SIGNER ×2 在线</span>
+    <span class="pill danger" data-k="pill.alerts"><span class="dot"></span>告警 1</span>
+    <span class="pill ok" data-k="pill.signer"><span class="dot"></span>SIGNER ×2 在线</span>
     <span class="clock num" data-k="clock">2026-07-05 21:47 · 15s 前</span>
   </div>
 </header>
 
 <!-- 全局告警条:各系统的 critical 事件在此合并置顶,点击跳转对应页 -->
-<div class="alert">
+<div class="alert" id="alertbar">
   <span class="tag">VAR/DEC</span>
   <div class="msg"><b>VPS2 · SOL 单腿</b>:Decibel 空腿 <span class="num">$88</span> 无对冲,已 <span class="num">4m12s</span> · janitor 处置中</div>
   <button onclick="go('vardec')">进入处理 →</button>
@@ -167,26 +167,26 @@
 <!-- ════════════ 页面 1 · 总览(聚合器,只读,消费各系统 status.json) ════════════ -->
 <section class="page on" id="page-overview">
   <div class="proj">
-    <div class="card alerted" onclick="go('vardec')">
-      <div class="head"><span class="name">Var / Decibel</span><span class="chip danger">单腿 ×1</span></div>
-      <div class="row"><span class="k">总权益(两VPS)</span><span class="v">$2,418.62 <span class="up">▲$3.14</span></span></div>
-      <div class="row"><span class="k">今日量 / 损耗</span><span class="v">$8,720 · <span class="down">−$1.84</span>(2.1bps/万U)</span></div>
-      <div class="row"><span class="k">VPS1 / VPS2</span><span class="v"><span class="up">● 8s</span> / <span class="warn" style="color:var(--warn)">● 暂停开仓</span></span></div>
-      <div class="row"><span class="k">积分估算</span><span class="v">21,695</span></div>
+    <div class="card" id="vd-card" onclick="go('vardec')">
+      <div class="head"><span class="name">Var / Decibel</span><span class="chip ok" data-k="vd.chip">—</span></div>
+      <div class="row"><span class="k">总权益(两VPS)</span><span class="v" data-k="vd.equity">$2,418.62 <span class="up">▲$3.14</span></span></div>
+      <div class="row"><span class="k" data-k="vd.vol_label">今日量 / 损耗</span><span class="v" data-k="vd.vol">$8,720 · <span class="down">−$1.84</span>(2.1bps/万U)</span></div>
+      <div class="row"><span class="k">VPS1 / VPS2</span><span class="v" data-k="vd.hosts"><span class="up">● 8s</span> / <span class="warn" style="color:var(--warn)">● 暂停开仓</span></span></div>
+      <div class="row"><span class="k">积分估算</span><span class="v" data-k="vd.points">21,695</span></div>
     </div>
     <div class="card" onclick="go('pm')">
       <div class="head"><span class="name">Polymarket 做市</span><span class="chip ok" data-k="pm.run">2/2 运行</span></div>
       <div class="row"><span class="k">活跃挂单 / 今日成交</span><span class="v" data-k="pm.orders_vol">34 · $1,240(18笔)</span></div>
       <div class="row"><span class="k">今日 PnL / 奖励估算</span><span class="v" data-k="pm.pnl"><span class="up">+$3.80</span> · $6.20</span></div>
-      <div class="row"><span class="k">kill-switch / 代理</span><span class="v">关 · HK-02 正常</span></div>
-      <div class="row"><span class="k">quotes_sent 今日</span><span class="v">4,182</span></div>
+      <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">关 · HK-02 正常</span></div>
+      <div class="row"><span class="k">quotes_sent 今日</span><span class="v" data-k="pm.quotes">4,182</span></div>
     </div>
     <div class="card" onclick="go('pf')">
-      <div class="head"><span class="name">Predict.fun 做市</span><span class="chip info">TESTNET · DRY-RUN</span></div>
-      <div class="row"><span class="k">周期 / 错误</span><span class="v">1,842 · 3</span></div>
+      <div class="head"><span class="name">Predict.fun 做市</span><span class="chip info" data-k="pf.chip">TESTNET · DRY-RUN</span></div>
+      <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles">1,842 · 3</span></div>
       <div class="row"><span class="k">风险闸门</span><span class="v"><span class="up">OK</span>(6/6 项通过)</span></div>
       <div class="row"><span class="k">模拟持仓 / 成交</span><span class="v">5 · 今日 12 笔</span></div>
-      <div class="row"><span class="k">ws / plan 年龄</span><span class="v">12s · 8s(阈 180s)</span></div>
+      <div class="row"><span class="k" data-k="pf.age_label">ws / plan 年龄</span><span class="v" data-k="pf.age">12s · 8s(阈 180s)</span></div>
     </div>
     <div class="card" onclick="go('sa')">
       <div class="head"><span class="name">Single Account</span><span class="chip ok" data-k="sa.worker">paper worker 运行中</span></div>
@@ -206,14 +206,14 @@
       <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip ok">正常</span></div>
       <div class="row"><span class="k">signer(Polymarket)</span><span class="v"><span class="up">●</span> 限额$500/单 · 今日 312 签</span></div>
       <div class="row"><span class="k">signer(Variational)</span><span class="v"><span class="up">●</span> vps1/vps2 双 key</span></div>
-      <div class="row"><span class="k">peer 状态同步</span><span class="v">3min 前(vps1←vps2)</span></div>
+      <div class="row"><span class="k">peer 状态同步</span><span class="v" data-k="infra.peer">3min 前(vps1←vps2)</span></div>
       <div class="row"><span class="k">Discord 通道</span><span class="v"><span class="up">●</span> 最近 21:45 送达</span></div>
     </div>
   </div>
   <div class="panel">
     <h2>跨系统事件流 <span class="feat f-new">新增</span></h2>
     <div class="src">source · 各系统 worker_events / 事件 jsonl 合并,按严重级过滤</div>
-    <ul class="events">
+    <ul class="events" id="events-list">
       <li><span class="dot d-crit"></span><div><div><b>[VAR/DEC · VPS2]</b> SOL 单腿:Decibel 空腿裸露 $88</div><div class="t">21:43 · single_leg_risk</div></div></li>
       <li><span class="dot d-info"></span><div><div>[PM] 账号2 成交 BUY 120 @0.42 → exit 已挂 0.46</div><div class="t">21:38 · fill</div></div></li>
       <li><span class="dot d-warn"></span><div><div>[PM] cross-side sentinel:NBA-LAL 对侧深度被扫,提前撤单</div><div class="t">21:31 · sentinel_cancel</div></div></li>
@@ -230,12 +230,12 @@
     <span>Research <em class="feat f-old">现有</em></span><span>Execution <em class="feat f-old">现有</em></span><span>Advanced <em class="feat f-old">现有</em></span>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value">$2,418.62</div><div class="sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
+    <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">$2,418.62</div><div class="sub" data-k="vdk.equity_sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
     <div class="kpi"><div class="label">今日净损耗</div><div class="value down">−$1.84</div><div class="sub num">2.1 bps/万U · 7日均 2.6</div></div>
-    <div class="kpi"><div class="label">今日交易量</div><div class="value">$8,720</div><div class="sub num">累计 $214.5K</div></div>
+    <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
     <div class="kpi"><div class="label">本周预算剩余</div><div class="value">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub">周亏损上限扣减制</div></div>
-    <div class="kpi"><div class="label">积分估算</div><div class="value">21,695</div><div class="sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
-    <div class="kpi"><div class="label">自动化</div><div class="value" style="font-size:16px"><span class="up">●</span> 全自动·A</div><div class="sub num">心跳 12s · VPS2 已暂停</div></div>
+    <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
+    <div class="kpi"><div class="label">自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div></div>
   </div>
   <div class="grid2">
     <div>
@@ -266,7 +266,7 @@
       <div class="panel" style="margin-top:16px">
         <h2>双 VPS 状态 <span class="feat f-old">原 Peer Snapshots 提级</span></h2>
         <div class="src">source · runtime + data/ops_peer_state</div>
-        <div class="proj" style="grid-template-columns:1fr;margin-top:0">
+        <div class="proj" style="grid-template-columns:1fr;margin-top:0" id="vd-host-cards">
           <div class="card"><div class="head"><span class="name num">VPS1</span><span class="chip ok">HEDGED ×2</span></div>
             <div class="row"><span class="k">权益/敞口</span><span class="v">$1,428 · <span class="up">$0.31</span></span></div>
             <div class="row"><span class="k">心跳/预算</span><span class="v">8s · $3.55/5</span></div></div>
@@ -297,12 +297,12 @@
     <span>Scan <em class="feat f-old">现有</em></span><span>Proxy <em class="feat f-old">现有</em></span>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="label">运行账号</div><div class="value">2 / 2</div><div class="sub num">multi_runner PID 41822</div></div>
-    <div class="kpi"><div class="label">活跃挂单</div><div class="value">34</div><div class="sub num">quotes_sent 今日 4,182</div></div>
-    <div class="kpi"><div class="label">今日成交</div><div class="value">$1,240</div><div class="sub num">18 笔 · 全部已挂 exit</div></div>
-    <div class="kpi"><div class="label">今日 PnL</div><div class="value up">+$3.80</div><div class="sub num">已实现 +$2.10 / 浮动 +$1.70</div></div>
-    <div class="kpi"><div class="label">奖励估算(今日)</div><div class="value">$6.20</div><div class="sub num">📊 Load Rewards 采样</div></div>
-    <div class="kpi"><div class="label">哨兵拦截(今日)</div><div class="value">7</div><div class="sub">cross-side 5 · 兄弟交叉 2 <span class="feat f-new">新增</span></div></div>
+    <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">2 / 2</div><div class="sub num" data-k="pmk.run_sub">multi_runner PID 41822</div></div>
+    <div class="kpi"><div class="label">活跃挂单</div><div class="value" data-k="pmk.orders">34</div><div class="sub num" data-k="pmk.quotes">quotes_sent 今日 4,182</div></div>
+    <div class="kpi"><div class="label">今日成交</div><div class="value" data-k="pmk.vol">$1,240</div><div class="sub num" data-k="pmk.vol_sub">18 笔 · 全部已挂 exit</div></div>
+    <div class="kpi"><div class="label">今日 PnL</div><div class="value up" data-k="pmk.pnl">+$3.80</div><div class="sub num">来自 fills 流(已实现)</div></div>
+    <div class="kpi"><div class="label">奖励(累计)</div><div class="value" data-k="pmk.rewards">$6.20</div><div class="sub num">rewards_cumulative</div></div>
+    <div class="kpi"><div class="label">兄弟交叉拦截</div><div class="value" data-k="pmk.sibling">7</div><div class="sub">sibling_registry <span class="feat f-new">新增</span></div></div>
   </div>
   <div class="grid2">
     <div>
@@ -311,7 +311,7 @@
         <div class="src">source · engine_state_N.json + .engine_N.pid + .account_N.paused + rewards snapshot;状态标签沿用 app.py 现有 tag 体系(运行中/风控熔断/异常)</div>
         <table>
           <thead><tr><th>#</th><th>FUNDER</th><th>状态</th><th>抵押/权益</th><th>挂单</th><th>今日成交</th><th>PnL</th><th>奖励est</th><th>哨兵</th><th>操作</th></tr></thead>
-          <tbody>
+          <tbody id="pm-matrix-body">
             <tr><td class="num">1</td><td class="num">0x3aF2…9c1</td><td><span class="chip ok">运行中</span></td><td class="num">$820</td><td class="num">18</td><td class="num">$680 · 10笔</td><td class="num up">+$2.20</td><td class="num">$3.4</td><td class="num">4</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button><button class="btn ghost">详情</button></td></tr>
             <tr><td class="num">2</td><td class="num">0x91bD…44e</td><td><span class="chip ok">运行中</span></td><td class="num">$791</td><td class="num">16</td><td class="num">$560 · 8笔</td><td class="num up">+$1.60</td><td class="num">$2.8</td><td class="num">3</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button><button class="btn ghost">详情</button></td></tr>
             <tr style="opacity:.55"><td class="num">3-10</td><td colspan="8" style="color:var(--faint)">扩容位:roster 加入即出现(multi_runner 上限 30;10账号前先启用兄弟交叉防线)</td><td></td></tr>
@@ -395,9 +395,9 @@
         <div class="src">Start / Stop / One Cycle / WS Check 全保留</div>
         <div class="btnrow"><button class="btn">Start</button><button class="btn">Stop</button><button class="btn ghost">One Cycle</button><button class="btn ghost">WS Check</button></div>
         <div class="proj" style="grid-template-columns:1fr;margin-top:12px"><div class="card">
-          <div class="row"><span class="k">周期 / 错误</span><span class="v">1,842 · 3</span></div>
-          <div class="row"><span class="k">上周期</span><span class="v">21:30:04 · 1.8s</span></div>
-          <div class="row"><span class="k">模式</span><span class="v">dry_run · testnet</span></div>
+          <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles2">1,842 · 3</span></div>
+          <div class="row"><span class="k">上周期</span><span class="v" data-k="pf.last_cycle">21:30:04 · 1.8s</span></div>
+          <div class="row"><span class="k">模式</span><span class="v" data-k="pf.mode">dry_run · testnet</span></div>
         </div></div>
       </div>
       <div class="panel">
@@ -517,11 +517,13 @@
       <div class="panel" style="margin-top:16px">
         <h2>决策日志 <span class="feat f-old">现有</span></h2>
         <div class="src">source · decisions 表(现 scorer 输出迁入)</div>
+        <div id="sa-skip-bars">
         <div class="util"><div class="u-head"><span>skip: 趋势/政权过滤</span><span class="num">42%</span></div><div class="u-bar"><i style="width:42%;background:#8B98A9"></i></div></div>
         <div class="util"><div class="u-head"><span>skip: 成本&gt;期望</span><span class="num">31%</span></div><div class="u-bar"><i style="width:31%;background:#8B98A9"></i></div></div>
         <div class="util"><div class="u-head"><span>skip: 事件窗口</span><span class="num">17%</span></div><div class="u-bar"><i style="width:17%;background:#8B98A9"></i></div></div>
         <div class="util"><div class="u-head"><span>skip: 仓位/冲突限制</span><span class="num">10%</span></div><div class="u-bar"><i style="width:10%;background:#8B98A9"></i></div></div>
-        <ul class="events" style="margin-top:8px">
+        </div>
+        <ul class="events" style="margin-top:8px" id="sa-decisions">
           <li><span class="dot d-info"></span><div><div>funding_carry · SOL allow 0.71 → 已开仓</div><div class="t">21:45</div></div></li>
           <li><span class="dot d-info"></span><div><div>trend · BTC skip 0.44(量未确认)</div><div class="t">21:45</div></div></li>
         </ul>
@@ -765,28 +767,153 @@
   }
 
   // ── 真数据绑定:每 15s 拉 /api/state,覆盖 [data-k] 元素;无真数据则保留模板示例值 ──
+  function esc(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML;}
+  function money(v){return v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
   function setK(key, html){
     if(html===null||html===undefined) return;
     document.querySelectorAll('[data-k="'+key+'"]').forEach(el=>{ el.innerHTML=html; el.dataset.real='1'; });
   }
+  function pnlSpan(p){const c=p>=0?'up':'down',s=p>=0?'+':'';return '<span class="'+c+'">'+s+money(Math.abs(p)).replace('$',p<0?'−$':'$')+'</span>';}
+
+  function bindPM(pm){
+    if(!pm.present) return;
+    setK('pm.run', pm.running+'/'+pm.total+' 运行');
+    setK('pm.orders_vol', pm.live_orders+' · '+money(pm.volume_today)+'('+(pm.fills_seen||0)+'笔累计)');
+    setK('pm.pnl', pnlSpan(pm.pnl_today||0)+(pm.rewards_total!=null?' · '+money(pm.rewards_total):''));
+    setK('pm.ks', (pm.cooldown?'<span class="down">冷却中</span>':'关')+' · —');
+    setK('pm.quotes', Number(pm.quotes_sent||0).toLocaleString());
+    setK('pmk.run', pm.running+' / '+pm.total);
+    setK('pmk.run_sub', 'engine_state 逐账号');
+    setK('pmk.orders', String(pm.live_orders));
+    setK('pmk.quotes', 'quotes_sent 累计 '+Number(pm.quotes_sent||0).toLocaleString());
+    setK('pmk.vol', money(pm.volume_today));
+    const ft=(pm.accounts||[]).reduce((n,a)=>n+(a.fills_today||0),0);
+    setK('pmk.vol_sub', ft+' 笔(24h)');
+    setK('pmk.pnl', pnlSpan(pm.pnl_today||0));
+    setK('pmk.rewards', money(pm.rewards_total));
+    const sib=(pm.accounts||[]).reduce((n,a)=>n+(a.sibling_conflicts||0),0);
+    setK('pmk.sibling', String(sib));
+    const body=document.getElementById('pm-matrix-body');
+    if(body && (pm.accounts||[]).length){
+      body.innerHTML = pm.accounts.map(a=>
+        '<tr><td class="num">'+a.idx+'</td><td class="num">'+esc(a.funder)+'</td>'+
+        '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span></td>'+
+        '<td class="num">'+money(a.balance)+'</td><td class="num">'+a.orders+'</td>'+
+        '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
+        '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">—</td>'+
+        '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
+        '<td class="btnrow" style="color:var(--faint);font-size:11px">操作在 :8501</td></tr>'
+      ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
+    }
+  }
+
+  function bindVD(vd){
+    if(!vd.present) return;
+    const hosts=vd.hosts||{}, names=Object.keys(hosts).sort();
+    const legs=(vd.single_leg||[]);
+    setK('vd.chip', legs.length? '<span class="chip danger">单腿 ×'+legs.length+'</span>':'四源正常');
+    const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0);
+    if(vd.equity_total!=null){
+      setK('vd.equity', money(vd.equity_total));
+      const dec=names.reduce((s,h)=>s+(hosts[h].equity_dec||0),0), vr=names.reduce((s,h)=>s+(hosts[h].equity_var||0),0);
+      setK('vdk.equity', money(vd.equity_total));
+      setK('vdk.equity_sub', 'V '+money(vr)+' / D '+money(dec)+'(四源相加)');
+    }
+    setK('vd.vol_label','本周量 / 累计');
+    if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · '+money(vd.volume_total));
+    setK('vdk.vol_label','本周交易量');
+    if(vd.volume_weekly!=null){ setK('vdk.vol', money(vd.volume_weekly)); setK('vdk.vol_sub','累计 '+money(vd.volume_total)); }
+    setK('vd.hosts', names.map(h=>{
+      const x=hosts[h]; const cls=x.stale?'down':(x.single_leg?'down':'up');
+      return '<span class="'+cls+'">● '+esc(x.age||'?')+'</span>';
+    }).join(' / ')||null);
+    if(vd.points_decibel!=null||vd.points_variational!=null){
+      const tot=(vd.points_decibel||0)+(vd.points_variational||0);
+      setK('vd.points', Number(tot.toFixed(1)).toLocaleString());
+      setK('vdk.points', Number(tot.toFixed(1)).toLocaleString());
+      setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
+    }
+    const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec||0),0);
+    setK('vdk.auto', worst>600?'<span class="down">●</span> 心跳过期':'<span class="up">●</span> 运行中');
+    setK('vdk.auto_sub','最旧心跳 '+esc(_fmtAge(worst)));
+    const hc=document.getElementById('vd-host-cards');
+    if(hc && names.length){
+      hc.innerHTML=names.map(h=>{
+        const x=hosts[h]; const bad=x.single_leg||x.stale;
+        const chip=x.single_leg?'<span class="chip danger">SINGLE-LEG</span>':(x.stale?'<span class="chip warn">STALE</span>':'<span class="chip ok">OK</span>');
+        return '<div class="card'+(bad?' alerted':'')+'"><div class="head"><span class="name num">'+h.toUpperCase()+'</span>'+chip+'</div>'+
+          '<div class="row"><span class="k">权益 V/D</span><span class="v">'+money(x.equity_var)+' · '+money(x.equity_dec)+'</span></div>'+
+          '<div class="row"><span class="k">心跳</span><span class="v">'+esc(x.age||'—')+'</span></div></div>';
+      }).join('');
+    }
+    setK('infra.peer', names.map(h=>h+' '+esc(hosts[h].age||'?')).join(' · ')||null);
+    const okAll=names.every(h=>hosts[h].ok_dec!==false&&hosts[h].ok_var!==false);
+    setK('pill.signer','<span class="dot"></span>读取 '+(okAll?'正常':'异常'));
+  }
+
+  function bindPF(pf){
+    if(!pf.present) return;
+    const env=(pf.environment||'')+' · '+(pf.mode||'');
+    setK('pf.chip', esc(env.toUpperCase()));
+    setK('pf.cycles', Number(pf.cycles||0).toLocaleString()+' · '+(pf.errors??0));
+    setK('pf.cycles2', Number(pf.cycles||0).toLocaleString()+' · '+(pf.errors??0));
+    setK('pf.age_label','上周期年龄');
+    setK('pf.age', esc(pf.last_cycle_age||'—')+(pf.running?'':' · <span class="down">stopped</span>'));
+    setK('pf.last_cycle', esc(pf.last_cycle_age||'—'));
+    setK('pf.mode', esc((pf.mode||'—')+' · '+(pf.environment||'—')));
+  }
+
+  function bindSA(sa){
+    if(!sa.present) return;
+    setK('sa.worker', sa.age? 'paper 最近 '+esc(sa.age):null);
+    setK('sa.cand', (sa.signals??'—')+' · '+(sa.actionable??'—'));
+    if(sa.top_score!=null) setK('sa.top', sa.top_score+(sa.top_strategy?'('+esc(sa.top_strategy)+' · '+esc(sa.top_symbol||'')+')':''));
+    if(sa.age) setK('sa.age', esc(sa.age));
+    if(sa.sim_equity!=null) setK('sa.sim', '虚拟权益 '+money(sa.sim_equity)+(sa.closed_trades!=null?' · '+sa.closed_trades+' 笔平仓':''));
+    const bars=document.getElementById('sa-skip-bars');
+    if(bars && (sa.skip_reasons||[]).length){
+      bars.innerHTML=sa.skip_reasons.map(r=>
+        '<div class="util"><div class="u-head"><span>skip: '+esc(r.reason)+'</span><span class="num">'+r.pct+'%('+r.count+')</span></div>'+
+        '<div class="u-bar"><i style="width:'+Math.min(100,r.pct)+'%;background:#8B98A9"></i></div></div>').join('');
+    }
+    const dl=document.getElementById('sa-decisions');
+    if(dl && (sa.recent_decisions||[]).length){
+      dl.innerHTML=sa.recent_decisions.map(d=>
+        '<li><span class="dot d-info"></span><div><div>'+esc(d.msg)+'</div></div></li>').join('');
+    }
+  }
+
+  function bindEventsAlerts(s){
+    const el=document.getElementById('events-list');
+    if(el && (s.events||[]).length){
+      el.innerHTML=s.events.map(e=>
+        '<li><span class="dot d-'+(e.sev||'info')+'"></span><div><div>'+esc(e.msg)+'</div><div class="t">'+esc(e.t||'')+'</div></div></li>').join('');
+    }
+    const bar=document.getElementById('alertbar');
+    const alerts=s.alerts||[];
+    setK('pill.alerts','<span class="dot"></span>告警 '+alerts.length);
+    document.querySelectorAll('[data-k="pill.alerts"]').forEach(p=>{p.className='pill '+(alerts.length?'danger':'ok');});
+    if(bar){
+      if(!alerts.length){ bar.style.display='none'; }
+      else{
+        bar.style.display='flex';
+        const a=alerts[0];
+        bar.innerHTML='<span class="tag">'+esc(a.tag)+'</span><div class="msg">'+a.msg+(alerts.length>1?'(+'+(alerts.length-1)+' 更多)':'')+'</div>'+
+          '<button onclick="go(\''+(a.page||'overview')+'\')">进入处理 →</button>';
+      }
+    }
+  }
+
+  function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
+
   async function refresh(){
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ return; }
     setK('clock', (s.ts||'')+' · 刚刷新');
-    const pm=s.polymarket||{};
-    if(pm.present){
-      setK('pm.run', pm.running+'/'+pm.total+' 运行');
-      setK('pm.orders_vol', pm.live_orders+' · $'+(pm.volume_today||0).toLocaleString());
-      const p=pm.pnl_today||0, cls=p>=0?'up':'down', sign=p>=0?'+':'';
-      setK('pm.pnl', '<span class="'+cls+'">'+sign+'$'+p.toLocaleString()+'</span>');
-    }
-    const sa=s.single_account||{};
-    if(sa.present){
-      setK('sa.cand', (sa.signals??'—')+' · '+(sa.actionable??'—'));
-      if(sa.top_score!=null) setK('sa.top', sa.top_score+(sa.top_strategy?'('+sa.top_strategy+' · '+(sa.top_symbol||'')+')':''));
-      if(sa.age) setK('sa.age', sa.age);
-      if(sa.sim_equity!=null) setK('sa.sim', '虚拟权益 $'+Math.round(sa.sim_equity).toLocaleString());
-    }
-    // 标注:哪些数字是真数据(悬停显示),示例值加浅色角标由 CSS 处理
+    try{bindPM(s.polymarket||{});}catch(e){}
+    try{bindVD(s.var_decibel||{});}catch(e){}
+    try{bindPF(s.predictfun||{});}catch(e){}
+    try{bindSA(s.single_account||{});}catch(e){}
+    try{bindEventsAlerts(s);}catch(e){}
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>el.title='示例数据(真数据接入中)');
   }
   refresh(); setInterval(refresh, 15000);
