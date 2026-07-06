@@ -52,6 +52,8 @@ SINGLE_ACCOUNT_CONFIG_PATH = REPO_DIR / "platforms" / "single_account" / "config
 SINGLE_ACCOUNT_PAPER_STATE_PATH = DATA_DIR / "single_account_paper_state.json"
 SINGLE_ACCOUNT_PAPER_PID_PATH = DATA_DIR / ".single_account_paper.pid"
 SINGLE_ACCOUNT_PAPER_LOG_PATH = DATA_DIR / "single_account_paper_worker.log"
+PREDICTFUN_RUNNER_STATE_PATH = DATA_DIR / "predictfun_mainnet_runner_state.json"
+PREDICTFUN_STATE_PATH = DATA_DIR / "predictfun_mainnet_state.json"
 
 
 def _resolve_var_decibel_dir() -> Path:
@@ -420,8 +422,69 @@ div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; 
     font-size:13px;
     line-height:1.45;
 }
+.home-grid {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0, 1fr));
+    gap:14px;
+    margin:12px 0 18px 0;
+}
+.home-card {
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:18px 18px 16px 18px;
+    min-height:156px;
+}
+.home-card.ok { border-top:4px solid #3fb950; }
+.home-card.warn { border-top:4px solid #d29922; }
+.home-card.idle { border-top:4px solid #484f58; }
+.home-card h3 {
+    color:#e6edf3;
+    margin:0 0 10px 0;
+    font-size:20px;
+    letter-spacing:0;
+}
+.home-card .home-status {
+    color:#e6edf3;
+    font-size:26px;
+    font-weight:800;
+    margin:0 0 8px 0;
+}
+.home-card .home-detail {
+    color:#8b949e;
+    font-size:13px;
+    line-height:1.5;
+    word-break:break-word;
+}
+.home-hero {
+    background:#111820;
+    border:1px solid #30363d;
+    border-radius:14px;
+    padding:22px 24px;
+    margin:4px 0 18px 0;
+}
+.home-hero h2 {
+    color:#e6edf3;
+    margin:0 0 8px 0;
+    font-size:30px;
+}
+.home-hero p {
+    color:#8b949e;
+    margin:0;
+    font-size:14px;
+    line-height:1.65;
+}
+.home-list {
+    background:#0d1117;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:16px 18px;
+    color:#8b949e;
+    font-size:14px;
+    line-height:1.8;
+}
 @media (max-width: 1100px) {
-    .sa-grid, .kpi-grid { grid-template-columns:1fr; }
+    .sa-grid, .kpi-grid, .home-grid { grid-template-columns:1fr; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1692,6 +1755,174 @@ def _render_airdrop_farming_dashboard() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED HOME / PRODUCTION OVERVIEW
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _json_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _short_age(path: Path) -> str:
+    if not path.exists():
+        return "no file"
+    try:
+        age = max(0, time.time() - path.stat().st_mtime)
+    except Exception:
+        return "unknown age"
+    if age < 90:
+        return f"{int(age)}s ago"
+    if age < 3600:
+        return f"{int(age // 60)}m ago"
+    if age < 86400:
+        return f"{age / 3600:.1f}h ago"
+    return f"{age / 86400:.1f}d ago"
+
+
+def _money(value: Any) -> str:
+    try:
+        return f"${float(value):,.2f}"
+    except Exception:
+        return "-"
+
+
+def _home_card(title: str, status: str, detail: str, tone: str = "idle") -> str:
+    safe_tone = tone if tone in {"ok", "warn", "idle"} else "idle"
+    detail_html = html.escape(str(detail)).replace("\n", "<br>")
+    return (
+        f'<div class="home-card {safe_tone}">'
+        f"<h3>{html.escape(str(title))}</h3>"
+        f'<div class="home-status">{html.escape(str(status))}</div>'
+        f'<div class="home-detail">{detail_html}</div>'
+        "</div>"
+    )
+
+
+def _polymarket_overview() -> tuple[str, str, str]:
+    states = load_all_engine_states()
+    alive = multi_engine_running()
+    account_ids = sorted(k for k in states.keys() if k > 0)
+    if not account_ids and states:
+        account_ids = sorted(states.keys())
+    running = sum(1 for acc_id in account_ids if alive.get(acc_id))
+    balance = sum(float(states.get(acc_id, {}).get("balance") or 0) for acc_id in account_ids)
+    fills = sum(len(states.get(acc_id, {}).get("fills") or []) for acc_id in account_ids)
+    if not states:
+        return "未接入", "没有 engine_state", "warn"
+    status = f"{running}/{len(account_ids)} running" if account_ids else "state only"
+    detail = f"balance {_money(balance)} · fills {fills} · state ttl 5s"
+    return status, detail, "ok" if running else "warn"
+
+
+def _predictfun_overview() -> tuple[str, str, str]:
+    runner = _json_state(PREDICTFUN_RUNNER_STATE_PATH)
+    state = _json_state(PREDICTFUN_STATE_PATH)
+    if not runner and not state:
+        return "未接入", "没有 predictfun state", "warn"
+    running = bool(runner.get("running"))
+    mode = runner.get("mode") or runner.get("environment") or "-"
+    cycles = runner.get("cycle_count", "-")
+    errors = runner.get("error_count", "-")
+    status = "running" if running else "stopped"
+    detail = f"mode {mode} · cycles {cycles} · errors {errors} · {_short_age(PREDICTFUN_RUNNER_STATE_PATH)}"
+    return status, detail, "ok" if running else "idle"
+
+
+def _var_decibel_overview() -> tuple[str, str, str]:
+    state_dir = VAR_DECIBEL_DIR / "ops" / "state"
+    rows: list[str] = []
+    active_count = 0
+    for host in ("vps1", "vps2"):
+        path = state_dir / f"{host}.json"
+        state = _json_state(path)
+        phase = str(state.get("phase") or state.get("status") or "no state")
+        generated = state.get("generated_at") or "-"
+        checks = state.get("checks") if isinstance(state.get("checks"), dict) else {}
+        check_status = str(checks.get("summary") or checks.get("status") or phase)
+        if phase.lower() not in {"no state", "stopped", "disabled", "manual"}:
+            active_count += 1
+        rows.append(f"{host}: {check_status} · {generated}")
+    if not rows:
+        return "未接入", "没有 ops/state", "warn"
+    status = f"{active_count}/2 active" if active_count else "read-only"
+    detail = "\n".join(rows)
+    return status, detail, "ok" if active_count else "idle"
+
+
+def _single_account_overview() -> tuple[str, str, str]:
+    pid = _single_account_worker_pid()
+    state = _json_state(SINGLE_ACCOUNT_PAPER_STATE_PATH)
+    if not state:
+        return "paper 未运行", "没有 paper 评分结果", "idle"
+    summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
+    signals = summary.get("signals", "-")
+    actionable = summary.get("actionable", "-")
+    status = "paper running" if pid else "paper stopped"
+    detail = f"signals {signals} · actionable {actionable} · {_short_age(SINGLE_ACCOUNT_PAPER_STATE_PATH)}"
+    return status, detail, "ok" if pid else "idle"
+
+
+def _research_data_overview() -> tuple[str, str, str]:
+    db_path = DATA_DIR / "single_account_market.db"
+    heartbeats = sorted(DATA_DIR.glob(".recorder_*.heartbeat"))
+    if not db_path.exists() and not heartbeats:
+        return "待接入", "Research 数据采集还未纳入统一运行面板", "idle"
+    latest = max([db_path, *heartbeats], key=lambda p: p.stat().st_mtime if p.exists() else 0)
+    return "已发现数据", f"{db_path.name if db_path.exists() else 'no db'} · latest {_short_age(latest)}", "ok"
+
+
+def _render_unified_home_dashboard() -> None:
+    st_autorefresh(interval=15000, key="unified_home_refresh")
+    st.markdown("## Latitude Alpha")
+    st.caption("Overview / Home")
+    st.markdown(
+        """
+        <div class="home-hero">
+            <h2>Production Overview</h2>
+            <p>统一入口只做状态聚合和跳转。Var/Decibel、Polymarket、Predict.fun、Single Account 的生产 worker、
+            签名服务和密钥位置保持原样；这里不迁移私钥，也不改交易执行链路。</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    poly_status, poly_detail, poly_tone = _polymarket_overview()
+    predict_status, predict_detail, predict_tone = _predictfun_overview()
+    var_status, var_detail, var_tone = _var_decibel_overview()
+    single_status, single_detail, single_tone = _single_account_overview()
+    research_status, research_detail, research_tone = _research_data_overview()
+
+    st.markdown(
+        '<div class="home-grid">'
+        + _home_card("Var / Decibel", var_status, var_detail, var_tone)
+        + _home_card("Polymarket", poly_status, poly_detail, poly_tone)
+        + _home_card("Predict.fun", predict_status, predict_detail, predict_tone)
+        + _home_card("Single Account", single_status, single_detail, single_tone)
+        + _home_card("Research Data", research_status, research_detail, research_tone)
+        + _home_card("HK / US Accounts", "planned", "账户管理只预留入口，未接入交易或密钥。", "idle")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 生产边界")
+    st.markdown(
+        """
+        <div class="home-list">
+        1. 当前迁移是 dashboard shell 迁移，不替换现有生产 worker。<br>
+        2. 私钥、API key、Mac mini signer、VPS systemd 服务继续按原项目隔离。<br>
+        3. 后续新增操作按钮必须调用已有 wrapper，并写清楚日志和 Discord 通知。<br>
+        4. 股票账户、Research 数据和单账号真钱执行，必须先完成只读状态面板，再接写操作。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # AUTOMATED TRADING / SINGLE ACCOUNT DRAFT
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2152,6 +2383,7 @@ with st.sidebar:
     st.markdown("---")
 
     PLATFORMS = {
+        "Overview": ["Home"],
         "Market Making": ["Polymarket", "Predict.fun"],
         "Airdrop Farming": ["Var/Decibel"],
         "Automated Trading": ["Single Account"],
@@ -2188,7 +2420,7 @@ with st.sidebar:
                 nav_feature = f
 
     # default selection
-    _nav = st.session_state.get("nav_feature", "Market Making/Polymarket")
+    _nav = st.session_state.get("nav_feature", "Overview/Home")
     if _nav == "Polymarket/Market Making":
         _nav = "Market Making/Polymarket"
         st.session_state["nav_feature"] = _nav
@@ -2199,6 +2431,10 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+
+if nav_platform == "Overview" and nav_feature == "Home":
+    _render_unified_home_dashboard()
+    st.stop()
 
 if nav_platform == "Market Making" and nav_feature == "Predict.fun":
     try:
