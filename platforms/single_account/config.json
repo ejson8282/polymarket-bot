@@ -3,6 +3,26 @@
   "runner": {
     "interval_sec": 300
   },
+  "sim": {
+    "_comment": "施工包01 §B3 模拟器成本模型:费用 bps;滑点=spread/2+impact 封顶 slip_cap;funding 无数据时按 interval_hours 整点",
+    "db": "../../data/single_account_paper.db",
+    "initial_cash": 10000,
+    "taker_fee_bps": 5,
+    "maker_fee_bps": 2,
+    "default_spread_bps": 10,
+    "fixed_impact_bps": 2,
+    "slip_cap_bps": 25,
+    "funding_interval_hours": 8,
+    "daily_loss_stop_pct": 0.02,
+    "max_gross_exposure_mult": 1.5,
+    "strategies": {
+      "_comment": "施工包02 §2 四策略参数(空对象=用代码内 DEFAULTS;字段可逐个覆盖);放 sim 下避免被旧 scorer 误消费(经确认)",
+      "funding_carry": {"max_notional_pct": 0.30},
+      "momentum_breakout": {"max_notional_pct": 0.30},
+      "mean_reversion": {"max_notional_pct": 0.20},
+      "rwa_basis": {"max_notional_pct": 0.10}
+    }
+  },
   "input": {
     "market_snapshot_path": "../../data/single_account_market_snapshot.json"
   },

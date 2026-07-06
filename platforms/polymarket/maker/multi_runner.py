@@ -32,6 +32,7 @@ sys.path.insert(0, str(_MAKER_DIR))
 
 from engine import PolyLPSMulti, log  # noqa: E402
 from rewards_snapshot import rewards_snapshot_loop  # noqa: E402
+from sibling_registry import SiblingOrderRegistry  # noqa: E402
 
 # NOTE: py_clob_client_v2.get_order_books posts `data=params` straight to httpx
 # without dataclass serialization, so passing BookParams instances raises
@@ -207,6 +208,13 @@ async def multi_run(config_dir: Path) -> None:
     if not engines:
         log("[multi] no accounts could be initialized — exiting")
         return
+
+    # 施工包04:跨账号自成交防线——单实例注册表注入全部 engine
+    # (与 _shared_book_cache 同款 setter 注入;engine 默认自建的空实例被覆盖)
+    sibling_registry = SiblingOrderRegistry()
+    for _, eng in engines:
+        eng._sibling_registry = sibling_registry
+    log(f"[multi] sibling order registry shared across {len(engines)} account(s)")
 
     # Collect all unique token IDs across all accounts
     all_token_ids = list({

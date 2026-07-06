@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Single Account · 策略验证驾驶舱(数据契约版)</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0E1116; --panel:#151B23; --panel2:#1A222C; --line:#242E3A;
+    --text:#E8EDF2; --muted:#8B98A9; --faint:#5A6676;
+    --var:#5EC8D8; --dec:#ECA13C; --ok:#46B26B; --warn:#E7C547; --danger:#E5484D; --plan:#7B8CDE;
+    --mono:"IBM Plex Mono","SF Mono",Menlo,Consolas,monospace;
+    --sans:"IBM Plex Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .wrap{max-width:1280px;margin:0 auto;padding:0 24px 32px}
+  .topbar{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+  .brand{font-weight:700}.brand small{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:.2em;font-weight:400}
+  .pill{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);letter-spacing:.05em}
+  .pill.paper{color:#8FCF9B;background:#22301F;border-color:#2E4A2A}
+  .pill.ok{color:var(--ok)}.spacer{flex:1}
+  .clock{font-family:var(--mono);font-size:11px;color:var(--faint)}
+
+  /* 五阶段路线进度条(本页签名元素):数据契约达成度驱动 */
+  .phases{display:flex;gap:0;margin:18px 0 4px}
+  .phase{flex:1;position:relative;padding:10px 14px 12px;border:1px solid var(--line);background:var(--panel);font-size:12px}
+  .phase:first-child{border-radius:8px 0 0 8px}.phase:last-child{border-radius:0 8px 8px 0}
+  .phase+.phase{border-left:0}
+  .phase .n{font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:.1em}
+  .phase .t{font-weight:600;margin-top:2px}
+  .phase .s{font-family:var(--mono);font-size:10.5px;margin-top:3px;color:var(--faint)}
+  .phase.done{background:#16241B}.phase.done .s{color:var(--ok)}
+  .phase.now{background:var(--panel2);box-shadow:inset 0 -2px 0 var(--var)}
+  .phase.now .s{color:var(--var)}
+  .gatebar{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-bottom:16px}
+
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-top:14px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+  .kpi .label{font-size:12px;color:var(--muted)}
+  .kpi .value{font-family:var(--mono);font-size:21px;font-weight:600;margin-top:3px}
+  .kpi .sub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:3px}
+  .up{color:var(--ok)}.down{color:var(--danger)}
+
+  .grid2{display:grid;grid-template-columns:1fr 340px;gap:16px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}
+  .panel h2{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .src{font-family:var(--mono);font-size:10px;color:var(--faint);margin:2px 0 12px}
+  .src b{color:var(--plan);font-weight:500}
+  .feat{font-family:var(--mono);font-size:9px;padding:1px 6px;border-radius:3px;letter-spacing:.06em}
+  .f-old{color:var(--ok);border:1px solid rgba(70,178,107,.45)}
+  .f-new{color:var(--var);border:1px solid rgba(94,200,216,.45)}
+  .f-plan{color:var(--plan);border:1px solid rgba(123,140,222,.45)}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{font-family:var(--mono);font-size:10.5px;font-weight:500;color:var(--faint);text-align:left;letter-spacing:.05em;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:8px;border-bottom:1px solid var(--panel2);vertical-align:middle}
+  td.num{font-family:var(--mono)}
+  .chip{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+  .chip.ok{color:var(--ok);border-color:rgba(70,178,107,.4)}
+  .chip.warn{color:var(--warn);border-color:rgba(231,197,71,.4)}
+  .chip.danger{color:var(--danger);border-color:rgba(229,72,77,.5)}
+  .chip.info{color:var(--var);border-color:rgba(94,200,216,.4)}
+  .btn{font-family:var(--mono);font-size:12px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 14px;cursor:pointer}
+  .btn.ghost{background:transparent}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap}
+  .toggle{display:inline-block;width:30px;height:16px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);position:relative;vertical-align:middle;cursor:pointer}
+  .toggle i{position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--faint)}
+  .toggle.on{background:#1F3A2A;border-color:var(--ok)}.toggle.on i{left:auto;right:2px;background:var(--ok)}
+  .util{margin:7px 0}
+  .util .u-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:3px}
+  .util .u-bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden}
+  .util .u-bar i{display:block;height:100%;background:var(--ok)}
+  .util.warn .u-bar i{background:var(--warn)}
+  .util.bad .u-bar i{background:var(--danger)}
+  .gate{display:flex;gap:5px;align-items:center;font-family:var(--mono);font-size:10.5px}
+  .gate i{width:9px;height:9px;border-radius:2px;background:var(--panel2);border:1px solid var(--line)}
+  .gate i.y{background:var(--ok);border-color:var(--ok)}
+  .events li{list-style:none;display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--panel2);font-size:12.5px}
+  .events .dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none}
+  .d-info{background:var(--faint)}.d-warn{background:var(--warn)}.d-crit{background:var(--danger)}
+  .events .t{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  footer{font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);margin-top:24px;padding-top:16px}
+  @media (max-width:1000px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}.phases{flex-wrap:wrap}.phase{min-width:45%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="topbar">
+  <div class="brand">Single Account<small>STRATEGY PROVING GROUND</small></div>
+  <span class="pill paper">PAPER · 虚拟本金 $10,000</span>
+  <span class="pill ok">worker ● 运行中</span>
+  <span class="spacer"></span>
+  <div class="btnrow">
+    <button class="btn">跑一次评分</button><button class="btn ghost">停止 worker</button><button class="btn ghost">导出周报</button>
+  </div>
+  <span class="clock num">2026-07-05 21:47 · bar 21:45</span>
+</header>
+
+<!-- 签名元素:五阶段路线进度(报告02 §5),每阶段显示验收门槛达成度 -->
+<div class="phases">
+  <div class="phase done"><div class="n">PHASE 1</div><div class="t">模拟器完整化</div><div class="s">✓ 6/6 测试绿 · DB 建成</div></div>
+  <div class="phase now"><div class="n">PHASE 2</div><div class="t">3-5 策略 paper 版</div><div class="s">3/4 策略上线 · rwa 等数据</div></div>
+  <div class="phase"><div class="n">PHASE 3</div><div class="t">实跑 ≥2 周</div><div class="s">已运行 6 天 / 14</div></div>
+  <div class="phase"><div class="n">PHASE 4</div><div class="t">tiny live</div><div class="s">0/4 策略达准入</div></div>
+  <div class="phase"><div class="n">PHASE 5</div><div class="t">规则化扩资金</div><div class="s">—</div></div>
+</div>
+<div class="gatebar">阶段推进由数据驱动,不由日期驱动 · 当前卡点:rwa_basis 记录器需 ≥7 天数据(已 4 天)· 本图示例为一期完成后的状态</div>
+
+<!-- KPI:回答"整体在赚吗 + 代价是什么" -->
+<div class="kpis">
+  <div class="kpi"><div class="label">虚拟权益</div><div class="value">$10,186</div><div class="sub"><span class="up">+1.86%</span> 起始 $10,000 · 6 天</div></div>
+  <div class="kpi"><div class="label">净 PnL(费后)</div><div class="value up">+$186.20</div><div class="sub num">毛 +$241 − 费 38.6 − funding 16.2</div></div>
+  <div class="kpi"><div class="label">最大回撤</div><div class="value">3.4%</div><div class="sub num">水下 11h · 阈值 10%</div></div>
+  <div class="kpi"><div class="label">胜率 / PF</div><div class="value">54% · 1.42</div><div class="sub num">37 笔平仓 · 期望 +0.21R</div></div>
+  <div class="kpi"><div class="label">敞口时间占比</div><div class="value">31%</div><div class="sub num">当前持仓 2 · 名义 $2,180</div></div>
+  <div class="kpi"><div class="label">日亏熔断</div><div class="value" style="font-size:16px"><span class="up">●</span> 未触发</div><div class="sub num">今日 −$8.4 / 上限 −$200(2%)</div></div>
+</div>
+
+<div class="grid2">
+  <div>
+    <!-- 权益曲线 + 回撤水下图 -->
+    <div class="panel">
+      <h2>虚拟权益曲线 &amp; 回撤 <span class="feat f-plan">契约:equity_snapshots 表</span></h2>
+      <div class="src">source · <b>equity_snapshots(ts, equity, cash, unrealized, drawdown)</b> — 每 bar 落一行;策略着色标记入场点</div>
+      <svg width="100%" height="150" viewBox="0 0 860 150" preserveAspectRatio="none">
+        <line x1="0" y1="100" x2="860" y2="100" stroke="#242E3A"/>
+        <polyline fill="none" stroke="#5EC8D8" stroke-width="2"
+          points="0,100 60,97 120,99 180,92 240,94 300,86 360,90 420,81 480,84 540,76 600,79 660,70 720,74 780,66 860,62"/>
+        <polyline fill="rgba(229,72,77,.25)" stroke="none"
+          points="0,150 0,142 60,145 120,143 180,148 240,146 300,149 360,145 420,148 480,146 540,149 600,147 660,149 720,146 780,148 860,149 860,150"/>
+        <text x="6" y="16" font-family="IBM Plex Mono" font-size="11" fill="#8B98A9">equity</text>
+        <text x="6" y="138" font-family="IBM Plex Mono" font-size="11" fill="#E5484D">drawdown(倒挂)</text>
+      </svg>
+    </div>
+
+    <!-- 核心:分策略战绩矩阵 + tiny live 准入 -->
+    <div class="panel">
+      <h2>分策略战绩 · 生死判定 <span class="feat f-plan">契约:strategy_daily + positions_closed 表</span></h2>
+      <div class="src">source · <b>strategy_daily(date,strategy,trades,wins,gross,fees,funding,net,mdd)</b> 聚合 + 失效规则(报告02 各策略"失效判定"条款)· 准入四门:≥30笔 · PF≥1.3 · MDD≤10% · 期望R&gt;0(费后)</div>
+      <table>
+        <thead><tr><th>策略 / 开关</th><th>笔数</th><th>胜率</th><th>期望R</th><th>PF</th><th>净PnL</th><th>费+FD占比</th><th>MDD</th><th>生死状态</th><th>tiny live 准入</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="toggle on"><i></i></span> <b>funding_carry</b></td>
+            <td class="num">14</td><td class="num">64%</td><td class="num up">+0.34</td><td class="num">1.71</td><td class="num up">+$96.4</td><td class="num">18%</td><td class="num">2.1%</td>
+            <td><span class="chip ok">健康</span></td>
+            <td><div class="gate"><i class="y"></i><i class="y"></i><i class="y"></i><i></i><span>14/30 笔</span></div></td>
+          </tr>
+          <tr>
+            <td><span class="toggle on"><i></i></span> <b>momentum_breakout</b></td>
+            <td class="num">11</td><td class="num">45%</td><td class="num up">+0.18</td><td class="num">1.35</td><td class="num up">+$61.0</td><td class="num">24%</td><td class="num">3.4%</td>
+            <td><span class="chip ok">健康</span></td>
+            <td><div class="gate"><i class="y"></i><i class="y"></i><i class="y"></i><i></i><span>11/30 笔</span></div></td>
+          </tr>
+          <tr>
+            <td><span class="toggle on"><i></i></span> <b>mean_reversion</b></td>
+            <td class="num">12</td><td class="num">50%</td><td class="num down">−0.05</td><td class="num">0.94</td><td class="num down">−$11.2</td><td class="num">41%</td><td class="num">1.8%</td>
+            <td><span class="chip warn">观察:连亏 3 · 政权过滤失效率 38%</span></td>
+            <td><div class="gate"><i></i><i></i><i class="y"></i><i></i><span>差距大</span></div></td>
+          </tr>
+          <tr style="opacity:.65">
+            <td><span class="toggle"><i></i></span> <b>rwa_basis</b></td>
+            <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+            <td><span class="chip info">测量期:记录器第 4/7 天 · 中位滞后 2.8s · 均值 basis 36bp</span></td>
+            <td><div class="gate"><i></i><i></i><i></i><i></i><span>未开始</span></div></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="src" style="margin-top:10px">生死规则(自动执行):滚动 30 笔期望&lt;0 → 自动停用 24h 并出报告;同一 symbol 连亏 3 → 拉黑 48h;mean_reversion 当前处"观察"= 再亏 1 笔即触发停用。</div>
+    </div>
+
+    <!-- 当前持仓 -->
+    <div class="panel">
+      <h2>当前虚拟持仓 <span class="feat f-plan">契约:positions(内存)+ orders/fills 表</span></h2>
+      <div class="src">source · broker 内存态,重启后由 <b>fills</b> 回放重建;reason = 入场信号快照(人话)</div>
+      <table>
+        <thead><tr><th>策略</th><th>SYMBOL</th><th>方向</th><th>数量@入场</th><th>浮盈</th><th>止损/距离</th><th>时长</th><th>入场理由</th></tr></thead>
+        <tbody>
+          <tr><td>funding_carry</td><td class="num">SOL</td><td><span class="chip danger">SHORT</span></td><td class="num">8.2 @ $142.10</td><td class="num up">+$14.2</td><td class="num">$146.9 · 1.4×ATR</td><td class="num">1d 3h</td><td style="color:var(--muted)">funding 年化 31%,z=1.8,无强趋势</td></tr>
+          <tr><td>momentum_breakout</td><td class="num">ETH</td><td><span class="chip ok">LONG</span></td><td class="num">0.31 @ $3,208</td><td class="num up">+$9.8</td><td class="num">追踪 $3,186</td><td class="num">4h</td><td style="color:var(--muted)">55bar 突破,量 1.9×,4h 趋势同向</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 最近平仓 -->
+    <div class="panel">
+      <h2>最近平仓 <span class="feat f-plan">契约:positions_closed 表</span></h2>
+      <div class="src">source · <b>positions_closed(…, r_multiple, exit_reason, holding_secs, tags_json)</b> — 每笔带 R 值与退出原因,周报直接由此聚合</div>
+      <table>
+        <thead><tr><th>时间</th><th>策略</th><th>SYMBOL</th><th>净PnL</th><th>R</th><th>时长</th><th>退出原因</th></tr></thead>
+        <tbody>
+          <tr><td class="num">21:12</td><td>momentum</td><td class="num">BTC</td><td class="num up">+$28.4</td><td class="num up">+2.1R</td><td class="num">9h</td><td>吊灯追踪止损触发</td></tr>
+          <tr><td class="num">18:40</td><td>mean_rev</td><td class="num">ETH</td><td class="num down">−$9.6</td><td class="num down">−1.0R</td><td class="num">2h</td><td>硬止损(带外 1×ATR)</td></tr>
+          <tr><td class="num">14:05</td><td>funding_carry</td><td class="num">DOGE</td><td class="num up">+$11.2</td><td class="num up">+0.8R</td><td class="num">2d</td><td>funding 连续 2 期 &lt;8% 年化</td></tr>
+          <tr><td class="num">09:31</td><td>mean_rev</td><td class="num">SOL</td><td class="num down">−$8.8</td><td class="num down">−1.0R</td><td class="num">45m</td><td>时间止损 16 bar</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <aside>
+    <!-- 决策日志(现有功能,升级呈现) -->
+    <div class="panel" style="margin-top:16px">
+      <h2>决策日志 <span class="feat f-old">现有</span></h2>
+      <div class="src">source · <b>decisions 表</b>(现 scorer 输出迁入)· skip 分布是调参最有用的图</div>
+      <div class="util"><div class="u-head"><span>skip: 趋势/政权过滤</span><span class="num">42%</span></div><div class="u-bar"><i style="width:42%;background:#8B98A9"></i></div></div>
+      <div class="util"><div class="u-head"><span>skip: 成本&gt;期望收益</span><span class="num">31%</span></div><div class="u-bar"><i style="width:31%;background:#8B98A9"></i></div></div>
+      <div class="util"><div class="u-head"><span>skip: 事件窗口(gate)</span><span class="num">17%</span></div><div class="u-bar"><i style="width:17%;background:#8B98A9"></i></div></div>
+      <div class="util"><div class="u-head"><span>skip: 仓位/冲突限制</span><span class="num">10%</span></div><div class="u-bar"><i style="width:10%;background:#8B98A9"></i></div></div>
+      <ul class="events" style="margin-top:8px">
+        <li><span class="dot d-info"></span><div><div>funding_carry · SOL allow 0.71 → 已开仓</div><div class="t">21:45</div></div></li>
+        <li><span class="dot d-info"></span><div><div>trend · BTC skip 0.44(量未确认)</div><div class="t">21:45</div></div></li>
+      </ul>
+    </div>
+
+    <!-- 事件闸门 -->
+    <div class="panel">
+      <h2>事件闸门 <span class="feat f-plan">契约:events 表(GPT 管线)</span></h2>
+      <div class="src">source · 事件管线每小时分类落库;闸门只禁不开</div>
+      <ul class="events">
+        <li><span class="dot d-warn"></span><div><div>FOMC 纪要 · 全策略禁新仓 02:00±30m</div><div class="t">impact 3 · macro</div></div></li>
+        <li><span class="dot d-info"></span><div><div>NVDA 财报 07-22 · rwa 该票提前 24h 平净</div><div class="t">impact 3 · earnings</div></div></li>
+      </ul>
+    </div>
+
+    <!-- 数据健康:模拟可信度 -->
+    <div class="panel">
+      <h2>数据健康 · 模拟可信度 <span class="feat f-new">新增</span></h2>
+      <div class="src">source · feed 状态 + recorder 状态 + broker 统计</div>
+      <div class="util"><div class="u-head"><span>行情延迟</span><span class="num">0.8s</span></div><div class="u-bar"><i style="width:8%"></i></div></div>
+      <div class="util"><div class="u-head"><span>ambiguous bars(同bar SL+TP)</span><span class="num">4.2% / 10%</span></div><div class="u-bar"><i style="width:42%"></i></div></div>
+      <div class="util warn"><div class="u-head"><span>rwa_basis 记录器</span><span class="num">4 / 7 天</span></div><div class="u-bar"><i style="width:57%"></i></div></div>
+      <div class="util"><div class="u-head"><span>funding 记录器</span><span class="num">6 天连续</span></div><div class="u-bar"><i style="width:86%"></i></div></div>
+      <div class="src" style="margin-top:8px">ambiguous 占比超 10% → 提示换 5m 周期;记录器断档 → 顶部告警</div>
+    </div>
+
+    <!-- 风险预算 -->
+    <div class="panel">
+      <h2>组合风险预算</h2>
+      <div class="src">source · config.json 各策略 cap + broker 实时占用</div>
+      <div class="util"><div class="u-head"><span>总名义 / 上限(1.5×权益)</span><span class="num">$2,180 / 15,279</span></div><div class="u-bar"><i style="width:14%"></i></div></div>
+      <div class="util"><div class="u-head"><span>funding_carry 名义</span><span class="num">$1,180 / 2,500</span></div><div class="u-bar"><i style="width:47%"></i></div></div>
+      <div class="util"><div class="u-head"><span>momentum 名义</span><span class="num">$1,000 / 2,500</span></div><div class="u-bar"><i style="width:40%"></i></div></div>
+      <div class="src" style="margin-top:8px">同 symbol 双策略反向 = gate 拒绝并计入 skip</div>
+    </div>
+  </aside>
+</div>
+
+<footer>
+  数据契约总表(面板 ⇄ 表,一期开发即按此验收):权益曲线 ⇄ equity_snapshots · 战绩矩阵 ⇄ strategy_daily + positions_closed · 持仓 ⇄ broker/fills 回放 · 平仓记录 ⇄ positions_closed(r_multiple, exit_reason)· 决策日志 ⇄ decisions(现 scorer 迁入)· 事件闸门 ⇄ events · 数据健康 ⇄ recorder/broker 统计。<br>
+  本页所有数字为示例,展示的是"Phase 2 进行中"应有的样子;当前真实状态 = 仅决策日志区有真数据,其余面板即开发清单。
+</footer>
+</div>
+</body>
+</html>

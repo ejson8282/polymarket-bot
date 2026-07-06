@@ -19,10 +19,12 @@ TOOLS.md
 USER.md
 role.txt
 *.txt
+!requirements.txt
 
 # Runtime data
 data/
 !data/.gitkeep
+logs/
 
 # Python env / caches
 .venv/

@@ -605,6 +605,13 @@ def _render_command_result() -> None:
 def render_predictfun_dashboard(*, embedded: bool = False) -> None:
     apply_predictfun_styles()
 
+    # 施工包05·5B:TESTNET · DRY-RUN 蓝灰横幅(顶部,照模板)
+    try:
+        from dashboard.overview_pm import banner_html as _pm_banner_html
+    except ModuleNotFoundError:
+        from overview_pm import banner_html as _pm_banner_html
+    st.markdown(_pm_banner_html("testnet"), unsafe_allow_html=True)
+
     cfg = load_config()
     scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
     strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}

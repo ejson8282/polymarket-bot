@@ -1,0 +1,7 @@
+# Single-account recorders & paper simulator (施工包01)
+pytest>=8
+requests>=2.32
+yfinance>=1.2
+# 统一导航壳聚合器(施工包05·5C)
+fastapi>=0.128
+uvicorn>=0.39

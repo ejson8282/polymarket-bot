@@ -1,0 +1,9 @@
+{
+  "version": 1, "ts": "2026-07-06T04:00:05Z", "ok": true, "mode": "live",
+  "summary": {"账号数": 2, "活跃挂单": 14, "今日成交": "$5,120", "sibling 冲突": 0},
+  "alerts": [],
+  "events": [
+    {"ts": "2026-07-06T03:55:00Z", "severity": "warning", "kind": "cooldown",
+     "message": "account 2 冷却中(fill kill-switch)"}
+  ]
+}
