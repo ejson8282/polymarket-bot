@@ -28,6 +28,9 @@ APP_DIR = Path(__file__).resolve().parent
 CONSOLE_HTML = APP_DIR / "console.html"
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", APP_DIR.parents[1] / "data"))
 VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming-live/data"))
+# 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、mac-mini 状态导出器
+ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
+MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
 
@@ -467,6 +470,76 @@ def _single_account() -> Dict[str, Any]:
     return out
 
 
+# ---------- 跨机只读拉取(带缓存,拉不到显示离线不阻塞) ----------
+
+_HTTP_CACHE: Dict[str, tuple] = {}
+
+
+def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[dict]:
+    import urllib.request
+
+    now = time.time()
+    cached = _HTTP_CACHE.get(url)
+    if cached and now - cached[1] < (ttl if cached[0] is not None else 15.0):
+        return cached[0]
+    data = None
+    try:
+        # tailnet 内网直连,显式绕过系统 HTTP 代理(本机 Clash 等会把内网 IP 打成 503)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        data = None
+    _HTTP_CACHE[url] = (data, now)
+    return data
+
+
+def _account_ops() -> Dict[str, Any]:
+    d = _fetch_json(ACCOUNT_OPS_URL)
+    if not isinstance(d, dict):
+        return {"present": False}
+    accounts = d.get("accounts") if isinstance(d.get("accounts"), list) else []
+    capital = sum(_num(a.get("capital")) or 0.0 for a in accounts if isinstance(a, dict))
+    income = sum(_num(a.get("income")) or 0.0 for a in accounts if isinstance(a, dict))
+    wear = sum(_num(a.get("wear")) or 0.0 for a in accounts if isinstance(a, dict))
+    reminders = ((d.get("reminders") or {}).get("summary")
+                 if isinstance(d.get("reminders"), dict) else {}) or {}
+    risks = d.get("risks") if isinstance(d.get("risks"), list) else []
+    meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    return {
+        "present": True,
+        "accounts": len(accounts),
+        "people": len(d.get("people") or []),
+        "capital": round(capital, 2),
+        "income": round(income, 2),
+        "roi_pct": round(income / capital * 100, 2) if capital else None,
+        "wear": round(wear, 2),
+        "wear_pct": round(wear / capital * 100, 2) if capital else None,
+        "pending": reminders.get("open"),
+        "overdue": reminders.get("overdue"),
+        "risk_count": len(risks),
+        "risks": [{"level": str(r.get("level") or ""), "title": str(r.get("title") or "")[:40],
+                   "meta": str(r.get("meta") or "")[:50], "value": str(r.get("value") or "")}
+                  for r in risks[:5] if isinstance(r, dict)],
+        "as_of": str(meta.get("as_of") or ""),
+        "as_of_age": _age_text(_iso_age(meta.get("as_of"))),
+    }
+
+
+def _macmini() -> Dict[str, Any]:
+    d = _fetch_json(MACMINI_STATUS_URL, ttl=30.0)
+    if not isinstance(d, dict):
+        return {"present": False}
+    services = d.get("services") if isinstance(d.get("services"), dict) else {}
+    out = {"present": True, "age": _age_text(max(0, int(time.time() - (_num(d.get("ts")) or 0))))}
+    for label, key in (("ai.codex.var-decibel-signer", "var_signer"),
+                       ("ai.codex.predictfun-api-proxy", "pf_proxy"),
+                       ("ai.codex.var-decibel-chrome-health", "chrome_health")):
+        svc = services.get(label) if isinstance(services.get(label), dict) else {}
+        out[key] = {"running": bool(svc.get("running")), "last_exit": svc.get("last_exit")}
+    return out
+
+
 # ---------- 记录器 / 事件流 / 告警 ----------
 
 def _recorders() -> Dict[str, Any]:
@@ -534,6 +607,8 @@ def api_state() -> JSONResponse:
         "var_decibel": vd,
         "single_account": _single_account(),
         "recorders": _recorders(),
+        "account_ops": _account_ops(),
+        "macmini": _macmini(),
         "events": _events(pm.pop("fill_events", [])),
         "alerts": _alerts(vd, pm),
     })

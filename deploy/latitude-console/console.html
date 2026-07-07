@@ -196,16 +196,16 @@
       <div class="row"><span class="k">模拟器一期</span><span class="v" data-k="sa.sim" style="color:var(--plan)">规划中</span></div>
     </div>
     <div class="card" onclick="go('hk')">
-      <div class="head"><span class="name">打新 & Alpha 核算台</span><span class="chip ok">现有系统 · 飞书</span></div>
-      <div class="row"><span class="k">总占用本金 / ROI</span><span class="v">$48,260 · 4.4%</span></div>
-      <div class="row"><span class="k">本月净收益</span><span class="v up">+$2,140</span></div>
-      <div class="row"><span class="k">待确认 / 异常账号</span><span class="v"><span style="color:var(--warn)">3</span> · <span style="color:var(--danger)">2</span></span></div>
-      <div class="row"><span class="k">今日打新轮次</span><span class="v">R-27 执行中 · 待申购 1</span></div>
+      <div class="head"><span class="name">打新 & Alpha 核算台</span><span class="chip ok" data-k="hk.chip">现有系统 · 飞书</span></div>
+      <div class="row"><span class="k">总占用本金 / ROI</span><span class="v" data-k="hk.capital">$48,260 · 4.4%</span></div>
+      <div class="row"><span class="k" data-k="hk.income_label">本月净收益</span><span class="v up" data-k="hk.income">+$2,140</span></div>
+      <div class="row"><span class="k">待确认 / 异常账号</span><span class="v" data-k="hk.pending"><span style="color:var(--warn)">3</span> · <span style="color:var(--danger)">2</span></span></div>
+      <div class="row"><span class="k">账号 / 人员</span><span class="v" data-k="hk.counts">R-27 执行中 · 待申购 1</span></div>
     </div>
     <div class="card">
-      <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip ok">正常</span></div>
-      <div class="row"><span class="k">signer(Polymarket)</span><span class="v"><span class="up">●</span> 限额$500/单 · 今日 312 签</span></div>
-      <div class="row"><span class="k">signer(Variational)</span><span class="v"><span class="up">●</span> vps1/vps2 双 key</span></div>
+      <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip ok" data-k="infra.chip">正常</span></div>
+      <div class="row"><span class="k" data-k="infra.r1_label">signer(Polymarket)</span><span class="v" data-k="infra.r1"><span class="up">●</span> 限额$500/单 · 今日 312 签</span></div>
+      <div class="row"><span class="k" data-k="infra.r2_label">signer(Variational)</span><span class="v" data-k="infra.r2"><span class="up">●</span> vps1/vps2 双 key</span></div>
       <div class="row"><span class="k">peer 状态同步</span><span class="v" data-k="infra.peer">3min 前(vps1←vps2)</span></div>
       <div class="row"><span class="k">Discord 通道</span><span class="v"><span class="up">●</span> 最近 21:45 送达</span></div>
     </div>
@@ -568,12 +568,12 @@
 
   <!-- 老板第一屏六指标(boss_dashboard_metrics 原样) -->
   <div class="kpis">
-    <div class="kpi"><div class="label">总占用本金</div><div class="value">$48,260</div><div class="sub num">已确认入金 − 出金 · 折USD</div></div>
-    <div class="kpi"><div class="label">净收益(本月)</div><div class="value up">+$2,140</div><div class="sub num">奖励+收益−成本−磨损</div></div>
-    <div class="kpi"><div class="label">ROI</div><div class="value">4.4%</div><div class="sub num">净收益 / 占用本金</div></div>
-    <div class="kpi"><div class="label">磨损率</div><div class="value">1.3%</div><div class="sub num">黄 &gt;2% · 红 &gt;5%</div></div>
-    <div class="kpi"><div class="label">待确认流水</div><div class="value" style="color:var(--warn)">3</div><div class="sub num">超 24h 未确认 → 群提醒</div></div>
-    <div class="kpi"><div class="label">异常账号</div><div class="value" style="color:var(--danger)">2</div><div class="sub num">缺字段 / 7 天无更新</div></div>
+    <div class="kpi"><div class="label">总占用本金</div><div class="value" data-k="hkk.capital">$48,260</div><div class="sub num" data-k="hkk.capital_sub">已确认入金 − 出金 · 折USD</div></div>
+    <div class="kpi"><div class="label" data-k="hkk.income_label">净收益(本月)</div><div class="value up" data-k="hkk.income">+$2,140</div><div class="sub num">奖励+收益−成本−磨损</div></div>
+    <div class="kpi"><div class="label">ROI</div><div class="value" data-k="hkk.roi">4.4%</div><div class="sub num">净收益 / 占用本金</div></div>
+    <div class="kpi"><div class="label">磨损率</div><div class="value" data-k="hkk.wear">1.3%</div><div class="sub num">黄 &gt;2% · 红 &gt;5%</div></div>
+    <div class="kpi"><div class="label">待确认流水</div><div class="value" style="color:var(--warn)" data-k="hkk.pending">3</div><div class="sub num" data-k="hkk.pending_sub">超 24h 未确认 → 群提醒</div></div>
+    <div class="kpi"><div class="label">异常账号</div><div class="value" style="color:var(--danger)" data-k="hkk.abnormal">2</div><div class="sub num">风险队列条目</div></div>
   </div>
 
   <div class="grid2">
@@ -704,7 +704,7 @@
       <div class="panel" style="margin-top:16px">
         <h2>风险与待处理 <span class="feat f-old">现有</span></h2>
         <div class="src">阈值:HKD&gt;3000 / USDT&gt;500 管理员确认 · 磨损 2%黄 5%红 · 待确认&gt;24h 群提醒 · 7 天无更新待检查</div>
-        <ul class="events">
+        <ul class="events" id="hk-risks">
           <li><span class="dot d-warn"></span><div><div>大额流水待确认:HK$8,200 出金(李四)</div><div class="t">已等待 26h · 超时提醒已发</div></div></li>
           <li><span class="dot d-warn"></span><div><div>ALP-05 磨损率 2.3% → 黄色</div><div class="t">阈值 2%</div></div></li>
           <li><span class="dot d-crit"></span><div><div>HK-09 已 9 天无更新 → 待检查</div><div class="t">阈值 7 天</div></div></li>
@@ -958,6 +958,50 @@
     }
   }
 
+  function bindHK(hk){
+    if(!hk.present) return;
+    setK('hk.chip','现有系统 · '+esc(hk.as_of_age||'—'));
+    setK('hk.capital', money(hk.capital)+' · '+(hk.roi_pct!=null?hk.roi_pct+'%':'—'));
+    setK('hk.income_label','净收益(累计)');
+    setK('hk.income', pnlSpan(hk.income||0));
+    setK('hk.pending','<span style="color:var(--warn)">'+(hk.pending??'—')+'</span> · <span style="color:var(--danger)">'+(hk.risk_count??'—')+'</span>');
+    setK('hk.counts', hk.accounts+' 账号 · '+hk.people+' 人');
+    setK('hkk.capital', money(hk.capital));
+    setK('hkk.capital_sub','折USD · '+esc(hk.as_of_age||'')+'更新');
+    setK('hkk.income_label','净收益(累计)');
+    setK('hkk.income', pnlSpan(hk.income||0));
+    setK('hkk.roi', (hk.roi_pct!=null?hk.roi_pct+'%':'—'));
+    setK('hkk.wear', (hk.wear_pct!=null?hk.wear_pct+'%':'—'));
+    setK('hkk.pending', String(hk.pending??'—'));
+    setK('hkk.pending_sub','逾期 '+(hk.overdue??0));
+    setK('hkk.abnormal', String(hk.risk_count??'—'));
+    const rl=document.getElementById('hk-risks');
+    if(rl && (hk.risks||[]).length){
+      rl.innerHTML=hk.risks.map(r=>{
+        const dot=r.level==='bad'?'d-crit':(r.level==='warn'?'d-warn':'d-info');
+        return '<li><span class="dot '+dot+'"></span><div><div>'+esc(r.title)+(r.value?' · '+esc(r.value):'')+'</div><div class="t">'+esc(r.meta||'')+'</div></div></li>';
+      }).join('');
+    } else if(rl && hk.present){
+      rl.innerHTML='<li><span class="dot d-info"></span><div><div>风险队列为空</div></div></li>';
+    }
+  }
+
+  function bindInfra(mm){
+    if(!mm.present) return;
+    const row=(x,label)=>{
+      const ok=x&&x.running;
+      return '<span class="'+(ok?'up':'down')+'">●</span> '+(ok?'运行中':'未运行(exit '+esc((x||{}).last_exit??'?')+')');
+    };
+    setK('infra.r1_label','pf-api-proxy(Mac mini)');
+    setK('infra.r1', row(mm.pf_proxy));
+    setK('infra.r2_label','var-decibel-signer(Mac mini)');
+    setK('infra.r2', row(mm.var_signer));
+    const allOk=(mm.pf_proxy&&mm.pf_proxy.running);
+    const signerOk=(mm.var_signer&&mm.var_signer.running);
+    setK('infra.chip', signerOk&&allOk?'正常':(signerOk?'部分异常':'signer 未运行'));
+    document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(signerOk&&allOk?'ok':'warn');});
+  }
+
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
   async function refresh(){
@@ -967,6 +1011,8 @@
     try{bindVD(s.var_decibel||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}
     try{bindSA(s.single_account||{});}catch(e){}
+    try{bindHK(s.account_ops||{});}catch(e){}
+    try{bindInfra(s.macmini||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>el.title='示例数据(真数据接入中)');
   }
