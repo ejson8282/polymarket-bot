@@ -386,6 +386,9 @@ def _var_decibel() -> Dict[str, Any]:
                 sign = -1.0 if str(p.get("side") or "").lower() in ("short", "sell") else 1.0
                 notional = _num(p.get("notional"))
                 entry, liq = _num(p.get("entry_price")), _num(p.get("liquidation_price"))
+                size = _num(p.get("size"))
+                if (notional is None or notional == 0) and size and entry:
+                    notional = abs(size) * entry  # 数据源 notional 缺失/为0时按 |size|×entry 推算
                 liq_pct = (round(abs(entry - liq) / entry * 100) if entry and liq else None)
                 return {"open": is_open, "side": str(p.get("side") or ""),
                         "notional": notional, "signed": (sign * notional) if (is_open and notional) else 0.0,
