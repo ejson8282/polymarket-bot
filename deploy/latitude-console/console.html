@@ -184,7 +184,7 @@
     <div class="card" onclick="go('pf')">
       <div class="head"><span class="name">Predict.fun 做市</span><span class="chip info" data-k="pf.chip">TESTNET · DRY-RUN</span></div>
       <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles">1,842 · 3</span></div>
-      <div class="row"><span class="k">风险闸门</span><span class="v"><span class="up">OK</span>(6/6 项通过)</span></div>
+      <div class="row"><span class="k">风险闸门</span><span class="v" data-k="pf.risk"><span class="up">OK</span>(6/6 项通过)</span></div>
       <div class="row"><span class="k">模拟持仓 / 成交</span><span class="v">5 · 今日 12 笔</span></div>
       <div class="row"><span class="k" data-k="pf.age_label">ws / plan 年龄</span><span class="v" data-k="pf.age">12s · 8s(阈 180s)</span></div>
     </div>
@@ -231,7 +231,7 @@
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">$2,418.62</div><div class="sub" data-k="vdk.equity_sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
-    <div class="kpi"><div class="label">今日净损耗</div><div class="value down">−$1.84</div><div class="sub num">2.1 bps/万U · 7日均 2.6</div></div>
+    <div class="kpi"><div class="label">今日净损耗</div><div class="value down" data-k="vdk.loss">−$1.84</div><div class="sub num" data-k="vdk.loss_sub">2.1 bps/万U · 7日均 2.6</div></div>
     <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
     <div class="kpi"><div class="label">本周预算剩余</div><div class="value">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub">周亏损上限扣减制</div></div>
     <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
@@ -244,7 +244,7 @@
         <div class="src">source · ops_state.json + runtime(交易所快照);原 Home 的 Hedge Pair Preview / 最近执行记录 移入本区下方折叠</div>
         <table>
           <thead><tr><th>SYMBOL/HOST</th><th>← VAR · DEC →</th><th>净敞口</th><th>清算 V/D</th><th>时长</th><th>状态</th></tr></thead>
-          <tbody>
+          <tbody id="vd-pair-body">
             <tr><td><b>BTC</b> <span class="chip">VPS1</span></td><td><div class="pair"><div class="lane l"><i class="bar" style="width:92%"></i></div><div class="tick"></div><div class="lane r"><i class="bar" style="width:92%"></i></div></div></td><td class="num up">$0.12</td><td class="num">31%/28%</td><td class="num">2h14m</td><td><span class="chip ok">HEDGED</span></td></tr>
             <tr><td><b>ETH</b> <span class="chip">VPS1</span></td><td><div class="pair"><div class="lane l"><i class="bar" style="width:64%"></i></div><div class="tick"></div><div class="lane r"><i class="bar" style="width:64%"></i></div></div></td><td class="num up">$0.19</td><td class="num">42%/39%</td><td class="num">0h48m</td><td><span class="chip ok">HEDGED</span></td></tr>
             <tr style="background:rgba(229,72,77,.05)"><td><b>SOL</b> <span class="chip">VPS2</span></td><td><div class="pair"><div class="lane l"></div><div class="tick"></div><div class="lane r"><i class="stub" style="width:58%"></i></div></div></td><td class="num down">−$88.40</td><td class="num">—/26%</td><td class="num">4m12s</td><td><span class="chip danger">DEC 裸腿</span></td></tr>
@@ -253,13 +253,13 @@
       </div>
       <div class="panel">
         <h2>今日损耗分解 <span class="feat f-old">原 Statistics 提级</span></h2>
-        <div class="src">source · trades 表 fee/funding/slippage 列;cost-per-point 曲线保留在 Statistics 二级页</div>
-        <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
+        <div class="src">source · trades 表 cost_bp/funding/slippage 列(近24h,(host,id) 去重)</div>
+        <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
           <i style="width:52%;background:var(--var);display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">fee −$0.96</i>
           <i style="width:27%;background:var(--dec);display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">funding −$0.50</i>
           <i style="width:21%;background:#8B98A9;display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">slip −$0.38</i>
         </div>
-        <div class="src" style="margin-top:8px">合计 −$1.84 = 2.1 bps/万U · 每积分成本 $0.0148(7日)</div>
+        <div class="src" style="margin-top:8px" data-k="vd.loss_src">合计 −$1.84 = 2.1 bps/万U · 每积分成本 $0.0148(7日)</div>
       </div>
     </div>
     <aside>
@@ -320,7 +320,7 @@
       </div>
       <div class="panel">
         <h2>Markets · Auto Curator <span class="feat f-old">现有</span></h2>
-        <div class="src">source · auto_curator_state.json + 自动扫入事件(48h);Refresh Markets / 开关+间隔 / Append·Replace 均为现有功能,保留在 Markets/Scan 二级页</div>
+        <div class="src" data-k="pm.curator">source · auto_curator_state.json + 自动扫入事件(48h);Refresh Markets / 开关+间隔 / Append·Replace 均为现有功能,保留在 Markets/Scan 二级页</div>
         <table>
           <thead><tr><th>MARKET</th><th>事件态</th><th>预算份额</th><th>我的档位</th><th>sentinel</th><th>奖励健康</th></tr></thead>
           <tbody>
@@ -369,13 +369,15 @@
     <div>
       <div class="panel">
         <h2>风险闸门利用率 <span class="feat f-new">新增呈现(数据现有)</span></h2>
-        <div class="src">source · predictfun_risk_state.json(risk.py 每周期评估,超限即 block 执行)</div>
+        <div class="src" data-k="pf.risk_src">source · predictfun_risk_state.json(risk.py 每周期评估,超限即 block 执行)</div>
+        <div id="pf-gates">
         <div class="util"><div class="u-head"><span>总期望名义</span><span class="num">$1,830 / 2,500</span></div><div class="u-bar"><i style="width:73%"></i></div></div>
         <div class="util"><div class="u-head"><span>活跃账号</span><span class="num">2 / 10</span></div><div class="u-bar"><i style="width:20%"></i></div></div>
         <div class="util warn"><div class="u-head"><span>单账号名义(最大者)</span><span class="num">$86 / 100</span></div><div class="u-bar"><i style="width:86%"></i></div></div>
         <div class="util"><div class="u-head"><span>单市场名义(最大者)</span><span class="num">$62 / 75</span></div><div class="u-bar"><i style="width:83%"></i></div></div>
         <div class="util"><div class="u-head"><span>ws 状态年龄</span><span class="num">12s / 180s</span></div><div class="u-bar"><i style="width:7%"></i></div></div>
         <div class="util"><div class="u-head"><span>plan 状态年龄</span><span class="num">8s / 180s</span></div><div class="u-bar"><i style="width:5%"></i></div></div>
+        </div>
       </div>
       <div class="panel">
         <h2>模拟持仓 &amp; 意向 <span class="feat f-old">现有</span></h2>
@@ -800,10 +802,14 @@
         '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span></td>'+
         '<td class="num">'+money(a.balance)+'</td><td class="num">'+a.orders+'</td>'+
         '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
-        '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">—</td>'+
+        '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
         '<td class="btnrow" style="color:var(--faint);font-size:11px">操作在 :8501</td></tr>'
       ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
+    }
+    if(pm.curator){
+      const c=pm.curator;
+      setK('pm.curator','source · auto_curator_state.json — '+(c.enabled?'启用':'停用')+' · 引擎内 '+c.markets+' 市场 · 累计扫入 '+(c.added_total??'—')+' / 拒绝 '+(c.rejected_total??'—')+(c.last_scan_age?' · 上次扫描 '+esc(c.last_scan_age):''));
     }
   }
 
@@ -849,6 +855,42 @@
     setK('infra.peer', names.map(h=>h+' '+esc(hosts[h].age||'?')).join(' · ')||null);
     const okAll=names.every(h=>hosts[h].ok_dec!==false&&hosts[h].ok_var!==false);
     setK('pill.signer','<span class="dot"></span>读取 '+(okAll?'正常':'异常'));
+    // 配对腿表(真实持仓;两腿条宽按名义占比)
+    const pb=document.getElementById('vd-pair-body');
+    if(pb && (vd.pairs||[]).length){
+      const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs(p.dec.notional||0))));
+      pb.innerHTML=vd.pairs.map(p=>{
+        const wl=Math.round(Math.abs(p.var.notional||0)/maxN*100), wr=Math.round(Math.abs(p.dec.notional||0)/maxN*100);
+        const bad=p.status!=='HEDGED';
+        const lane_l=p.var.open?'<i class="bar" style="width:'+wl+'%"></i>':'';
+        const lane_r=p.dec.open?'<i class="'+(bad?'stub':'bar')+'" style="width:'+wr+'%"></i>':'';
+        const netCls=Math.abs(p.net)<1?'up':'down';
+        return '<tr'+(bad?' style="background:rgba(229,72,77,.05)"':'')+'><td><b>'+esc(p.symbol)+'</b> <span class="chip">'+esc(p.host.toUpperCase())+'</span></td>'+
+          '<td><div class="pair"><div class="lane l">'+lane_l+'</div><div class="tick"></div><div class="lane r">'+lane_r+'</div></div></td>'+
+          '<td class="num '+netCls+'">'+money(p.net)+'</td>'+
+          '<td class="num">'+(p.var.liq_pct!=null?p.var.liq_pct+'%':'—')+'/'+(p.dec.liq_pct!=null?p.dec.liq_pct+'%':'—')+'</td>'+
+          '<td class="num">—</td><td><span class="chip '+(bad?'danger':'ok')+'">'+esc(p.status)+'</span></td></tr>';
+      }).join('');
+    } else if(pb && vd.present){
+      pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">当前无持仓(空仓)</td></tr>';
+    }
+    // 今日损耗(近24h,(host,id) 去重后真实计算)
+    const t=vd.today||{};
+    if(t.present){
+      setK('vdk.loss', (t.loss>0?'−':'')+money(t.loss).replace('$','$'));
+      setK('vdk.loss_sub', (t.loss_bps_wan!=null?t.loss_bps_wan+' bps/万U':'—')+' · '+t.trades+' 笔 · 量 '+money(t.volume));
+      const bar=document.getElementById('vd-loss-bar');
+      const total=Math.max(0.0001,(t.fee||0)+Math.abs(t.funding||0)+(t.slip||0));
+      if(bar){
+        const seg=(w,c,txt)=>'<i style="width:'+Math.max(8,Math.round(w))+'%;background:'+c+';display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">'+txt+'</i>';
+        bar.innerHTML=seg((t.fee||0)/total*100,'var(--var)','cost '+money(t.fee))+
+                      seg(Math.abs(t.funding||0)/total*100,'var(--dec)','funding '+money(Math.abs(t.funding||0)))+
+                      seg((t.slip||0)/total*100,'#8B98A9','slip '+money(t.slip));
+      }
+      setK('vd.loss_src','近24h 合计损耗 −'+money(t.loss).slice(1)+' = '+(t.loss_bps_wan??'—')+' bps/万U · 实现PnL '+pnlSpan(t.pnl||0));
+      setK('vd.vol_label','本周量 / 今日损耗');
+      if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
+    }
   }
 
   function bindPF(pf){
@@ -861,6 +903,18 @@
     setK('pf.age', esc(pf.last_cycle_age||'—')+(pf.running?'':' · <span class="down">stopped</span>'));
     setK('pf.last_cycle', esc(pf.last_cycle_age||'—'));
     setK('pf.mode', esc((pf.mode||'—')+' · '+(pf.environment||'—')));
+    const r=pf.risk;
+    if(r){
+      const okTxt=(r.checks_not_ok?'<span class="down">'+r.checks_not_ok+' 项异常</span>':'<span class="up">OK</span>')+'('+((r.checks_total||0)-(r.checks_not_ok||0))+'/'+(r.checks_total||0)+' 项通过)';
+      setK('pf.risk', okTxt);
+      setK('pf.risk_src','source · risk_state — blocked '+(r.blocked??0)+' · warn '+(r.warn??0)+' · 期望名义 '+money(r.desired_notional)+' · 活跃账号 '+(r.active_accounts??'—')+' · 模拟持仓 '+(r.sim_positions??'—'));
+      const g=document.getElementById('pf-gates');
+      if(g && (r.gates||[]).length){
+        g.innerHTML=r.gates.map(x=>
+          '<div class="util'+(x.pct>=85?' warn':'')+(x.ok?'':' bad')+'"><div class="u-head"><span>'+esc(x.name)+'</span><span class="num">'+x.value+' / '+x.limit+'</span></div>'+
+          '<div class="u-bar"><i style="width:'+x.pct+'%"></i></div></div>').join('');
+      }
+    }
   }
 
   function bindSA(sa){

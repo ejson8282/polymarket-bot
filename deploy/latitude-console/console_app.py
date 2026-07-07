@@ -79,6 +79,14 @@ def _num(value: Any) -> Optional[float]:
 # ---------- Polymarket(engine_state_N 逐账号,不混算) ----------
 
 def _polymarket() -> Dict[str, Any]:
+    rewards_by_addr: Dict[str, float] = {}
+    rewards = _read_json(DATA_DIR / "rewards_cumulative.json")
+    if isinstance(rewards, dict) and isinstance(rewards.get("accounts"), dict):
+        for row in rewards["accounts"].values():
+            if isinstance(row, dict) and row.get("address"):
+                v = _num(row.get("cumulative_usd"))
+                if v is not None:
+                    rewards_by_addr[str(row["address"]).lower()] = v
     accounts: List[dict] = []
     running = live_orders = 0
     volume_today = pnl_today = 0.0
@@ -123,6 +131,7 @@ def _polymarket() -> Dict[str, Any]:
         accounts.append({
             "idx": idx,
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
+            "rewards": rewards_by_addr.get(funder.lower()),
             "status": "已暂停" if paused else ("运行中" if alive else "已停止"),
             "status_cls": "warn" if paused else ("ok" if alive else "danger"),
             "balance": _num(state.get("balance")),
@@ -134,21 +143,107 @@ def _polymarket() -> Dict[str, Any]:
             "sibling_mode": sibling.get("mode"),
             "age": _age_text(_mtime_age(DATA_DIR / (f"engine_state_{idx}.json" if (DATA_DIR / f"engine_state_{idx}.json").exists() else "engine_state.json"))),
         })
-    rewards_total = None
-    rewards = _read_json(DATA_DIR / "rewards_cumulative.json")
-    if isinstance(rewards, dict) and isinstance(rewards.get("accounts"), (list, dict)):
-        acc = rewards["accounts"]
-        rows = acc if isinstance(acc, list) else list(acc.values())
-        vals = [_num(r.get("total") or r.get("cumulative") or r.get("earnings")) for r in rows if isinstance(r, dict)]
-        vals = [v for v in vals if v is not None]
-        rewards_total = round(sum(vals), 2) if vals else None
+    rewards_total = round(sum(rewards_by_addr.values()), 2) if rewards_by_addr else None
+    curator = _read_json(DATA_DIR / "auto_curator_state.json")
+    curator_out = None
+    if isinstance(curator, dict):
+        mie = curator.get("markets_in_engine")
+        curator_out = {
+            "enabled": bool(curator.get("enabled")),
+            "markets": (len(mie) if isinstance(mie, (list, dict)) else int(_num(mie) or 0)),
+            "added_total": curator.get("added_total"),
+            "rejected_total": curator.get("rejected_total"),
+            "last_scan_age": _age_text(_iso_age(curator.get("last_scan_ts"))
+                                       if isinstance(curator.get("last_scan_ts"), str)
+                                       else (int(time.time() - curator["last_scan_ts"])
+                                             if _num(curator.get("last_scan_ts")) else None)),
+        }
     return {
+        "curator": curator_out,
         "present": bool(accounts), "accounts": accounts,
         "running": running, "total": len(accounts), "live_orders": live_orders,
         "volume_today": round(volume_today, 2), "pnl_today": round(pnl_today, 2),
         "quotes_sent": quotes_sent, "fills_seen": fills_seen,
         "cooldown": cooldown, "rewards_total": rewards_total,
         "fill_events": pm_fill_events[-6:],
+    }
+
+
+# ---------- varia trades:今日量 / 损耗分解(本地 sqlite + peer,(host,id) 去重) ----------
+
+def _parse_ts(value: Any) -> Optional[float]:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _varia_trades_today() -> Dict[str, Any]:
+    rows: List[dict] = []
+    db = VARIA_DIR / "hedge_bot.sqlite3"
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        cur = conn.execute(
+            "SELECT id, host, status, timestamp_close, target_notional, funding_var, "
+            "funding_decibel, realized_cost_bp, estimated_cost_bp, var_slippage_bp, "
+            "decibel_slippage_bp, realized_pnl_usdc FROM trades "
+            "WHERE timestamp_close >= datetime('now','-1 day')")
+        names = [d[0] for d in cur.description]
+        rows += [dict(zip(names, r)) for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    peer_dir = VARIA_DIR / "peer_trades"
+    cutoff = time.time() - 86400
+    for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
+        raw = _read_json(path)
+        if not isinstance(raw, list):
+            continue
+        for r in raw:
+            if not isinstance(r, dict):
+                continue
+            ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
+            if ts is None or ts < cutoff:
+                continue
+            r = dict(r)
+            r.setdefault("host", path.stem)
+            rows.append(r)
+    # (host,id) 去重 + 只算 executed(口径同 varia dashboard)
+    seen = set()
+    volume = pnl = fee = funding = slip = loss = 0.0
+    count = 0
+    for r in rows:
+        status = str(r.get("status") or "").strip().lower()
+        if status not in ("", "executed"):
+            continue
+        key = (str(r.get("host") or "").lower(), r.get("id"))
+        if r.get("id") is not None and key in seen:
+            continue
+        seen.add(key)
+        notional = abs(_num(r.get("target_notional")) or 0.0)
+        volume += notional
+        count += 1
+        r_pnl = _num(r.get("realized_pnl_usdc"))
+        if r_pnl is not None:
+            pnl += r_pnl
+            if r_pnl < 0:
+                loss += -r_pnl
+        cost_bp = _num(r.get("realized_cost_bp"))
+        if cost_bp is None:
+            cost_bp = _num(r.get("estimated_cost_bp"))
+        if cost_bp is not None:
+            fee += abs(cost_bp) * notional / 10000.0
+            if r_pnl is None:
+                loss += abs(cost_bp) * notional / 10000.0
+        funding += (_num(r.get("funding_var")) or 0.0) + (_num(r.get("funding_decibel")) or 0.0)
+        slip += (abs(_num(r.get("var_slippage_bp")) or 0.0)
+                 + abs(_num(r.get("decibel_slippage_bp")) or 0.0)) * notional / 10000.0
+    return {
+        "present": count > 0,
+        "trades": count, "volume": round(volume, 2), "pnl": round(pnl, 2),
+        "loss": round(loss, 2),
+        "loss_bps_wan": round(loss / volume * 10000.0, 2) if volume else None,
+        "fee": round(fee, 2), "funding": round(funding, 2), "slip": round(slip, 2),
     }
 
 
@@ -170,6 +265,31 @@ def _predictfun() -> Dict[str, Any]:
             "last_cycle_age": _age_text(_iso_age(runner.get("last_cycle_finished_at"))),
             "last_error": (str(runner.get("last_error"))[:120] if runner.get("last_error") else None),
         }
+        risk = _read_json(DATA_DIR / f"{prefix}_risk_state.json")
+        if isinstance(risk, dict):
+            summary = risk.get("summary") if isinstance(risk.get("summary"), dict) else {}
+            checks = risk.get("checks") if isinstance(risk.get("checks"), list) else []
+            gates = []
+            not_ok = 0
+            for c in checks:
+                if not isinstance(c, dict):
+                    continue
+                ok = str(c.get("status") or "").upper() == "OK"
+                not_ok += 0 if ok else 1
+                v, lim = _num(c.get("value")), _num(c.get("limit"))
+                if v is not None and lim not in (None, 0):
+                    gates.append({"name": str(c.get("name") or "")[:28], "value": v,
+                                  "limit": lim, "pct": round(min(100.0, abs(v) / abs(lim) * 100)),
+                                  "ok": ok})
+            gates.sort(key=lambda g: -g["pct"])
+            out["risk"] = {
+                "blocked": summary.get("blocked"), "warn": summary.get("warn"),
+                "checks_total": summary.get("checks"), "checks_not_ok": not_ok,
+                "desired_notional": _num(summary.get("desired_total_notional")),
+                "active_accounts": summary.get("active_accounts"),
+                "sim_positions": summary.get("sim_positions"),
+                "gates": gates[:8],
+            }
         break
     return out
 
@@ -212,6 +332,7 @@ def _var_decibel() -> Dict[str, Any]:
     vol_weekly = vol_total = 0.0
     vol_found = False
     single_leg: List[str] = []
+    pairs: List[dict] = []
     for state in sources:
         if not isinstance(state, dict):
             continue
@@ -247,13 +368,36 @@ def _var_decibel() -> Dict[str, Any]:
                 tp = _num(pts.get("total_points"))
                 if tp is not None:
                     points_var = (points_var or 0.0) + tp
-        # 单腿检测(轻量,口径同 varia _host_exposure_status 的核心判断)
+        # 单腿检测 + 配对腿行(口径同 varia _host_exposure_status 的核心判断)
         for symbol in sorted(set(dec_syms) | set(var_syms)):
+            d_pos = (dec_syms.get(symbol) or {}).get("position") if isinstance(dec_syms.get(symbol), dict) else {}
+            v_pos = (var_syms.get(symbol) or {}).get("position") if isinstance(var_syms.get(symbol), dict) else {}
+            d_pos = d_pos if isinstance(d_pos, dict) else {}
+            v_pos = v_pos if isinstance(v_pos, dict) else {}
             d_open = _pos_open(dec_syms.get(symbol))
             v_open = _pos_open(var_syms.get(symbol))
+            if not d_open and not v_open:
+                continue
             if d_open != v_open:
                 single_leg.append(f"{host.upper()}·{symbol}")
                 h["single_leg"] = True
+
+            def _leg(p: dict, is_open: bool) -> dict:
+                sign = -1.0 if str(p.get("side") or "").lower() in ("short", "sell") else 1.0
+                notional = _num(p.get("notional"))
+                entry, liq = _num(p.get("entry_price")), _num(p.get("liquidation_price"))
+                liq_pct = (round(abs(entry - liq) / entry * 100) if entry and liq else None)
+                return {"open": is_open, "side": str(p.get("side") or ""),
+                        "notional": notional, "signed": (sign * notional) if (is_open and notional) else 0.0,
+                        "liq_pct": liq_pct}
+
+            var_leg, dec_leg = _leg(v_pos, v_open), _leg(d_pos, d_open)
+            pairs.append({
+                "host": host, "symbol": symbol, "var": var_leg, "dec": dec_leg,
+                "net": round(var_leg["signed"] + dec_leg["signed"], 2),
+                "status": ("HEDGED" if (d_open and v_open) else
+                           ("DEC 裸腿" if d_open else "VAR 裸腿")),
+            })
         tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
         for venue_data in (tv.get("venues") or {}).values():
             if isinstance(venue_data, dict):
@@ -273,6 +417,8 @@ def _var_decibel() -> Dict[str, Any]:
         "volume_weekly": round(vol_weekly, 2) if vol_found else None,
         "volume_total": round(vol_total, 2) if vol_found else None,
         "single_leg": single_leg,
+        "pairs": pairs[:12],
+        "today": _varia_trades_today(),
     }
 
 
