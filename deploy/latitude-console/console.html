@@ -988,18 +988,15 @@
 
   function bindInfra(mm){
     if(!mm.present) return;
-    const row=(x,label)=>{
-      const ok=x&&x.running;
-      return '<span class="'+(ok?'up':'down')+'">●</span> '+(ok?'运行中':'未运行(exit '+esc((x||{}).last_exit??'?')+')');
-    };
     setK('infra.r1_label','pf-api-proxy(Mac mini)');
-    setK('infra.r1', row(mm.pf_proxy));
+    const proxyOk=mm.pf_proxy&&mm.pf_proxy.running;
+    setK('infra.r1', '<span class="'+(proxyOk?'up':'down')+'">●</span> '+(proxyOk?'运行中':'未运行(exit '+esc((mm.pf_proxy||{}).last_exit??'?')+')'));
+    // var signer 是按需签名服务:授权时才拉起,平时不驻留 → 空闲属正常态
     setK('infra.r2_label','var-decibel-signer(Mac mini)');
-    setK('infra.r2', row(mm.var_signer));
-    const allOk=(mm.pf_proxy&&mm.pf_proxy.running);
-    const signerOk=(mm.var_signer&&mm.var_signer.running);
-    setK('infra.chip', signerOk&&allOk?'正常':(signerOk?'部分异常':'signer 未运行'));
-    document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(signerOk&&allOk?'ok':'warn');});
+    const signerOn=mm.var_signer&&mm.var_signer.running;
+    setK('infra.r2', signerOn?'<span class="up">●</span> 签名中':'<span style="color:var(--faint)">●</span> 按需 · 空闲');
+    setK('infra.chip', proxyOk?'正常':'proxy 异常');
+    document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(proxyOk?'ok':'warn');});
   }
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
