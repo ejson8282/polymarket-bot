@@ -217,12 +217,14 @@ def _varia_trades_today() -> Dict[str, Any]:
     cutoff_24h = time.time() - 86400
     volume = pnl = fee = funding = slip = loss = 0.0
     loss_7d = 0.0
+    loss_7d_by_host: Dict[str, float] = {}
     count = 0
     for r in rows:
         status = str(r.get("status") or "").strip().lower()
         if status not in ("", "executed"):
             continue
-        key = (str(r.get("host") or "").lower(), r.get("id"))
+        host = str(r.get("host") or "").lower() or "unknown"
+        key = (host, r.get("id"))
         if r.get("id") is not None and key in seen:
             continue
         seen.add(key)
@@ -234,6 +236,7 @@ def _varia_trades_today() -> Dict[str, Any]:
         row_loss = (-r_pnl if (r_pnl is not None and r_pnl < 0) else
                     (abs(cost_bp) * notional / 10000.0 if (r_pnl is None and cost_bp is not None) else 0.0))
         loss_7d += row_loss
+        loss_7d_by_host[host] = loss_7d_by_host.get(host, 0.0) + row_loss
         ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
         if ts is None or ts < cutoff_24h:
             continue
@@ -251,6 +254,7 @@ def _varia_trades_today() -> Dict[str, Any]:
         "present": count > 0,
         "trades": count, "volume": round(volume, 2), "pnl": round(pnl, 2),
         "loss": round(loss, 2), "loss_7d": round(loss_7d, 2),
+        "loss_7d_by_host": {h: round(v, 4) for h, v in loss_7d_by_host.items()},
         "loss_bps_wan": round(loss / volume * 10000.0, 2) if volume else None,
         "fee": round(fee, 2), "funding": round(funding, 2), "slip": round(slip, 2),
     }
@@ -431,7 +435,8 @@ def _var_decibel() -> Dict[str, Any]:
         "single_leg": single_leg,
         "pairs": pairs[:12],
         "today": (today := _varia_trades_today()),
-        "budget": _varia_budget(today.get("loss_7d")),
+        "budget": _varia_budget({h: today.get("loss_7d_by_host", {}).get(h, 0.0)
+                                 for h in (hosts or {"vps1": {}})}),
     }
 
 
@@ -626,22 +631,38 @@ def _pf_intents() -> Dict[str, Any]:
     return out
 
 
-def _varia_budget(loss_7d: Optional[float]) -> Dict[str, Any]:
-    """③ 本周预算剩余:config weekly_loss_cap_usdc − 近7日损耗(滚动窗口口径,如实标注)。"""
-    cap = None
+def _budget_cap_for_host() -> Optional[float]:
+    """生效的每周预算:优先 auto_strategy_state.json(varia dashboard 控件写入的
+    生效值),回退 config.yaml。每 VPS 独立(各自 $5)。"""
+    state = _read_json(VARIA_DIR / "auto_strategy_state.json") \
+        or _read_json(VARIA_DIR / "auto_strategy_runtime.json")
+    if isinstance(state, dict) and _num(state.get("weekly_loss_cap_usdc")) is not None:
+        return _num(state.get("weekly_loss_cap_usdc"))
     try:
-        text = (VARIA_DIR.parent / "config.yaml").read_text(encoding="utf-8")
-        for line in text.splitlines():
+        for line in (VARIA_DIR.parent / "config.yaml").read_text(encoding="utf-8").splitlines():
             if "weekly_loss_cap_usdc" in line and ":" in line:
-                cap = _num(line.split(":", 1)[1].strip().strip('"').strip("'"))
-                break
+                return _num(line.split(":", 1)[1].strip().strip('"').strip("'"))
     except Exception:
         pass
+    return None
+
+
+def _varia_budget(loss_by_host: Dict[str, float]) -> Dict[str, Any]:
+    """③ 本周预算:每 VPS 各自 cap − 各自近7日损耗(每VPS独立,合计=各源相加)。
+    本机 cap 可读到生效值;peer VPS 的 cap 目前取同值(两台配置一致),标注口径。"""
+    cap = _budget_cap_for_host()
     if cap is None:
         return {"present": False}
-    remaining = max(0.0, cap - (loss_7d or 0.0))
-    return {"present": True, "cap": cap, "loss_7d": round(loss_7d or 0.0, 2),
-            "remaining": round(remaining, 2)}
+    hosts = {}
+    total_remaining = total_cap = 0.0
+    for host, loss in sorted(loss_by_host.items()):
+        rem = max(0.0, cap - loss)
+        hosts[host] = {"cap": cap, "loss_7d": round(loss, 2), "remaining": round(rem, 2)}
+        total_remaining += rem
+        total_cap += cap
+    return {"present": True, "per_vps": True, "hosts": hosts,
+            "cap_each": cap,
+            "total_cap": round(total_cap, 2), "total_remaining": round(total_remaining, 2)}
 
 
 def _macmini() -> Dict[str, Any]:

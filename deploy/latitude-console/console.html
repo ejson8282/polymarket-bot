@@ -892,11 +892,13 @@
       setK('vd.vol_label','本周量 / 今日损耗');
       if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
     }
-    // 本周预算剩余(config weekly_loss_cap − 近7日损耗;滚动窗口口径如实标注)
+    // 本周预算:每 VPS 各 cap − 各自近7日损耗(每VPS独立;总卡显示合计,悬停看分解)
     const b=vd.budget||{};
     if(b.present){
-      setK('vdk.budget', money(b.remaining)+'<span style="font-size:13px;color:var(--faint)">/'+(b.cap??'—')+'</span>');
-      setK('vdk.budget_sub', '近7日损耗 −'+money(b.loss_7d).slice(1)+'(滚动7日口径)');
+      const hs=Object.entries(b.hosts||{});
+      setK('vdk.budget', money(b.total_remaining)+'<span style="font-size:13px;color:var(--faint)">/'+money(b.total_cap).slice(1)+'</span>');
+      const detail=hs.map(([h,x])=>h.toUpperCase()+' '+money(x.remaining).slice(0)+'/'+ (x.cap)).join(' · ');
+      setK('vdk.budget_sub', '每VPS各$'+(b.cap_each??'—')+' · '+detail+'(滚动7日)');
     }
   }
 
