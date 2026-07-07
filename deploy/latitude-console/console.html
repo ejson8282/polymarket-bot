@@ -233,7 +233,7 @@
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">$2,418.62</div><div class="sub" data-k="vdk.equity_sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
     <div class="kpi"><div class="label">今日净损耗</div><div class="value down" data-k="vdk.loss">−$1.84</div><div class="sub num" data-k="vdk.loss_sub">2.1 bps/万U · 7日均 2.6</div></div>
     <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
-    <div class="kpi"><div class="label">本周预算剩余</div><div class="value">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub">周亏损上限扣减制</div></div>
+    <div class="kpi"><div class="label">本周预算剩余</div><div class="value" data-k="vdk.budget">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub" data-k="vdk.budget_sub">周亏损上限扣减制</div></div>
     <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
     <div class="kpi"><div class="label">自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div></div>
   </div>
@@ -380,13 +380,13 @@
         </div>
       </div>
       <div class="panel">
-        <h2>模拟持仓 &amp; 意向 <span class="feat f-old">现有</span></h2>
-        <div class="src">source · simulation_state.json(positions/fills)+ desired_orders.json;reconcile 每周期对账</div>
+        <h2>意向 &amp; 对账 <span class="feat f-old">现有</span></h2>
+        <div class="src" data-k="pf.intents_src">source · desired_orders.json + execution_report.json;reconcile 每周期对账</div>
         <table>
-          <thead><tr><th>MARKET</th><th>库存</th><th>意向档位</th><th>本周期动作</th><th>fast_requote</th></tr></thead>
-          <tbody>
-            <tr><td>US Election 子盘 A</td><td class="num">+140 @0.31</td><td class="num">0.30 / 0.33</td><td><span class="chip ok">保持</span></td><td class="num">—</td></tr>
-            <tr><td>Crypto 价格盘 B</td><td class="num">−60 @0.55</td><td class="num">0.54 / 0.57</td><td><span class="chip info">重报</span></td><td class="num up">2s(有成交)</td></tr>
+          <thead><tr><th>MARKET</th><th>账号</th><th>方向</th><th>价格</th><th>数量</th><th>动作</th></tr></thead>
+          <tbody id="pf-intents-body">
+            <tr><td>US Election 子盘 A</td><td class="num">1</td><td class="num">BUY</td><td class="num">0.31</td><td class="num">140</td><td><span class="chip ok">保持</span></td></tr>
+            <tr><td>Crypto 价格盘 B</td><td class="num">2</td><td class="num">SELL</td><td class="num">0.55</td><td class="num">60</td><td><span class="chip info">重报</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -601,7 +601,7 @@
         <div class="flow">
           <span>① 新股数据导入<br>HKEX/AASTOCKS</span><span>② 人工观点<br>飞书群</span><span>③ 观点提炼<br>OpenClaw</span><span>④ 排班计算<br>Router(代码)</span><span class="here">⑤ 方案对比+老板确认<br>本页(策略交互层)</span><span>⑥ 提醒执行<br>飞书 Bot</span><span>⑦ 状态/结果回填<br>群回复→本页</span>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px" id="hk-round-chips">
           <span class="chip ok">轮次 R-27 · 执行中</span>
           <span class="chip">截止 07-08 16:00</span>
           <span class="chip warn">锁资冲突检查:1 账号与下一轮冲突</span>
@@ -610,7 +610,7 @@
         </div>
         <table>
           <thead><tr><th>新股池评分</th><th>评分</th><th>预计中签率</th><th>入场费</th><th>风险</th><th>OpenClaw 摘要</th></tr></thead>
-          <tbody>
+          <tbody id="hk-stocks">
             <tr><td><b>某科技 2688.HK</b></td><td class="num up">82</td><td class="num">乙组头 8%</td><td class="num">HK$2,948</td><td><span class="chip warn">情绪票</span></td><td style="color:var(--muted)">孖展 41 倍,热度高,留意首日兑现</td></tr>
             <tr><td><b>某消费 1929.HK</b></td><td class="num">67</td><td class="num">一手 22%</td><td class="num">HK$4,120</td><td><span class="chip ok">基本面</span></td><td style="color:var(--muted)">基石 3 家,回拨概率中</td></tr>
             <tr><td><b>某物流</b></td><td class="num down">31</td><td class="num">—</td><td class="num">HK$3,560</td><td><span class="chip danger">建议跳过</span></td><td style="color:var(--muted)">同业近 4 只破 3,锁资 9 天</td></tr>
@@ -619,7 +619,7 @@
         <div style="height:10px"></div>
         <table>
           <thead><tr><th>账号排班</th><th>人员</th><th>建议新股</th><th>入场费+费用</th><th>锁资到期</th><th>状态</th><th>排班解释</th></tr></thead>
-          <tbody>
+          <tbody id="hk-entries">
             <tr><td class="num">HK-03</td><td>张三</td><td class="num">2688.HK ×1手</td><td class="num">HK$2,948+50</td><td class="num">07-11</td><td><span class="chip ok">已申购</span></td><td style="color:var(--muted)">现金充足,不冲突下一轮</td></tr>
             <tr><td class="num">HK-07</td><td>李四</td><td class="num">1929.HK ×1手</td><td class="num">HK$4,120+50</td><td class="num">07-12</td><td><span class="chip warn">待申购</span></td><td style="color:var(--muted)">退款 07-12 赶得上 R-28</td></tr>
             <tr><td class="num">HK-11</td><td>王五</td><td class="num">跳过本轮</td><td class="num">—</td><td class="num">—</td><td><span class="chip">跳过</span></td><td style="color:var(--muted)">资金被 R-26 锁至 07-10</td></tr>
@@ -634,7 +634,7 @@
         <div class="src">source · 流水表按人员/账号聚合 — 点击人名进入下方明细</div>
         <table>
           <thead><tr><th>人员</th><th>管理本金</th><th>净收益</th><th>ROI</th><th>磨损</th><th>待结算分成</th></tr></thead>
-          <tbody>
+          <tbody id="hk-people">
             <tr style="cursor:pointer" onclick="showPerson('zs')"><td style="color:var(--var)">张三 ▸</td><td class="num">$18,400</td><td class="num up">+$980</td><td class="num">5.3%</td><td class="num">0.9%</td><td class="num">$294</td></tr>
             <tr style="cursor:pointer" onclick="showPerson('ls')"><td style="color:var(--var)">李四 ▸</td><td class="num">$16,100</td><td class="num up">+$720</td><td class="num">4.5%</td><td class="num">1.4%</td><td class="num">$216</td></tr>
             <tr style="cursor:pointer" onclick="showPerson('ww')"><td style="color:var(--var)">王五 ▸</td><td class="num">$13,760</td><td class="num up">+$440</td><td class="num">3.2%</td><td class="num" style="color:var(--warn)">2.3%</td><td class="num">$132</td></tr>
@@ -645,7 +645,7 @@
       <!-- 人员明细钻取:数据全在五表(均挂人员字段),此视图为呈现层新增 -->
       <div class="panel">
         <h2>人员明细 <span class="feat f-new">新增呈现(数据现有:五表均挂人员字段)</span></h2>
-        <div class="subnav" style="margin:6px 0 4px">
+        <div class="subnav" style="margin:6px 0 4px" id="hk-person-tabs">
           <span class="on" id="pc-zs" onclick="showPerson('zs')">张三</span>
           <span id="pc-ls" onclick="showPerson('ls')">李四</span>
           <span id="pc-ww" onclick="showPerson('ww')">王五</span>
@@ -891,6 +891,81 @@
       setK('vd.vol_label','本周量 / 今日损耗');
       if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
     }
+    // 本周预算剩余(config weekly_loss_cap − 近7日损耗;滚动窗口口径如实标注)
+    const b=vd.budget||{};
+    if(b.present){
+      setK('vdk.budget', money(b.remaining)+'<span style="font-size:13px;color:var(--faint)">/'+(b.cap??'—')+'</span>');
+      setK('vdk.budget_sub', '近7日损耗 −'+money(b.loss_7d).slice(1)+'(滚动7日口径)');
+    }
+  }
+
+  function bindPFIntents(pi){
+    if(!pi.present) return;
+    setK('pf.intents_src','source · desired_orders('+esc(pi.ts_age||'—')+'更新 · 共 '+(pi.intents_total??0)+' 条意向)+ execution_report');
+    const body=document.getElementById('pf-intents-body');
+    if(body){
+      body.innerHTML=(pi.intents||[]).length? pi.intents.map(i=>
+        '<tr><td>'+esc(i.market||'—')+'</td><td class="num">'+esc(i.account||'—')+'</td>'+
+        '<td class="num">'+esc(i.side||'—')+'</td><td class="num">'+(i.price??'—')+'</td>'+
+        '<td class="num">'+(i.size??'—')+'</td><td><span class="chip info">'+esc(i.action||'—')+'</span></td></tr>').join('')
+        : '<tr><td colspan="6" style="color:var(--faint)">当前无意向单</td></tr>';
+    }
+  }
+
+  function bindIPO(ipo){
+    if(!ipo.present) return;
+    const chips=document.getElementById('hk-round-chips');
+    if(chips){
+      const r=ipo.round||{};
+      chips.innerHTML='<span class="chip ok">'+esc(r.title||r.code||'本轮')+(ipo.mode?' · '+esc(ipo.mode):'')+'</span>'+
+        (r.deadline?'<span class="chip">截止 '+esc(r.deadline)+'</span>':'')+
+        '<span class="chip">新股池 '+(ipo.stocks_total??0)+' · 排班 '+(ipo.entries_total??0)+'</span>'+
+        '<span class="chip">'+esc(ipo.updated_age||'?')+'更新</span>'+
+        '<span class="chip info" style="cursor:pointer" onclick="window.open(\'http://100.82.86.62:8081/\',\'_blank\')">操作在核算台 →</span>';
+    }
+    const st=document.getElementById('hk-stocks');
+    if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>
+      '<tr><td><b>'+esc(x.name||'—')+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+'</td>'+
+      '<td class="num">'+(x.score??'—')+'</td><td class="num">—</td><td class="num">'+(x.fee??'—')+'</td>'+
+      '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
+      '<td style="color:var(--muted)">'+esc(x.note||'')+'</td></tr>').join('')
+      : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
+    const en=document.getElementById('hk-entries');
+    if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>
+      '<tr><td class="num">'+esc(e.account||'—')+'</td><td>'+esc(e.person||'—')+'</td>'+
+      '<td class="num">'+esc(e.stock||'—')+'</td><td class="num">'+(e.fee??'—')+'</td>'+
+      '<td class="num">'+esc(e.due||'—')+'</td><td><span class="chip">'+esc(e.status||'—')+'</span></td>'+
+      '<td style="color:var(--muted)">'+esc(e.reason||'')+'</td></tr>').join('')
+      : '<tr><td colspan="7" style="color:var(--faint)">本轮暂无排班</td></tr>';
+  }
+
+  window.__owners=[]; window.__ownerIdx=0;
+  function switchOwner(i){
+    window.__ownerIdx=i;
+    const tabs=document.getElementById('hk-person-tabs');
+    if(tabs) tabs.querySelectorAll('span').forEach((sp,j)=>sp.classList.toggle('on',j===i));
+    renderOwnerDetail(i);
+  }
+  function renderOwnerDetail(i){
+    const o=(window.__owners||[])[i]; if(!o) return;
+    let host=document.getElementById('hk-person-body');
+    if(!host){
+      const first=document.getElementById('pd-zs'); if(!first) return;
+      host=document.createElement('div'); host.id='hk-person-body';
+      first.parentNode.insertBefore(host, first);
+      ['zs','ls','ww'].forEach(k=>{const el=document.getElementById('pd-'+k); if(el) el.remove();});
+    }
+    host.innerHTML='<div class="pstat"><span>管理本金 <b>'+money(o.capital)+'</b></span>'+
+      '<span>净收益 <b>'+pnlSpan(o.income||0)+'</b></span>'+
+      '<span>ROI <b>'+(o.roi_pct!=null?o.roi_pct+'%':'—')+'</b></span>'+
+      '<span>磨损 <b>'+(o.wear_pct!=null?o.wear_pct+'%':'—')+'</b></span>'+
+      '<span>分成比例 <b>'+(o.share!=null?Math.round(o.share*100)+'%':'—')+'</b></span></div>'+
+      '<table><thead><tr><th>名下账号</th><th>平台</th><th>本金</th><th>状态</th><th>净收益</th></tr></thead><tbody>'+
+      (o.accounts||[]).map(a=>'<tr><td class="num">'+esc(a.id||'—')+'</td><td>'+esc(a.platform||'—')+'</td>'+
+        '<td class="num">'+money(a.capital)+'</td>'+
+        '<td><span class="chip '+(String(a.status||'').includes('运行')?'ok':'warn')+'">'+esc(a.status||'—')+'</span></td>'+
+        '<td class="num">'+pnlSpan(a.income||0)+'</td></tr>').join('')+
+      '</tbody></table>';
   }
 
   function bindPF(pf){
@@ -984,6 +1059,24 @@
     } else if(rl && hk.present){
       rl.innerHTML='<li><span class="dot d-info"></span><div><div>风险队列为空</div></div></li>';
     }
+    // 人员排行 + 人员明细(④)
+    const pt=document.getElementById('hk-people');
+    if(pt && (hk.owners||[]).length){
+      pt.innerHTML=hk.owners.map((o,i)=>
+        '<tr style="cursor:pointer" onclick="switchOwner('+i+')">'+
+        '<td style="color:var(--var)">'+esc(o.name)+' ▸</td><td class="num">'+money(o.capital)+'</td>'+
+        '<td class="num">'+pnlSpan(o.income||0)+'</td>'+
+        '<td class="num">'+(o.roi_pct!=null?o.roi_pct+'%':'—')+'</td>'+
+        '<td class="num">'+(o.wear_pct!=null?o.wear_pct+'%':'—')+'</td>'+
+        '<td class="num">'+(o.share!=null?Math.round(o.share*100)+'%':'—')+'</td></tr>').join('');
+    }
+    window.__owners=hk.owners||[];
+    const tabs=document.getElementById('hk-person-tabs');
+    if(tabs && window.__owners.length){
+      tabs.innerHTML=window.__owners.map((o,i)=>
+        '<span'+(i===(window.__ownerIdx||0)?' class="on"':'')+' onclick="switchOwner('+i+')">'+esc(o.name)+'</span>').join('');
+      renderOwnerDetail(window.__ownerIdx||0);
+    }
   }
 
   function bindInfra(mm){
@@ -1027,6 +1120,8 @@
     try{bindPF(s.predictfun||{});}catch(e){}
     try{bindSA(s.single_account||{});}catch(e){}
     try{bindHK(s.account_ops||{});}catch(e){}
+    try{bindIPO(s.ipo||{});}catch(e){}
+    try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>el.title='示例数据(真数据接入中)');

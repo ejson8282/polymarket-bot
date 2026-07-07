@@ -28,8 +28,9 @@ APP_DIR = Path(__file__).resolve().parent
 CONSOLE_HTML = APP_DIR / "console.html"
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", APP_DIR.parents[1] / "data"))
 VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming-live/data"))
-# 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、mac-mini 状态导出器
+# 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
+IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
@@ -190,14 +191,14 @@ def _varia_trades_today() -> Dict[str, Any]:
             "SELECT id, host, status, timestamp_close, target_notional, funding_var, "
             "funding_decibel, realized_cost_bp, estimated_cost_bp, var_slippage_bp, "
             "decibel_slippage_bp, realized_pnl_usdc FROM trades "
-            "WHERE timestamp_close >= datetime('now','-1 day')")
+            "WHERE timestamp_close >= datetime('now','-7 day')")
         names = [d[0] for d in cur.description]
         rows += [dict(zip(names, r)) for r in cur.fetchall()]
         conn.close()
     except Exception:
         pass
     peer_dir = VARIA_DIR / "peer_trades"
-    cutoff = time.time() - 86400
+    cutoff_7d = time.time() - 7 * 86400
     for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
         raw = _read_json(path)
         if not isinstance(raw, list):
@@ -206,14 +207,16 @@ def _varia_trades_today() -> Dict[str, Any]:
             if not isinstance(r, dict):
                 continue
             ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
-            if ts is None or ts < cutoff:
+            if ts is None or ts < cutoff_7d:
                 continue
             r = dict(r)
             r.setdefault("host", path.stem)
             rows.append(r)
-    # (host,id) 去重 + 只算 executed(口径同 varia dashboard)
+    # (host,id) 去重 + 只算 executed(口径同 varia dashboard);24h 与 7日双窗口
     seen = set()
+    cutoff_24h = time.time() - 86400
     volume = pnl = fee = funding = slip = loss = 0.0
+    loss_7d = 0.0
     count = 0
     for r in rows:
         status = str(r.get("status") or "").strip().lower()
@@ -224,27 +227,30 @@ def _varia_trades_today() -> Dict[str, Any]:
             continue
         seen.add(key)
         notional = abs(_num(r.get("target_notional")) or 0.0)
-        volume += notional
-        count += 1
         r_pnl = _num(r.get("realized_pnl_usdc"))
-        if r_pnl is not None:
-            pnl += r_pnl
-            if r_pnl < 0:
-                loss += -r_pnl
         cost_bp = _num(r.get("realized_cost_bp"))
         if cost_bp is None:
             cost_bp = _num(r.get("estimated_cost_bp"))
+        row_loss = (-r_pnl if (r_pnl is not None and r_pnl < 0) else
+                    (abs(cost_bp) * notional / 10000.0 if (r_pnl is None and cost_bp is not None) else 0.0))
+        loss_7d += row_loss
+        ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
+        if ts is None or ts < cutoff_24h:
+            continue
+        volume += notional
+        count += 1
+        loss += row_loss
+        if r_pnl is not None:
+            pnl += r_pnl
         if cost_bp is not None:
             fee += abs(cost_bp) * notional / 10000.0
-            if r_pnl is None:
-                loss += abs(cost_bp) * notional / 10000.0
         funding += (_num(r.get("funding_var")) or 0.0) + (_num(r.get("funding_decibel")) or 0.0)
         slip += (abs(_num(r.get("var_slippage_bp")) or 0.0)
                  + abs(_num(r.get("decibel_slippage_bp")) or 0.0)) * notional / 10000.0
     return {
         "present": count > 0,
         "trades": count, "volume": round(volume, 2), "pnl": round(pnl, 2),
-        "loss": round(loss, 2),
+        "loss": round(loss, 2), "loss_7d": round(loss_7d, 2),
         "loss_bps_wan": round(loss / volume * 10000.0, 2) if volume else None,
         "fee": round(fee, 2), "funding": round(funding, 2), "slip": round(slip, 2),
     }
@@ -424,7 +430,8 @@ def _var_decibel() -> Dict[str, Any]:
         "volume_total": round(vol_total, 2) if vol_found else None,
         "single_leg": single_leg,
         "pairs": pairs[:12],
-        "today": _varia_trades_today(),
+        "today": (today := _varia_trades_today()),
+        "budget": _varia_budget(today.get("loss_7d")),
     }
 
 
@@ -506,7 +513,34 @@ def _account_ops() -> Dict[str, Any]:
                  if isinstance(d.get("reminders"), dict) else {}) or {}
     risks = d.get("risks") if isinstance(d.get("risks"), list) else []
     meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    # ④ 人员明细:accounts 按 owner 聚合,share 从 people 表补
+    share_by_name = {str(p.get("name") or ""): _num(p.get("share"))
+                     for p in (d.get("people") or []) if isinstance(p, dict)}
+    owners: Dict[str, dict] = {}
+    for a in accounts:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("owner") or "未分配")
+        o = owners.setdefault(name, {"name": name, "capital": 0.0, "income": 0.0,
+                                     "wear": 0.0, "accounts": []})
+        o["capital"] += _num(a.get("capital")) or 0.0
+        o["income"] += _num(a.get("income")) or 0.0
+        o["wear"] += _num(a.get("wear")) or 0.0
+        if len(o["accounts"]) < 6:
+            o["accounts"].append({"id": a.get("id"), "platform": a.get("platform"),
+                                  "status": a.get("status"),
+                                  "capital": round(_num(a.get("capital")) or 0.0, 2),
+                                  "income": round(_num(a.get("income")) or 0.0, 2)})
+    owner_rows = []
+    for o in sorted(owners.values(), key=lambda x: -x["capital"])[:8]:
+        owner_rows.append({
+            **{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()},
+            "roi_pct": round(o["income"] / o["capital"] * 100, 2) if o["capital"] else None,
+            "wear_pct": round(o["wear"] / o["capital"] * 100, 2) if o["capital"] else None,
+            "share": share_by_name.get(o["name"]),
+        })
     return {
+        "owners": owner_rows,
         "present": True,
         "accounts": len(accounts),
         "people": len(d.get("people") or []),
@@ -524,6 +558,90 @@ def _account_ops() -> Dict[str, Any]:
         "as_of": str(meta.get("as_of") or ""),
         "as_of_age": _age_text(_iso_age(meta.get("as_of"))),
     }
+
+
+def _ipo() -> Dict[str, Any]:
+    """① 打新工作台:router /dashboard/ipo/state(只读)。"""
+    d = _fetch_json(IPO_STATE_URL, ttl=120.0)
+    inner = (d or {}).get("ipo") if isinstance(d, dict) else None
+    if not isinstance(inner, dict):
+        return {"present": False}
+    rnd = inner.get("round") if isinstance(inner.get("round"), dict) else {}
+    stocks = inner.get("stocks") if isinstance(inner.get("stocks"), list) else []
+    entries = inner.get("entries") if isinstance(inner.get("entries"), list) else []
+
+    def _stock(s: dict) -> dict:
+        return {"name": str(s.get("name") or s.get("title") or s.get("code") or "")[:24],
+                "code": str(s.get("code") or ""),
+                "score": s.get("score"),
+                "fee": s.get("fee") or s.get("entryFee") or s.get("entry_fee"),
+                "risk": str(s.get("risk") or s.get("riskLabel") or "")[:12],
+                "note": str(s.get("note") or s.get("summary") or s.get("comment") or "")[:48]}
+
+    def _entry(e: dict) -> dict:
+        return {"account": str(e.get("account") or e.get("accountId") or "")[:14],
+                "person": str(e.get("person") or e.get("owner") or "")[:10],
+                "stock": str(e.get("stock") or e.get("code") or e.get("suggestion") or "")[:20],
+                "fee": e.get("fee") or e.get("entryFee"),
+                "due": str(e.get("due") or e.get("lockUntil") or e.get("deadline") or "")[:12],
+                "status": str(e.get("status") or "")[:14],
+                "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
+
+    return {
+        "present": True, "mode": inner.get("mode"),
+        "round": {"title": rnd.get("title"), "code": rnd.get("code"),
+                  "deadline": rnd.get("deadline"), "currency": rnd.get("currency")},
+        "updated_age": _age_text(_iso_age(inner.get("updated_at"))),
+        "stocks": [_stock(s) for s in stocks[:6] if isinstance(s, dict)],
+        "entries": [_entry(e) for e in entries[:8] if isinstance(e, dict)],
+        "stocks_total": len(stocks), "entries_total": len(entries),
+    }
+
+
+def _pf_intents() -> Dict[str, Any]:
+    """② PF 模拟持仓&意向:desired_orders + execution_report(只读)。"""
+    out: Dict[str, Any] = {"present": False}
+    desired = _read_json(DATA_DIR / "predictfun_mainnet_desired_orders.json") \
+        or _read_json(DATA_DIR / "predictfun_desired_orders.json")
+    if isinstance(desired, dict):
+        summary = desired.get("summary") if isinstance(desired.get("summary"), dict) else {}
+        intents = desired.get("intents") if isinstance(desired.get("intents"), list) else []
+
+        def _intent(i: dict) -> dict:
+            market = str(i.get("market") or i.get("market_title") or i.get("market_id") or "")[:26]
+            outcome = str(i.get("outcome") or "")[:10]
+            return {"market": (market + (" · " + outcome if outcome else "")),
+                    "side": str(i.get("side") or "")[:6],
+                    "price": i.get("price"), "size": i.get("size") or i.get("quantity"),
+                    "action": str(i.get("action") or i.get("op") or i.get("reason") or "")[:14],
+                    "account": str(i.get("account") or i.get("account_id") or "")[:10]}
+        out = {"present": True, "ts_age": _age_text(_iso_age(desired.get("ts"))),
+               "summary": {k: summary.get(k) for k in list(summary)[:6]},
+               "intents": [_intent(i) for i in intents[:6] if isinstance(i, dict)],
+               "intents_total": len(intents)}
+    report = _read_json(DATA_DIR / "predictfun_mainnet_execution_report.json")
+    if isinstance(report, dict):
+        rs = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        out["exec_summary"] = {k: rs.get(k) for k in list(rs)[:6]}
+    return out
+
+
+def _varia_budget(loss_7d: Optional[float]) -> Dict[str, Any]:
+    """③ 本周预算剩余:config weekly_loss_cap_usdc − 近7日损耗(滚动窗口口径,如实标注)。"""
+    cap = None
+    try:
+        text = (VARIA_DIR.parent / "config.yaml").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "weekly_loss_cap_usdc" in line and ":" in line:
+                cap = _num(line.split(":", 1)[1].strip().strip('"').strip("'"))
+                break
+    except Exception:
+        pass
+    if cap is None:
+        return {"present": False}
+    remaining = max(0.0, cap - (loss_7d or 0.0))
+    return {"present": True, "cap": cap, "loss_7d": round(loss_7d or 0.0, 2),
+            "remaining": round(remaining, 2)}
 
 
 def _macmini() -> Dict[str, Any]:
@@ -629,6 +747,8 @@ def api_state() -> JSONResponse:
         "single_account": _single_account(),
         "recorders": _recorders(),
         "account_ops": _account_ops(),
+        "ipo": _ipo(),
+        "pf_intents": _pf_intents(),
         "macmini": _macmini(),
         "events": _events(pm.pop("fill_events", [])),
         "alerts": _alerts(vd, pm),
