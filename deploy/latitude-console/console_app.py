@@ -482,6 +482,95 @@ def _single_account() -> Dict[str, Any]:
     return out
 
 
+# ---------- 原生子视图明细(只读)----------
+
+def _varia_detail() -> Dict[str, Any]:
+    """varia 二级页原生数据:近期成交明细 + 统计聚合(替代 iframe)。"""
+    trades: List[dict] = []
+    db = VARIA_DIR / "hedge_bot.sqlite3"
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        cur = conn.execute(
+            "SELECT id, host, symbol, timestamp_open, timestamp_close, target_notional, "
+            "var_side, decibel_side, basis_open_bp, basis_close_bp, realized_pnl_usdc, "
+            "realized_cost_bp, status, strategy FROM trades "
+            "ORDER BY timestamp_close DESC LIMIT 40")
+        names = [d[0] for d in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        rows = []
+    for r in rows:
+        tc = str(r.get("timestamp_close") or "")
+        trades.append({
+            "id": r.get("id"), "host": str(r.get("host") or "").upper(),
+            "symbol": r.get("symbol"), "strategy": r.get("strategy"),
+            "close": tc[5:16].replace("T", " ") if len(tc) >= 16 else tc,
+            "notional": _num(r.get("target_notional")),
+            "side": f"{r.get('var_side') or '?'}/{r.get('decibel_side') or '?'}",
+            "basis": (f"{_num(r.get('basis_open_bp')):.1f}→{_num(r.get('basis_close_bp')):.1f}bp"
+                      if _num(r.get("basis_open_bp")) is not None else "—"),
+            "pnl": _num(r.get("realized_pnl_usdc")),
+            "cost_bp": _num(r.get("realized_cost_bp")),
+            "status": r.get("status"),
+        })
+    # 统计聚合(按 host / 按 symbol)
+    by_host: Dict[str, dict] = {}
+    by_symbol: Dict[str, dict] = {}
+    for t in trades:
+        for bucket, keyname in ((by_host, t["host"]), (by_symbol, str(t["symbol"] or "?"))):
+            b = bucket.setdefault(keyname, {"trades": 0, "notional": 0.0, "pnl": 0.0, "wins": 0})
+            b["trades"] += 1
+            b["notional"] += t["notional"] or 0.0
+            b["pnl"] += t["pnl"] or 0.0
+            b["wins"] += 1 if (t["pnl"] or 0) > 0 else 0
+    def _agg(d):
+        return [{"name": k, "trades": v["trades"], "notional": round(v["notional"], 2),
+                 "pnl": round(v["pnl"], 2),
+                 "win_rate": round(v["wins"] / v["trades"] * 100) if v["trades"] else 0}
+                for k, v in sorted(d.items(), key=lambda kv: -kv[1]["notional"])]
+    return {"present": bool(trades), "trades": trades,
+            "by_host": _agg(by_host), "by_symbol": _agg(by_symbol)}
+
+
+def _pm_detail() -> Dict[str, Any]:
+    """pm 二级页原生数据:各账号在做市场明细 + 成交流(engine_state)。"""
+    markets: List[dict] = []
+    fills: List[dict] = []
+    for idx in range(1, 31):
+        state = _read_json(DATA_DIR / f"engine_state_{idx}.json")
+        if state is None and idx == 1:
+            state = _read_json(DATA_DIR / "engine_state.json")
+        if not isinstance(state, dict):
+            continue
+        mk = state.get("markets") if isinstance(state.get("markets"), dict) else {}
+        for tid, m in mk.items():
+            if not isinstance(m, dict):
+                continue
+            orders = m.get("orders")
+            markets.append({
+                "account": idx, "token": str(tid)[:10],
+                "mid": _num(m.get("mid")), "bid": _num(m.get("best_bid")),
+                "ask": _num(m.get("best_ask")),
+                "orders": len(orders) if isinstance(orders, list) else 0,
+                "status": m.get("status") or m.get("event_state") or "—",
+            })
+        for f in (state.get("fills") if isinstance(state.get("fills"), list) else [])[-15:]:
+            if not isinstance(f, dict):
+                continue
+            ts = _num(f.get("ts")) or 0
+            fills.append({
+                "account": idx,
+                "t": datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "—",
+                "epoch": ts,
+                "side": f.get("side"), "price": _num(f.get("price")),
+                "size": _num(f.get("size")), "pnl": _num(f.get("pnl")),
+                "market": str(f.get("market") or f.get("slug") or f.get("asset_id") or "")[:18],
+            })
+    fills.sort(key=lambda x: -(x["epoch"] or 0))
+    return {"present": bool(markets or fills), "markets": markets[:40], "fills": fills[:30]}
+
+
 # ---------- 跨机只读拉取(带缓存,拉不到显示离线不阻塞) ----------
 
 _HTTP_CACHE: Dict[str, tuple] = {}
@@ -770,10 +859,49 @@ def api_state() -> JSONResponse:
         "account_ops": _account_ops(),
         "ipo": _ipo(),
         "pf_intents": _pf_intents(),
+        "varia_detail": _varia_detail(),
+        "pm_detail": _pm_detail(),
         "macmini": _macmini(),
         "events": _events(pm.pop("fill_events", [])),
         "alerts": _alerts(vd, pm),
+        "writes_enabled": WRITES_ENABLED,
     })
+
+
+# ---------- 受控写:varia 周预算(默认关闭,LATITUDE_ENABLE_WRITES=1 启用) ----------
+# 写路径与 varia dashboard 自身控件完全一致:改 VPS1 的 auto_strategy_state.json,
+# 由 varia 既有的 state 同步机制传播到 VPS2。带备份 + 审计日志 + 范围校验。
+
+WRITES_ENABLED = os.getenv("LATITUDE_ENABLE_WRITES", "0") == "1"
+AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
+
+
+@app.post("/api/varia/budget")
+async def set_varia_budget(payload: dict) -> JSONResponse:
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用:待 Kevin 审阅后在服务环境设 "
+                                                   "LATITUDE_ENABLE_WRITES=1(见 README)"}, status_code=403)
+    cap = _num((payload or {}).get("cap"))
+    if cap is None or not (0 <= cap <= 500):
+        return JSONResponse({"ok": False, "error": "cap 需为 0–500 之间的数字"}, status_code=400)
+    path = VARIA_DIR / "auto_strategy_state.json"
+    state = _read_json(path)
+    if not isinstance(state, dict):
+        return JSONResponse({"ok": False, "error": "auto_strategy_state.json 不可读"}, status_code=500)
+    old = state.get("weekly_loss_cap_usdc")
+    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    backup.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    state["weekly_loss_cap_usdc"] = str(cap)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    with AUDIT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+                             "action": "set_weekly_loss_cap", "old": old, "new": str(cap),
+                             "backup": backup.name}, ensure_ascii=False) + "\n")
+    return JSONResponse({"ok": True, "old": old, "new": str(cap),
+                         "note": "已写入 VPS1 生效值;VPS2 由 varia 既有 state 同步机制传播"})
 
 
 @app.get("/", response_class=HTMLResponse)

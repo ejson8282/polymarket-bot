@@ -1097,44 +1097,81 @@
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
-  // 二级导航 pill → 页内内嵌原系统(iframe;Streamlit ?embed=true 无边框模式,
-  // 经同源 /varia/ 与 /alpha/ 反代,凭证/websocket 全部继承;核算台直嵌 8081)
+  // 二级导航 pill → 原生子视图(控制台自有样式,零 iframe;用 /api/state 数据渲染)
+  window.__detail={};   // {pageId: 当前激活的 pill 文本}
   (function(){
-    const targets={vardec:'/varia/?embed=true', pm:'/alpha/?embed=true',
-                   pf:'/alpha/?embed=true', sa:'/alpha/?embed=true',
-                   hk:'http://100.82.86.62:8081/'};
     document.querySelectorAll('.page').forEach(pg=>{
-      const t=targets[pg.id.replace('page-','')];
+      const pid=pg.id.replace('page-','');
       const nav=pg.querySelector('.subnav');
-      if(!t||!nav) return;
-      const wrap=document.createElement('div');
-      wrap.style.display='none';
-      wrap.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px">'+
-        '<span class="src" style="margin:0">原系统内嵌视图 — 数据与操作即原站,二级页在其内部切换</span>'+
-        '<button class="btn ghost" style="font-size:11px">收起内嵌 ↑</button></div>'+
-        '<iframe style="width:100%;height:1500px;border:1px solid var(--line);border-radius:10px;background:var(--panel)" loading="lazy"></iframe>';
-      nav.parentNode.insertBefore(wrap, nav.nextSibling);
-      wrap.querySelector('button').addEventListener('click',()=>{
-        wrap.style.display='none';
-        nav.querySelectorAll('span').forEach(s=>s.classList.remove('embed-on'));
-      });
+      if(!nav) return;
+      const box=document.createElement('div');
+      box.className='panel'; box.style.display='none'; box.id='detail-'+pid;
+      nav.parentNode.insertBefore(box, nav.nextSibling);
       nav.querySelectorAll('span').forEach(sp=>{
-        if(sp.classList.contains('on')) return;   // 首个 pill 是本页(新首屏),不内嵌
-        sp.title='在本页内嵌打开原系统';
+        if(sp.classList.contains('on')){
+          sp.addEventListener('click',()=>{ // 回到首屏:收起明细
+            box.style.display='none'; window.__detail[pid]=null;
+            nav.querySelectorAll('span').forEach(s=>s.classList.remove('embed-on'));
+          });
+          return;
+        }
+        const name=sp.textContent.replace(/现有|[图\s]/g,'').trim();
+        sp.title='原生子视图(本页内渲染)';
         sp.addEventListener('click',()=>{
-          const ifr=wrap.querySelector('iframe');
-          if(!ifr.getAttribute('src')) ifr.src=t;
-          wrap.style.display='block';
+          window.__detail[pid]=name;
           nav.querySelectorAll('span').forEach(s=>s.classList.remove('embed-on'));
           sp.classList.add('embed-on');
-          wrap.scrollIntoView({behavior:'smooth',block:'start'});
+          box.style.display='block';
+          renderDetail(pid);
+          box.scrollIntoView({behavior:'smooth',block:'start'});
         });
       });
     });
   })();
 
+  function _table(cols, rows, rowfn){
+    if(!rows||!rows.length) return '<div style="color:var(--faint);padding:10px">暂无数据</div>';
+    return '<table><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'+
+      rows.map(rowfn).join('')+'</tbody></table>';
+  }
+  function renderDetail(pid){
+    const box=document.getElementById('detail-'+pid); if(!box) return;
+    const s=window.__state||{}; const name=window.__detail[pid]; if(!name){box.style.display='none';return;}
+    let html='<h2>'+esc(name)+' <span class="feat f-new">原生视图</span></h2>';
+    if(pid==='vardec'){
+      const vdt=s.varia_detail||{};
+      if(name.indexOf('Statistics')>=0||name.indexOf('统计')>=0){
+        html+='<div class="src">按 host / symbol 聚合(近40笔成交)</div>'+
+          '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
+          _table(['VPS','笔数','名义','净PnL','胜率'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+          '</div><div><h2 style="font-size:12px">按 SYMBOL</h2>'+
+          _table(['SYMBOL','笔数','名义','净PnL','胜率'],vdt.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+          '</div></div>';
+      } else {
+        html+='<div class="src">近 40 笔对冲成交('+esc(name)+')· 数据来自 trades 表</div>'+
+          _table(['时间','VPS','SYMBOL','策略','名义','方向 V/D','basis','净PnL','状态'],vdt.trades,r=>
+            '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
+      }
+    } else if(pid==='pm'){
+      const pmd=s.pm_detail||{};
+      if(name.indexOf('Fills')>=0||name.indexOf('成交')>=0){
+        html+='<div class="src">各账号成交流(engine_state fills)</div>'+
+          _table(['账号','时间','市场','方向','价格','数量','PnL'],pmd.fills,r=>
+            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.t)+'</td><td class="num">'+esc(r.market||'—')+'</td><td class="num">'+esc(r.side||'—')+'</td><td class="num">'+(r.price??'—')+'</td><td class="num">'+(r.size??'—')+'</td><td class="num">'+(r.pnl!=null?pnlSpan(r.pnl):'—')+'</td></tr>');
+      } else {
+        html+='<div class="src">各账号在做市场(engine_state markets:mid/bid/ask/挂单)</div>'+
+          _table(['账号','TOKEN','mid','bid','ask','挂单','状态'],pmd.markets,r=>
+            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.token)+'</td><td class="num">'+(r.mid??'—')+'</td><td class="num">'+(r.bid??'—')+'</td><td class="num">'+(r.ask??'—')+'</td><td class="num">'+r.orders+'</td><td><span class="chip">'+esc(r.status)+'</span></td></tr>');
+      }
+    }
+    html+='<div class="src" style="margin-top:10px">需要在原系统操作(启停/下单)? 从下方按钮打开 varia/pmbot 完整面板 → '+
+      '<button class="btn ghost" style="font-size:11px" onclick="window.open(\''+(pid==='vardec'?'/varia/':'/alpha/')+'\',\'_blank\')">打开完整面板</button></div>';
+    box.innerHTML=html;
+  }
+
   async function refresh(){
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ return; }
+    window.__state=s;
     setK('clock', (s.ts||'')+' · 刚刷新');
     try{bindPM(s.polymarket||{});}catch(e){}
     try{bindVD(s.var_decibel||{});}catch(e){}
@@ -1145,7 +1182,37 @@
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
+    try{bindBudgetEditor(s);}catch(e){}
+    Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>el.title='示例数据(真数据接入中)');
+  }
+
+  // 周预算编辑器:预算 KPI 卡加"改"按钮,弹输入 → POST /api/varia/budget
+  function bindBudgetEditor(s){
+    const vd=s.var_decibel||{}; const b=vd.budget||{};
+    if(!b.present) return;
+    const card=document.querySelector('[data-k="vdk.budget"]');
+    if(!card || card.dataset.editWired) return;
+    const kpi=card.closest('.kpi'); if(!kpi) return;
+    kpi.dataset.editWired='1';
+    const btn=document.createElement('button');
+    btn.className='btn ghost'; btn.style.cssText='font-size:10px;padding:2px 8px;margin-top:6px';
+    btn.textContent=s.writes_enabled?'改预算':'改预算(待启用)';
+    btn.onclick=async()=>{
+      const cur=b.cap_each||0;
+      const v=prompt('每 VPS 周预算上限(USDC),当前每台 $'+cur+':', cur);
+      if(v===null) return;
+      const cap=parseFloat(v); if(isNaN(cap)){alert('请输入数字');return;}
+      btn.textContent='写入中…'; btn.disabled=true;
+      try{
+        const r=await fetch('/api/varia/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cap})});
+        const j=await r.json();
+        if(j.ok){ alert('已更新:每台 $'+cur+' → $'+cap+'\n'+(j.note||'')); refresh(); }
+        else{ alert('未生效:'+(j.error||'未知')); }
+      }catch(e){ alert('请求失败:'+e); }
+      btn.textContent=s.writes_enabled?'改预算':'改预算(待启用)'; btn.disabled=false;
+    };
+    kpi.appendChild(btn);
   }
   refresh(); setInterval(refresh, 15000);
 </script>
