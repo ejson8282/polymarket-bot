@@ -1001,6 +1001,24 @@
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
+  // 二级导航 pill → 打开对应原系统页面(新标签):varia 走同源 /varia/ 反代,
+  // pmbot Streamlit 直连 :8501,打新台直连 Windows 8081
+  (function(){
+    const targets={vardec:'/varia/', pm:':8501', pf:':8501', sa:':8501', hk:'http://100.82.86.62:8081/'};
+    document.querySelectorAll('.page').forEach(pg=>{
+      const t=targets[pg.id.replace('page-','')];
+      if(!t) return;
+      pg.querySelectorAll('.subnav span').forEach(sp=>{
+        if(sp.classList.contains('on')) return;
+        sp.title='在新标签打开原系统对应页';
+        sp.addEventListener('click',()=>{
+          const url=t.startsWith(':')?('http://'+location.hostname+t):t;
+          window.open(url,'_blank');
+        });
+      });
+    });
+  })();
+
   async function refresh(){
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ return; }
     setK('clock', (s.ts||'')+' · 刚刷新');

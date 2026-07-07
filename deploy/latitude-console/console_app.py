@@ -559,27 +559,48 @@ _SEV = {"error": "crit", "failed": "crit", "critical": "crit", "warning": "warn"
 
 def _events(pm_fills: List[dict]) -> List[dict]:
     merged: List[dict] = list(pm_fills)
-    path = VARIA_DIR / "ops_events.ndjson"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()[-15:]
-    except Exception:
-        lines = []
-    for line in lines:
+    seen = set()
+    sources = [VARIA_DIR / "ops_events.ndjson"]
+    peer_dir = VARIA_DIR / "ops_peer_events"
+    if peer_dir.exists():
+        sources += sorted(peer_dir.glob("*.ndjson"))
+    for path in sources:
         try:
-            ev = json.loads(line)
+            lines = path.read_text(encoding="utf-8").splitlines()[-15:]
         except Exception:
             continue
-        status = str(ev.get("status") or ev.get("kind") or "").lower()
-        sev = _SEV.get(status, "crit" if ev.get("error") else "info")
-        ts = str(ev.get("finished_at") or ev.get("timestamp") or "")
-        age = _iso_age(ts)
-        msg = str(ev.get("message") or ev.get("reason_label") or ev.get("job_kind") or ev.get("kind") or "")[:90]
-        merged.append({
-            "t": ts[11:16] if len(ts) >= 16 else ts,
-            "epoch": (time.time() - age) if age is not None else 0,
-            "sev": sev,
-            "msg": f"[VAR/DEC·{str(ev.get('host') or '').upper()}] {msg}",
-        })
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            status = str(ev.get("status") or ev.get("kind") or "").lower()
+            sev = _SEV.get(status, "crit" if ev.get("error") else "info")
+            ts = str(ev.get("finished_at") or ev.get("timestamp") or "")
+            key = (str(ev.get("host") or ""), ts, str(ev.get("kind") or ""))
+            if key in seen:
+                continue  # 本机文件与 peer 副本重叠时去重
+            seen.add(key)
+            age = _iso_age(ts)
+            # 事件时间戳为 UTC(无时区后缀),显示统一转北京时间
+            t_disp = ts[11:16] if len(ts) >= 16 else ts
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                from datetime import timedelta as _td
+
+                t_disp = (dt.astimezone(timezone(_td(hours=8)))).strftime("%H:%M")
+            except Exception:
+                pass
+            msg = str(ev.get("message") or ev.get("reason_label") or ev.get("job_kind")
+                      or ev.get("kind") or "").replace("\n", " · ")[:150]
+            merged.append({
+                "t": t_disp,
+                "epoch": (time.time() - age) if age is not None else 0,
+                "sev": sev,
+                "msg": f"[VAR/DEC·{str(ev.get('host') or '').upper()}] {msg}",
+            })
     merged.sort(key=lambda e: -(e.get("epoch") or 0))
     return merged[:12]
 
