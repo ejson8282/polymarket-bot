@@ -84,6 +84,7 @@
   .subnav{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}
   .subnav span{font-family:var(--mono);font-size:11px;padding:4px 12px;border-radius:99px;border:1px solid var(--line);color:var(--muted);cursor:pointer}
   .subnav span.on{color:var(--text);background:var(--panel2)}
+  .subnav span.embed-on{color:var(--text);background:#1E2A38;box-shadow:inset 0 -2px 0 var(--dec)}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
   .banner.livewarn{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.35);color:#FF9B9E}
@@ -1094,19 +1095,37 @@
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
-  // 二级导航 pill → 打开对应原系统页面(新标签):varia 走同源 /varia/ 反代,
-  // pmbot Streamlit 直连 :8501,打新台直连 Windows 8081
+  // 二级导航 pill → 页内内嵌原系统(iframe;Streamlit ?embed=true 无边框模式,
+  // 经同源 /varia/ 与 /alpha/ 反代,凭证/websocket 全部继承;核算台直嵌 8081)
   (function(){
-    const targets={vardec:'/varia/', pm:':8501', pf:':8501', sa:':8501', hk:'http://100.82.86.62:8081/'};
+    const targets={vardec:'/varia/?embed=true', pm:'/alpha/?embed=true',
+                   pf:'/alpha/?embed=true', sa:'/alpha/?embed=true',
+                   hk:'http://100.82.86.62:8081/'};
     document.querySelectorAll('.page').forEach(pg=>{
       const t=targets[pg.id.replace('page-','')];
-      if(!t) return;
-      pg.querySelectorAll('.subnav span').forEach(sp=>{
-        if(sp.classList.contains('on')) return;
-        sp.title='在新标签打开原系统对应页';
+      const nav=pg.querySelector('.subnav');
+      if(!t||!nav) return;
+      const wrap=document.createElement('div');
+      wrap.style.display='none';
+      wrap.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px">'+
+        '<span class="src" style="margin:0">原系统内嵌视图 — 数据与操作即原站,二级页在其内部切换</span>'+
+        '<button class="btn ghost" style="font-size:11px">收起内嵌 ↑</button></div>'+
+        '<iframe style="width:100%;height:1500px;border:1px solid var(--line);border-radius:10px;background:var(--panel)" loading="lazy"></iframe>';
+      nav.parentNode.insertBefore(wrap, nav.nextSibling);
+      wrap.querySelector('button').addEventListener('click',()=>{
+        wrap.style.display='none';
+        nav.querySelectorAll('span').forEach(s=>s.classList.remove('embed-on'));
+      });
+      nav.querySelectorAll('span').forEach(sp=>{
+        if(sp.classList.contains('on')) return;   // 首个 pill 是本页(新首屏),不内嵌
+        sp.title='在本页内嵌打开原系统';
         sp.addEventListener('click',()=>{
-          const url=t.startsWith(':')?('http://'+location.hostname+t):t;
-          window.open(url,'_blank');
+          const ifr=wrap.querySelector('iframe');
+          if(!ifr.getAttribute('src')) ifr.src=t;
+          wrap.style.display='block';
+          nav.querySelectorAll('span').forEach(s=>s.classList.remove('embed-on'));
+          sp.classList.add('embed-on');
+          wrap.scrollIntoView({behavior:'smooth',block:'start'});
         });
       });
     });
