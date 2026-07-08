@@ -857,7 +857,9 @@ def _macmini() -> Dict[str, Any]:
     out = {"present": True, "age": _age_text(max(0, int(time.time() - (_num(d.get("ts")) or 0))))}
     for label, key in (("ai.codex.var-decibel-signer", "var_signer"),
                        ("ai.codex.predictfun-api-proxy", "pf_proxy"),
-                       ("ai.codex.var-decibel-chrome-health", "chrome_health")):
+                       ("ai.codex.var-decibel-chrome-health", "chrome_health"),
+                       # PM 签名器常驻化后(ai.codex.polymarket-signer)导出器一上报这里就接住
+                       ("ai.codex.polymarket-signer", "pm_signer")):
         svc = services.get(label) if isinstance(services.get(label), dict) else {}
         out[key] = {"running": bool(svc.get("running")), "last_exit": svc.get("last_exit")}
     return out
