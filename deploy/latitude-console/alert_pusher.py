@@ -48,11 +48,7 @@ def main() -> int:
     except Exception:
         pass
 
-    new = {k: v for k, v in current.items() if k not in prev}
-    if new:
-        body = "⚠️ Latitude 新告警(" + time.strftime("%m-%d %H:%M") + "):\n" \
-               + "\n".join("· " + v for v in new.values()) \
-               + f"\n共 {len(current)} 条活跃 → http://100.122.255.98:8502/"
+    def push(body: str) -> None:
         req = urllib.request.Request(
             hook,
             data=json.dumps({"msg_type": "text", "content": {"text": body}}).encode("utf-8"),
@@ -60,10 +56,27 @@ def main() -> int:
         with opener.open(req, timeout=10) as resp:
             resp.read()
 
-    # 只保留当前活跃指纹(消失的清除 → 复发会再推)
-    PUSH_STATE.write_text(
-        json.dumps({k: prev.get(k) or int(time.time()) for k in current}, ensure_ascii=False),
-        encoding="utf-8")
+    new = {k: v for k, v in current.items() if k not in prev}
+    if new:
+        push("⚠️ Latitude 新告警(" + time.strftime("%m-%d %H:%M") + "):\n"
+             + "\n".join("· " + v for v in new.values())
+             + f"\n共 {len(current)} 条活跃 → http://100.122.255.98:8502/")
+    # 告警解除也推(只报忧不报喜会让人不敢关手机)
+    gone = [k for k in prev if k not in current]
+    if gone:
+        texts = [(prev[k].get("text") if isinstance(prev[k], dict) else None) or "(历史告警)"
+                 for k in gone]
+        push("✅ Latitude 告警解除(" + time.strftime("%m-%d %H:%M") + "):\n"
+             + "\n".join("· " + t for t in texts)
+             + (f"\n仍有 {len(current)} 条活跃" if current else "\n当前无活跃告警 🎉"))
+
+    # 状态=当前活跃指纹 + 文本(解除时要报人话);消失的清除 → 复发会再推
+    out = {}
+    for k, text in current.items():
+        old = prev.get(k)
+        ts = old.get("ts") if isinstance(old, dict) else (old if isinstance(old, (int, float)) else None)
+        out[k] = {"ts": int(ts or time.time()), "text": text}
+    PUSH_STATE.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     return 0
 
 
