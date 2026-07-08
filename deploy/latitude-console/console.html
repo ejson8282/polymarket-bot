@@ -234,7 +234,7 @@
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">$2,418.62</div><div class="sub" data-k="vdk.equity_sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
     <div class="kpi"><div class="label">今日净损耗</div><div class="value down" data-k="vdk.loss">−$1.84</div><div class="sub num" data-k="vdk.loss_sub">2.1 bps/万U · 7日均 2.6</div></div>
     <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
-    <div class="kpi"><div class="label">本周预算剩余</div><div class="value" data-k="vdk.budget">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub" data-k="vdk.budget_sub">周亏损上限扣减制</div></div>
+    <div class="kpi"><div class="label">本周预算剩余 <span id="budget-edit-btn" style="float:right;cursor:pointer;color:var(--var);font-size:11px">改预算 ✎</span></div><div class="value" data-k="vdk.budget">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub" data-k="vdk.budget_sub">周亏损上限扣减制</div><div id="budget-edit-box" style="display:none;margin-top:8px"><input id="budget-input" type="number" step="1" min="0" max="500" style="width:80px;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono)"> <button class="btn" style="font-size:11px" id="budget-save">保存(两台)</button> <button class="btn ghost" style="font-size:11px" id="budget-cancel">取消</button><div id="budget-msg" class="src" style="margin-top:4px"></div></div></div>
     <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
     <div class="kpi"><div class="label">自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div></div>
   </div>
@@ -895,6 +895,7 @@
     // 本周预算:每 VPS 各 cap − 各自近7日损耗(每VPS独立;总卡显示合计,悬停看分解)
     const b=vd.budget||{};
     if(b.present){
+      window.__budgetCap=b.cap_each;
       const hs=Object.entries(b.hosts||{});
       setK('vdk.budget', money(b.total_remaining)+'<span style="font-size:13px;color:var(--faint)">/'+money(b.total_cap).slice(1)+'</span>');
       const detail=hs.map(([h,x])=>h.toUpperCase()+' '+money(x.remaining).slice(0)+'/'+ (x.cap)).join(' · ');
@@ -1097,6 +1098,31 @@
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
+  // 预算编辑器(受控写:POST /api/varia/budget;写通道由服务端 LATITUDE_ENABLE_WRITES 闸门)
+  (function(){
+    const btn=document.getElementById('budget-edit-btn'), box=document.getElementById('budget-edit-box');
+    if(!btn||!box) return;
+    const inp=document.getElementById('budget-input'), msg=document.getElementById('budget-msg');
+    btn.addEventListener('click',()=>{
+      if(window.__writesEnabled===false){ box.style.display='block'; msg.innerHTML='<span class="down">写通道未启用(只读)</span>'; inp.disabled=true; document.getElementById('budget-save').disabled=true; return; }
+      box.style.display=box.style.display==='none'?'block':'none';
+      const cur=(window.__budgetCap!=null)?window.__budgetCap:'';
+      inp.value=cur; msg.textContent='每 VPS 各自的周亏损上限 USDC(改动两台生效)';
+    });
+    document.getElementById('budget-cancel').addEventListener('click',()=>{box.style.display='none';});
+    document.getElementById('budget-save').addEventListener('click',async()=>{
+      const cap=parseFloat(inp.value);
+      if(isNaN(cap)||cap<0||cap>500){ msg.innerHTML='<span class="down">需 0–500 的数字</span>'; return; }
+      msg.textContent='写入中…';
+      try{
+        const r=await fetch('/api/varia/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cap})});
+        const j=await r.json();
+        msg.innerHTML=j.ok? '<span class="up">已保存:'+j.old+' → '+j.new+' USDC/台</span>' : '<span class="down">'+esc(j.error||'失败')+'</span>';
+        if(j.ok) setTimeout(refresh,800);
+      }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
+    });
+  })();
+
   // 二级导航 pill → 原生子视图(控制台自有样式,零 iframe;用 /api/state 数据渲染)
   window.__detail={};   // {pageId: 当前激活的 pill 文本}
   (function(){
@@ -1173,6 +1199,7 @@
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ return; }
     window.__state=s;
     setK('clock', (s.ts||'')+' · 刚刷新');
+    window.__writesEnabled=!!s.writes_enabled;
     try{bindPM(s.polymarket||{});}catch(e){}
     try{bindVD(s.var_decibel||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}
