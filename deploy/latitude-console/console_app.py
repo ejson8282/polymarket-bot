@@ -581,23 +581,45 @@ def _pm_detail() -> Dict[str, Any]:
 _HTTP_CACHE: Dict[str, tuple] = {}
 
 
-def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[dict]:
+def _do_fetch(url: str, timeout: float = 4.0) -> Optional[dict]:
     import urllib.request
 
-    now = time.time()
-    cached = _HTTP_CACHE.get(url)
-    if cached and now - cached[1] < (ttl if cached[0] is not None else 15.0):
-        return cached[0]
-    data = None
     try:
         # tailnet 内网直连,显式绕过系统 HTTP 代理(本机 Clash 等会把内网 IP 打成 503)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(url, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except Exception:
-        data = None
-    _HTTP_CACHE[url] = (data, now)
+        return None
+
+
+def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[dict]:
+    """请求路径永不阻塞:命中缓存直接返回(哪怕已过期,后台线程会刷新);
+    仅冷启动(缓存全空)时同步拉一次(短超时)。跨机源慢/断都不拖慢 /api/state。"""
+    cached = _HTTP_CACHE.get(url)
+    if cached is not None:
+        return cached[0]  # 有缓存(含 None=上次拉失败)就立即返回,不阻塞
+    data = _do_fetch(url, timeout=2.0)  # 冷启动:短超时同步一次
+    _HTTP_CACHE[url] = (data, time.time())
     return data
+
+
+_PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL]
+
+
+def _prefetch_loop() -> None:
+    """后台守护线程:每 20s 主动刷新跨机只读源到缓存,使请求路径始终命中热缓存。"""
+    while True:
+        for url in _PREFETCH_URLS:
+            _HTTP_CACHE[url] = (_do_fetch(url, timeout=6.0), time.time())
+        time.sleep(20)
+
+
+@app.on_event("startup")
+def _start_prefetch() -> None:
+    import threading
+
+    threading.Thread(target=_prefetch_loop, name="latitude-prefetch", daemon=True).start()
 
 
 def _account_ops() -> Dict[str, Any]:
