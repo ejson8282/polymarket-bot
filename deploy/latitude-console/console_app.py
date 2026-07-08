@@ -729,6 +729,7 @@ def _account_ops() -> Dict[str, Any]:
                   for r in risks[:5] if isinstance(r, dict)],
         "as_of": str(meta.get("as_of") or ""),
         "as_of_age": _age_text(_iso_age(meta.get("as_of"))),
+        "age_sec": _iso_age(meta.get("as_of")),
     }
 
 
@@ -911,15 +912,82 @@ def _events(pm_fills: List[dict]) -> List[dict]:
     return merged[:12]
 
 
-def _alerts(vd: Dict[str, Any], pm: Dict[str, Any]) -> List[dict]:
+IPO_IMPORT_LOG = Path(os.getenv("IPO_IMPORT_LOG", "/home/ubuntu/ipo_import.log"))
+
+
+def _tier(age: Optional[int]) -> str:
+    if age is None:
+        return "unknown"
+    if age < 900:
+        return "ok"
+    if age < 86400:
+        return "warn"
+    return "danger"
+
+
+def _freshness(vd: Dict[str, Any], ao: Dict[str, Any]) -> Dict[str, Any]:
+    """每页核心源年龄徽章:🟢 <15m / 🟡 迟滞 / 🔴 停摆(附停摆日期)。纯只读。"""
+    from datetime import timedelta
+    out: Dict[str, Any] = {}
+
+    def entry(key: str, age: Optional[int]) -> None:
+        t = _tier(age)
+        if age is None:
+            lbl = "无数据"
+        elif t == "danger":
+            stop = (datetime.now(timezone.utc) - timedelta(seconds=age)).astimezone()
+            lbl = f"停摆 · 停于 {stop.strftime('%m-%d')}"
+        else:
+            lbl = _age_text(age) or ""
+        out[key] = {"age": age, "tier": t, "label": lbl}
+
+    pm_p = DATA_DIR / "engine_state_1.json"
+    entry("pm", _mtime_age(pm_p if pm_p.exists() else DATA_DIR / "engine_state.json"))
+    hosts = [h.get("age_sec") for h in (vd.get("hosts") or {}).values() if h.get("age_sec") is not None]
+    entry("vardec", min(hosts) if hosts else None)
+    pf_p = DATA_DIR / "predictfun_mainnet_execution_report.json"
+    entry("pf", _mtime_age(pf_p if pf_p.exists() else DATA_DIR / "predictfun_execution_report.json"))
+    entry("sa", _mtime_age(DATA_DIR / "single_account_paper_state.json"))
+    entry("hk", ao.get("age_sec") if ao.get("present") else None)
+    return out
+
+
+def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
+            ao: Dict[str, Any], mm: Dict[str, Any], fresh: Dict[str, Any]) -> List[dict]:
     alerts: List[dict] = []
     for item in vd.get("single_leg") or []:
-        alerts.append({"tag": "VAR/DEC", "msg": f"<b>{item} 单腿</b>:双腿不对称,janitor 应在处置", "page": "vardec"})
+        alerts.append({"tag": "VAR/DEC", "msg": f"<b>{item} 单腿</b>:双腿不对称,janitor 应在处置", "page": "vardec", "sev": "crit"})
     for host, h in (vd.get("hosts") or {}).items():
         if h.get("age_sec") is not None and h["age_sec"] > STALE_SEC:
-            alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host.upper()} ops 心跳过期</b>:{_age_text(h['age_sec'])}", "page": "vardec"})
+            alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host.upper()} ops 心跳过期</b>:{_age_text(h['age_sec'])}", "page": "vardec", "sev": "warn"})
     if pm.get("cooldown"):
-        alerts.append({"tag": "PM", "msg": "<b>Polymarket 冷却中</b>:kill-switch/冷却激活,暂停开新单", "page": "pm"})
+        alerts.append({"tag": "PM", "msg": "<b>Polymarket 冷却中</b>:kill-switch/冷却激活,暂停开新单", "page": "pm", "sev": "warn"})
+    # 补全(2026-07-08):account-ops 迟滞 / IPO 导入超期 / macmini 失联 / 权益曲线断更 / 预算告急 / SA worker 停
+    if not ao.get("present"):
+        alerts.append({"tag": "HK/US", "msg": "<b>account-ops 数据源不可达</b>(Windows :8081)", "page": "hk", "sev": "warn"})
+    elif ao.get("age_sec") is not None and ao["age_sec"] > 1800:
+        alerts.append({"tag": "HK/US", "msg": f"<b>account-ops 数据迟滞</b>:{_age_text(ao['age_sec'])} 未更新(>30m)", "page": "hk", "sev": "warn"})
+    imp_age = _mtime_age(IPO_IMPORT_LOG)
+    if imp_age is not None and imp_age > 26 * 3600:
+        alerts.append({"tag": "IPO", "msg": f"<b>每日新股导入超期</b>:{_age_text(imp_age)} 未跑(cron 每日 01:00,错过一轮即报)", "page": "hk", "sev": "warn"})
+    if not mm.get("present"):
+        alerts.append({"tag": "INFRA", "msg": "<b>mac-mini 状态导出器失联</b>(:8620;影响 signer/pf-proxy 可见性)", "page": "vardec", "sev": "warn"})
+    eq = vd.get("equity_history") or {}
+    if eq.get("present"):
+        try:
+            last_d = datetime.fromisoformat(str(eq["points"][-1]["t"]))
+            if (datetime.now() - last_d).total_seconds() > 2 * 86400:
+                alerts.append({"tag": "VAR/DEC", "msg": f"<b>权益曲线断更</b>:最后一点 {eq['points'][-1]['t']}", "page": "vardec", "sev": "warn"})
+        except Exception:
+            pass
+    for host, h in ((vd.get("budget") or {}).get("hosts") or {}).items():
+        cap, rem = _num(h.get("cap")) or 0.0, _num(h.get("remaining")) or 0.0
+        if cap and rem < max(1.0, 0.2 * cap):
+            alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host} 周预算告急</b>:剩 ${rem:.2f} / ${cap:.2f}", "page": "vardec", "sev": "crit"})
+    if sa.get("present") and not sa.get("worker_running"):
+        alerts.append({"tag": "SA", "msg": "<b>SA paper worker 未运行</b>(sa-paper-worker.service)", "page": "sa", "sev": "warn"})
+    if (fresh.get("pm") or {}).get("tier") == "danger":
+        alerts.append({"tag": "PM", "msg": f"<b>PM 引擎停摆</b>:{fresh['pm']['label']}(启动前先刷新 markets)", "page": "pm", "sev": "warn"})
     return alerts
 
 
@@ -928,21 +996,26 @@ def api_state() -> JSONResponse:
     pm = _polymarket()
     pm["engine_ctl"] = _engine_ctl()
     vd = _var_decibel()
+    sa = _single_account()
+    ao = _account_ops()
+    mm = _macmini()
+    fresh = _freshness(vd, ao)
     return JSONResponse({
         "ts": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),
         "polymarket": pm,
         "predictfun": _predictfun(),
         "var_decibel": vd,
-        "single_account": _single_account(),
+        "single_account": sa,
         "recorders": _recorders(),
-        "account_ops": _account_ops(),
+        "account_ops": ao,
         "ipo": _ipo(),
         "pf_intents": _pf_intents(),
         "varia_detail": _varia_detail(),
         "pm_detail": _pm_detail(),
-        "macmini": _macmini(),
+        "macmini": mm,
+        "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),
-        "alerts": _alerts(vd, pm),
+        "alerts": _alerts(vd, pm, sa, ao, mm, fresh),
         "writes_enabled": WRITES_ENABLED,
     })
 

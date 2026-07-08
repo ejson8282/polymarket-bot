@@ -1,0 +1,9 @@
+[Unit]
+Description=Latitude 告警推送 每 5 分钟
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

@@ -138,6 +138,10 @@
   footer{padding:20px 24px 28px;font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);margin-top:24px}
   @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}.proj{grid-template-columns:1fr}.ipo3{grid-template-columns:1fr}}
 .opin{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono);font-size:11px}
+.fresh-badge{font-family:var(--mono);font-size:11px;margin-right:10px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);white-space:nowrap}
+.fresh-badge.ok{color:#3fb950}.fresh-badge.warn{color:#d29922}.fresh-badge.danger{color:#f85149;border-color:#f85149}
+.page.nodata .panel{position:relative}
+.page.nodata .panel::after{content:"数据不可达 — 下方为模板样例,非真实数据";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.85);color:#d29922;font-family:var(--mono);font-size:12px;letter-spacing:.06em;border-radius:inherit;z-index:5}
 </style>
 </head>
 <body>
@@ -1455,11 +1459,38 @@
     box.innerHTML=html;
   }
 
+  // P5:每页核心源新鲜度徽章(🟢<15m/🟡迟滞/🔴停摆·附日期);P7:缺源页面盖"数据不可达"遮罩
+  function bindFresh(f){
+    const map={pm:'page-pm',vardec:'page-vardec',pf:'page-pf',sa:'page-sa',hk:'page-hk'};
+    for(const k in map){
+      const pg=document.getElementById(map[k]); if(!pg||!f[k]) continue;
+      let b=pg.querySelector('.fresh-badge');
+      if(!b){
+        const host=pg.querySelector('.banner')||pg.querySelector('.subnav')||pg.firstElementChild;
+        if(!host) continue;
+        b=document.createElement('span'); b.className='fresh-badge'; host.insertBefore(b,host.firstChild);
+      }
+      const t=f[k].tier||'unknown';
+      b.textContent=(t==='ok'?'🟢 ':(t==='warn'?'🟡 ':'🔴 '))+(f[k].label||'');
+      b.className='fresh-badge '+(t==='unknown'?'danger':t);
+    }
+  }
+  function bindMasks(s){
+    const nd={'page-pm':!(s.polymarket||{}).present,
+              'page-vardec':!Object.keys(((s.var_decibel||{}).hosts)||{}).length,
+              'page-pf':!(s.predictfun||{}).present,
+              'page-sa':!(s.single_account||{}).present,
+              'page-hk':!(s.account_ops||{}).present};
+    for(const id in nd){ const el=document.getElementById(id); if(el) el.classList.toggle('nodata',!!nd[id]); }
+  }
   async function refresh(){
-    let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ return; }
+    let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }
+    catch(e){ document.querySelectorAll('.page').forEach(p=>p.classList.add('nodata')); return; }
     window.__state=s;
     setK('clock', (s.ts||'')+' · 刚刷新');
     window.__writesEnabled=!!s.writes_enabled;
+    try{bindFresh(s.freshness||{});}catch(e){}
+    try{bindMasks(s);}catch(e){}
     try{bindPM(s.polymarket||{});}catch(e){}
     try{bindVD(s.var_decibel||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}

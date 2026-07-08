@@ -1,0 +1,8 @@
+[Unit]
+Description=Latitude 告警 Feishu 推送(webhook 文件不存在则静默跳过)
+After=latitude-console.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python /home/ubuntu/polymarket-bot/deploy/latitude-console/alert_pusher.py
