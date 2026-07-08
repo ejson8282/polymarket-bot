@@ -137,6 +137,7 @@
   @media (max-width:1100px){.phases{flex-wrap:wrap}.phase{min-width:45%}}
   footer{padding:20px 24px 28px;font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);margin-top:24px}
   @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}.proj{grid-template-columns:1fr}.ipo3{grid-template-columns:1fr}}
+.opin{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono);font-size:11px}
 </style>
 </head>
 <body>
@@ -297,7 +298,7 @@
 <!-- ════════════ 页面 3 · Polymarket(账号矩阵首屏,原 5 tab 保留) ════════════ -->
 <section class="page" id="page-pm">
   <div class="banner livewarn">MAINNET · LIVE — 真实资金 · kill-switch 待命
-    <span style="flex:1"></span><button class="btn danger">EMERGENCY STOP</button><span class="feat f-old" style="margin-left:8px">现有按钮</span>
+    <span style="flex:1"></span><span id="pm-op-msg" style="font-size:11px;font-family:var(--mono);margin-right:8px"></span><button class="btn danger" id="pm-estop-btn">EMERGENCY STOP</button>
   </div>
   <div class="subnav">
     <span class="on">账号矩阵(新首屏)</span><span>Markets <em class="feat f-old">现有</em></span><span>Fills <em class="feat f-old">现有</em></span>
@@ -337,11 +338,33 @@
           </tbody>
         </table>
       </div>
+      <div class="panel">
+        <h2>Scan &amp; 市场配置 <span class="feat f-new">已迁移</span></h2>
+        <div class="src">scanner.py --json(同 /alpha/ Run Scan);应用选择=写 config.json + 全量同步 config_N;引擎需 Stop+Start 才读新 markets</div>
+        <div class="btnrow" style="margin-top:8px;flex-wrap:wrap;gap:6px">
+          <input id="sc-minr" class="opin" type="number" placeholder="MinDaily$" style="width:84px">
+          <input id="sc-maxr" class="opin" type="number" placeholder="MaxDaily$" style="width:84px">
+          <input id="sc-mins" class="opin" type="number" placeholder="MinSprd" style="width:76px">
+          <input id="sc-maxs" class="opin" type="number" placeholder="MaxSprd" style="width:76px">
+          <input id="sc-minv" class="opin" type="number" placeholder="MinVol$" style="width:84px">
+          <input id="sc-mind" class="opin" type="number" placeholder="MinDepth$" style="width:88px">
+          <input id="sc-top" class="opin" type="number" placeholder="TopN" style="width:60px">
+          <button class="btn" id="scan-run-btn">Run Scan</button>
+          <label style="font-size:11px;color:var(--faint)"><input type="checkbox" id="scan-ac-only" checked> 只看 A/C 区</label>
+          <span id="scan-status" class="src"></span>
+        </div>
+        <div id="scan-results" style="margin-top:8px;max-height:340px;overflow:auto"></div>
+        <div class="btnrow" id="scan-apply-row" style="display:none;margin-top:8px">
+          <button class="btn" id="scan-apply-btn">应用选择(日盘+夜盘)</button><span id="scan-apply-msg" class="src"></span>
+        </div>
+      </div>
     </div>
     <aside>
       <div class="panel" style="margin-top:16px">
-        <h2>Runner 控制 <span class="feat f-old">现有</span></h2>
-        <div class="btnrow"><button class="btn">Start</button><button class="btn">Stop</button><button class="btn">Reload</button><button class="btn ghost">📊 Load Rewards</button></div>
+        <h2>引擎控制 <span class="feat f-new">已迁移</span> <span id="pm-engine-chip" class="chip" style="margin-left:auto">—</span></h2>
+        <div class="src">systemd · polymarket-engine.service;Stop/Reload 先 REST 撤单再停(与 /alpha/ 急停同一路径)</div>
+        <div class="btnrow" style="margin-top:8px"><button class="btn" id="pm-start-btn">Start</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
+        <div class="src" id="pm-engine-msg" style="margin-top:6px"></div>
       </div>
       <div class="panel">
         <h2>代理(Clash) <span class="feat f-old">现有</span></h2>
@@ -351,7 +374,9 @@
           <div class="row"><span class="k">failover(24h)</span><span class="v">1(HK-01→HK-02)</span></div>
           <div class="row"><span class="k">req 异常(1h)</span><span class="v">2 / 阈值风暴保护</span></div></div>
         </div>
-        <div class="btnrow" style="margin-top:10px"><button class="btn ghost">Run Test</button></div>
+        <div class="src" style="margin-top:10px">代理池 <b id="proxy-count">—</b> 条 <span class="feat f-new">编辑已迁移</span>(Run Test 留在 /alpha/)</div>
+        <textarea id="proxy-input" class="opin" rows="4" placeholder="host:port 或 host:port:user:pass,一行一条" style="width:100%;margin-top:6px;box-sizing:border-box"></textarea>
+        <div class="btnrow" style="margin-top:6px"><button class="btn ghost" id="proxy-append">Append</button><button class="btn ghost" id="proxy-replace">Replace all</button><span id="proxy-msg" class="src"></span></div>
       </div>
       <div class="panel">
         <h2>Fills 流 <span class="feat f-old">现有</span></h2>
@@ -425,8 +450,8 @@
 <!-- ════════════ 页面 5 · Single Account · 策略验证驾驶舱 ════════════ -->
 <section class="page" id="page-sa">
   <div class="banner readonly">PAPER · 虚拟本金 $10,000 — 只模拟,不下真实单
-    <span style="flex:1"></span>
-    <button class="btn">跑一次评分</button><button class="btn ghost">停止 worker</button><button class="btn ghost">导出周报</button><span class="feat f-old" style="margin-left:6px">评分/worker 为现有功能</span>
+    <span style="flex:1"></span><span id="sa-op-msg" style="font-size:11px;font-family:var(--mono);margin-right:8px"></span>
+    <button class="btn" id="sa-once-btn">跑一次评分</button><button class="btn" id="sa-start-btn">启动 worker</button><button class="btn ghost" id="sa-stop-btn">停止 worker</button><span class="feat f-new" style="margin-left:6px">已迁移</span>
   </div>
 
   <!-- 五阶段路线:按数据推进,不按日期推进 -->
@@ -438,6 +463,30 @@
     <div class="phase"><div class="n">PHASE 5</div><div class="t">规则化扩资金</div><div class="s">—</div></div>
   </div>
   <div class="gatebar">当前卡点:rwa_basis 记录器需 ≥7 天数据(已 4 天)· 本页数字为示例,展示 Phase 2 进行中应有的样子;当前真实状态 = 仅决策日志有真数据,其余面板即开发清单</div>
+
+  <div class="panel" style="margin-top:12px">
+    <h2>自动化草稿 <span class="feat f-new">已迁移</span> <span id="sad-msg" class="src" style="margin-left:auto;font-weight:400"></span></h2>
+    <div class="src">写 single_account_automation_draft.json(不启动 worker,不下单);与 /alpha/「保存草稿」同一文件同一字段</div>
+    <div class="btnrow" style="margin-top:8px;flex-wrap:wrap;gap:6px">
+      <input id="sad-mode" class="opin" placeholder="mode(paper)" style="width:92px">
+      <input id="sad-host" class="opin" placeholder="host" style="width:110px">
+      <input id="sad-cap" class="opin" type="number" placeholder="周亏上限U" style="width:88px">
+      <input id="sad-pos" class="opin" type="number" placeholder="最大持仓" style="width:80px">
+      <input id="sad-lev" class="opin" type="number" placeholder="杠杆" style="width:60px">
+      <input id="sad-not" class="opin" type="number" placeholder="单笔名义U" style="width:88px">
+      <input id="sad-sl" class="opin" type="number" placeholder="止损%" style="width:68px">
+      <input id="sad-tp" class="opin" type="number" placeholder="止盈%" style="width:68px">
+    </div>
+    <div class="btnrow" style="margin-top:6px;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--faint)">
+      <label><input type="checkbox" class="sad-strat" data-name="Funding Carry Rotation"> FundingCarry</label>
+      <label><input type="checkbox" class="sad-strat" data-name="Trend / Momentum Breakout"> Momentum</label>
+      <label><input type="checkbox" class="sad-strat" data-name="Mean Reversion / Range"> MeanRev</label>
+      <label><input type="checkbox" class="sad-strat" data-name="RWA / Stock Rotation"> RWA</label>
+      <label><input type="checkbox" class="sad-strat" data-name="Event / New Listing Momentum"> Event</label>
+    </div>
+    <textarea id="sad-notes" class="opin" rows="2" placeholder="备注" style="width:100%;margin-top:6px;box-sizing:border-box"></textarea>
+    <div class="btnrow" style="margin-top:6px"><button class="btn" id="sad-save">保存草稿</button></div>
+  </div>
 
   <div class="kpis">
     <div class="kpi"><div class="label">虚拟权益</div><div class="value">$10,186</div><div class="sub"><span class="up">+1.86%</span> 起始 $10,000 · 6 天</div></div>
@@ -811,8 +860,16 @@
         '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
         '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
-        '<td class="btnrow" style="color:var(--faint);font-size:11px">操作在 :8502/alpha/</td></tr>'
+        '<td class="btnrow">'+(a.paused
+          ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="resume">恢复</button>'
+          :'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停(撤单)</button>')+'</td></tr>'
       ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
+    }
+    const ec=pm.engine_ctl||{};
+    const echip=document.getElementById('pm-engine-chip');
+    if(echip){
+      echip.textContent = ec.active ? 'RUNNING' : (ec.state||'stopped').toUpperCase();
+      echip.className = 'chip ' + (ec.active ? 'ok' : 'danger');
     }
     if(pm.curator){
       const c=pm.curator;
@@ -1027,6 +1084,12 @@
   }
 
   function bindSA(sa){
+    if(sa.automation_draft && window.__fillDraft) window.__fillDraft(sa.automation_draft);
+    const wchip=document.querySelector('[data-k="sa.worker"]');
+    if(wchip){
+      wchip.textContent = sa.worker_running ? ('paper worker 运行中 · pid '+sa.worker_pid) : 'paper worker 未运行';
+      wchip.className = 'chip ' + (sa.worker_running ? 'ok' : 'danger');
+    }
     if(!sa.present) return;
     setK('sa.worker', sa.age? 'paper 最近 '+esc(sa.age):null);
     setK('sa.cand', (sa.signals??'—')+' · '+(sa.actionable??'—'));
@@ -1176,6 +1239,147 @@
         msg.innerHTML=j.ok? '<span class="up">已保存:'+j.old+' → '+j.new+' USDC/台</span>' : '<span class="down">'+esc(j.error||'失败')+'</span>';
         if(j.ok) setTimeout(refresh,800);
       }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
+    });
+  })();
+
+  // pmbot 操作(已迁移自 /alpha/):引擎启停/急停、账号软暂停、SA paper worker
+  async function postOp(url, body, msgEl, label){
+    if(window.__writesEnabled===false){ if(msgEl) msgEl.innerHTML='<span class="down">写通道未启用(只读)</span>'; return null; }
+    if(msgEl) msgEl.textContent=label+'…';
+    try{
+      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const j=await r.json();
+      if(msgEl) msgEl.innerHTML=j.ok?'<span class="up">'+esc(j.msg||j.note||'完成')+'</span>':'<span class="down">'+esc(j.error||j.msg||'失败')+'</span>';
+      if(j.ok) setTimeout(refresh,1200);
+      return j;
+    }catch(e){ if(msgEl) msgEl.innerHTML='<span class="down">请求失败</span>'; return null; }
+  }
+  (function(){
+    const emsg=document.getElementById('pm-engine-msg');
+    const bmsg=document.getElementById('pm-op-msg');
+    function stopFlow(el){
+      if(window.__writesEnabled===false){ if(el) el.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
+      const t=prompt('急停:先 REST 撤销全部账号挂单,再 systemctl stop polymarket-engine。\n输入 STOP 确认');
+      if(t!=='STOP'){ if(el&&t!==null) el.innerHTML='<span class="down">未确认,已取消</span>'; return; }
+      postOp('/api/pm/engine',{action:'stop',confirm:true},el,'撤单+停机');
+    }
+    const eb=document.getElementById('pm-estop-btn'); if(eb) eb.addEventListener('click',()=>stopFlow(bmsg));
+    const sb=document.getElementById('pm-stop-btn'); if(sb) sb.addEventListener('click',()=>stopFlow(emsg));
+    const st=document.getElementById('pm-start-btn');
+    if(st) st.addEventListener('click',()=>{
+      if(!confirm('启动 PM 引擎 = 恢复真实资金报价(引擎已停摆一段时间,先确认账号与市场配置仍正确)。继续?')) return;
+      postOp('/api/pm/engine',{action:'start',confirm:true},emsg,'启动引擎');
+    });
+    const rl=document.getElementById('pm-reload-btn');
+    if(rl) rl.addEventListener('click',()=>{
+      if(!confirm('Reload:撤单 → 停引擎 → 重启。期间全部挂单撤销。继续?')) return;
+      postOp('/api/pm/engine',{action:'reload',confirm:true},emsg,'重启引擎');
+    });
+    const mb=document.getElementById('pm-matrix-body');
+    if(mb) mb.addEventListener('click',(ev)=>{
+      const b=ev.target.closest('.pm-acct-btn'); if(!b) return;
+      const idx=parseInt(b.dataset.idx,10), act=b.dataset.act;
+      const txt=(act==='pause')?('暂停账号 '+idx+':撤其挂单并停报价(软暂停,引擎进程不停)。继续?')
+                               :('恢复账号 '+idx+' 报价。继续?');
+      if(!confirm(txt)) return;
+      postOp('/api/pm/account',{idx:idx,action:act},bmsg,(act==='pause'?'暂停':'恢复')+' acc'+idx);
+    });
+    const smsg=document.getElementById('sa-op-msg');
+    const so=document.getElementById('sa-once-btn'); if(so) so.addEventListener('click',()=>postOp('/api/sa/paper',{action:'once'},smsg,'评分中(约30s)'));
+    const ss=document.getElementById('sa-start-btn'); if(ss) ss.addEventListener('click',()=>postOp('/api/sa/paper',{action:'start'},smsg,'启动 worker'));
+    const sp=document.getElementById('sa-stop-btn'); if(sp) sp.addEventListener('click',()=>{
+      if(!confirm('停止 SA paper worker?(纯 paper,无真实持仓)')) return;
+      postOp('/api/sa/paper',{action:'stop'},smsg,'停止 worker');
+    });
+  })();
+
+  // 二期迁移:Scan & 市场配置 / 代理池 / SA 草稿
+  (function(){
+    const sbtn=document.getElementById('scan-run-btn'); if(!sbtn) return;
+    const sst=document.getElementById('scan-status'), sres=document.getElementById('scan-results');
+    let scanTimer=null, scanData=null, cfgDay={}, cfgNight={};
+    function fld(id){ const v=parseFloat(document.getElementById(id).value); return isNaN(v)?undefined:v; }
+    async function poll(){
+      try{
+        const j=await (await fetch('/api/pm/scan')).json();
+        cfgDay=j.config_day||{}; cfgNight=j.config_night||{};
+        const pc=document.getElementById('proxy-count'); if(pc&&j.proxy_count!=null) pc.textContent=j.proxy_count;
+        if(j.status==='running'){ sst.textContent='扫描中…(60-120s)'; if(!scanTimer) scanTimer=setInterval(poll,3000); return; }
+        if(scanTimer){ clearInterval(scanTimer); scanTimer=null; }
+        if(j.status==='done'){ scanData=j.results||[]; sst.textContent='完成:'+scanData.length+' 个候选'; renderTable(); }
+        else if(j.status==='error'){ sst.innerHTML='<span class="down">'+esc(j.error||'失败')+'</span>'; }
+      }catch(e){}
+    }
+    function renderTable(){
+      if(!scanData) return;
+      const acOnly=document.getElementById('scan-ac-only').checked;
+      const rows=scanData.filter(m=>!acOnly||/^[AC]/.test(String(m.quadrant||'')));
+      sres.innerHTML='<table><thead><tr><th>日</th><th>夜</th><th>MARKET</th><th>象限</th><th>Daily $</th><th>Risk</th><th>Vol24h</th></tr></thead><tbody>'+
+        rows.map(m=>{
+          const tid=String(m.token_id||''), no=String(m.paired_token_id||'');
+          const inDay=cfgDay[tid]!=null||cfgDay[no]!=null, inNight=cfgNight[tid]!=null||cfgNight[no]!=null;
+          return '<tr><td><input type="checkbox" class="sc-day" data-tid="'+esc(tid)+'"'+(inDay?' checked':'')+'></td>'+
+            '<td><input type="checkbox" class="sc-night" data-tid="'+esc(tid)+'"'+(inNight?' checked':'')+'></td>'+
+            '<td>'+esc(String(m.question||m.slug||'').slice(0,60))+'</td><td class="num">'+esc(String(m.quadrant||'—').slice(0,1))+'</td>'+
+            '<td class="num">$'+Math.round(m.reward||0)+'</td><td class="num">'+(m.fill_risk!=null?Number(m.fill_risk).toFixed(1):'—')+'</td>'+
+            '<td class="num">$'+Math.round((m.volume24h||0)/1000)+'k</td></tr>';
+        }).join('')+'</tbody></table>';
+      document.getElementById('scan-apply-row').style.display='flex';
+    }
+    sbtn.addEventListener('click',async()=>{
+      if(window.__writesEnabled===false){ sst.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
+      const body={min_reward:fld('sc-minr'),max_reward:fld('sc-maxr'),min_spread:fld('sc-mins'),max_spread:fld('sc-maxs'),
+                  min_volume:fld('sc-minv'),min_bid_depth:fld('sc-mind'),top:fld('sc-top')};
+      sst.textContent='启动…';
+      try{
+        const r=await fetch('/api/pm/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json();
+        if(!j.ok){ sst.innerHTML='<span class="down">'+esc(j.error||'失败')+'</span>'; return; }
+        poll();
+      }catch(e){ sst.innerHTML='<span class="down">请求失败</span>'; }
+    });
+    const acbox=document.getElementById('scan-ac-only'); if(acbox) acbox.addEventListener('change',renderTable);
+    const ap=document.getElementById('scan-apply-btn');
+    if(ap) ap.addEventListener('click',async()=>{
+      const day=[...document.querySelectorAll('.sc-day:checked')].map(x=>x.dataset.tid);
+      const night=[...document.querySelectorAll('.sc-night:checked')].map(x=>x.dataset.tid);
+      if(!confirm('应用选择:日盘 '+day.length+' 个,夜盘 '+night.length+' 个。\n写 config.json 并同步全部 config_N(自动备份);引擎需 Stop+Start 才生效。继续?')) return;
+      const j=await postOp('/api/pm/markets/apply',{day_tokens:day,night_tokens:night},document.getElementById('scan-apply-msg'),'写入中');
+      if(j&&j.ok) sst.textContent='已保存:日盘 '+j.day+' · 夜盘 '+j.night+' · 同步 '+j.synced.length+' 个 config · '+j.note;
+    });
+    poll();  // 初始拉一次:带 config 勾选态 + 代理计数
+    // 代理池
+    function proxies(){ return (document.getElementById('proxy-input').value||'').split('\n').map(s=>s.trim()).filter(Boolean); }
+    const pa=document.getElementById('proxy-append');
+    if(pa) pa.addEventListener('click',()=>{ const L=proxies(); if(!L.length) return;
+      if(!confirm('追加 '+L.length+' 条代理到 config?')) return;
+      postOp('/api/pm/proxies',{mode:'append',proxies:L},document.getElementById('proxy-msg'),'追加中').then(poll); });
+    const pr=document.getElementById('proxy-replace');
+    if(pr) pr.addEventListener('click',()=>{ const L=proxies();
+      if(!confirm('替换全部代理为 '+L.length+' 条?现有列表将被覆盖(config 已自动备份)。')) return;
+      postOp('/api/pm/proxies',{mode:'replace',proxies:L},document.getElementById('proxy-msg'),'替换中').then(poll); });
+  })();
+  // SA 自动化草稿
+  (function(){
+    const sv=document.getElementById('sad-save'); if(!sv) return;
+    let filled=false;
+    window.__fillDraft=function(d){
+      if(filled||!d) return; filled=true;
+      const set=(id,v)=>{const el=document.getElementById(id); if(el&&v!=null) el.value=v;};
+      set('sad-mode',d.mode); set('sad-host',d.host); set('sad-cap',d.weekly_loss_cap_usdc);
+      set('sad-pos',d.max_open_positions); set('sad-lev',d.max_leverage); set('sad-not',d.max_notional_usdc);
+      set('sad-sl',d.default_stop_loss_pct); set('sad-tp',d.default_take_profit_pct); set('sad-notes',d.notes);
+      const en=new Set(d.enabled_strategies||[]);
+      document.querySelectorAll('.sad-strat').forEach(c=>{c.checked=en.has(c.dataset.name);});
+    };
+    sv.addEventListener('click',()=>{
+      const g=id=>document.getElementById(id).value;
+      const body={mode:g('sad-mode')||'paper',host:g('sad-host'),weekly_loss_cap_usdc:parseFloat(g('sad-cap')),
+        max_open_positions:parseFloat(g('sad-pos')),max_leverage:parseFloat(g('sad-lev')),
+        max_notional_usdc:parseFloat(g('sad-not')),default_stop_loss_pct:parseFloat(g('sad-sl')),
+        default_take_profit_pct:parseFloat(g('sad-tp')),notes:g('sad-notes'),
+        enabled_strategies:[...document.querySelectorAll('.sad-strat:checked')].map(c=>c.dataset.name)};
+      postOp('/api/sa/draft',body,document.getElementById('sad-msg'),'保存中');
     });
   })();
 
