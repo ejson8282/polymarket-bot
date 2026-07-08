@@ -322,11 +322,11 @@
         <h2>账号矩阵 <span class="feat f-new">新增首屏</span> <span class="feat f-old">暂停=撤单 为现有功能</span></h2>
         <div class="src">source · engine_state_N.json + .engine_N.pid + .account_N.paused + rewards snapshot;状态标签沿用 app.py 现有 tag 体系(运行中/风控熔断/异常)</div>
         <table>
-          <thead><tr><th>#</th><th>FUNDER</th><th>状态</th><th>抵押/权益</th><th>挂单</th><th>今日成交</th><th>PnL</th><th>奖励est</th><th>哨兵</th><th>操作</th></tr></thead>
+          <thead><tr><th title="勾选=下次 Start 让该账户上线报价">上线</th><th>#</th><th>FUNDER</th><th>状态</th><th>抵押/权益</th><th>挂单</th><th>今日成交</th><th>PnL</th><th>奖励est</th><th>哨兵</th><th>操作</th></tr></thead>
           <tbody id="pm-matrix-body">
-            <tr><td class="num">1</td><td class="num">0x3aF2…9c1</td><td><span class="chip ok">运行中</span></td><td class="num">$820</td><td class="num">18</td><td class="num">$680 · 10笔</td><td class="num up">+$2.20</td><td class="num">$3.4</td><td class="num">4</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button><button class="btn ghost">详情</button></td></tr>
-            <tr><td class="num">2</td><td class="num">0x91bD…44e</td><td><span class="chip ok">运行中</span></td><td class="num">$791</td><td class="num">16</td><td class="num">$560 · 8笔</td><td class="num up">+$1.60</td><td class="num">$2.8</td><td class="num">3</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button><button class="btn ghost">详情</button></td></tr>
-            <tr style="opacity:.55"><td class="num">3-10</td><td colspan="8" style="color:var(--faint)">扩容位:roster 加入即出现(multi_runner 上限 30;10账号前先启用兄弟交叉防线)</td><td></td></tr>
+            <tr><td class="num"><input type="checkbox" checked disabled></td><td class="num">1</td><td class="num">0x3aF2…9c1</td><td><span class="chip ok">运行中</span></td><td class="num">$820</td><td class="num">18</td><td class="num">$680 · 10笔</td><td class="num up">+$2.20</td><td class="num">$3.4</td><td class="num">4</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button></td></tr>
+            <tr><td class="num"><input type="checkbox" checked disabled></td><td class="num">2</td><td class="num">0x91bD…44e</td><td><span class="chip ok">运行中</span></td><td class="num">$791</td><td class="num">16</td><td class="num">$560 · 8笔</td><td class="num up">+$1.60</td><td class="num">$2.8</td><td class="num">3</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button></td></tr>
+            <tr style="opacity:.55"><td></td><td class="num">3-10</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现(multi_runner 上限 30;10账号前先启用兄弟交叉防线)</td></tr>
           </tbody>
         </table>
       </div>
@@ -366,8 +366,9 @@
     <aside>
       <div class="panel" style="margin-top:16px">
         <h2>引擎控制 <span class="feat f-new">已迁移</span> <span id="pm-engine-chip" class="chip" style="margin-left:auto">—</span></h2>
-        <div class="src">systemd · polymarket-engine.service;Stop/Reload 先 REST 撤单再停(与 /alpha/ 急停同一路径)</div>
-        <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="pm-precheck-btn">启动预检</button><button class="btn" id="pm-start-btn">Start</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
+        <div class="src">systemd · polymarket-engine.service;Start 只启动矩阵里勾选"上线"的账户(未勾的置暂停旗标不报价);Stop/Reload 先 REST 撤单再停</div>
+        <div class="src" id="pm-sel-hint" style="margin-top:4px"></div>
+        <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="pm-precheck-btn">启动预检</button><button class="btn" id="pm-start-btn">Start 选中</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
         <div class="src" id="pm-engine-msg" style="margin-top:6px"></div>
         <div id="pm-precheck-out" style="margin-top:6px;font-family:var(--mono);font-size:11px;line-height:1.7"></div>
       </div>
@@ -859,7 +860,8 @@
     const body=document.getElementById('pm-matrix-body');
     if(body && (pm.accounts||[]).length){
       body.innerHTML = pm.accounts.map(a=>
-        '<tr><td class="num">'+a.idx+'</td><td class="num">'+esc(a.funder)+'</td>'+
+        '<tr><td class="num"><input type="checkbox" class="pm-sel" data-idx="'+a.idx+'"'+(a.paused?'':' checked')+'></td>'+
+        '<td class="num">'+a.idx+'</td><td class="num">'+esc(a.funder)+'</td>'+
         '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span></td>'+
         '<td class="num">'+money(a.balance)+'</td><td class="num">'+a.orders+'</td>'+
         '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
@@ -875,6 +877,12 @@
     if(echip){
       echip.textContent = ec.active ? 'RUNNING' : (ec.state||'stopped').toUpperCase();
       echip.className = 'chip ' + (ec.active ? 'ok' : 'danger');
+    }
+    const selHint=document.getElementById('pm-sel-hint');
+    if(selHint){
+      const on=(pm.accounts||[]).filter(a=>!a.paused).map(a=>a.idx);
+      const off=(pm.accounts||[]).filter(a=>a.paused).map(a=>a.idx);
+      selHint.innerHTML='当前勾选上线:<b>'+(on.length?on.join(', '):'无')+'</b>'+(off.length?' · 停用 '+off.join(', '):'');
     }
     if(pm.curator){
       const c=pm.curator;
@@ -1270,15 +1278,22 @@
     }
     const eb=document.getElementById('pm-estop-btn'); if(eb) eb.addEventListener('click',()=>stopFlow(bmsg));
     const sb=document.getElementById('pm-stop-btn'); if(sb) sb.addEventListener('click',()=>stopFlow(emsg));
+    function selectedAccounts(){
+      return [...document.querySelectorAll('.pm-sel:checked')].map(x=>parseInt(x.dataset.idx,10));
+    }
     const st=document.getElementById('pm-start-btn');
     if(st) st.addEventListener('click',()=>{
-      if(!confirm('启动 PM 引擎 = 恢复真实资金报价(引擎已停摆一段时间,先确认账号与市场配置仍正确)。继续?')) return;
-      postOp('/api/pm/engine',{action:'start',confirm:true},emsg,'启动引擎');
+      const sel=selectedAccounts();
+      if(!sel.length){ if(emsg) emsg.innerHTML='<span class="down">先在矩阵勾选至少 1 个"上线"账户</span>'; return; }
+      if(!confirm('启动 PM 引擎 = 恢复真实资金报价。\n本次上线账户:'+sel.join(', ')+'(未勾选的将被置暂停不报价)。\n先确认账号与市场配置正确。继续?')) return;
+      postOp('/api/pm/engine',{action:'start',confirm:true,accounts:sel},emsg,'启动引擎(账户 '+sel.join(',')+')');
     });
     const rl=document.getElementById('pm-reload-btn');
     if(rl) rl.addEventListener('click',()=>{
-      if(!confirm('Reload:撤单 → 停引擎 → 重启。期间全部挂单撤销。继续?')) return;
-      postOp('/api/pm/engine',{action:'reload',confirm:true},emsg,'重启引擎');
+      const sel=selectedAccounts();
+      if(!sel.length){ if(emsg) emsg.innerHTML='<span class="down">先勾选至少 1 个"上线"账户</span>'; return; }
+      if(!confirm('Reload:撤单 → 停引擎 → 以选中账户('+sel.join(', ')+')重启。期间全部挂单撤销。继续?')) return;
+      postOp('/api/pm/engine',{action:'reload',confirm:true,accounts:sel},emsg,'重启引擎(账户 '+sel.join(',')+')');
     });
     const pc=document.getElementById('pm-precheck-btn');
     if(pc) pc.addEventListener('click',async()=>{

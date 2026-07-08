@@ -1103,11 +1103,37 @@ def _cancel_all_orders() -> Dict[str, Any]:
         return {"rc": r["rc"], "raw": r["out"], "err": r["err"]}
 
 
+def _configured_pm_accounts() -> List[int]:
+    """已配置的 PM 本地账户 idx(config_N.json 存在)。"""
+    return [i for i in range(1, 31) if (MAKER_DIR / f"config_{i}.json").exists()]
+
+
+def _apply_account_selection(accounts: List[int]) -> Dict[str, Any]:
+    """按 Start 前的账户选择置 .account_N.paused:选中→清旗标(上线),未选→置旗标(不报价)。
+    引擎主循环每轮读该旗标(engine.py _is_account_paused),启动首轮即生效。"""
+    configured = _configured_pm_accounts()
+    sel = {i for i in accounts if i in configured}
+    activated, paused = [], []
+    for i in configured:
+        flag = DATA_DIR / f".account_{i}.paused"
+        if i in sel:
+            try:
+                flag.unlink()
+            except FileNotFoundError:
+                pass
+            activated.append(i)
+        else:
+            flag.touch(exist_ok=True)
+            paused.append(i)
+    return {"activated": activated, "paused": paused}
+
+
 @app.post("/api/pm/engine")
 async def pm_engine(payload: dict, request: Request) -> JSONResponse:
     """进程控制类(Cloudflare 入口放行,同 Streamlit 规则):
     start=systemctl start;stop=撤单+systemctl stop(=EMERGENCY STOP);reload=stop 后 start。
-    与 dashboard/app.py::start_multi_runner/stop_multi_runner 同一写路径。"""
+    start/reload 可带 accounts=[idx…] 只让选中账户上线(未选的置暂停旗标,引擎不给它报价);
+    省略 accounts=全部上线(向后兼容)。与 dashboard/app.py 同一写路径。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
@@ -1122,14 +1148,27 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
     if action == "reload":
         time.sleep(1)
     if action in ("start", "reload"):
+        accounts = (payload or {}).get("accounts")
+        if isinstance(accounts, list):
+            try:
+                sel = [int(x) for x in accounts]
+            except (TypeError, ValueError):
+                return JSONResponse({"ok": False, "error": "accounts 须为账户号列表"}, status_code=400)
+            if not sel:
+                return JSONResponse({"ok": False, "error": "至少选 1 个账户上线"}, status_code=400)
+            steps["selection"] = _apply_account_selection(sel)
         steps["start"] = _run_cmd(["sudo", "-n", "systemctl", "start", ENGINE_UNIT], timeout=20)
-    ok = all(s.get("rc") == 0 for k, s in steps.items() if k != "cancel")
+    ok = all(s.get("rc") == 0 for k, s in steps.items() if k not in ("cancel", "selection"))
     _audit("pm_engine", request_action=action, steps=steps,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     cancel_n = steps.get("cancel", {}).get("results")
     note = ""
     if isinstance(cancel_n, list):
         note = "撤单:" + (" ".join(f"acc{x['account']}:{x['status']}" for x in cancel_n) or "无账号")
+    sel_info = steps.get("selection")
+    if sel_info:
+        note = (note + " · " if note else "") + f"上线账户 {sel_info['activated']}" + \
+               (f",停用 {sel_info['paused']}" if sel_info["paused"] else "")
     return JSONResponse({"ok": ok, "engine": _engine_ctl(), "note": note,
                          "error": None if ok else json.dumps(steps, ensure_ascii=False)[:300]})
 
