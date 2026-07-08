@@ -58,8 +58,17 @@ def _build_client(config_path: Path):
 
 def main() -> int:
     check_only = "--check" in sys.argv  # 预检:只 derive_creds 验证签名路径,不撤单
+    # --account N:只处理该账户(per-account stop 撤单用,避免误撤其他账户的单)
+    only_acct = None
+    if "--account" in sys.argv:
+        try:
+            only_acct = int(sys.argv[sys.argv.index("--account") + 1])
+        except (IndexError, ValueError):
+            print(json.dumps({"results": [], "error": "--account 需跟账户号"})); return 1
     results = []
     for i in range(1, 31):
+        if only_acct is not None and i != only_acct:
+            continue
         cfg_path = MAKER_DIR / f"config_{i}.json"
         if not cfg_path.exists():
             continue

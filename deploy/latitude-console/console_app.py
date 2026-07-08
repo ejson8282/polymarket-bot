@@ -97,14 +97,24 @@ def _polymarket() -> Dict[str, Any]:
     quotes_sent = fills_seen = 0
     cooldown = False
     pm_fill_events: List[dict] = []
+    remotes = _load_pm_remotes()
     for idx in range(1, 31):
-        state = _read_json(DATA_DIR / f"engine_state_{idx}.json")
-        if state is None and idx == 1:
+        is_remote = idx in remotes
+        base = PM_PEER_DIR if is_remote else DATA_DIR
+        state = _read_json(base / f"engine_state_{idx}.json")
+        if state is None and idx == 1 and not is_remote:
             state = _read_json(DATA_DIR / "engine_state.json")
         if state is None:
-            continue
-        alive = (DATA_DIR / f".engine_{idx}.pid").exists() or (DATA_DIR / ".engine.pid").exists()
-        paused = (DATA_DIR / f".account_{idx}.paused").exists()
+            if is_remote:
+                state = {}          # 远程账号已配置但还没跑出状态:仍显示一行
+            else:
+                continue
+        if is_remote:
+            alive = _REMOTE_STATUS.get(idx, False)
+            paused = (PM_PEER_DIR / f".account_{idx}.paused").exists()
+        else:
+            alive = (DATA_DIR / f".engine_{idx}.pid").exists() or (DATA_DIR / ".engine.pid").exists()
+            paused = (DATA_DIR / f".account_{idx}.paused").exists()
         markets = state.get("markets") if isinstance(state.get("markets"), dict) else {}
         acct_orders = 0
         for m in markets.values():
@@ -135,6 +145,7 @@ def _polymarket() -> Dict[str, Any]:
         accounts.append({
             "idx": idx,
             "paused": paused,
+            "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
             "rewards": rewards_by_addr.get(funder.lower()),
             "status": "已暂停" if paused else ("运行中" if alive else "已停止"),
@@ -673,12 +684,68 @@ def _probe_pm_signer() -> bool:
         return False
 
 
+# ---------- 多 VPS PM 账号(一 VPS 一账号):远程账号路由 ----------
+# remote_accounts.json:{"2":{"ssh_host":"ubuntu@100.101.50.40","ssh_key":"/home/ubuntu/.ssh/id_ed25519",
+#                            "systemd_unit":"polymarket-engine.service","label":"VPS2"}}
+# 账号1在本机(VPS1),账号2在 VPS2;启停按账号路由到对应机器的 systemctl。
+REMOTE_ACCOUNTS_PATH = DATA_DIR / "remote_accounts.json"
+PM_PEER_DIR = DATA_DIR / "pm_peer"          # rsync 回来的远程账号只读状态
+_REMOTE_STATUS: Dict[int, bool] = {}         # idx -> 远程单元 is-active(prefetch 刷新)
+REMOTE_REPO_DATA = "/home/ubuntu/polymarket-bot/data"
+
+
+def _load_pm_remotes() -> Dict[int, dict]:
+    d = _read_json(REMOTE_ACCOUNTS_PATH)
+    if not isinstance(d, dict):
+        return {}
+    out: Dict[int, dict] = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            try:
+                out[int(k)] = v
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _remote_ssh(remote: dict, cmd: str, timeout: float = 20.0) -> Dict[str, Any]:
+    ssh = ["ssh", "-i", str(remote.get("ssh_key", "")), "-o", "BatchMode=yes",
+           "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8",
+           str(remote.get("ssh_host", "")), cmd]
+    return _run_cmd(ssh, timeout)
+
+
+def _refresh_pm_remotes() -> None:
+    """prefetch 调用:刷新远程账号单元活跃态 + rsync 其只读状态文件到本地 peer 目录。"""
+    import subprocess
+    remotes = _load_pm_remotes()
+    if not remotes:
+        return
+    PM_PEER_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, r in remotes.items():
+        unit = r.get("systemd_unit", "polymarket-engine.service")
+        act = _remote_ssh(r, f"systemctl is-active {unit}", timeout=12)
+        _REMOTE_STATUS[idx] = (act.get("out") == "active")
+        for fn in (f"engine_state_{idx}.json", f".engine_{idx}.pid", f".account_{idx}.paused"):
+            src = f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/{fn}"
+            try:
+                subprocess.run(["scp", "-i", str(r.get("ssh_key", "")), "-o", "BatchMode=yes",
+                                "-o", "ConnectTimeout=8", src, str(PM_PEER_DIR / fn)],
+                               capture_output=True, timeout=15)
+            except Exception:
+                pass
+
+
 def _prefetch_loop() -> None:
     """后台守护线程:每 20s 主动刷新跨机只读源到缓存,使请求路径始终命中热缓存。"""
     while True:
         for url in _PREFETCH_URLS:
             _HTTP_CACHE[url] = (_do_fetch(url, timeout=6.0), time.time())
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
+        try:
+            _refresh_pm_remotes()
+        except Exception:
+            pass
         time.sleep(20)
 
 
@@ -1020,6 +1087,9 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
 def api_state() -> JSONResponse:
     pm = _polymarket()
     pm["engine_ctl"] = _engine_ctl()
+    _accs = pm.get("accounts") or []
+    pm["engine_summary"] = {"running": sum(1 for a in _accs if a.get("status") == "运行中"),
+                            "total": len(_accs)}
     vd = _var_decibel()
     sa = _single_account()
     ao = _account_ops()
@@ -1108,32 +1178,28 @@ def _configured_pm_accounts() -> List[int]:
     return [i for i in range(1, 31) if (MAKER_DIR / f"config_{i}.json").exists()]
 
 
-def _apply_account_selection(accounts: List[int]) -> Dict[str, Any]:
-    """按 Start 前的账户选择置 .account_N.paused:选中→清旗标(上线),未选→置旗标(不报价)。
-    引擎主循环每轮读该旗标(engine.py _is_account_paused),启动首轮即生效。"""
-    configured = _configured_pm_accounts()
-    sel = {i for i in accounts if i in configured}
-    activated, paused = [], []
-    for i in configured:
-        flag = DATA_DIR / f".account_{i}.paused"
-        if i in sel:
-            try:
-                flag.unlink()
-            except FileNotFoundError:
-                pass
-            activated.append(i)
-        else:
-            flag.touch(exist_ok=True)
-            paused.append(i)
-    return {"activated": activated, "paused": paused}
+def _pm_all_accounts() -> List[int]:
+    """全部 PM 账户 = 本地已配置 ∪ 远程(remote_accounts.json)。"""
+    return sorted(set(_configured_pm_accounts()) | set(_load_pm_remotes().keys()))
+
+
+def _cancel_account_orders(idx: int) -> Dict[str, Any]:
+    """撤单只针对账号 idx(cancel_all_cli --account N)。在 VPS1 上跑即可——VPS1 有全部
+    config + 签名器白名单,能派生任一账户 creds 去 REST 撤单,与引擎在哪台机无关。"""
+    import sys as _sys
+    r = _run_cmd([_sys.executable, str(CANCEL_CLI), "--account", str(idx)], timeout=60)
+    try:
+        return {"rc": r["rc"], **json.loads(r["out"])}
+    except Exception:
+        return {"rc": r["rc"], "raw": r["out"], "err": r["err"]}
 
 
 @app.post("/api/pm/engine")
 async def pm_engine(payload: dict, request: Request) -> JSONResponse:
-    """进程控制类(Cloudflare 入口放行,同 Streamlit 规则):
-    start=systemctl start;stop=撤单+systemctl stop(=EMERGENCY STOP);reload=stop 后 start。
-    start/reload 可带 accounts=[idx…] 只让选中账户上线(未选的置暂停旗标,引擎不给它报价);
-    省略 accounts=全部上线(向后兼容)。与 dashboard/app.py 同一写路径。"""
+    """按账号路由的进程控制(一 VPS 一账号):每个账号 = 对应机器上一个
+    polymarket-engine.service。start/stop/reload 带 accounts=[idx…] 对选中账号逐个
+    在其所属机器 systemctl(本地账号本地跑,远程账号 SSH 到对应 VPS);省略 accounts=全部。
+    stop/reload 先按账号 REST 撤单(只撤该账号)再停;省略 accounts 的 stop = EMERGENCY(停全部)。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
@@ -1141,36 +1207,48 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "action 须为 start/stop/reload"}, status_code=400)
     if not (payload or {}).get("confirm"):
         return JSONResponse({"ok": False, "error": "缺少 confirm 确认标记"}, status_code=400)
-    steps: Dict[str, Any] = {}
-    if action in ("stop", "reload"):
-        steps["cancel"] = _cancel_all_orders()
-        steps["stop"] = _run_cmd(["sudo", "-n", "systemctl", "stop", ENGINE_UNIT], timeout=25)
-    if action == "reload":
-        time.sleep(1)
-    if action in ("start", "reload"):
-        accounts = (payload or {}).get("accounts")
-        if isinstance(accounts, list):
-            try:
-                sel = [int(x) for x in accounts]
-            except (TypeError, ValueError):
-                return JSONResponse({"ok": False, "error": "accounts 须为账户号列表"}, status_code=400)
-            if not sel:
-                return JSONResponse({"ok": False, "error": "至少选 1 个账户上线"}, status_code=400)
-            steps["selection"] = _apply_account_selection(sel)
-        steps["start"] = _run_cmd(["sudo", "-n", "systemctl", "start", ENGINE_UNIT], timeout=20)
-    ok = all(s.get("rc") == 0 for k, s in steps.items() if k not in ("cancel", "selection"))
-    _audit("pm_engine", request_action=action, steps=steps,
+    remotes = _load_pm_remotes()
+    all_acc = _pm_all_accounts()
+    req_acc = (payload or {}).get("accounts")
+    if isinstance(req_acc, list):
+        try:
+            targets = [int(x) for x in req_acc]
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "accounts 须为账户号列表"}, status_code=400)
+    else:
+        targets = all_acc
+    targets = [i for i in targets if i in all_acc]
+    if not targets:
+        return JSONResponse({"ok": False, "error": "无有效账户(检查是否已配置)"}, status_code=400)
+
+    per: Dict[int, Any] = {}
+    for idx in targets:
+        is_remote = idx in remotes
+        r = remotes.get(idx, {})
+        unit = r.get("systemd_unit", "polymarket-engine.service") if is_remote else ENGINE_UNIT
+        entry: Dict[str, Any] = {"host": (r.get("label") or "远程") if is_remote else "VPS1",
+                                 "remote": is_remote}
+        if action in ("stop", "reload"):
+            entry["cancel"] = _cancel_account_orders(idx)
+            entry["stop"] = (_remote_ssh(r, f"sudo -n systemctl stop {unit}", timeout=25) if is_remote
+                             else _run_cmd(["sudo", "-n", "systemctl", "stop", unit], timeout=25))
+        if action == "reload":
+            time.sleep(1)
+        if action in ("start", "reload"):
+            entry["start"] = (_remote_ssh(r, f"sudo -n systemctl start {unit}", timeout=20) if is_remote
+                              else _run_cmd(["sudo", "-n", "systemctl", "start", unit], timeout=20))
+        per[idx] = entry
+
+    ok = True
+    for v in per.values():
+        for k in ("start", "stop"):
+            if k in v and v[k].get("rc") != 0:
+                ok = False
+    _audit("pm_engine", request_action=action, targets=targets, per=per,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
-    cancel_n = steps.get("cancel", {}).get("results")
-    note = ""
-    if isinstance(cancel_n, list):
-        note = "撤单:" + (" ".join(f"acc{x['account']}:{x['status']}" for x in cancel_n) or "无账号")
-    sel_info = steps.get("selection")
-    if sel_info:
-        note = (note + " · " if note else "") + f"上线账户 {sel_info['activated']}" + \
-               (f",停用 {sel_info['paused']}" if sel_info["paused"] else "")
-    return JSONResponse({"ok": ok, "engine": _engine_ctl(), "note": note,
-                         "error": None if ok else json.dumps(steps, ensure_ascii=False)[:300]})
+    note = "、".join(f"账号{i}@{per[i]['host']}" for i in targets) + f" 已{action}"
+    return JSONResponse({"ok": ok, "note": note, "per": per,
+                         "error": None if ok else json.dumps(per, ensure_ascii=False)[:300]})
 
 
 @app.post("/api/pm/precheck")
@@ -1186,16 +1264,30 @@ async def pm_precheck(request: Request) -> JSONResponse:
     checks.append({"name": f"签名器 TCP({PM_SIGNER_HOSTPORT})", "ok": signer_up,
                    "note": "可达" if signer_up else "不可达 — 先修 mac-mini 上的 PM signer"})
     if signer_up:
-        r = _run_cmd([_sys.executable, str(CANCEL_CLI), "--check"], timeout=60)
-        try:
-            accounts = json.loads(r["out"]).get("results", [])
-        except Exception:
-            accounts = []
-        for a in accounts:
-            checks.append({"name": f"账号 {a['account']} derive-creds", "ok": a["status"] == "ok",
-                           "note": a.get("note") or a["status"]})
-        if not accounts:
-            checks.append({"name": "账号 derive-creds", "ok": False, "note": r["err"] or "无输出"})
+        remotes = _load_pm_remotes()
+        for idx in _pm_all_accounts():
+            if idx in remotes:
+                # 远程账号:在其所属 VPS 上验签(用远程 venv),更贴近真实运行环境
+                rc = remotes[idx]
+                py = rc.get("python", "/home/ubuntu/.venv2/bin/python")
+                cmd = (f"cd /home/ubuntu/polymarket-bot && {py} "
+                       f"platforms/polymarket/maker/cancel_all_cli.py --check --account {idx}")
+                r = _remote_ssh(rc, cmd, timeout=40)
+                host = rc.get("label") or "远程"
+            else:
+                r = _run_cmd([_sys.executable, str(CANCEL_CLI), "--check", "--account", str(idx)], timeout=60)
+                host = "VPS1"
+            try:
+                res = json.loads(r["out"]).get("results", [])
+            except Exception:
+                res = []
+            if res:
+                a = res[0]
+                checks.append({"name": f"账号 {idx}@{host} derive-creds", "ok": a["status"] == "ok",
+                               "note": a.get("note") or a["status"]})
+            else:
+                checks.append({"name": f"账号 {idx}@{host} derive-creds", "ok": False,
+                               "note": (r.get("err") or "无输出")[:80]})
     cfg = _pm_cfg()
     n_day, n_night = len(cfg.get("markets") or []), len(cfg.get("night_markets") or [])
     cfg_age = _mtime_age(PM_CONFIG)
@@ -1220,8 +1312,20 @@ async def pm_account(payload: dict, request: Request) -> JSONResponse:
     action = str((payload or {}).get("action") or "")
     if not isinstance(idx, int) or not (1 <= idx <= 30) or action not in ("pause", "resume"):
         return JSONResponse({"ok": False, "error": "需 idx 1-30 且 action pause/resume"}, status_code=400)
-    if not (MAKER_DIR / f"config_{idx}.json").exists():
+    remotes = _load_pm_remotes()
+    if idx not in remotes and not (MAKER_DIR / f"config_{idx}.json").exists():
         return JSONResponse({"ok": False, "error": f"账号 {idx} 未配置"}, status_code=404)
+    if idx in remotes:
+        # 远程账号:旗标在其所属 VPS 上,SSH touch/unlink(引擎在那台机上读它)
+        r = remotes[idx]
+        fpath = f"{REMOTE_REPO_DATA}/.account_{idx}.paused"
+        cmd = f"touch {fpath}" if action == "pause" else f"rm -f {fpath}"
+        res = _remote_ssh(r, cmd, timeout=15)
+        paused_now = action == "pause" and res.get("rc") == 0
+        _audit("pm_account", idx=idx, request_action=action, remote=True, rc=res.get("rc"),
+               source="cloudflare" if _is_cloudflare(request) else "tailnet")
+        return JSONResponse({"ok": res.get("rc") == 0, "idx": idx, "paused": paused_now,
+                             "host": r.get("label") or "远程"})
     flag = DATA_DIR / f".account_{idx}.paused"
     if action == "pause":
         flag.touch(exist_ok=True)
@@ -1232,7 +1336,7 @@ async def pm_account(payload: dict, request: Request) -> JSONResponse:
             pass
     _audit("pm_account", idx=idx, request_action=action,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
-    return JSONResponse({"ok": True, "idx": idx, "paused": flag.exists()})
+    return JSONResponse({"ok": True, "idx": idx, "paused": flag.exists(), "host": "VPS1"})
 
 
 @app.post("/api/sa/paper")
@@ -1446,12 +1550,28 @@ async def pm_markets_apply(payload: dict, request: Request) -> JSONResponse:
             synced.append(mp.name)
         except Exception as e:
             failed.append(f"{mp.name}({str(e)[:60]})")
+    # 远程账号(别的 VPS)的 config 也要推过去,否则它读不到新 markets
+    import subprocess
+    pushed: List[str] = []
+    for idx, r in _load_pm_remotes().items():
+        local_cfg = MAKER_DIR / f"config_{idx}.json"
+        if not local_cfg.exists():
+            continue
+        dst = f"{r.get('ssh_host')}:/home/ubuntu/polymarket-bot/platforms/polymarket/maker/config_{idx}.json"
+        try:
+            pr = subprocess.run(["scp", "-i", str(r.get("ssh_key", "")), "-o", "BatchMode=yes",
+                                 "-o", "ConnectTimeout=8", str(local_cfg), dst],
+                                capture_output=True, text=True, timeout=20)
+            (pushed if pr.returncode == 0 else failed).append(
+                f"→{r.get('label') or idx}:config_{idx}" if pr.returncode == 0
+                else f"push config_{idx} 失败({(pr.stderr or '')[:40]})")
+        except Exception as e:
+            failed.append(f"push config_{idx}({str(e)[:40]})")
     _audit("pm_markets_apply", day=len(new_markets), night=len(checked_night),
-           synced=synced, failed=failed, backup=backup,
-           source="tailnet")
+           synced=synced, pushed=pushed, failed=failed, backup=backup, source="tailnet")
     return JSONResponse({"ok": not failed, "day": len(new_markets), "night": len(checked_night),
-                         "synced": synced, "failed": failed,
-                         "note": "engine 需 Stop+Start 重启才会读取新 markets 列表"})
+                         "synced": synced, "pushed": pushed, "failed": failed,
+                         "note": "engine 需 Stop+Start 重启才读新 markets;远程账号 config 已推送对应 VPS"})
 
 
 @app.post("/api/pm/proxies")
