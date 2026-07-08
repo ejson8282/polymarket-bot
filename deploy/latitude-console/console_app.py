@@ -945,8 +945,11 @@ def _freshness(vd: Dict[str, Any], ao: Dict[str, Any]) -> Dict[str, Any]:
     entry("pm", _mtime_age(pm_p if pm_p.exists() else DATA_DIR / "engine_state.json"))
     hosts = [h.get("age_sec") for h in (vd.get("hosts") or {}).values() if h.get("age_sec") is not None]
     entry("vardec", min(hosts) if hosts else None)
-    pf_p = DATA_DIR / "predictfun_mainnet_execution_report.json"
-    entry("pf", _mtime_age(pf_p if pf_p.exists() else DATA_DIR / "predictfun_execution_report.json"))
+    # dry-run 每轮更新 state/desired_orders;execution_report 只有 executor 写,不能当心跳
+    pf_ages = [a for a in (_mtime_age(DATA_DIR / n) for n in
+                           ("predictfun_mainnet_state.json", "predictfun_mainnet_desired_orders.json",
+                            "predictfun_mainnet_execution_report.json")) if a is not None]
+    entry("pf", min(pf_ages) if pf_ages else None)
     entry("sa", _mtime_age(DATA_DIR / "single_account_paper_state.json"))
     entry("hk", ao.get("age_sec") if ao.get("present") else None)
     return out
