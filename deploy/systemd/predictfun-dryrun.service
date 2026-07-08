@@ -1,0 +1,12 @@
+[Unit]
+Description=Predict.fun dry-run 单轮扫描(mode=dry_run,不下真实单)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python -m platforms.predictfun.maker.dry_run --config /home/ubuntu/polymarket-bot/platforms/predictfun/maker/config.mainnet.json --once
+StandardOutput=append:/home/ubuntu/polymarket-bot/data/predictfun_dryrun.log
+StandardError=append:/home/ubuntu/polymarket-bot/data/predictfun_dryrun.log

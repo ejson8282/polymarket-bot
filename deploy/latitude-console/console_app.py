@@ -471,7 +471,19 @@ def _equity_history() -> Dict[str, Any]:
 # ---------- Single Account ----------
 
 def _sa_worker_pid() -> Optional[int]:
-    """与 dashboard/app.py::_single_account_worker_pid 同一 pid 文件与探活逻辑。"""
+    """先查 systemd 单元(sa-paper-worker.service,2026-07-08 起的正规跑法——
+    dashboard Popen 子进程会被 dashboard 重启连坐杀死,7/1 停摆即此因),
+    再退回 dashboard 遗留的 pid 文件。"""
+    import subprocess
+    try:
+        r = subprocess.run(["systemctl", "show", "sa-paper-worker.service",
+                            "-p", "ActiveState", "-p", "MainPID"],
+                           capture_output=True, text=True, timeout=5)
+        props = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+        if props.get("ActiveState") == "active" and props.get("MainPID", "0") != "0":
+            return int(props["MainPID"])
+    except Exception:
+        pass
     pid_path = DATA_DIR / ".single_account_paper.pid"
     if not pid_path.exists():
         return None
@@ -1069,27 +1081,26 @@ async def sa_paper(payload: dict, request: Request) -> JSONResponse:
         result = {"ok": r["rc"] == 0,
                   "msg": "paper worker 已完成一次评分;未下单。" if r["rc"] == 0 else (r["err"] or r["out"] or "失败")}
     elif action == "start":
+        # systemd 单元跑法:不再 Popen(dashboard/console 重启会 cgroup 连坐杀掉子进程,
+        # 7/1 停摆即此因;sa-paper-worker.service 独立于两者存活)
         if pid:
             result = {"ok": True, "msg": f"paper worker 已在运行,pid={pid}"}
         else:
-            log_fh = SA_LOG.open("a", encoding="utf-8")
-            proc = subprocess.Popen(
-                [_sys.executable, "-m", "platforms.single_account.paper_worker",
-                 "--config", str(SA_CONFIG)],
-                cwd=REPO_ROOT, stdout=log_fh, stderr=log_fh, start_new_session=True)
-            SA_PID.write_text(str(proc.pid), encoding="utf-8")
-            result = {"ok": True, "msg": f"paper worker 已启动,pid={proc.pid}"}
+            r = _run_cmd(["sudo", "-n", "systemctl", "start", "sa-paper-worker.service"], timeout=20)
+            result = {"ok": r["rc"] == 0,
+                      "msg": "paper worker 已启动(systemd)" if r["rc"] == 0 else (r["err"] or "启动失败")}
     else:
-        if not pid:
-            SA_PID.unlink(missing_ok=True)
-            result = {"ok": True, "msg": "paper worker 未运行。"}
-        else:
+        legacy_pid_file = SA_PID.exists()
+        r = _run_cmd(["sudo", "-n", "systemctl", "stop", "sa-paper-worker.service"], timeout=20)
+        if legacy_pid_file and pid:  # dashboard 遗留 Popen 进程,单元停了也要补刀
             import signal as _signal
             try:
                 os.kill(pid, _signal.SIGTERM)
-                result = {"ok": True, "msg": f"已发送停止信号,pid={pid}"}
-            except Exception as exc:
-                result = {"ok": False, "msg": f"停止失败:{exc}"}
+            except Exception:
+                pass
+        SA_PID.unlink(missing_ok=True)
+        result = {"ok": r["rc"] == 0,
+                  "msg": "paper worker 已停止" if r["rc"] == 0 else (r["err"] or "停止失败")}
     _audit("sa_paper", request_action=action, ok=result["ok"], msg=result["msg"],
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     return JSONResponse({**result, "worker_pid": _sa_worker_pid()})

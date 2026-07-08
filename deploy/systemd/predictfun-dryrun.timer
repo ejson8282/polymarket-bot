@@ -1,0 +1,10 @@
+[Unit]
+Description=Predict.fun dry-run 每 30 分钟一轮
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

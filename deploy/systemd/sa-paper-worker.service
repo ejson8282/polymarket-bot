@@ -1,0 +1,17 @@
+[Unit]
+Description=SA paper worker (纯 paper 评分循环,不下真实单)
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python -m platforms.single_account.paper_worker --config /home/ubuntu/polymarket-bot/platforms/single_account/config.json
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/home/ubuntu/polymarket-bot/data/single_account_paper_worker.log
+StandardError=append:/home/ubuntu/polymarket-bot/data/single_account_paper_worker.log
+
+[Install]
+WantedBy=multi-user.target
