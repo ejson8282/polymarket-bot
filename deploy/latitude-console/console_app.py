@@ -425,8 +425,13 @@ def _var_decibel() -> Dict[str, Any]:
                 if t is not None:
                     vol_total += t
         hosts[host] = h
+    auto = _read_json(VARIA_DIR / "auto_strategy_state.json")
+    auto_ctl = None
+    if isinstance(auto, dict):
+        auto_ctl = {"enabled": bool(auto.get("enabled")), "mode": auto.get("mode"),
+                    "hosts": auto.get("hosts") if isinstance(auto.get("hosts"), dict) else {}}
     return {
-        "present": bool(hosts), "hosts": hosts,
+        "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
         "equity_total": round(equity_total, 2) if equity_found else None,
         "points_decibel": round(points_dec, 1) if points_dec is not None else None,
         "points_variational": round(points_var, 1) if points_var is not None else None,
@@ -902,6 +907,47 @@ async def set_varia_budget(payload: dict) -> JSONResponse:
                              "backup": backup.name}, ensure_ascii=False) + "\n")
     return JSONResponse({"ok": True, "old": old, "new": str(cap),
                          "note": "已写入 VPS1 生效值;VPS2 由 varia 既有 state 同步机制传播"})
+
+
+def _write_auto_strategy(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """A 类操作:部分更新 auto_strategy_state.json(保留其余字段),读改写+备份+审计。
+    与 varia dashboard 自身 _write_auto_strategy_state 同一文件、同一 worker 消费路径。"""
+    path = VARIA_DIR / "auto_strategy_state.json"
+    state = _read_json(path)
+    if not isinstance(state, dict):
+        return {"ok": False, "error": "auto_strategy_state.json 不可读", "code": 500}
+    before = {k: state.get(k) for k in updates}
+    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    backup.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    state.update(updates)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    with AUDIT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+                             "action": "set_auto_strategy", "before": before,
+                             "after": updates, "backup": backup.name}, ensure_ascii=False) + "\n")
+    return {"ok": True, "before": before, "after": updates}
+
+
+@app.post("/api/varia/auto")
+async def set_varia_auto(payload: dict) -> JSONResponse:
+    """A 类:自动运行总开关 / 半-全自动模式(文件写,worker 生效,可逆)。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    updates: Dict[str, Any] = {}
+    if "enabled" in (payload or {}):
+        updates["enabled"] = bool(payload["enabled"])
+    if "mode" in (payload or {}):
+        mode = str(payload["mode"])
+        if mode not in ("semi_auto", "full_auto"):
+            return JSONResponse({"ok": False, "error": "mode 须为 semi_auto/full_auto"}, status_code=400)
+        updates["mode"] = mode
+    if not updates:
+        return JSONResponse({"ok": False, "error": "无有效字段"}, status_code=400)
+    res = _write_auto_strategy(updates)
+    return JSONResponse(res, status_code=res.pop("code", 200 if res.get("ok") else 500))
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -236,7 +236,7 @@
     <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
     <div class="kpi"><div class="label">本周预算剩余 <span id="budget-edit-btn" style="float:right;cursor:pointer;color:var(--var);font-size:11px">改预算 ✎</span></div><div class="value" data-k="vdk.budget">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub" data-k="vdk.budget_sub">周亏损上限扣减制</div><div id="budget-edit-box" style="display:none;margin-top:8px"><input id="budget-input" type="number" step="1" min="0" max="500" style="width:80px;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono)"> <button class="btn" style="font-size:11px" id="budget-save">保存(两台)</button> <button class="btn ghost" style="font-size:11px" id="budget-cancel">取消</button><div id="budget-msg" class="src" style="margin-top:4px"></div></div></div>
     <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
-    <div class="kpi"><div class="label">自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div></div>
+    <div class="kpi"><div class="label">自动化 <span id="auto-edit-btn" style="float:right;cursor:pointer;color:var(--var);font-size:11px">控制 ⚙</span></div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div><div id="auto-ctl-box" style="display:none;margin-top:8px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn" style="font-size:11px" id="auto-toggle">切换自动运行</button><select id="auto-mode" style="background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:3px 6px;font-size:11px"><option value="semi_auto">半自动</option><option value="full_auto">全自动</option></select><button class="btn ghost" style="font-size:11px" id="auto-cancel">收起</button></div><div id="auto-msg" class="src" style="margin-top:4px"></div></div></div>
   </div>
   <div class="grid2">
     <div>
@@ -840,8 +840,12 @@
       setK('vdk.points', Number(tot.toFixed(1)).toLocaleString());
       setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
     }
+    window.__autoCtl=vd.auto||{};
     const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec||0),0);
-    setK('vdk.auto', worst>600?'<span class="down">●</span> 心跳过期':'<span class="up">●</span> 运行中');
+    if(vd.auto){
+      const a=vd.auto;
+      setK('vdk.auto', (a.enabled?'<span class="up">●</span> ':'<span class="down">●</span> ')+(a.enabled?(a.mode==='full_auto'?'全自动':'半自动'):'已停'));
+    } else setK('vdk.auto', worst>600?'<span class="down">●</span> 心跳过期':'<span class="up">●</span> 运行中');
     setK('vdk.auto_sub','最旧心跳 '+esc(_fmtAge(worst)));
     const hc=document.getElementById('vd-host-cards');
     if(hc && names.length){
@@ -1097,6 +1101,32 @@
   }
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
+
+  // 自动策略控制(A类:文件写,worker生效可逆)——自动运行开关 + 半/全自动模式
+  (function(){
+    const btn=document.getElementById('auto-edit-btn'), box=document.getElementById('auto-ctl-box');
+    if(!btn||!box) return;
+    const msg=document.getElementById('auto-msg'), sel=document.getElementById('auto-mode');
+    btn.addEventListener('click',()=>{
+      if(window.__writesEnabled===false){ box.style.display='block'; msg.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
+      box.style.display=box.style.display==='none'?'block':'none';
+      const a=window.__autoCtl||{};
+      if(a.mode) sel.value=a.mode;
+      msg.textContent='自动运行:'+(a.enabled?'开':'关')+' · 模式:'+(a.mode==='full_auto'?'全自动':'半自动');
+    });
+    document.getElementById('auto-cancel').addEventListener('click',()=>{box.style.display='none';});
+    async function post(body,label){
+      msg.textContent=label+'…';
+      try{ const r=await fetch('/api/varia/auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json(); msg.innerHTML=j.ok?'<span class="up">已保存</span>':'<span class="down">'+esc(j.error||'失败')+'</span>';
+        if(j.ok) setTimeout(refresh,800);
+      }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
+    }
+    document.getElementById('auto-toggle').addEventListener('click',()=>{
+      const cur=(window.__autoCtl||{}).enabled; post({enabled:!cur}, (cur?'关闭':'开启')+'自动运行');
+    });
+    sel.addEventListener('change',()=>post({mode:sel.value},'切换模式'));
+  })();
 
   // 预算编辑器(受控写:POST /api/varia/budget;写通道由服务端 LATITUDE_ENABLE_WRITES 闸门)
   (function(){
