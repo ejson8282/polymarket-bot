@@ -1,8 +1,8 @@
 [Unit]
-Description=Latitude 早报 每日 09:00 北京时间(=01:00 UTC)
+Description=Latitude 早报 每日 09:00(服务器时区=Asia/Shanghai)
 
 [Timer]
-OnCalendar=*-*-* 01:00:00
+OnCalendar=*-*-* 09:00:00
 Persistent=true
 
 [Install]

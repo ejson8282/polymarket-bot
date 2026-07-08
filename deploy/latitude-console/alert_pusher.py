@@ -52,16 +52,24 @@ def send_feishu(text: str) -> bool:
     url = _webhook(FEISHU_FILE)
     if not url:
         return False
-    _post(url, {"msg_type": "text", "content": {"text": text}})
-    return True
+    try:
+        _post(url, {"msg_type": "text", "content": {"text": text}})
+        return True
+    except Exception as e:  # 单通道故障不拖垮整轮(403=webhook 被删等)
+        print(f"feishu push failed: {e}", file=sys.stderr)
+        return False
 
 
 def send_discord(text: str) -> bool:
     url = _webhook(DISCORD_FILE)
     if not url:
         return False
-    _post(url, {"content": text[:1900]})
-    return True
+    try:
+        _post(url, {"content": text[:1900]})
+        return True
+    except Exception as e:
+        print(f"discord push failed: {e}", file=sys.stderr)
+        return False
 
 
 def send_routed(sev: str, text: str) -> None:
