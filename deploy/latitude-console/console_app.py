@@ -442,7 +442,29 @@ def _var_decibel() -> Dict[str, Any]:
         "today": (today := _varia_trades_today()),
         "budget": _varia_budget({h: today.get("loss_7d_by_host", {}).get(h, 0.0)
                                  for h in (hosts or {"vps1": {}})}),
+        "equity_history": _equity_history(),
     }
+
+
+def _equity_history() -> Dict[str, Any]:
+    """总权益历史曲线(home_active_total_equity_history,带 principal ledger 校正)。"""
+    rows = _read_json(VARIA_DIR / "home_active_total_equity_history.json")
+    if not isinstance(rows, list) or not rows:
+        return {"present": False}
+    pts = []
+    for r in rows:
+        v = _num(r.get("value")) if isinstance(r, dict) else None
+        ts = str(r.get("timestamp") or "")[:10] if isinstance(r, dict) else ""
+        if v is not None:
+            pts.append({"t": ts, "v": round(v, 2)})
+    if len(pts) < 2:
+        return {"present": False}
+    vals = [p["v"] for p in pts]
+    first, last = vals[0], vals[-1]
+    return {"present": True, "points": pts[-30:], "first": first, "last": last,
+            "min": round(min(vals), 2), "max": round(max(vals), 2),
+            "change": round(last - first, 2),
+            "change_pct": round((last - first) / first * 100, 2) if first else None}
 
 
 # ---------- Single Account ----------

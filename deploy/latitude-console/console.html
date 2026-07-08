@@ -262,6 +262,12 @@
         </div>
         <div class="src" style="margin-top:8px" data-k="vd.loss_src">合计 −$1.84 = 2.1 bps/万U · 每积分成本 $0.0148(7日)</div>
       </div>
+      <div class="panel" id="vd-equity-panel" style="display:none">
+        <h2>总权益曲线 <span class="feat f-new">新增</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
+        <div class="src">source · home_active_total_equity_history(两 VPS 合计,principal ledger 校正)</div>
+        <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" style="margin-top:8px"></svg>
+        <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
+      </div>
     </div>
     <aside>
       <div class="panel" style="margin-top:16px">
@@ -895,6 +901,26 @@
       setK('vd.loss_src','近24h 合计损耗 −'+money(t.loss).slice(1)+' = '+(t.loss_bps_wan??'—')+' bps/万U · 实现PnL '+pnlSpan(t.pnl||0));
       setK('vd.vol_label','本周量 / 今日损耗');
       if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
+    }
+    // 总权益曲线(原生 SVG;真实历史序列)
+    const eq=vd.equity_history||{};
+    const eqp=document.getElementById('vd-equity-panel');
+    if(eq.present && eqp){
+      eqp.style.display='block';
+      const pts=eq.points||[], n=pts.length;
+      const lo=eq.min, hi=eq.max, span=(hi-lo)||1, W=860, H=120, pad=10;
+      const x=i=>pad+(W-2*pad)*i/(Math.max(1,n-1));
+      const y=v=>H-pad-(H-2*pad)*(v-lo)/span;
+      const line=pts.map((p,i)=>(i?'L':'M')+x(i).toFixed(1)+','+y(p.v).toFixed(1)).join(' ');
+      const area=line+' L'+x(n-1).toFixed(1)+','+(H-pad)+' L'+x(0).toFixed(1)+','+(H-pad)+' Z';
+      const up=eq.change>=0;
+      const svg=document.getElementById('vd-equity-svg');
+      if(svg) svg.innerHTML='<path d="'+area+'" fill="'+(up?'rgba(70,178,107,.12)':'rgba(229,72,77,.12)')+'"/>'+
+        '<path d="'+line+'" fill="none" stroke="'+(up?'var(--ok)':'var(--danger)')+'" stroke-width="2"/>'+
+        '<circle cx="'+x(n-1).toFixed(1)+'" cy="'+y(pts[n-1].v).toFixed(1)+'" r="3" fill="'+(up?'var(--ok)':'var(--danger)')+'"/>';
+      setK('vd.eq_head', pts[0].t+' → '+pts[n-1].t+' · '+n+'点');
+      setK('vd.eq_foot', '当前 '+money(eq.last)+' · 区间变化 '+(up?'+':'')+money(Math.abs(eq.change)).replace('$',up?'$':'−$')+
+        (eq.change_pct!=null?'('+(up?'+':'')+eq.change_pct+'%)':'')+' · 区间 '+money(eq.min)+'–'+money(eq.max));
     }
     // 本周预算:每 VPS 各 cap − 各自近7日损耗(每VPS独立;总卡显示合计,悬停看分解)
     const b=vd.budget||{};
