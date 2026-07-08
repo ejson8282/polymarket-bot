@@ -297,7 +297,7 @@
 <!-- ════════════ 页面 3 · Polymarket(账号矩阵首屏,原 5 tab 保留) ════════════ -->
 <section class="page" id="page-pm">
   <div class="banner livewarn">MAINNET · LIVE — 真实资金 · kill-switch 待命
-    <span style="flex:1"></span><button class="btn danger">EMERGENCY STOP</button><span class="feat f-old" style="margin-left:8px">现有按钮</span>
+    <span style="flex:1"></span><span id="pm-op-msg" style="font-size:11px;font-family:var(--mono);margin-right:8px"></span><button class="btn danger" id="pm-estop-btn">EMERGENCY STOP</button>
   </div>
   <div class="subnav">
     <span class="on">账号矩阵(新首屏)</span><span>Markets <em class="feat f-old">现有</em></span><span>Fills <em class="feat f-old">现有</em></span>
@@ -340,8 +340,10 @@
     </div>
     <aside>
       <div class="panel" style="margin-top:16px">
-        <h2>Runner 控制 <span class="feat f-old">现有</span></h2>
-        <div class="btnrow"><button class="btn">Start</button><button class="btn">Stop</button><button class="btn">Reload</button><button class="btn ghost">📊 Load Rewards</button></div>
+        <h2>引擎控制 <span class="feat f-new">已迁移</span> <span id="pm-engine-chip" class="chip" style="margin-left:auto">—</span></h2>
+        <div class="src">systemd · polymarket-engine.service;Stop/Reload 先 REST 撤单再停(与 /alpha/ 急停同一路径)</div>
+        <div class="btnrow" style="margin-top:8px"><button class="btn" id="pm-start-btn">Start</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
+        <div class="src" id="pm-engine-msg" style="margin-top:6px"></div>
       </div>
       <div class="panel">
         <h2>代理(Clash) <span class="feat f-old">现有</span></h2>
@@ -425,8 +427,8 @@
 <!-- ════════════ 页面 5 · Single Account · 策略验证驾驶舱 ════════════ -->
 <section class="page" id="page-sa">
   <div class="banner readonly">PAPER · 虚拟本金 $10,000 — 只模拟,不下真实单
-    <span style="flex:1"></span>
-    <button class="btn">跑一次评分</button><button class="btn ghost">停止 worker</button><button class="btn ghost">导出周报</button><span class="feat f-old" style="margin-left:6px">评分/worker 为现有功能</span>
+    <span style="flex:1"></span><span id="sa-op-msg" style="font-size:11px;font-family:var(--mono);margin-right:8px"></span>
+    <button class="btn" id="sa-once-btn">跑一次评分</button><button class="btn" id="sa-start-btn">启动 worker</button><button class="btn ghost" id="sa-stop-btn">停止 worker</button><span class="feat f-new" style="margin-left:6px">已迁移</span>
   </div>
 
   <!-- 五阶段路线:按数据推进,不按日期推进 -->
@@ -811,8 +813,16 @@
         '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
         '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
-        '<td class="btnrow" style="color:var(--faint);font-size:11px">操作在 :8502/alpha/</td></tr>'
+        '<td class="btnrow">'+(a.paused
+          ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="resume">恢复</button>'
+          :'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停(撤单)</button>')+'</td></tr>'
       ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
+    }
+    const ec=pm.engine_ctl||{};
+    const echip=document.getElementById('pm-engine-chip');
+    if(echip){
+      echip.textContent = ec.active ? 'RUNNING' : (ec.state||'stopped').toUpperCase();
+      echip.className = 'chip ' + (ec.active ? 'ok' : 'danger');
     }
     if(pm.curator){
       const c=pm.curator;
@@ -1027,6 +1037,11 @@
   }
 
   function bindSA(sa){
+    const wchip=document.querySelector('[data-k="sa.worker"]');
+    if(wchip){
+      wchip.textContent = sa.worker_running ? ('paper worker 运行中 · pid '+sa.worker_pid) : 'paper worker 未运行';
+      wchip.className = 'chip ' + (sa.worker_running ? 'ok' : 'danger');
+    }
     if(!sa.present) return;
     setK('sa.worker', sa.age? 'paper 最近 '+esc(sa.age):null);
     setK('sa.cand', (sa.signals??'—')+' · '+(sa.actionable??'—'));
@@ -1176,6 +1191,57 @@
         msg.innerHTML=j.ok? '<span class="up">已保存:'+j.old+' → '+j.new+' USDC/台</span>' : '<span class="down">'+esc(j.error||'失败')+'</span>';
         if(j.ok) setTimeout(refresh,800);
       }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
+    });
+  })();
+
+  // pmbot 操作(已迁移自 /alpha/):引擎启停/急停、账号软暂停、SA paper worker
+  async function postOp(url, body, msgEl, label){
+    if(window.__writesEnabled===false){ if(msgEl) msgEl.innerHTML='<span class="down">写通道未启用(只读)</span>'; return null; }
+    if(msgEl) msgEl.textContent=label+'…';
+    try{
+      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const j=await r.json();
+      if(msgEl) msgEl.innerHTML=j.ok?'<span class="up">'+esc(j.msg||j.note||'完成')+'</span>':'<span class="down">'+esc(j.error||j.msg||'失败')+'</span>';
+      if(j.ok) setTimeout(refresh,1200);
+      return j;
+    }catch(e){ if(msgEl) msgEl.innerHTML='<span class="down">请求失败</span>'; return null; }
+  }
+  (function(){
+    const emsg=document.getElementById('pm-engine-msg');
+    const bmsg=document.getElementById('pm-op-msg');
+    function stopFlow(el){
+      if(window.__writesEnabled===false){ if(el) el.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
+      const t=prompt('急停:先 REST 撤销全部账号挂单,再 systemctl stop polymarket-engine。\n输入 STOP 确认');
+      if(t!=='STOP'){ if(el&&t!==null) el.innerHTML='<span class="down">未确认,已取消</span>'; return; }
+      postOp('/api/pm/engine',{action:'stop',confirm:true},el,'撤单+停机');
+    }
+    const eb=document.getElementById('pm-estop-btn'); if(eb) eb.addEventListener('click',()=>stopFlow(bmsg));
+    const sb=document.getElementById('pm-stop-btn'); if(sb) sb.addEventListener('click',()=>stopFlow(emsg));
+    const st=document.getElementById('pm-start-btn');
+    if(st) st.addEventListener('click',()=>{
+      if(!confirm('启动 PM 引擎 = 恢复真实资金报价(引擎已停摆一段时间,先确认账号与市场配置仍正确)。继续?')) return;
+      postOp('/api/pm/engine',{action:'start',confirm:true},emsg,'启动引擎');
+    });
+    const rl=document.getElementById('pm-reload-btn');
+    if(rl) rl.addEventListener('click',()=>{
+      if(!confirm('Reload:撤单 → 停引擎 → 重启。期间全部挂单撤销。继续?')) return;
+      postOp('/api/pm/engine',{action:'reload',confirm:true},emsg,'重启引擎');
+    });
+    const mb=document.getElementById('pm-matrix-body');
+    if(mb) mb.addEventListener('click',(ev)=>{
+      const b=ev.target.closest('.pm-acct-btn'); if(!b) return;
+      const idx=parseInt(b.dataset.idx,10), act=b.dataset.act;
+      const txt=(act==='pause')?('暂停账号 '+idx+':撤其挂单并停报价(软暂停,引擎进程不停)。继续?')
+                               :('恢复账号 '+idx+' 报价。继续?');
+      if(!confirm(txt)) return;
+      postOp('/api/pm/account',{idx:idx,action:act},bmsg,(act==='pause'?'暂停':'恢复')+' acc'+idx);
+    });
+    const smsg=document.getElementById('sa-op-msg');
+    const so=document.getElementById('sa-once-btn'); if(so) so.addEventListener('click',()=>postOp('/api/sa/paper',{action:'once'},smsg,'评分中(约30s)'));
+    const ss=document.getElementById('sa-start-btn'); if(ss) ss.addEventListener('click',()=>postOp('/api/sa/paper',{action:'start'},smsg,'启动 worker'));
+    const sp=document.getElementById('sa-stop-btn'); if(sp) sp.addEventListener('click',()=>{
+      if(!confirm('停止 SA paper worker?(纯 paper,无真实持仓)')) return;
+      postOp('/api/sa/paper',{action:'stop'},smsg,'停止 worker');
     });
   })();
 

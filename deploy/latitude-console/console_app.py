@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 APP_DIR = Path(__file__).resolve().parent
@@ -134,6 +134,7 @@ def _polymarket() -> Dict[str, Any]:
         funder = str(state.get("funder") or "")
         accounts.append({
             "idx": idx,
+            "paused": paused,
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
             "rewards": rewards_by_addr.get(funder.lower()),
             "status": "已暂停" if paused else ("运行中" if alive else "已停止"),
@@ -469,9 +470,24 @@ def _equity_history() -> Dict[str, Any]:
 
 # ---------- Single Account ----------
 
+def _sa_worker_pid() -> Optional[int]:
+    """与 dashboard/app.py::_single_account_worker_pid 同一 pid 文件与探活逻辑。"""
+    pid_path = DATA_DIR / ".single_account_paper.pid"
+    if not pid_path.exists():
+        return None
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        return pid
+    except Exception:
+        return None
+
+
 def _single_account() -> Dict[str, Any]:
     state = _read_json(DATA_DIR / "single_account_paper_state.json")
-    out: Dict[str, Any] = {"present": state is not None}
+    out: Dict[str, Any] = {"present": state is not None,
+                           "worker_pid": _sa_worker_pid()}
+    out["worker_running"] = out["worker_pid"] is not None
     if state:
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
         out.update({
@@ -897,6 +913,7 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any]) -> List[dict]:
 @app.get("/api/state")
 def api_state() -> JSONResponse:
     pm = _polymarket()
+    pm["engine_ctl"] = _engine_ctl()
     vd = _var_decibel()
     return JSONResponse({
         "ts": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),
@@ -924,12 +941,166 @@ def api_state() -> JSONResponse:
 WRITES_ENABLED = os.getenv("LATITUDE_ENABLE_WRITES", "0") == "1"
 AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
 
+# pmbot 操作迁移(自 /alpha/ Streamlit,写路径一一对应 dashboard/app.py):
+REPO_ROOT = DATA_DIR.parent
+MAKER_DIR = REPO_ROOT / "platforms" / "polymarket" / "maker"
+ENGINE_UNIT = "polymarket-engine.service"
+CANCEL_CLI = MAKER_DIR / "cancel_all_cli.py"
+SA_CONFIG = REPO_ROOT / "platforms" / "single_account" / "config.json"
+SA_PID = DATA_DIR / ".single_account_paper.pid"
+SA_LOG = DATA_DIR / "single_account_paper_worker.log"
+
+
+def _audit(action: str, **fields: Any) -> None:
+    with AUDIT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+                             "action": action, **fields}, ensure_ascii=False) + "\n")
+
+
+def _is_cloudflare(request: Request) -> bool:
+    """公网 Cloudflare 入口(nginx 注 X-Dashboard-Source 头)。与 dashboard/app.py::
+    _is_public_access 同一规则:配置类写降级只读,进程控制类放行(Kevin 2026-04-24)。"""
+    return str(request.headers.get("X-Dashboard-Source", "")).lower() == "cloudflare"
+
+
+def _run_cmd(cmd: List[str], timeout: float, cwd: Optional[Path] = None) -> Dict[str, Any]:
+    import subprocess
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           cwd=str(cwd) if cwd else None)
+        return {"rc": r.returncode, "out": (r.stdout or "").strip()[:400],
+                "err": (r.stderr or "").strip()[:200]}
+    except subprocess.TimeoutExpired:
+        return {"rc": -1, "out": "", "err": "timeout"}
+    except Exception as e:
+        return {"rc": -1, "out": "", "err": f"{type(e).__name__}: {str(e)[:80]}"}
+
+
+def _engine_ctl() -> Dict[str, Any]:
+    r = _run_cmd(["systemctl", "is-active", ENGINE_UNIT], timeout=5)
+    return {"unit": ENGINE_UNIT, "active": r["out"] == "active", "state": r["out"] or r["err"]}
+
+
+def _cancel_all_orders() -> Dict[str, Any]:
+    """EMERGENCY STOP 第一步:REST 撤销全部挂单(cancel_all_cli 镜像 dashboard 同一
+    signer 路径;引擎 SIGTERM 时自身也会撤单,此为双保险)。best-effort,不阻塞停机。"""
+    import sys as _sys
+    r = _run_cmd([_sys.executable, str(CANCEL_CLI)], timeout=90)
+    try:
+        return {"rc": r["rc"], **json.loads(r["out"])}
+    except Exception:
+        return {"rc": r["rc"], "raw": r["out"], "err": r["err"]}
+
+
+@app.post("/api/pm/engine")
+async def pm_engine(payload: dict, request: Request) -> JSONResponse:
+    """进程控制类(Cloudflare 入口放行,同 Streamlit 规则):
+    start=systemctl start;stop=撤单+systemctl stop(=EMERGENCY STOP);reload=stop 后 start。
+    与 dashboard/app.py::start_multi_runner/stop_multi_runner 同一写路径。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    if action not in ("start", "stop", "reload"):
+        return JSONResponse({"ok": False, "error": "action 须为 start/stop/reload"}, status_code=400)
+    if not (payload or {}).get("confirm"):
+        return JSONResponse({"ok": False, "error": "缺少 confirm 确认标记"}, status_code=400)
+    steps: Dict[str, Any] = {}
+    if action in ("stop", "reload"):
+        steps["cancel"] = _cancel_all_orders()
+        steps["stop"] = _run_cmd(["sudo", "-n", "systemctl", "stop", ENGINE_UNIT], timeout=25)
+    if action == "reload":
+        time.sleep(1)
+    if action in ("start", "reload"):
+        steps["start"] = _run_cmd(["sudo", "-n", "systemctl", "start", ENGINE_UNIT], timeout=20)
+    ok = all(s.get("rc") == 0 for k, s in steps.items() if k != "cancel")
+    _audit("pm_engine", request_action=action, steps=steps,
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    cancel_n = steps.get("cancel", {}).get("results")
+    note = ""
+    if isinstance(cancel_n, list):
+        note = "撤单:" + (" ".join(f"acc{x['account']}:{x['status']}" for x in cancel_n) or "无账号")
+    return JSONResponse({"ok": ok, "engine": _engine_ctl(), "note": note,
+                         "error": None if ok else json.dumps(steps, ensure_ascii=False)[:300]})
+
+
+@app.post("/api/pm/account")
+async def pm_account(payload: dict, request: Request) -> JSONResponse:
+    """账号级软暂停/恢复:touch/unlink data/.account_N.paused,引擎在跑时自行撤单停报价。
+    与 dashboard/app.py::_set_account_paused 同一旗标文件。进程控制类,Cloudflare 放行。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    idx = (payload or {}).get("idx")
+    action = str((payload or {}).get("action") or "")
+    if not isinstance(idx, int) or not (1 <= idx <= 30) or action not in ("pause", "resume"):
+        return JSONResponse({"ok": False, "error": "需 idx 1-30 且 action pause/resume"}, status_code=400)
+    if not (MAKER_DIR / f"config_{idx}.json").exists():
+        return JSONResponse({"ok": False, "error": f"账号 {idx} 未配置"}, status_code=404)
+    flag = DATA_DIR / f".account_{idx}.paused"
+    if action == "pause":
+        flag.touch(exist_ok=True)
+    else:
+        try:
+            flag.unlink()
+        except FileNotFoundError:
+            pass
+    _audit("pm_account", idx=idx, request_action=action,
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    return JSONResponse({"ok": True, "idx": idx, "paused": flag.exists()})
+
+
+@app.post("/api/sa/paper")
+async def sa_paper(payload: dict, request: Request) -> JSONResponse:
+    """SA paper worker 控制(纯 paper,不下单):once/start/stop。
+    与 dashboard/app.py::_run/_start/_stop_single_account_paper_worker 同一命令、
+    同一 pid/log 文件。进程控制类,Cloudflare 放行。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    import subprocess
+    import sys as _sys
+    action = str((payload or {}).get("action") or "")
+    if action not in ("once", "start", "stop"):
+        return JSONResponse({"ok": False, "error": "action 须为 once/start/stop"}, status_code=400)
+    pid = _sa_worker_pid()
+    result: Dict[str, Any]
+    if action == "once":
+        r = _run_cmd([_sys.executable, "-m", "platforms.single_account.paper_worker",
+                      "--config", str(SA_CONFIG), "--once"], timeout=60, cwd=REPO_ROOT)
+        result = {"ok": r["rc"] == 0,
+                  "msg": "paper worker 已完成一次评分;未下单。" if r["rc"] == 0 else (r["err"] or r["out"] or "失败")}
+    elif action == "start":
+        if pid:
+            result = {"ok": True, "msg": f"paper worker 已在运行,pid={pid}"}
+        else:
+            log_fh = SA_LOG.open("a", encoding="utf-8")
+            proc = subprocess.Popen(
+                [_sys.executable, "-m", "platforms.single_account.paper_worker",
+                 "--config", str(SA_CONFIG)],
+                cwd=REPO_ROOT, stdout=log_fh, stderr=log_fh, start_new_session=True)
+            SA_PID.write_text(str(proc.pid), encoding="utf-8")
+            result = {"ok": True, "msg": f"paper worker 已启动,pid={proc.pid}"}
+    else:
+        if not pid:
+            SA_PID.unlink(missing_ok=True)
+            result = {"ok": True, "msg": "paper worker 未运行。"}
+        else:
+            import signal as _signal
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                result = {"ok": True, "msg": f"已发送停止信号,pid={pid}"}
+            except Exception as exc:
+                result = {"ok": False, "msg": f"停止失败:{exc}"}
+    _audit("sa_paper", request_action=action, ok=result["ok"], msg=result["msg"],
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    return JSONResponse({**result, "worker_pid": _sa_worker_pid()})
+
 
 @app.post("/api/varia/budget")
-async def set_varia_budget(payload: dict) -> JSONResponse:
+async def set_varia_budget(payload: dict, request: Request) -> JSONResponse:
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用:待 Kevin 审阅后在服务环境设 "
                                                    "LATITUDE_ENABLE_WRITES=1(见 README)"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse({"ok": False, "error": "公网入口只读:配置类写请走 Tailscale 内网"}, status_code=403)
     cap = _num((payload or {}).get("cap"))
     if cap is None or not (0 <= cap <= 500):
         return JSONResponse({"ok": False, "error": "cap 需为 0–500 之间的数字"}, status_code=400)
@@ -976,10 +1147,12 @@ def _write_auto_strategy(updates: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.post("/api/varia/auto")
-async def set_varia_auto(payload: dict) -> JSONResponse:
+async def set_varia_auto(payload: dict, request: Request) -> JSONResponse:
     """A 类:自动运行总开关 / 半-全自动模式(文件写,worker 生效,可逆)。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse({"ok": False, "error": "公网入口只读:配置类写请走 Tailscale 内网"}, status_code=403)
     updates: Dict[str, Any] = {}
     if "enabled" in (payload or {}):
         updates["enabled"] = bool(payload["enabled"])
