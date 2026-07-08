@@ -1890,53 +1890,23 @@ def _research_data_overview() -> tuple[str, str, str]:
 
 
 def _render_unified_home_dashboard() -> None:
-    st_autorefresh(interval=15000, key="unified_home_refresh")
-    # 融合(施工包05·5B × ae12ed5):全局 MAINNET 横幅在统一 Home 也可见。
-    # Home 保持只读(“统一入口只做状态聚合”),EMERGENCY STOP 按钮仍在 Polymarket 视图。
+    # 旧"Production Overview"聚合首页已废弃:总览职责整体移交 Latitude 控制台(8502 根路径),
+    # 本 Streamlit 只保留操作工具页。Home 只做指路,不再摆状态卡片(避免陈旧数据冒充总览)。
     try:
         from dashboard.overview_pm import banner_html as _home_banner_html
     except ModuleNotFoundError:
         from overview_pm import banner_html as _home_banner_html
     st.markdown(_home_banner_html("mainnet"), unsafe_allow_html=True)
-    st.markdown("## Latitude Alpha")
-    st.caption("Overview / Home")
+    st.markdown("## Latitude Alpha · 操作后台")
+    st.caption("Operations / Home")
     st.markdown(
         """
         <div class="home-hero">
-            <h2>Production Overview</h2>
-            <p>统一入口只做状态聚合和跳转。Var/Decibel、Polymarket、Predict.fun、Single Account 的生产 worker、
-            签名服务和密钥位置保持原样；这里不迁移私钥，也不改交易执行链路。</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    poly_status, poly_detail, poly_tone = _polymarket_overview()
-    predict_status, predict_detail, predict_tone = _predictfun_overview()
-    var_status, var_detail, var_tone = _var_decibel_overview()
-    single_status, single_detail, single_tone = _single_account_overview()
-    research_status, research_detail, research_tone = _research_data_overview()
-
-    st.markdown(
-        '<div class="home-grid">'
-        + _home_card("Var / Decibel", var_status, var_detail, var_tone)
-        + _home_card("Polymarket", poly_status, poly_detail, poly_tone)
-        + _home_card("Predict.fun", predict_status, predict_detail, predict_tone)
-        + _home_card("Single Account", single_status, single_detail, single_tone)
-        + _home_card("Research Data", research_status, research_detail, research_tone)
-        + _home_card("HK / US Accounts", "planned", "账户管理只预留入口，未接入交易或密钥。", "idle")
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("### 生产边界")
-    st.markdown(
-        """
-        <div class="home-list">
-        1. 当前迁移是 dashboard shell 迁移，不替换现有生产 worker。<br>
-        2. 私钥、API key、Mac mini signer、VPS systemd 服务继续按原项目隔离。<br>
-        3. 后续新增操作按钮必须调用已有 wrapper，并写清楚日志和 Discord 通知。<br>
-        4. 股票账户、Research 数据和单账号真钱执行，必须先完成只读状态面板，再接写操作。
+            <h2>总览已迁移</h2>
+            <p>系统状态、数据、告警一律看 <a href="/" target="_top" style="font-weight:700">Latitude 控制台 ←</a>
+            (本站根路径 <code>:8502/</code>)。<br>
+            这里只保留<b>操作</b>:左侧边栏进入 Polymarket / Predict.fun / Var/Decibel / Single Account
+            对应工具页(急停、参数等按钮都在各自视图内,位置不变)。</p>
         </div>
         """,
         unsafe_allow_html=True,
