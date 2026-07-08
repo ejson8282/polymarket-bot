@@ -57,6 +57,7 @@ def _build_client(config_path: Path):
 
 
 def main() -> int:
+    check_only = "--check" in sys.argv  # 预检:只 derive_creds 验证签名路径,不撤单
     results = []
     for i in range(1, 31):
         cfg_path = MAKER_DIR / f"config_{i}.json"
@@ -67,12 +68,14 @@ def main() -> int:
             if err:
                 results.append({"account": i, "status": "skip", "note": err[:80]})
                 continue
-            client.cancel_all()
-            results.append({"account": i, "status": "ok", "note": ""})
+            if not check_only:
+                client.cancel_all()
+            results.append({"account": i, "status": "ok", "note": "signer OK" if check_only else ""})
         except Exception as e:
             results.append({"account": i, "status": "fail",
                             "note": f"{type(e).__name__}: {str(e)[:60]}"})
-    print(json.dumps({"results": results}, ensure_ascii=False))
+    print(json.dumps({"results": results, "mode": "check" if check_only else "cancel"},
+                     ensure_ascii=False))
     return 0
 
 

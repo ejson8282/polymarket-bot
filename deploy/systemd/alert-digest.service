@@ -1,0 +1,8 @@
+[Unit]
+Description=Latitude 每日早报(Discord;未配置则临时走飞书)
+After=latitude-console.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python /home/ubuntu/polymarket-bot/deploy/latitude-console/alert_pusher.py --digest

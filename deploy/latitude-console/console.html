@@ -367,8 +367,9 @@
       <div class="panel" style="margin-top:16px">
         <h2>引擎控制 <span class="feat f-new">已迁移</span> <span id="pm-engine-chip" class="chip" style="margin-left:auto">—</span></h2>
         <div class="src">systemd · polymarket-engine.service;Stop/Reload 先 REST 撤单再停(与 /alpha/ 急停同一路径)</div>
-        <div class="btnrow" style="margin-top:8px"><button class="btn" id="pm-start-btn">Start</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
+        <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="pm-precheck-btn">启动预检</button><button class="btn" id="pm-start-btn">Start</button><button class="btn" id="pm-stop-btn">Stop</button><button class="btn" id="pm-reload-btn">Reload</button></div>
         <div class="src" id="pm-engine-msg" style="margin-top:6px"></div>
+        <div id="pm-precheck-out" style="margin-top:6px;font-family:var(--mono);font-size:11px;line-height:1.7"></div>
       </div>
       <div class="panel">
         <h2>代理(Clash) <span class="feat f-old">现有</span></h2>
@@ -1278,6 +1279,19 @@
     if(rl) rl.addEventListener('click',()=>{
       if(!confirm('Reload:撤单 → 停引擎 → 重启。期间全部挂单撤销。继续?')) return;
       postOp('/api/pm/engine',{action:'reload',confirm:true},emsg,'重启引擎');
+    });
+    const pc=document.getElementById('pm-precheck-btn');
+    if(pc) pc.addEventListener('click',async()=>{
+      const out=document.getElementById('pm-precheck-out');
+      if(window.__writesEnabled===false){ out.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
+      out.textContent='预检中(验签名器+每账号可签+markets 新鲜度,约 10-30s)…';
+      try{
+        const r=await fetch('/api/pm/precheck',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        const j=await r.json();
+        out.innerHTML=(j.checks||[]).map(c=>(c.ok?'<span class="up">✓</span> ':'<span class="down">✗</span> ')
+          +esc(c.name)+' — '+esc(c.note||'')).join('<br>')
+          +'<br><b>'+(j.ok?'<span class="up">'+esc(j.note)+'</span>':'<span class="down">'+esc(j.note||j.error||'预检失败')+'</span>')+'</b>';
+      }catch(e){ out.innerHTML='<span class="down">请求失败</span>'; }
     });
     const mb=document.getElementById('pm-matrix-body');
     if(mb) mb.addEventListener('click',(ev)=>{

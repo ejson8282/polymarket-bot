@@ -658,11 +658,27 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
 _PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL]
 
 
+PM_SIGNER_HOSTPORT = os.getenv("PM_SIGNER_HOSTPORT", "100.91.159.54:8420")
+
+
+def _probe_pm_signer() -> bool:
+    """TCP 探活 mac-mini PM 签名器(不发请求不碰密钥)。6/8 引擎重启失败即因 signer 500,
+    且 :8420 不在任何监控里——死了没人知道,故纳入控制台告警。"""
+    import socket
+    host, port = PM_SIGNER_HOSTPORT.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=4):
+            return True
+    except Exception:
+        return False
+
+
 def _prefetch_loop() -> None:
     """后台守护线程:每 20s 主动刷新跨机只读源到缓存,使请求路径始终命中热缓存。"""
     while True:
         for url in _PREFETCH_URLS:
             _HTTP_CACHE[url] = (_do_fetch(url, timeout=6.0), time.time())
+        _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
         time.sleep(20)
 
 
@@ -991,6 +1007,10 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
         alerts.append({"tag": "SA", "msg": "<b>SA paper worker 未运行</b>(sa-paper-worker.service)", "page": "sa", "sev": "warn"})
     if (fresh.get("pm") or {}).get("tier") == "danger":
         alerts.append({"tag": "PM", "msg": f"<b>PM 引擎停摆</b>:{fresh['pm']['label']}(启动前先刷新 markets)", "page": "pm", "sev": "warn"})
+    signer_cached = _HTTP_CACHE.get("pm_signer_up")
+    if signer_cached is not None and signer_cached[0] is False:
+        alerts.append({"tag": "PM", "msg": f"<b>PM 签名器不可达</b>(mac-mini :{PM_SIGNER_HOSTPORT.rsplit(':', 1)[1]})"
+                                           ":引擎无法启动,急停撤单不可用", "page": "pm", "sev": "warn"})
     return alerts
 
 
@@ -1110,6 +1130,43 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
         note = "撤单:" + (" ".join(f"acc{x['account']}:{x['status']}" for x in cancel_n) or "无账号")
     return JSONResponse({"ok": ok, "engine": _engine_ctl(), "note": note,
                          "error": None if ok else json.dumps(steps, ensure_ascii=False)[:300]})
+
+
+@app.post("/api/pm/precheck")
+async def pm_precheck(request: Request) -> JSONResponse:
+    """启动预检(只读探测,不撤单不下单):
+    ① signer TCP 可达 ② 每账号 derive-creds 可签(cancel_all_cli --check)
+    ③ markets 配置新鲜度。全绿才建议 Start —— 6/8 盲启失败(signer 500)的疫苗。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    import sys as _sys
+    checks: List[dict] = []
+    signer_up = _probe_pm_signer()
+    checks.append({"name": f"签名器 TCP({PM_SIGNER_HOSTPORT})", "ok": signer_up,
+                   "note": "可达" if signer_up else "不可达 — 先修 mac-mini 上的 PM signer"})
+    if signer_up:
+        r = _run_cmd([_sys.executable, str(CANCEL_CLI), "--check"], timeout=60)
+        try:
+            accounts = json.loads(r["out"]).get("results", [])
+        except Exception:
+            accounts = []
+        for a in accounts:
+            checks.append({"name": f"账号 {a['account']} derive-creds", "ok": a["status"] == "ok",
+                           "note": a.get("note") or a["status"]})
+        if not accounts:
+            checks.append({"name": "账号 derive-creds", "ok": False, "note": r["err"] or "无输出"})
+    cfg = _pm_cfg()
+    n_day, n_night = len(cfg.get("markets") or []), len(cfg.get("night_markets") or [])
+    cfg_age = _mtime_age(PM_CONFIG)
+    cfg_fresh = cfg_age is not None and cfg_age < 7 * 86400
+    checks.append({"name": f"markets 配置(日 {n_day} · 夜 {n_night})", "ok": bool(n_day) and cfg_fresh,
+                   "note": ("最后修改 " + (_age_text(cfg_age) or "?")) +
+                           ("" if cfg_fresh else " — 陈旧,先 Run Scan 应用新市场")})
+    all_ok = all(c["ok"] for c in checks)
+    _audit("pm_precheck", ok=all_ok, checks=checks,
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    return JSONResponse({"ok": all_ok, "checks": checks,
+                         "note": "全绿,可以 Start" if all_ok else "有红项,先处理再启动"})
 
 
 @app.post("/api/pm/account")
