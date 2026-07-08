@@ -486,7 +486,8 @@ def _sa_worker_pid() -> Optional[int]:
 def _single_account() -> Dict[str, Any]:
     state = _read_json(DATA_DIR / "single_account_paper_state.json")
     out: Dict[str, Any] = {"present": state is not None,
-                           "worker_pid": _sa_worker_pid()}
+                           "worker_pid": _sa_worker_pid(),
+                           "automation_draft": _read_json(DATA_DIR / "single_account_automation_draft.json")}
     out["worker_running"] = out["worker_pid"] is not None
     if state:
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
@@ -1092,6 +1093,250 @@ async def sa_paper(payload: dict, request: Request) -> JSONResponse:
     _audit("sa_paper", request_action=action, ok=result["ok"], msg=result["msg"],
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     return JSONResponse({**result, "worker_pid": _sa_worker_pid()})
+
+
+# ---------- 二期:Scan 后台任务 / 市场配置应用 / 代理池 / SA 草稿 ----------
+
+PM_CONFIG = MAKER_DIR / "config.json"
+SCANNER = MAKER_DIR / "scanner.py"
+SA_DRAFT_PATH = DATA_DIR / "single_account_automation_draft.json"
+_SCAN_JOB: Dict[str, Any] = {"status": "idle"}  # idle|running|done|error
+
+
+def _pm_cfg() -> dict:
+    return _read_json(PM_CONFIG) or {}
+
+
+def _cfg_token_sides(cfg: dict, key: str) -> Dict[str, str]:
+    return {str(m.get("token_id")): str(m.get("side", "YES"))
+            for m in (cfg.get(key) or []) if isinstance(m, dict) and m.get("token_id")}
+
+
+def _backup_pm_config(cfg: dict) -> str:
+    backup = PM_CONFIG.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    backup.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return backup.name
+
+
+@app.get("/api/pm/scan")
+def pm_scan_get() -> JSONResponse:
+    cfg = _pm_cfg()
+    out = {k: v for k, v in _SCAN_JOB.items()}
+    out["config_day"] = _cfg_token_sides(cfg, "markets")
+    out["config_night"] = _cfg_token_sides(cfg, "night_markets")
+    out["proxy_count"] = len((cfg.get("proxy_pool") or {}).get("proxies") or [])
+    return JSONResponse(out)
+
+
+@app.post("/api/pm/scan")
+async def pm_scan_run(payload: dict, request: Request) -> JSONResponse:
+    """跑 scanner.py --json(与 /alpha/ Run Scan 同一脚本同一参数;只查公开行情,60-120s)。
+    后台线程执行,前端轮询 GET /api/pm/scan。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _SCAN_JOB.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "已有 scan 在跑"}, status_code=409)
+    sd = (_pm_cfg().get("dashboard") or {}).get("scan_defaults") or {}
+    p = payload or {}
+
+    def _n(key: str, default: float) -> float:
+        v = _num(p.get(key))
+        return v if v is not None else (_num(sd.get(key)) if _num(sd.get(key)) is not None else default)
+
+    sort_by = str(p.get("sort_by") or sd.get("sort_by") or "reward")[:32]
+    args = [str(SCANNER),
+            "--min-volume", str(int(_n("min_volume", 0))),
+            "--min-reward", str(int(_n("min_reward", 0))),
+            "--max-reward", str(int(_n("max_reward", 0))),
+            "--min-spread", str(_n("min_spread", 0)),
+            "--max-spread", str(_n("max_spread", 0)),
+            "--min-bid-depth", str(int(_n("min_bid_depth", 0))),
+            "--sort-by", sort_by,
+            "--top", str(int(_n("top", 50))),
+            "--json"]
+    _SCAN_JOB.clear()
+    _SCAN_JOB.update({"status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
+                      "params": {a: b for a, b in zip(args[1::2], args[2::2])}})
+    _audit("pm_scan", params=_SCAN_JOB["params"],
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+
+    # scan 结果可能超出 _run_cmd 的 stdout 截断上限 → 线程内直接 subprocess 拿完整输出
+    def _worker_full() -> None:
+        import subprocess
+        import sys as _sys
+        try:
+            r = subprocess.run([_sys.executable] + args, capture_output=True, text=True,
+                               timeout=300, cwd=str(MAKER_DIR))
+            json_line = next((ln.strip() for ln in (r.stdout or "").splitlines()
+                              if ln.strip().startswith("[")), "")
+            if r.returncode != 0 or not json_line:
+                _SCAN_JOB.update({"status": "error",
+                                  "error": (r.stderr or "")[-300:] or "no output"})
+                return
+            results = json.loads(json_line)
+            _SCAN_JOB.update({"status": "done", "count": len(results), "results": results,
+                              "finished_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as e:
+            _SCAN_JOB.update({"status": "error", "error": f"{type(e).__name__}: {str(e)[:120]}"})
+
+    import threading
+    threading.Thread(target=_worker_full, name="pm-scan", daemon=True).start()
+    return JSONResponse({"ok": True, "status": "running"})
+
+
+@app.post("/api/pm/markets/apply")
+async def pm_markets_apply(payload: dict, request: Request) -> JSONResponse:
+    """应用选择(日盘+夜盘):与 /alpha/「应用选择」同一写路径 —— 服务器端按 scan 结果
+    重建 entry(参数模板逐字段一致),写 config.json 并全量同步 config_1..30 的
+    markets/night_markets。配置类写:Cloudflare 入口只读。引擎需 Stop+Start 才读新列表。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse({"ok": False, "error": "公网入口只读:配置类写请走 Tailscale 内网"}, status_code=403)
+    if _SCAN_JOB.get("status") != "done" or not _SCAN_JOB.get("results"):
+        return JSONResponse({"ok": False, "error": "无 scan 结果:先 Run Scan"}, status_code=400)
+    day_ids = {str(t) for t in (payload or {}).get("day_tokens") or []}
+    night_ids = {str(t) for t in (payload or {}).get("night_tokens") or []}
+    cfg = _pm_cfg()
+    if not cfg:
+        return JSONResponse({"ok": False, "error": "config.json 不可读"}, status_code=500)
+    existing_day = _cfg_token_sides(cfg, "markets")
+    existing_night = _cfg_token_sides(cfg, "night_markets")
+
+    def _detect_side(item: dict) -> str:
+        no_tid = str(item.get("paired_token_id") or "")
+        if no_tid and (no_tid in existing_day or no_tid in existing_night):
+            return "NO"
+        return existing_day.get(str(item.get("token_id") or ""), "YES")
+
+    new_markets: List[dict] = []
+    checked_night: List[dict] = []
+    for item in _SCAN_JOB["results"]:
+        if not isinstance(item, dict):
+            continue
+        yes_tid = str(item.get("token_id") or "")
+        no_tid = str(item.get("paired_token_id") or "")
+        if not yes_tid:
+            continue
+        side = _detect_side(item)
+        tid = no_tid if side == "NO" and no_tid else yes_tid
+        paired = no_tid if side == "YES" else yes_tid
+        if yes_tid in day_ids:
+            entry = {"token_id": tid, "side": side,
+                     "max_incentive_spread": round(_num(item.get("maxIncentiveSpread")) or 3.5, 4),
+                     "price_tick": 0.01, "min_distance_from_best_bid": 0.01,
+                     "quote_size": 100.0,
+                     "risk": "low" if str(item.get("quadrant", "")).startswith("A") else "mid",
+                     "enabled": True}
+            if paired:
+                entry["paired_token_id"] = paired
+            new_markets.append(entry)
+        if yes_tid in night_ids:
+            entry = {"token_id": tid, "side": side,
+                     "max_incentive_spread": round(_num(item.get("maxIncentiveSpread")) or 3.5, 4),
+                     "price_tick": 0.01, "min_distance_from_best_bid": 0.02,
+                     "quote_size": 80.0, "risk": "low", "enabled": True}
+            if paired:
+                entry["paired_token_id"] = paired
+            checked_night.append(entry)
+
+    backup = _backup_pm_config(cfg)
+    cfg["markets"] = new_markets
+    cfg["night_markets"] = checked_night
+    tmp = PM_CONFIG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PM_CONFIG)
+
+    synced = ["config.json"]
+    failed: List[str] = []
+    for i in range(1, 31):
+        mp = MAKER_DIR / f"config_{i}.json"
+        if not mp.exists():
+            continue
+        try:
+            mc = json.loads(mp.read_text(encoding="utf-8"))
+            mc["markets"] = new_markets
+            mc["night_markets"] = checked_night
+            mp.write_text(json.dumps(mc, ensure_ascii=False, indent=2), encoding="utf-8")
+            synced.append(mp.name)
+        except Exception as e:
+            failed.append(f"{mp.name}({str(e)[:60]})")
+    _audit("pm_markets_apply", day=len(new_markets), night=len(checked_night),
+           synced=synced, failed=failed, backup=backup,
+           source="tailnet")
+    return JSONResponse({"ok": not failed, "day": len(new_markets), "night": len(checked_night),
+                         "synced": synced, "failed": failed,
+                         "note": "engine 需 Stop+Start 重启才会读取新 markets 列表"})
+
+
+@app.post("/api/pm/proxies")
+async def pm_proxies(payload: dict, request: Request) -> JSONResponse:
+    """代理池 Append/Replace:与 /alpha/ Proxy tab 同一写路径(config.json proxy_pool.proxies)。
+    配置类写:Cloudflare 只读。审计只记条数,不落代理凭据。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse({"ok": False, "error": "公网入口只读:配置类写请走 Tailscale 内网"}, status_code=403)
+    mode = str((payload or {}).get("mode") or "")
+    lines = (payload or {}).get("proxies")
+    if mode not in ("append", "replace") or not isinstance(lines, list):
+        return JSONResponse({"ok": False, "error": "需 mode append/replace + proxies 列表"}, status_code=400)
+    new_proxies = [str(x).strip() for x in lines if str(x).strip()]
+    if len(new_proxies) > 500 or any(len(x) > 200 for x in new_proxies):
+        return JSONResponse({"ok": False, "error": "条数≤500,单条≤200字符"}, status_code=400)
+    cfg = _pm_cfg()
+    if not cfg:
+        return JSONResponse({"ok": False, "error": "config.json 不可读"}, status_code=500)
+    pool = cfg.get("proxy_pool") or {}
+    cur = [str(x) for x in (pool.get("proxies") or [])]
+    if mode == "append":
+        added = [p for p in new_proxies if p not in set(cur)]
+        cur.extend(added)
+        result = {"added": len(added), "skipped": len(new_proxies) - len(added), "total": len(cur)}
+    else:
+        cur = new_proxies
+        result = {"replaced": len(cur), "total": len(cur)}
+    backup = _backup_pm_config(cfg)
+    pool["proxies"] = cur
+    cfg["proxy_pool"] = pool
+    tmp = PM_CONFIG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PM_CONFIG)
+    _audit("pm_proxies", mode=mode, counts=result, backup=backup, source="tailnet")
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/api/sa/draft")
+async def sa_draft(payload: dict, request: Request) -> JSONResponse:
+    """SA 自动化草稿保存:与 /alpha/「保存草稿」同一文件同一字段(不启动 worker,不下单)。
+    配置类写:Cloudflare 只读。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse({"ok": False, "error": "公网入口只读:配置类写请走 Tailscale 内网"}, status_code=403)
+    from datetime import timedelta
+    p = payload or {}
+    ranges = {"weekly_loss_cap_usdc": (0, 10000), "max_open_positions": (1, 10),
+              "max_leverage": (1, 50), "max_notional_usdc": (0, 10000),
+              "default_stop_loss_pct": (0.1, 50), "default_take_profit_pct": (0.1, 100)}
+    draft: Dict[str, Any] = {}
+    for k, (lo, hi) in ranges.items():
+        v = _num(p.get(k))
+        if v is None or not (lo <= v <= hi):
+            return JSONResponse({"ok": False, "error": f"{k} 需在 {lo}–{hi}"}, status_code=400)
+        draft[k] = v
+    draft["mode"] = str(p.get("mode") or "paper")[:24]
+    draft["host"] = str(p.get("host") or "")[:64]
+    strategies = p.get("enabled_strategies")
+    draft["enabled_strategies"] = [str(s)[:64] for s in strategies][:8] if isinstance(strategies, list) else []
+    draft["notes"] = str(p.get("notes") or "")[:2000]
+    bjt = timezone(timedelta(hours=8))
+    draft["updated_at_bjt"] = datetime.now(bjt).isoformat()
+    tmp = SA_DRAFT_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SA_DRAFT_PATH)
+    _audit("sa_draft", draft={k: v for k, v in draft.items() if k != "notes"}, source="tailnet")
+    return JSONResponse({"ok": True, "msg": "已保存单号自动化草稿;未启动 worker,未下单。"})
 
 
 @app.post("/api/varia/budget")
