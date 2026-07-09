@@ -1573,7 +1573,7 @@
     const card=document.querySelector('[data-k="vdk.budget"]');
     if(!card || card.dataset.editWired) return;
     const kpi=card.closest('.kpi'); if(!kpi) return;
-    kpi.dataset.editWired='1';
+    card.dataset.editWired='1';   // 修:守卫查 card 就设在 card(此前设在 kpi,守卫永不生效→每次刷新 append 一个按钮)
     const btn=document.createElement('button');
     btn.className='btn ghost'; btn.style.cssText='font-size:10px;padding:2px 8px;margin-top:6px';
     btn.textContent=s.writes_enabled?'改预算':'改预算(待启用)';
