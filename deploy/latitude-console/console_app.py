@@ -89,11 +89,14 @@ def _pm_pnl() -> Dict[str, Any]:
     远程账号读 peer 目录。"""
     rc = _read_json(DATA_DIR / "rewards_cumulative.json")
     accts_rc = rc.get("accounts") if isinstance(rc, dict) and isinstance(rc.get("accounts"), dict) else {}
-    # address(lower) -> {daily, cumulative, last_date}
-    by_addr: Dict[str, dict] = {}
-    for a in accts_rc.values():
-        if isinstance(a, dict) and a.get("address"):
-            by_addr[str(a["address"]).lower()] = a
+    # rewards_cumulative 按账户序号存(dict 键 "0"/"1"…),按序号 join(funder 地址会随迁移变)
+    by_idx: Dict[int, dict] = {}
+    for k, a in accts_rc.items():
+        if isinstance(a, dict):
+            try:
+                by_idx[int(k)] = a
+            except (TypeError, ValueError):
+                pass
     remotes = _load_pm_remotes()
     rows: List[dict] = []
     total_reward_7d = total_loss_session = 0.0
@@ -102,8 +105,7 @@ def _pm_pnl() -> Dict[str, Any]:
         is_remote = idx in remotes
         base = PM_PEER_DIR if is_remote else DATA_DIR
         st = _read_json(base / f"engine_state_{idx}.json") or {}
-        funder = str(st.get("funder") or "").lower()
-        a = by_addr.get(funder, {})
+        a = by_idx.get(idx, {})
         daily = a.get("daily") if isinstance(a.get("daily"), dict) else {}
         days = sorted(daily.keys())[-7:]
         series = [{"d": d, "v": round(_num(daily.get(d)) or 0, 2)} for d in days]
