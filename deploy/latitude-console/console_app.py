@@ -82,6 +82,58 @@ def _num(value: Any) -> Optional[float]:
 
 # ---------- Polymarket(engine_state_N 逐账号,不混算) ----------
 
+def _pm_pnl() -> Dict[str, Any]:
+    """PM 收益核算(诚实粒度=账户-日)。奖励:rewards_cumulative.json 的 daily(持久,
+    Polymarket /rewards/user/total 只到账户-日,无法按市场拆);损耗:各账户当前会话
+    fills 的实现 pnl(引擎重启即清,标"本次运行")。净=近7日奖励 − 本次运行损耗。
+    远程账号读 peer 目录。"""
+    rc = _read_json(DATA_DIR / "rewards_cumulative.json")
+    accts_rc = rc.get("accounts") if isinstance(rc, dict) and isinstance(rc.get("accounts"), dict) else {}
+    # address(lower) -> {daily, cumulative, last_date}
+    by_addr: Dict[str, dict] = {}
+    for a in accts_rc.values():
+        if isinstance(a, dict) and a.get("address"):
+            by_addr[str(a["address"]).lower()] = a
+    remotes = _load_pm_remotes()
+    rows: List[dict] = []
+    total_reward_7d = total_loss_session = 0.0
+    any_reward = False
+    for idx in _pm_all_accounts():
+        is_remote = idx in remotes
+        base = PM_PEER_DIR if is_remote else DATA_DIR
+        st = _read_json(base / f"engine_state_{idx}.json") or {}
+        funder = str(st.get("funder") or "").lower()
+        a = by_addr.get(funder, {})
+        daily = a.get("daily") if isinstance(a.get("daily"), dict) else {}
+        days = sorted(daily.keys())[-7:]
+        series = [{"d": d, "v": round(_num(daily.get(d)) or 0, 2)} for d in days]
+        reward_7d = round(sum(x["v"] for x in series), 2)
+        # 本次运行损耗:fills 的负 pnl 求和(绝对值),及费用(若引擎写了)
+        fills = st.get("fills") if isinstance(st.get("fills"), list) else []
+        realized = sum(_num(f.get("pnl")) or 0 for f in fills if f.get("pnl") is not None)
+        loss_session = round(-realized, 2) if realized < 0 else 0.0
+        if series:
+            any_reward = True
+        total_reward_7d += reward_7d
+        total_loss_session += loss_session
+        rows.append({
+            "idx": idx, "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
+            "cumulative": _num(a.get("cumulative_usd")), "last_date": a.get("last_snapshot_date"),
+            "recent": series, "reward_7d": reward_7d,
+            "realized_session": round(realized, 2), "fills_session": len(fills),
+            "net_est": round(reward_7d - loss_session, 2),
+        })
+    return {
+        "present": any_reward or bool(rows),
+        "has_reward_data": any_reward,
+        "accounts": rows,
+        "total_reward_7d": round(total_reward_7d, 2),
+        "total_loss_session": round(total_loss_session, 2),
+        "total_net_est": round(total_reward_7d - total_loss_session, 2),
+        "note": "奖励=账户-日粒度(Polymarket 不提供按市场拆分);损耗=本次运行 fills 实现盈亏",
+    }
+
+
 def _polymarket() -> Dict[str, Any]:
     rewards_by_addr: Dict[str, float] = {}
     rewards = _read_json(DATA_DIR / "rewards_cumulative.json")
@@ -1087,6 +1139,7 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
 def api_state() -> JSONResponse:
     pm = _polymarket()
     pm["engine_ctl"] = _engine_ctl()
+    pm["pnl"] = _pm_pnl()
     _accs = pm.get("accounts") or []
     pm["engine_summary"] = {"running": sum(1 for a in _accs if a.get("status") == "运行中"),
                             "total": len(_accs)}

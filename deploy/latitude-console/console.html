@@ -330,6 +330,14 @@
           </tbody>
         </table>
       </div>
+      <div class="panel" id="pm-pnl-panel">
+        <h2>收益核算 <span class="feat f-new">新增</span> <span data-k="pmpnl.head" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400"></span></h2>
+        <div class="src" data-k="pmpnl.note">source · rewards_cumulative.json 每日奖励(账户-日粒度,Polymarket 不提供按市场拆分)＋ 各账户本次运行 fills 实现盈亏</div>
+        <table style="margin-top:6px">
+          <thead><tr><th>账号</th><th>近7日奖励</th><th>累计奖励</th><th>本次运行实现盈亏</th><th>净估计</th><th>最后快照</th></tr></thead>
+          <tbody id="pm-pnl-body"><tr><td colspan="6" style="color:var(--faint)">等实时数据(引擎未运行时显示历史)</td></tr></tbody>
+        </table>
+      </div>
       <div class="panel">
         <h2>Markets · Auto Curator <span class="feat f-old">现有</span></h2>
         <div class="src" data-k="pm.curator">source · auto_curator_state.json + 自动扫入事件(48h);Refresh Markets / 开关+间隔 / Append·Replace 均为现有功能,保留在 Markets/Scan 二级页</div>
@@ -841,6 +849,23 @@
 
   function bindPM(pm){
     if(!pm.present) return;
+    // 收益核算面板(账户-日粒度,诚实标口径)
+    const pl=pm.pnl||{};
+    const plb=document.getElementById('pm-pnl-body');
+    if(plb && (pl.accounts||[]).length){
+      plb.innerHTML=pl.accounts.map(a=>{
+        const spark=(a.recent||[]).map(x=>'$'+x.v).join(' ')||'—';
+        const net=a.net_est||0;
+        return '<tr><td>账号'+a.idx+'<span style="color:var(--faint);font-size:10px"> @'+esc(a.host||'')+'</span></td>'+
+          '<td class="num">'+(a.reward_7d!=null?money(a.reward_7d):'—')+'</td>'+
+          '<td class="num">'+(a.cumulative!=null?money(a.cumulative):'—')+'</td>'+
+          '<td class="num">'+(a.fills_session?pnlSpan(a.realized_session):'<span style="color:var(--faint)">本次0笔</span>')+'</td>'+
+          '<td class="num">'+pnlSpan(net)+'</td>'+
+          '<td class="num" style="font-size:11px;color:var(--faint)">'+esc(a.last_date||'无')+'</td></tr>';
+      }).join('');
+      setK('pmpnl.head','近7日奖励合计 '+money(pl.total_reward_7d||0)+' · 净估计 '+money(pl.total_net_est||0));
+      if(pl.note) setK('pmpnl.note','source · '+esc(pl.note));
+    }
     setK('pm.run', pm.running+'/'+pm.total+' 运行');
     setK('pm.orders_vol', pm.live_orders+' · '+money(pm.volume_today)+'('+(pm.fills_seen||0)+'笔累计)');
     setK('pm.pnl', pnlSpan(pm.pnl_today||0)+(pm.rewards_total!=null?' · '+money(pm.rewards_total):''));
