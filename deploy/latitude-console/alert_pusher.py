@@ -118,12 +118,18 @@ def _fmt_audit(rec: dict) -> str:
     return ""  # pm_scan / pm_precheck 等噪音跳过
 
 
+# 防抖:告警必须持续存在 ≥ 这么久才推(kill "闪断一下自己就好"的噪音)。
+# 定时器每 5min 跑,600s = 至少熬过一整个周期还在,才算真问题。
+DEBOUNCE_SEC = 600
+
+
 def run_alerts() -> None:
     with _opener.open(STATE_URL, timeout=10) as resp:
         state = json.load(resp)
     alerts = state.get("alerts") or []
     ps = _load_push_state()
     prev = ps.get("alerts") or {}
+    now = int(time.time())
 
     current: dict = {}
     for a in alerts:
@@ -131,24 +137,32 @@ def run_alerts() -> None:
         text = f"[{a.get('tag', '')}]{'🔴' if sev == 'crit' else '🟡'} {_plain(a.get('msg', ''))}"
         current[hashlib.sha1(text.encode()).hexdigest()[:16]] = {"text": text, "sev": sev}
 
+    # 结转状态:记 first_seen(首次出现)与 pushed(是否已推过),用于防抖 + 只对推过的报解除
+    out_alerts = {}
+    for k, v in current.items():
+        old = prev.get(k) or {}
+        out_alerts[k] = {"first_seen": int(old.get("first_seen") or now),
+                         "pushed": bool(old.get("pushed")), **v}
+
     stamp = time.strftime("%m-%d %H:%M")
+    # 新告警:仅推送"已持续 ≥DEBOUNCE 且尚未推过"的(自愈的短暂告警永不打扰)
     for sev in ("crit", "warn"):
-        new = [v["text"] for k, v in current.items() if k not in prev and v["sev"] == sev]
-        if new:
+        ripe = [(k, v) for k, v in out_alerts.items()
+                if v["sev"] == sev and not v["pushed"] and (now - v["first_seen"]) >= DEBOUNCE_SEC]
+        if ripe:
             send_routed(sev, ("🚨" if sev == "crit" else "⚠️") + f" Latitude 新告警({stamp}):\n"
-                        + "\n".join("· " + t for t in new)
+                        + "\n".join("· " + v["text"] for _, v in ripe)
                         + f"\n共 {len(current)} 条活跃 → {CONSOLE_URL}")
+            for k, _ in ripe:
+                out_alerts[k]["pushed"] = True
+    # 解除:只对"之前真推过"的告警报解除(被防抖挡下、从没推过的,消失也不吭声)
+    for sev in ("crit", "warn"):
         gone = [v for k, v in prev.items()
-                if k not in current and (v.get("sev") or "warn") == sev and v.get("text")]
+                if k not in current and v.get("pushed") and (v.get("sev") or "warn") == sev and v.get("text")]
         if gone:
             send_routed(sev, f"✅ Latitude 告警解除({stamp}):\n"
                         + "\n".join("· " + v["text"] for v in gone)
                         + (f"\n仍有 {len(current)} 条活跃" if current else "\n当前无活跃告警 🎉"))
-
-    out_alerts = {}
-    for k, v in current.items():
-        old = prev.get(k) or {}
-        out_alerts[k] = {"ts": int(old.get("ts") or time.time()), **v}
 
     # 写操作增量 → Discord(日常通道;无 Discord 则跳过,审计文件本身仍是完整记录)
     offset = int(ps.get("audit_offset") or 0)

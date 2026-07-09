@@ -1128,12 +1128,13 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
             alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host} 周预算告急</b>:剩 ${rem:.2f} / ${cap:.2f}", "page": "vardec", "sev": "crit"})
     if sa.get("present") and not sa.get("worker_running"):
         alerts.append({"tag": "SA", "msg": "<b>SA paper worker 未运行</b>(sa-paper-worker.service)", "page": "sa", "sev": "warn"})
-    if (fresh.get("pm") or {}).get("tier") == "danger":
-        alerts.append({"tag": "PM", "msg": f"<b>PM 引擎停摆</b>:{fresh['pm']['label']}(启动前先刷新 markets)", "page": "pm", "sev": "warn"})
+    # PM 引擎停摆不再作为推送告警:启停是用户主动控制的状态,dashboard 徽章已显示,
+    # 常态是"故意没开",当故障天天报纯噪音。真崩溃需告警可在实盘后加"曾运行→掉线"探测。
+    # PM 签名器不可达只在"引擎在跑却连不上签名器"时才是真问题;引擎没跑时签名器闲置正常。
     signer_cached = _HTTP_CACHE.get("pm_signer_up")
-    if signer_cached is not None and signer_cached[0] is False:
+    if signer_cached is not None and signer_cached[0] is False and (pm.get("engine_ctl") or {}).get("active"):
         alerts.append({"tag": "PM", "msg": f"<b>PM 签名器不可达</b>(mac-mini :{PM_SIGNER_HOSTPORT.rsplit(':', 1)[1]})"
-                                           ":引擎无法启动,急停撤单不可用", "page": "pm", "sev": "warn"})
+                                           ":引擎在跑却连不上签名器,急停撤单不可用", "page": "pm", "sev": "crit"})
     return alerts
 
 
