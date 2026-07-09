@@ -73,12 +73,13 @@ def send_discord(text: str) -> bool:
 
 
 def send_routed(sev: str, text: str) -> None:
-    """crit → 飞书;其余 → Discord,Discord 缺配置时降级飞书(标注临时)。"""
+    """crit → 飞书(严格只此一类进飞书);warn/日常 → 只走 Discord。
+    Discord 不通(未配置/失效)时 warn **不推**——dashboard 可见即可,绝不回退淹没飞书。
+    (2026-07-09 改:此前回退飞书,叠加 Discord webhook 403 失效,导致飞书被 warn 刷屏。)"""
     if sev == "crit":
         send_feishu(text)
-        return
-    if not send_discord(text):
-        send_feishu(text + "\n(临时走飞书:Discord 未配置)")
+    else:
+        send_discord(text)  # 返回 False(webhook 缺失/403)则静默丢弃,不回退
 
 
 def _plain(t: str) -> str:
@@ -209,8 +210,7 @@ def run_digest() -> None:
     body = ("📋 Latitude 早报 " + time.strftime("%m-%d %H:%M") + "\n"
             + "\n".join(rows) + "\n" + eq_line + "\n" + bud_line + "\n" + a_line
             + "\n" + CONSOLE_URL)
-    if not send_discord(body):
-        send_feishu(body + "\n(临时走飞书:Discord 未配置)")
+    send_discord(body)  # 每日汇总只走 Discord;Discord 不通则不推(不淹没飞书,汇总非紧急)
 
 
 def main() -> int:

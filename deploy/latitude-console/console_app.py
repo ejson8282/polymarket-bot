@@ -794,7 +794,14 @@ def _prefetch_loop() -> None:
     """后台守护线程:每 20s 主动刷新跨机只读源到缓存,使请求路径始终命中热缓存。"""
     while True:
         for url in _PREFETCH_URLS:
-            _HTTP_CACHE[url] = (_do_fetch(url, timeout=6.0), time.time())
+            data = _do_fetch(url, timeout=10.0)  # 放宽超时:Windows 源偶尔慢到 5-6s
+            if data is None:
+                # 单次拉取失败别急着翻成"不可达":保留 5 分钟内的上一次好值,
+                # 慢源/瞬时抖动不再造成 present=false 闪断(配合告警防抖彻底消除假警)
+                prev = _HTTP_CACHE.get(url)
+                if prev is not None and prev[0] is not None and (time.time() - prev[1]) < 300:
+                    continue
+            _HTTP_CACHE[url] = (data, time.time())
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
         try:
             _refresh_pm_remotes()
