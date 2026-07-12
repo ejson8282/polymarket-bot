@@ -484,9 +484,12 @@ def _var_decibel() -> Dict[str, Any]:
             payload = exchanges.get(venue) if isinstance(exchanges.get(venue), dict) else {}
             bal = payload.get("balance") if isinstance(payload.get("balance"), dict) else {}
             eq = _num(bal.get("total_equity"))
-            h[f"equity_{venue[:3]}"] = eq
+            venue_ok = payload.get("ok") is True
+            trusted_eq = eq if (venue_ok and not h["stale"]) else None
+            h[f"equity_{venue[:3]}"] = trusted_eq
+            h[f"equity_{venue[:3]}_last_seen"] = eq
             h[f"ok_{venue[:3]}"] = payload.get("ok")
-            if eq is not None and not h["stale"]:
+            if trusted_eq is not None:
                 equity_total += eq
                 equity_found = True
             if venue == "decibel":
@@ -495,13 +498,13 @@ def _var_decibel() -> Dict[str, Any]:
                 rows = pts.get("breakdown") if isinstance(pts.get("breakdown"), list) else []
                 vals = [_num(r.get("points")) for r in rows if isinstance(r, dict)]
                 vals = [v for v in vals if v is not None]
-                if vals:
+                if vals and venue_ok and not h["stale"]:
                     points_dec = (points_dec or 0.0) + sum(vals)
             else:
                 var_syms = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
                 pts = payload.get("points") if isinstance(payload.get("points"), dict) else {}
                 tp = _num(pts.get("total_points"))
-                if tp is not None:
+                if tp is not None and venue_ok and not h["stale"]:
                     points_var = (points_var or 0.0) + tp
         # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
         # 任何一源过期或失败都标“仓位未知”，不拿上次快照冒充当前状态。
@@ -552,25 +555,33 @@ def _var_decibel() -> Dict[str, Any]:
                 "status": ("HEDGED" if (d_open and v_open) else
                            ("DEC 裸腿" if d_open else "VAR 裸腿")),
             })
-        tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
-        for venue_data in (tv.get("venues") or {}).values():
-            if isinstance(venue_data, dict):
-                w = _num(venue_data.get("weekly_notional_usdc"))
-                t = _num(venue_data.get("total_notional_usdc"))
-                if w is not None:
-                    vol_weekly += w
-                    vol_found = True
-                if t is not None:
-                    vol_total += t
+        if positions_verified:
+            tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
+            for venue_data in (tv.get("venues") or {}).values():
+                if isinstance(venue_data, dict):
+                    w = _num(venue_data.get("weekly_notional_usdc"))
+                    t = _num(venue_data.get("total_notional_usdc"))
+                    if w is not None:
+                        vol_weekly += w
+                        vol_found = True
+                    if t is not None:
+                        vol_total += t
         hosts[host] = h
     auto = _read_json(VARIA_DIR / "auto_strategy_state.json")
     auto_ctl = None
     if isinstance(auto, dict):
         auto_ctl = {"enabled": bool(auto.get("enabled")), "mode": auto.get("mode"),
                     "hosts": auto.get("hosts") if isinstance(auto.get("hosts"), dict) else {}}
+    equity_complete = bool(hosts) and all(
+        h.get("positions_verified") is True
+        and h.get("equity_dec") is not None
+        and h.get("equity_var") is not None
+        for h in hosts.values()
+    )
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
-        "equity_total": round(equity_total, 2) if equity_found else None,
+        "equity_total": round(equity_total, 2) if equity_found and equity_complete else None,
+        "equity_complete": equity_complete,
         "points_decibel": round(points_dec, 1) if points_dec is not None else None,
         "points_variational": round(points_var, 1) if points_var is not None else None,
         "volume_weekly": round(vol_weekly, 2) if vol_found else None,

@@ -932,7 +932,7 @@
       setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
     }
     window.__autoCtl=vd.auto||{};
-    const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec||0),0);
+    const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec??999999),0);
     if(vd.auto){
       const a=vd.auto;
       setK('vdk.auto', (a.enabled?'<span class="up">●</span> ':'<span class="down">●</span> ')+(a.enabled?(a.mode==='full_auto'?'全自动':'半自动'):'已停'));

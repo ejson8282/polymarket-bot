@@ -69,6 +69,8 @@ def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_pat
 
     assert result["pairs"] == []
     assert result["single_leg"] == []
+    assert result["equity_total"] is None
+    assert result["equity_complete"] is False
     assert result["position_sources"]["verified_hosts"] == ["vps1"]
     assert result["position_sources"]["unverified"] == [
         {
@@ -98,8 +100,32 @@ def test_var_decibel_does_not_report_single_leg_when_one_venue_failed(
 
     assert result["pairs"] == []
     assert result["single_leg"] == []
+    assert result["equity_total"] is None
+    assert result["equity_complete"] is False
+    assert result["hosts"]["vps1"]["equity_dec"] == 100.0
+    assert result["hosts"]["vps1"]["equity_var"] is None
     assert result["position_sources"]["unverified"][0]["reason"] == "交易所读取不完整"
     assert result["position_sources"]["unverified"][0]["last_seen_symbols"] == ["SOL"]
+
+
+def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "ops_state.json",
+        _state("vps1", now, _venue(ok=True), _venue(ok=True)),
+    )
+    _write_json(
+        tmp_path / "ops_peer_state" / "vps2.json",
+        _state("vps2", now, _venue(ok=True), _venue(ok=True)),
+    )
+
+    result = console._var_decibel()
+
+    assert result["equity_complete"] is True
+    assert result["equity_total"] == 400.0
 
 
 def test_stopped_polymarket_engine_does_not_claim_historical_orders(
@@ -190,3 +216,4 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "无真数据宁可显示未知" in html
     assert "旧 Var/Decibel worker 已退出生产" in html
     assert 'id="alertbar" style="display:none"' in html
+    assert "hosts[h].age_sec??999999" in html
