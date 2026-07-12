@@ -141,7 +141,7 @@
 .fresh-badge{font-family:var(--mono);font-size:11px;margin-right:10px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);white-space:nowrap}
 .fresh-badge.ok{color:#3fb950}.fresh-badge.warn{color:#d29922}.fresh-badge.danger{color:#f85149;border-color:#f85149}
 .page.nodata .panel{position:relative}
-.page.nodata .panel::after{content:"数据不可达 — 下方为模板样例,非真实数据";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.85);color:#d29922;font-family:var(--mono);font-size:12px;letter-spacing:.06em;border-radius:inherit;z-index:5}
+.page.nodata .panel::after{content:"数据不可达 — 未验证内容已隐藏";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.94);color:#d29922;font-family:var(--mono);font-size:12px;letter-spacing:.06em;border-radius:inherit;z-index:5}
 </style>
 </head>
 <body>
@@ -157,74 +157,67 @@
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
   </nav>
   <div class="status-cluster">
-    <span class="pill danger" data-k="pill.alerts"><span class="dot"></span>告警 1</span>
-    <span class="pill ok" data-k="pill.signer"><span class="dot"></span>SIGNER ×2 在线</span>
-    <span class="clock num" data-k="clock">2026-07-05 21:47 · 15s 前</span>
+    <span class="pill" data-k="pill.alerts"><span class="dot"></span>告警读取中</span>
+    <span class="pill" data-k="pill.signer"><span class="dot"></span>SIGNER 待读取</span>
+    <span class="clock num" data-k="clock">状态读取中</span>
   </div>
 </header>
 
 <!-- 全局告警条:各系统的 critical 事件在此合并置顶,点击跳转对应页 -->
-<div class="alert" id="alertbar">
-  <span class="tag">VAR/DEC</span>
-  <div class="msg"><b>VPS2 · SOL 单腿</b>:Decibel 空腿 <span class="num">$88</span> 无对冲,已 <span class="num">4m12s</span> · janitor 处置中</div>
-  <button onclick="go('vardec')">进入处理 →</button>
-</div>
+<div class="alert" id="alertbar" style="display:none"></div>
 
 <!-- ════════════ 页面 1 · 总览(聚合器,只读,消费各系统 status.json) ════════════ -->
 <section class="page on" id="page-overview">
   <div class="proj">
     <div class="card" id="vd-card" onclick="go('vardec')">
       <div class="head"><span class="name">Var / Decibel</span><span class="chip ok" data-k="vd.chip">—</span></div>
-      <div class="row"><span class="k">总权益(两VPS)</span><span class="v" data-k="vd.equity">$2,418.62 <span class="up">▲$3.14</span></span></div>
-      <div class="row"><span class="k" data-k="vd.vol_label">今日量 / 损耗</span><span class="v" data-k="vd.vol">$8,720 · <span class="down">−$1.84</span>(2.1bps/万U)</span></div>
-      <div class="row"><span class="k">VPS1 / VPS2</span><span class="v" data-k="vd.hosts"><span class="up">● 8s</span> / <span class="warn" style="color:var(--warn)">● 暂停开仓</span></span></div>
-      <div class="row"><span class="k">积分估算</span><span class="v" data-k="vd.points">21,695</span></div>
+      <div class="row"><span class="k">总权益(两VPS)</span><span class="v" data-k="vd.equity">—</span></div>
+      <div class="row"><span class="k" data-k="vd.vol_label">交易量 / 损耗</span><span class="v" data-k="vd.vol">—</span></div>
+      <div class="row"><span class="k">VPS1 / VPS2</span><span class="v" data-k="vd.hosts">—</span></div>
+      <div class="row"><span class="k">积分估算</span><span class="v" data-k="vd.points">—</span></div>
     </div>
     <div class="card" onclick="go('pm')">
-      <div class="head"><span class="name">Polymarket 做市</span><span class="chip ok" data-k="pm.run">2/2 运行</span></div>
-      <div class="row"><span class="k">活跃挂单 / 今日成交</span><span class="v" data-k="pm.orders_vol">34 · $1,240(18笔)</span></div>
-      <div class="row"><span class="k">今日 PnL / 奖励估算</span><span class="v" data-k="pm.pnl"><span class="up">+$3.80</span> · $6.20</span></div>
-      <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">关 · HK-02 正常</span></div>
-      <div class="row"><span class="k">quotes_sent 今日</span><span class="v" data-k="pm.quotes">4,182</span></div>
+      <div class="head"><span class="name">Polymarket 做市</span><span class="chip" data-k="pm.run">读取中</span></div>
+      <div class="row"><span class="k">活跃挂单 / 今日成交</span><span class="v" data-k="pm.orders_vol">—</span></div>
+      <div class="row"><span class="k">今日 PnL / 奖励估算</span><span class="v" data-k="pm.pnl">—</span></div>
+      <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">—</span></div>
+      <div class="row"><span class="k">quotes_sent（新鲜状态）</span><span class="v" data-k="pm.quotes">—</span></div>
     </div>
     <div class="card" onclick="go('pf')">
-      <div class="head"><span class="name">Predict.fun 做市</span><span class="chip info" data-k="pf.chip">TESTNET · DRY-RUN</span></div>
-      <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles">1,842 · 3</span></div>
-      <div class="row"><span class="k">风险闸门</span><span class="v" data-k="pf.risk"><span class="up">OK</span>(6/6 项通过)</span></div>
-      <div class="row"><span class="k">模拟持仓 / 成交</span><span class="v">5 · 今日 12 笔</span></div>
-      <div class="row"><span class="k" data-k="pf.age_label">ws / plan 年龄</span><span class="v" data-k="pf.age">12s · 8s(阈 180s)</span></div>
+      <div class="head"><span class="name">Predict.fun 做市</span><span class="chip" data-k="pf.chip">读取中</span></div>
+      <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles">—</span></div>
+      <div class="row"><span class="k">风险闸门</span><span class="v" data-k="pf.risk">—</span></div>
+      <div class="row"><span class="k">模拟持仓 / 期望订单</span><span class="v" data-k="pf.positions">—</span></div>
+      <div class="row"><span class="k" data-k="pf.age_label">状态年龄</span><span class="v" data-k="pf.age">—</span></div>
     </div>
     <div class="card" onclick="go('sa')">
-      <div class="head"><span class="name">Single Account</span><span class="chip ok" data-k="sa.worker">paper worker 运行中</span></div>
-      <div class="row"><span class="k">候选 / 可执行</span><span class="v" data-k="sa.cand">18 · 3</span></div>
-      <div class="row"><span class="k">最高分</span><span class="v" data-k="sa.top">0.71(funding_carry · SOL)</span></div>
-      <div class="row"><span class="k">最近评分</span><span class="v" data-k="sa.age">21:45</span></div>
-      <div class="row"><span class="k">模拟器一期</span><span class="v" data-k="sa.sim" style="color:var(--plan)">规划中</span></div>
+      <div class="head"><span class="name">Single Account</span><span class="chip" data-k="sa.worker">读取中</span></div>
+      <div class="row"><span class="k">候选 / 可执行</span><span class="v" data-k="sa.cand">—</span></div>
+      <div class="row"><span class="k">最高分</span><span class="v" data-k="sa.top">—</span></div>
+      <div class="row"><span class="k">最近评分</span><span class="v" data-k="sa.age">—</span></div>
+      <div class="row"><span class="k">模拟结果</span><span class="v" data-k="sa.sim">—</span></div>
     </div>
     <div class="card" onclick="go('hk')">
-      <div class="head"><span class="name">打新 & Alpha 核算台</span><span class="chip ok" data-k="hk.chip">现有系统 · 飞书</span></div>
-      <div class="row"><span class="k">总占用本金 / ROI</span><span class="v" data-k="hk.capital">$48,260 · 4.4%</span></div>
-      <div class="row"><span class="k" data-k="hk.income_label">本月净收益</span><span class="v up" data-k="hk.income">+$2,140</span></div>
-      <div class="row"><span class="k">待确认 / 异常账号</span><span class="v" data-k="hk.pending"><span style="color:var(--warn)">3</span> · <span style="color:var(--danger)">2</span></span></div>
-      <div class="row"><span class="k">账号 / 人员</span><span class="v" data-k="hk.counts">R-27 执行中 · 待申购 1</span></div>
+      <div class="head"><span class="name">打新 & Alpha 核算台</span><span class="chip" data-k="hk.chip">读取中</span></div>
+      <div class="row"><span class="k">总占用本金 / ROI</span><span class="v" data-k="hk.capital">—</span></div>
+      <div class="row"><span class="k" data-k="hk.income_label">净收益</span><span class="v" data-k="hk.income">—</span></div>
+      <div class="row"><span class="k">待确认 / 异常账号</span><span class="v" data-k="hk.pending">—</span></div>
+      <div class="row"><span class="k">账号 / 人员</span><span class="v" data-k="hk.counts">—</span></div>
     </div>
     <div class="card">
-      <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip ok" data-k="infra.chip">正常</span></div>
-      <div class="row"><span class="k" data-k="infra.r1_label">signer(Polymarket)</span><span class="v" data-k="infra.r1"><span class="up">●</span> 限额$500/单 · 今日 312 签</span></div>
-      <div class="row"><span class="k" data-k="infra.r2_label">signer(Variational)</span><span class="v" data-k="infra.r2"><span class="up">●</span> vps1/vps2 双 key</span></div>
-      <div class="row"><span class="k">peer 状态同步</span><span class="v" data-k="infra.peer">3min 前(vps1←vps2)</span></div>
-      <div class="row"><span class="k">Discord 通道</span><span class="v"><span class="up">●</span> 最近 21:45 送达</span></div>
+      <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip" data-k="infra.chip">读取中</span></div>
+      <div class="row"><span class="k" data-k="infra.r1_label">PM signer</span><span class="v" data-k="infra.r1">等待探测</span></div>
+      <div class="row"><span class="k" data-k="infra.r2_label">Var/Dec signer</span><span class="v" data-k="infra.r2">等待探测</span></div>
+      <div class="row"><span class="k">Predict.fun proxy</span><span class="v" data-k="infra.proxy">等待状态</span></div>
+      <div class="row"><span class="k">peer 状态同步</span><span class="v" data-k="infra.peer">—</span></div>
+      <div class="row"><span class="k">Discord 通道</span><span class="v" data-k="infra.discord">未接入送达回执</span></div>
     </div>
   </div>
   <div class="panel">
     <h2>跨系统事件流 <span class="feat f-new">新增</span></h2>
     <div class="src">source · 各系统 worker_events / 事件 jsonl 合并,按严重级过滤</div>
     <ul class="events" id="events-list">
-      <li><span class="dot d-crit"></span><div><div><b>[VAR/DEC · VPS2]</b> SOL 单腿:Decibel 空腿裸露 $88</div><div class="t">21:43 · single_leg_risk</div></div></li>
-      <li><span class="dot d-info"></span><div><div>[PM] 账号2 成交 BUY 120 @0.42 → exit 已挂 0.46</div><div class="t">21:38 · fill</div></div></li>
-      <li><span class="dot d-warn"></span><div><div>[PM] cross-side sentinel:NBA-LAL 对侧深度被扫,提前撤单</div><div class="t">21:31 · sentinel_cancel</div></div></li>
-      <li><span class="dot d-info"></span><div><div>[PF] 周期 #1842 完成,fast_requote 触发(模拟成交 2 笔)</div><div class="t">21:30 · cycle</div></div></li>
-      <li><span class="dot d-info"></span><div><div>[VAR/DEC · VPS1] ETH 开仓成功,双腿对齐</div><div class="t">20:59 · open_success</div></div></li>
+      <li><span class="dot d-info"></span><div><div>等待实时事件数据</div></div></li>
     </ul>
   </div>
 </section>
@@ -236,12 +229,12 @@
     <span>Research <em class="feat f-old">现有</em></span><span>Execution <em class="feat f-old">现有</em></span><span>Advanced <em class="feat f-old">现有</em></span>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">$2,418.62</div><div class="sub" data-k="vdk.equity_sub"><span class="up">▲$3.14</span> · V $1,206 / D $1,212</div></div>
-    <div class="kpi"><div class="label">今日净损耗</div><div class="value down" data-k="vdk.loss">−$1.84</div><div class="sub num" data-k="vdk.loss_sub">2.1 bps/万U · 7日均 2.6</div></div>
-    <div class="kpi"><div class="label" data-k="vdk.vol_label">今日交易量</div><div class="value" data-k="vdk.vol">$8,720</div><div class="sub num" data-k="vdk.vol_sub">累计 $214.5K</div></div>
-    <div class="kpi"><div class="label">本周预算剩余 <span id="budget-edit-btn" style="float:right;cursor:pointer;color:var(--var);font-size:11px">改预算 ✎</span></div><div class="value" data-k="vdk.budget">$3.16<span style="font-size:13px;color:var(--faint)">/5.00</span></div><div class="sub" data-k="vdk.budget_sub">周亏损上限扣减制</div><div id="budget-edit-box" style="display:none;margin-top:8px"><input id="budget-input" type="number" step="1" min="0" max="500" style="width:80px;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono)"> <button class="btn" style="font-size:11px" id="budget-save">保存(两台)</button> <button class="btn ghost" style="font-size:11px" id="budget-cancel">取消</button><div id="budget-msg" class="src" style="margin-top:4px"></div></div></div>
-    <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">21,695</div><div class="sub" data-k="vdk.points_sub"><span style="color:var(--var)">Var 12,480</span> · <span style="color:var(--dec)">Dec 9,215</span></div></div>
-    <div class="kpi"><div class="label">自动化 <span id="auto-edit-btn" style="float:right;cursor:pointer;color:var(--var);font-size:11px">控制 ⚙</span></div><div class="value" style="font-size:16px" data-k="vdk.auto"><span class="up">●</span> 全自动·A</div><div class="sub num" data-k="vdk.auto_sub">心跳 12s · VPS2 已暂停</div><div id="auto-ctl-box" style="display:none;margin-top:8px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn" style="font-size:11px" id="auto-toggle">切换自动运行</button><select id="auto-mode" style="background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:3px 6px;font-size:11px"><option value="semi_auto">半自动</option><option value="full_auto">全自动</option></select><button class="btn ghost" style="font-size:11px" id="auto-cancel">收起</button></div><div id="auto-msg" class="src" style="margin-top:4px"></div></div></div>
+    <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">今日净损耗</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label" data-k="vdk.vol_label">交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">旧周预算（只读）</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">旧 worker 已退出生产</div></div>
+    <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">旧自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto">读取中</div><div class="sub num" data-k="vdk.auto_sub">旧 worker 已退出生产</div></div>
   </div>
   <div class="grid2">
     <div>
@@ -251,9 +244,7 @@
         <table>
           <thead><tr><th>SYMBOL/HOST</th><th>← VAR · DEC →</th><th>净敞口</th><th>清算 V/D</th><th>时长</th><th>状态</th></tr></thead>
           <tbody id="vd-pair-body">
-            <tr><td><b>BTC</b> <span class="chip">VPS1</span></td><td><div class="pair"><div class="lane l"><i class="bar" style="width:92%"></i></div><div class="tick"></div><div class="lane r"><i class="bar" style="width:92%"></i></div></div></td><td class="num up">$0.12</td><td class="num">31%/28%</td><td class="num">2h14m</td><td><span class="chip ok">HEDGED</span></td></tr>
-            <tr><td><b>ETH</b> <span class="chip">VPS1</span></td><td><div class="pair"><div class="lane l"><i class="bar" style="width:64%"></i></div><div class="tick"></div><div class="lane r"><i class="bar" style="width:64%"></i></div></div></td><td class="num up">$0.19</td><td class="num">42%/39%</td><td class="num">0h48m</td><td><span class="chip ok">HEDGED</span></td></tr>
-            <tr style="background:rgba(229,72,77,.05)"><td><b>SOL</b> <span class="chip">VPS2</span></td><td><div class="pair"><div class="lane l"></div><div class="tick"></div><div class="lane r"><i class="stub" style="width:58%"></i></div></div></td><td class="num down">−$88.40</td><td class="num">—/26%</td><td class="num">4m12s</td><td><span class="chip danger">DEC 裸腿</span></td></tr>
+            <tr><td colspan="6" style="color:var(--faint)">正在核对四源真实仓位…</td></tr>
           </tbody>
         </table>
       </div>
@@ -261,11 +252,9 @@
         <h2>今日损耗分解 <span class="feat f-old">原 Statistics 提级</span></h2>
         <div class="src">source · trades 表 cost_bp/funding/slippage 列(近24h,(host,id) 去重)</div>
         <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
-          <i style="width:52%;background:var(--var);display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">fee −$0.96</i>
-          <i style="width:27%;background:var(--dec);display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">funding −$0.50</i>
-          <i style="width:21%;background:#8B98A9;display:flex;align-items:center;justify-content:center;color:#0E1116;font-weight:600">slip −$0.38</i>
+          <span style="width:100%;display:flex;align-items:center;color:var(--faint)">等待真实交易数据</span>
         </div>
-        <div class="src" style="margin-top:8px" data-k="vd.loss_src">合计 −$1.84 = 2.1 bps/万U · 每积分成本 $0.0148(7日)</div>
+        <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
       </div>
       <div class="panel" id="vd-equity-panel" style="display:none">
         <h2>总权益曲线 <span class="feat f-new">新增</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
@@ -279,21 +268,13 @@
         <h2>双 VPS 状态 <span class="feat f-old">原 Peer Snapshots 提级</span></h2>
         <div class="src">source · runtime + data/ops_peer_state</div>
         <div class="proj" style="grid-template-columns:1fr;margin-top:0" id="vd-host-cards">
-          <div class="card"><div class="head"><span class="name num">VPS1</span><span class="chip ok">HEDGED ×2</span></div>
-            <div class="row"><span class="k">权益/敞口</span><span class="v">$1,428 · <span class="up">$0.31</span></span></div>
-            <div class="row"><span class="k">心跳/预算</span><span class="v">8s · $3.55/5</span></div></div>
-          <div class="card alerted"><div class="head"><span class="name num">VPS2</span><span class="chip danger">SINGLE-LEG</span></div>
-            <div class="row"><span class="k">权益/敞口</span><span class="v">$990 · <span class="down">−$88.40</span></span></div>
-            <div class="row"><span class="k">心跳/预算</span><span class="v">14s · $2.20/5</span></div></div>
+          <div class="card"><div class="head"><span class="name num">读取中</span><span class="chip">UNKNOWN</span></div></div>
         </div>
       </div>
       <div class="panel">
-        <h2>操作 <span class="feat f-old">现有</span></h2>
-        <div class="src">原 Home Actions / Trade 一键平仓 / 自动策略启停 保留</div>
-        <div class="btnrow">
-          <button class="btn">暂停 VPS1 自动化</button><button class="btn">暂停 VPS2 自动化</button>
-          <button class="btn">一键平仓…</button><button class="btn ghost">手动开仓(Trade 页)</button>
-        </div>
+        <h2>旧系统状态</h2>
+        <div class="src">旧 Var/Decibel worker 已退出生产。本页只读，不提供未接线的交易按钮。</div>
+        <div class="btnrow"><button class="btn ghost" onclick="window.open('/varia/','_blank')">打开旧只读详情</button></div>
       </div>
     </aside>
   </div>
@@ -309,12 +290,12 @@
     <span>Scan <em class="feat f-old">现有</em></span><span>Proxy <em class="feat f-old">现有</em></span>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">2 / 2</div><div class="sub num" data-k="pmk.run_sub">multi_runner PID 41822</div></div>
-    <div class="kpi"><div class="label">活跃挂单</div><div class="value" data-k="pmk.orders">34</div><div class="sub num" data-k="pmk.quotes">quotes_sent 今日 4,182</div></div>
-    <div class="kpi"><div class="label">今日成交</div><div class="value" data-k="pmk.vol">$1,240</div><div class="sub num" data-k="pmk.vol_sub">18 笔 · 全部已挂 exit</div></div>
-    <div class="kpi"><div class="label">今日 PnL</div><div class="value up" data-k="pmk.pnl">+$3.80</div><div class="sub num">来自 fills 流(已实现)</div></div>
-    <div class="kpi"><div class="label">奖励(累计)</div><div class="value" data-k="pmk.rewards">$6.20</div><div class="sub num">rewards_cumulative</div></div>
-    <div class="kpi"><div class="label">兄弟交叉拦截</div><div class="value" data-k="pmk.sibling">7</div><div class="sub">sibling_registry <span class="feat f-new">新增</span></div></div>
+    <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">—</div><div class="sub num" data-k="pmk.run_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">活跃挂单</div><div class="value" data-k="pmk.orders">—</div><div class="sub num" data-k="pmk.quotes">等待实时数据</div></div>
+    <div class="kpi"><div class="label">今日成交</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">今日 PnL</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">来自已核验 fills</div></div>
+    <div class="kpi"><div class="label">奖励(累计)</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">rewards_cumulative</div></div>
+    <div class="kpi"><div class="label">兄弟交叉拦截</div><div class="value" data-k="pmk.sibling">—</div><div class="sub">sibling_registry</div></div>
   </div>
   <div class="grid2">
     <div>
@@ -324,9 +305,7 @@
         <table>
           <thead><tr><th title="勾选=纳入 Start/Stop/Reload 操作">选中</th><th>#</th><th>机器</th><th>FUNDER</th><th>状态</th><th>抵押/权益</th><th>挂单</th><th>今日成交</th><th>PnL</th><th>奖励est</th><th>哨兵</th><th>操作</th></tr></thead>
           <tbody id="pm-matrix-body">
-            <tr><td class="num"><input type="checkbox" checked disabled></td><td class="num">1</td><td class="num">VPS1</td><td class="num">0x3aF2…9c1</td><td><span class="chip ok">运行中</span></td><td class="num">$820</td><td class="num">18</td><td class="num">$680 · 10笔</td><td class="num up">+$2.20</td><td class="num">$3.4</td><td class="num">4</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button></td></tr>
-            <tr><td class="num"><input type="checkbox" checked disabled></td><td class="num">2</td><td class="num">VPS2</td><td class="num">0x91bD…44e</td><td><span class="chip ok">运行中</span></td><td class="num">$791</td><td class="num">16</td><td class="num">$560 · 8笔</td><td class="num up">+$1.60</td><td class="num">$2.8</td><td class="num">3</td><td class="btnrow"><button class="btn ghost">暂停(撤单)</button></td></tr>
-            <tr style="opacity:.55"><td></td><td class="num">3-30</td><td colspan="10" style="color:var(--faint)">扩容位:一 VPS 一账号,新账号加 remote_accounts.json 即出现</td></tr>
+            <tr><td colspan="12" style="color:var(--faint)">正在读取各账号实时状态…</td></tr>
           </tbody>
         </table>
       </div>
@@ -344,9 +323,7 @@
         <table>
           <thead><tr><th>MARKET</th><th>事件态</th><th>预算份额</th><th>我的档位</th><th>sentinel</th><th>奖励健康</th></tr></thead>
           <tbody>
-            <tr><td>NBA · LAL vs BOS</td><td><span class="chip ok">active</span></td><td class="num">22%</td><td class="num">0.41 / 0.40×2</td><td><span class="chip warn">冷却 38s</span></td><td><span class="chip ok">合格</span></td></tr>
-            <tr><td>EPL · ARS vs MCI</td><td><span class="chip warn">start-guard</span></td><td class="num">15%</td><td class="num">开赛前 12m 撤出</td><td class="num">—</td><td><span class="chip ok">合格</span></td></tr>
-            <tr><td>MLB · NYY ML</td><td><span class="chip">quarantine</span></td><td class="num">0%</td><td class="num">波动隔离 6m 后复评</td><td class="num">—</td><td class="num">—</td></tr>
+            <tr><td colspan="6" style="color:var(--faint)">市场明细尚未接入本面板，请以启动预检或完整后台为准</td></tr>
           </tbody>
         </table>
       </div>
@@ -384,9 +361,9 @@
         <h2>代理(Clash) <span class="feat f-old">现有</span></h2>
         <div class="src">source · proxy failover 计数;Run Test 保留</div>
         <div class="proj" style="grid-template-columns:1fr;margin-top:0">
-          <div class="card"><div class="row"><span class="k">当前节点</span><span class="v up">HK-02 · 84ms</span></div>
-          <div class="row"><span class="k">failover(24h)</span><span class="v">1(HK-01→HK-02)</span></div>
-          <div class="row"><span class="k">req 异常(1h)</span><span class="v">2 / 阈值风暴保护</span></div></div>
+          <div class="card"><div class="row"><span class="k">当前节点</span><span class="v">未接入实时状态</span></div>
+          <div class="row"><span class="k">failover(24h)</span><span class="v">—</span></div>
+          <div class="row"><span class="k">req 异常(1h)</span><span class="v">—</span></div></div>
         </div>
         <div class="src" style="margin-top:10px">代理池 <b id="proxy-count">—</b> 条 <span class="feat f-new">编辑已迁移</span>(Run Test 留在 /alpha/)</div>
         <textarea id="proxy-input" class="opin" rows="4" placeholder="host:port 或 host:port:user:pass,一行一条" style="width:100%;margin-top:6px;box-sizing:border-box"></textarea>
@@ -395,9 +372,7 @@
       <div class="panel">
         <h2>Fills 流 <span class="feat f-old">现有</span></h2>
         <ul class="events">
-          <li><span class="dot d-info"></span><div><div>#2 BUY 120@0.42 LAL → exit 0.46 已挂</div><div class="t">21:38 · ws_user</div></div></li>
-          <li><span class="dot d-warn"></span><div><div>sentinel:LAL 对侧 ask 被扫 34%,撤单保护</div><div class="t">21:31</div></div></li>
-          <li><span class="dot d-info"></span><div><div>#1 exit 成交 0.47,round-trip +$0.9</div><div class="t">21:12</div></div></li>
+          <li><span class="dot d-info"></span><div><div>本面板暂无已核验的实时成交</div></div></li>
         </ul>
       </div>
     </aside>
@@ -416,24 +391,14 @@
       <div class="panel">
         <h2>风险闸门利用率 <span class="feat f-new">新增呈现(数据现有)</span></h2>
         <div class="src" data-k="pf.risk_src">source · predictfun_risk_state.json(risk.py 每周期评估,超限即 block 执行)</div>
-        <div id="pf-gates">
-        <div class="util"><div class="u-head"><span>总期望名义</span><span class="num">$1,830 / 2,500</span></div><div class="u-bar"><i style="width:73%"></i></div></div>
-        <div class="util"><div class="u-head"><span>活跃账号</span><span class="num">2 / 10</span></div><div class="u-bar"><i style="width:20%"></i></div></div>
-        <div class="util warn"><div class="u-head"><span>单账号名义(最大者)</span><span class="num">$86 / 100</span></div><div class="u-bar"><i style="width:86%"></i></div></div>
-        <div class="util"><div class="u-head"><span>单市场名义(最大者)</span><span class="num">$62 / 75</span></div><div class="u-bar"><i style="width:83%"></i></div></div>
-        <div class="util"><div class="u-head"><span>ws 状态年龄</span><span class="num">12s / 180s</span></div><div class="u-bar"><i style="width:7%"></i></div></div>
-        <div class="util"><div class="u-head"><span>plan 状态年龄</span><span class="num">8s / 180s</span></div><div class="u-bar"><i style="width:5%"></i></div></div>
-        </div>
+        <div id="pf-gates" style="color:var(--faint)">等待真实风险状态</div>
       </div>
       <div class="panel">
         <h2>意向 &amp; 对账 <span class="feat f-old">现有</span></h2>
         <div class="src" data-k="pf.intents_src">source · desired_orders.json + execution_report.json;reconcile 每周期对账</div>
         <table>
           <thead><tr><th>MARKET</th><th>账号</th><th>方向</th><th>价格</th><th>数量</th><th>动作</th></tr></thead>
-          <tbody id="pf-intents-body">
-            <tr><td>US Election 子盘 A</td><td class="num">1</td><td class="num">BUY</td><td class="num">0.31</td><td class="num">140</td><td><span class="chip ok">保持</span></td></tr>
-            <tr><td>Crypto 价格盘 B</td><td class="num">2</td><td class="num">SELL</td><td class="num">0.55</td><td class="num">60</td><td><span class="chip info">重报</span></td></tr>
-          </tbody>
+          <tbody id="pf-intents-body"><tr><td colspan="6" style="color:var(--faint)">等待真实意向与执行报告</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -443,9 +408,9 @@
         <div class="src">Start / Stop / One Cycle / WS Check 全保留</div>
         <div class="btnrow"><button class="btn">Start</button><button class="btn">Stop</button><button class="btn ghost">One Cycle</button><button class="btn ghost">WS Check</button></div>
         <div class="proj" style="grid-template-columns:1fr;margin-top:12px"><div class="card">
-          <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles2">1,842 · 3</span></div>
-          <div class="row"><span class="k">上周期</span><span class="v" data-k="pf.last_cycle">21:30:04 · 1.8s</span></div>
-          <div class="row"><span class="k">模式</span><span class="v" data-k="pf.mode">dry_run · testnet</span></div>
+          <div class="row"><span class="k">周期 / 错误</span><span class="v" data-k="pf.cycles2">—</span></div>
+          <div class="row"><span class="k">上周期</span><span class="v" data-k="pf.last_cycle">—</span></div>
+          <div class="row"><span class="k">模式</span><span class="v" data-k="pf.mode">—</span></div>
         </div></div>
       </div>
       <div class="panel">
@@ -638,12 +603,12 @@
 
   <!-- 老板第一屏六指标(boss_dashboard_metrics 原样) -->
   <div class="kpis">
-    <div class="kpi"><div class="label">总占用本金</div><div class="value" data-k="hkk.capital">$48,260</div><div class="sub num" data-k="hkk.capital_sub">已确认入金 − 出金 · 折USD</div></div>
-    <div class="kpi"><div class="label" data-k="hkk.income_label">净收益(本月)</div><div class="value up" data-k="hkk.income">+$2,140</div><div class="sub num">奖励+收益−成本−磨损</div></div>
-    <div class="kpi"><div class="label">ROI</div><div class="value" data-k="hkk.roi">4.4%</div><div class="sub num">净收益 / 占用本金</div></div>
-    <div class="kpi"><div class="label">磨损率</div><div class="value" data-k="hkk.wear">1.3%</div><div class="sub num">黄 &gt;2% · 红 &gt;5%</div></div>
-    <div class="kpi"><div class="label">待确认流水</div><div class="value" style="color:var(--warn)" data-k="hkk.pending">3</div><div class="sub num" data-k="hkk.pending_sub">超 24h 未确认 → 群提醒</div></div>
-    <div class="kpi"><div class="label">异常账号</div><div class="value" style="color:var(--danger)" data-k="hkk.abnormal">2</div><div class="sub num">风险队列条目</div></div>
+    <div class="kpi"><div class="label">总占用本金</div><div class="value" data-k="hkk.capital">—</div><div class="sub num" data-k="hkk.capital_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label" data-k="hkk.income_label">净收益</div><div class="value" data-k="hkk.income">—</div><div class="sub num">奖励+收益−成本−磨损</div></div>
+    <div class="kpi"><div class="label">ROI</div><div class="value" data-k="hkk.roi">—</div><div class="sub num">净收益 / 占用本金</div></div>
+    <div class="kpi"><div class="label">磨损率</div><div class="value" data-k="hkk.wear">—</div><div class="sub num">等待实时数据</div></div>
+    <div class="kpi"><div class="label">待确认流水</div><div class="value" data-k="hkk.pending">—</div><div class="sub num" data-k="hkk.pending_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">异常账号</div><div class="value" data-k="hkk.abnormal">—</div><div class="sub num">风险队列条目</div></div>
   </div>
 
   <div class="grid2">
@@ -838,7 +803,7 @@
     document.getElementById('pd-'+id).scrollIntoView({block:'nearest'});
   }
 
-  // ── 真数据绑定:每 15s 拉 /api/state,覆盖 [data-k] 元素;无真数据则保留模板示例值 ──
+  // ── 真数据绑定:每 15s 拉 /api/state。无真数据宁可显示未知，绝不保留模板样例。 ──
   function esc(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML;}
   function money(v){return v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
   function setK(key, html){
@@ -847,8 +812,21 @@
   }
   function pnlSpan(p){const c=p>=0?'up':'down',s=p>=0?'+':'';return '<span class="'+c+'">'+s+money(Math.abs(p)).replace('$',p<0?'−$':'$')+'</span>';}
 
+  function clearTemplateSamples(){
+    document.querySelectorAll('.value[data-k],.v[data-k]').forEach(el=>{
+      el.textContent='—'; el.removeAttribute('data-real'); el.title='等待实时数据';
+    });
+    document.querySelectorAll('.sub[data-k]').forEach(el=>{
+      el.textContent='等待实时数据'; el.removeAttribute('data-real'); el.title='等待实时数据';
+    });
+  }
+
   function bindPM(pm){
-    if(!pm.present) return;
+    const body=document.getElementById('pm-matrix-body');
+    if(!pm.present){
+      if(body) body.innerHTML='<tr><td colspan="12" style="color:var(--faint)">PM 状态源不可达，当前状态未知</td></tr>';
+      return;
+    }
     // 收益核算面板(账户-日粒度,诚实标口径)
     const pl=pm.pnl||{};
     const plb=document.getElementById('pm-pnl-body');
@@ -867,34 +845,38 @@
       if(pl.note) setK('pmpnl.note','source · '+esc(pl.note));
     }
     setK('pm.run', pm.running+'/'+pm.total+' 运行');
-    setK('pm.orders_vol', pm.live_orders+' · '+money(pm.volume_today)+'('+(pm.fills_seen||0)+'笔累计)');
-    setK('pm.pnl', pnlSpan(pm.pnl_today||0)+(pm.rewards_total!=null?' · '+money(pm.rewards_total):''));
-    setK('pm.ks', (pm.cooldown?'<span class="down">冷却中</span>':'关')+' · —');
-    setK('pm.quotes', Number(pm.quotes_sent||0).toLocaleString());
+    const orderText=pm.live_orders==null?'待核验':String(pm.live_orders);
+    setK('pm.orders_vol', orderText+' · '+money(pm.volume_today)+'('+(pm.fills_seen??'—')+'笔累计)');
+    setK('pm.pnl', (pm.pnl_today==null?'—':pnlSpan(pm.pnl_today))+(pm.rewards_total!=null?' · '+money(pm.rewards_total):''));
+    setK('pm.ks', (pm.cooldown==null?'待核验':(pm.cooldown?'<span class="down">冷却中</span>':'关'))+' · —');
+    setK('pm.quotes', pm.quotes_sent==null?'—':Number(pm.quotes_sent).toLocaleString());
     setK('pmk.run', pm.running+' / '+pm.total);
     setK('pmk.run_sub', 'engine_state 逐账号');
-    setK('pmk.orders', String(pm.live_orders));
-    setK('pmk.quotes', 'quotes_sent 累计 '+Number(pm.quotes_sent||0).toLocaleString());
+    setK('pmk.orders', orderText);
+    setK('pmk.quotes', '新鲜状态 '+(pm.quotes_sent==null?'待核验':Number(pm.quotes_sent).toLocaleString()));
     setK('pmk.vol', money(pm.volume_today));
+    const ftKnown=(pm.accounts||[]).some(a=>a.fills_today!=null);
     const ft=(pm.accounts||[]).reduce((n,a)=>n+(a.fills_today||0),0);
-    setK('pmk.vol_sub', ft+' 笔(24h)');
-    setK('pmk.pnl', pnlSpan(pm.pnl_today||0));
+    setK('pmk.vol_sub', ftKnown?ft+' 笔(24h)':'待核验');
+    setK('pmk.pnl', pm.pnl_today==null?'—':pnlSpan(pm.pnl_today));
     setK('pmk.rewards', money(pm.rewards_total));
+    const sibKnown=(pm.accounts||[]).some(a=>a.sibling_conflicts!=null);
     const sib=(pm.accounts||[]).reduce((n,a)=>n+(a.sibling_conflicts||0),0);
-    setK('pmk.sibling', String(sib));
-    const body=document.getElementById('pm-matrix-body');
+    setK('pmk.sibling', sibKnown?String(sib):'—');
     if(body && (pm.accounts||[]).length){
       body.innerHTML = pm.accounts.map(a=>
         '<tr><td class="num"><input type="checkbox" class="pm-sel" data-idx="'+a.idx+'" checked></td>'+
         '<td class="num">'+a.idx+'</td><td class="num">'+esc(a.host||'—')+'</td><td class="num">'+esc(a.funder)+'</td>'+
-        '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span></td>'+
-        '<td class="num">'+money(a.balance)+'</td><td class="num">'+a.orders+'</td>'+
-        '<td class="num">'+money(a.volume_today)+' · '+a.fills_today+'笔</td>'+
-        '<td class="num">'+pnlSpan(a.pnl_today||0)+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
+        '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span>'+(a.age?'<div style="font-size:10px;color:var(--faint);margin-top:3px">状态 '+esc(a.age)+'</div>':'')+'</td>'+
+        '<td class="num">'+money(a.balance)+'</td><td class="num">'+(a.orders==null?'<span style="color:var(--warn)">待核验</span>':a.orders)+'</td>'+
+        '<td class="num">'+(a.volume_today==null?'—':money(a.volume_today)+' · '+a.fills_today+'笔')+'</td>'+
+        '<td class="num">'+(a.pnl_today==null?'—':pnlSpan(a.pnl_today))+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
         '<td class="btnrow">'+(a.paused
           ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="resume">恢复</button>'
-          :'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停(撤单)</button>')+'</td></tr>'
+          :(String(a.status||'').startsWith('运行中')
+            ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停(撤单)</button>'
+            :'<span style="color:var(--faint)">已停止</span>'))+'</td></tr>'
       ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
     }
     const es=pm.engine_summary||{running:0,total:0};
@@ -906,7 +888,7 @@
     const selHint=document.getElementById('pm-sel-hint');
     if(selHint){
       selHint.innerHTML=(pm.accounts||[]).map(a=>'账号'+a.idx+'@'+esc(a.host||'?')+' '
-        +(a.status==='运行中'?'<span class="up">运行</span>':(a.status==='已暂停'?'<span style="color:var(--warn)">暂停</span>':'<span class="down">停止</span>'))).join(' · ')
+        +(String(a.status||'').startsWith('运行中')?'<span class="up">运行</span>':(a.status==='已暂停'?'<span style="color:var(--warn)">暂停</span>':'<span class="down">停止</span>'))).join(' · ')
         ||'无账户';
     }
     if(pm.curator){
@@ -916,11 +898,19 @@
   }
 
   function bindVD(vd){
-    if(!vd.present) return;
+    const pb=document.getElementById('vd-pair-body');
+    const hc=document.getElementById('vd-host-cards');
+    if(!vd.present){
+      if(pb) pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">四源状态不可达，仓位未知</td></tr>';
+      if(hc) hc.innerHTML='<div class="card alerted"><div class="head"><span class="name">状态不可达</span><span class="chip danger">UNKNOWN</span></div></div>';
+      return;
+    }
     const hosts=vd.hosts||{}, names=Object.keys(hosts).sort();
     const legs=(vd.single_leg||[]);
-    setK('vd.chip', legs.length? '<span class="chip danger">单腿 ×'+legs.length+'</span>':'四源正常');
-    const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0);
+    const sourceState=vd.position_sources||{}, unverified=(sourceState.unverified||[]);
+    setK('vd.chip', legs.length? '<span class="chip danger">单腿 ×'+legs.length+'</span>':
+      (unverified.length?'<span class="chip warn">仓位待核验 ×'+unverified.length+'</span>':'四源仓位已核验'));
+    const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0||unverified.length>0);
     if(vd.equity_total!=null){
       setK('vd.equity', money(vd.equity_total));
       const dec=names.reduce((s,h)=>s+(hosts[h].equity_dec||0),0), vr=names.reduce((s,h)=>s+(hosts[h].equity_var||0),0);
@@ -942,30 +932,32 @@
       setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
     }
     window.__autoCtl=vd.auto||{};
-    const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec||0),0);
+    const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec??999999),0);
     if(vd.auto){
       const a=vd.auto;
       setK('vdk.auto', (a.enabled?'<span class="up">●</span> ':'<span class="down">●</span> ')+(a.enabled?(a.mode==='full_auto'?'全自动':'半自动'):'已停'));
     } else setK('vdk.auto', worst>600?'<span class="down">●</span> 心跳过期':'<span class="up">●</span> 运行中');
-    setK('vdk.auto_sub','最旧心跳 '+esc(_fmtAge(worst)));
-    const hc=document.getElementById('vd-host-cards');
+    setK('vdk.auto_sub',(vd.auto&&vd.auto.enabled?'配置仍为开启；需核对 worker':'总开关关闭；旧 worker 已退出生产')+' · 快照 '+esc(_fmtAge(worst)));
     if(hc && names.length){
       hc.innerHTML=names.map(h=>{
-        const x=hosts[h]; const bad=x.single_leg||x.stale;
-        const chip=x.single_leg?'<span class="chip danger">SINGLE-LEG</span>':(x.stale?'<span class="chip warn">STALE</span>':'<span class="chip ok">OK</span>');
+        const x=hosts[h]; const unknown=x.positions_verified===false; const bad=x.single_leg||unknown;
+        const chip=x.single_leg?'<span class="chip danger">SINGLE-LEG</span>':(unknown?'<span class="chip warn">仓位未知</span>':'<span class="chip ok">已核验</span>');
         return '<div class="card'+(bad?' alerted':'')+'"><div class="head"><span class="name num">'+h.toUpperCase()+'</span>'+chip+'</div>'+
-          '<div class="row"><span class="k">权益 V/D</span><span class="v">'+money(x.equity_var)+' · '+money(x.equity_dec)+'</span></div>'+
+          '<div class="row"><span class="k">权益 V/D</span><span class="v">'+(x.stale?'— · —':money(x.equity_var)+' · '+money(x.equity_dec))+'</span></div>'+
           '<div class="row"><span class="k">心跳</span><span class="v">'+esc(x.age||'—')+'</span></div></div>';
       }).join('');
     }
     setK('infra.peer', names.map(h=>h+' '+esc(hosts[h].age||'?')).join(' · ')||null);
-    const okAll=names.every(h=>hosts[h].ok_dec!==false&&hosts[h].ok_var!==false);
+    const okAll=names.length>0&&names.every(h=>hosts[h].positions_verified===true);
     setK('pill.signer','<span class="dot"></span>读取 '+(okAll?'正常':'异常'));
     // 配对腿表(真实持仓;两腿条宽按名义占比)
-    const pb=document.getElementById('vd-pair-body');
+    const unknownRows=unverified.map(x=>{
+      const seen=(x.last_seen_symbols||[]).length?'；上次快照曾见 '+x.last_seen_symbols.map(esc).join('/') : '';
+      return '<tr style="background:rgba(231,180,67,.06)"><td><b>'+esc((x.host||'').toUpperCase())+'</b></td><td colspan="4" style="color:var(--warn)">'+esc(x.reason||'数据不完整')+'，当前仓位未知'+seen+'</td><td><span class="chip warn">UNKNOWN</span></td></tr>';
+    });
     if(pb && (vd.pairs||[]).length){
       const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs(p.dec.notional||0))));
-      pb.innerHTML=vd.pairs.map(p=>{
+      const pairRows=vd.pairs.map(p=>{
         const wl=Math.round(Math.abs(p.var.notional||0)/maxN*100), wr=Math.round(Math.abs(p.dec.notional||0)/maxN*100);
         const bad=p.status!=='HEDGED';
         const lane_l=p.var.open?'<i class="bar" style="width:'+wl+'%"></i>':'';
@@ -976,9 +968,13 @@
           '<td class="num '+netCls+'">'+money(p.net)+'</td>'+
           '<td class="num">'+(p.var.liq_pct!=null?p.var.liq_pct+'%':'—')+'/'+(p.dec.liq_pct!=null?p.dec.liq_pct+'%':'—')+'</td>'+
           '<td class="num">—</td><td><span class="chip '+(bad?'danger':'ok')+'">'+esc(p.status)+'</span></td></tr>';
-      }).join('');
+      });
+      pb.innerHTML=pairRows.concat(unknownRows).join('');
+    } else if(pb && unverified.length){
+      pb.innerHTML=unknownRows.join('');
     } else if(pb && vd.present){
-      pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">当前无持仓(空仓)</td></tr>';
+      const verified=(sourceState.verified_hosts||[]).length;
+      pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">'+(verified?'当前无持仓（已由 '+verified+' 台主机的四源快照确认）':'没有足够数据确认仓位')+'</td></tr>';
     }
     // 今日损耗(近24h,(host,id) 去重后真实计算)
     const t=vd.today||{};
@@ -996,6 +992,12 @@
       setK('vd.loss_src','近24h 合计损耗 −'+money(t.loss).slice(1)+' = '+(t.loss_bps_wan??'—')+' bps/万U · 实现PnL '+pnlSpan(t.pnl||0));
       setK('vd.vol_label','本周量 / 今日损耗');
       if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
+    } else {
+      setK('vdk.loss','—');
+      setK('vdk.loss_sub','近24小时没有可核验的已执行交易');
+      const bar=document.getElementById('vd-loss-bar');
+      if(bar) bar.innerHTML='<span style="width:100%;display:flex;align-items:center;color:var(--faint)">近24小时没有可核验的已执行交易</span>';
+      setK('vd.loss_src','没有已执行交易数据，不计算损耗、费率或滑点');
     }
     // 总权益曲线(原生 SVG;真实历史序列)
     const eq=vd.equity_history||{};
@@ -1111,6 +1113,7 @@
     if(r){
       const okTxt=(r.checks_not_ok?'<span class="down">'+r.checks_not_ok+' 项异常</span>':'<span class="up">OK</span>')+'('+((r.checks_total||0)-(r.checks_not_ok||0))+'/'+(r.checks_total||0)+' 项通过)';
       setK('pf.risk', okTxt);
+      setK('pf.positions',(r.sim_positions??'—')+' · '+(r.desired_notional!=null?money(r.desired_notional):'—'));
       setK('pf.risk_src','source · risk_state — blocked '+(r.blocked??0)+' · warn '+(r.warn??0)+' · 期望名义 '+money(r.desired_notional)+' · 活跃账号 '+(r.active_accounts??'—')+' · 模拟持仓 '+(r.sim_positions??'—'));
       const g=document.getElementById('pf-gates');
       if(g && (r.gates||[]).length){
@@ -1152,7 +1155,7 @@
     if(el && (s.events||[]).length){
       el.innerHTML=s.events.map(e=>
         '<li><span class="dot d-'+(e.sev||'info')+'"></span><div><div>'+esc(e.msg)+'</div><div class="t">'+esc(e.t||'')+'</div></div></li>').join('');
-    }
+    } else if(el) el.innerHTML='<li><span class="dot d-info"></span><div><div>当前没有实时事件</div></div></li>';
     const bar=document.getElementById('alertbar');
     const alerts=s.alerts||[];
     setK('pill.alerts','<span class="dot"></span>告警 '+alerts.length);
@@ -1215,70 +1218,28 @@
   }
 
   function bindInfra(mm){
-    if(!mm.present) return;
-    setK('infra.r1_label','pf-api-proxy(Mac mini)');
+    if(!mm.present){
+      setK('infra.chip','状态不可达');
+      setK('infra.r1','—'); setK('infra.r2','—'); setK('infra.proxy','—');
+      return;
+    }
+    const reach=(svc)=>svc&&svc.reachable===true;
+    const unknown=(svc)=>!svc||svc.reachable==null;
+    const reachHtml=(svc)=>unknown(svc)?'<span style="color:var(--faint)">●</span> 未探测':
+      (reach(svc)?'<span class="up">●</span> TCP 可达':'<span class="down">●</span> TCP 不可达');
+    setK('infra.r1_label','PM signer · 8420');
+    setK('infra.r1',reachHtml(mm.pm_signer));
+    setK('infra.r2_label','Var/Dec signer · 8787');
+    setK('infra.r2',reachHtml(mm.var_signer));
     const proxyOk=mm.pf_proxy&&mm.pf_proxy.running;
-    setK('infra.r1', '<span class="'+(proxyOk?'up':'down')+'">●</span> '+(proxyOk?'运行中':'未运行(exit '+esc((mm.pf_proxy||{}).last_exit??'?')+')'));
-    // var signer 是按需签名服务:授权时才拉起,平时不驻留 → 空闲属正常态
-    setK('infra.r2_label','var-decibel-signer(Mac mini)');
-    const signerOn=mm.var_signer&&mm.var_signer.running;
-    setK('infra.r2', signerOn?'<span class="up">●</span> 签名中':'<span style="color:var(--faint)">●</span> 按需 · 空闲');
-    setK('infra.chip', proxyOk?'正常':'proxy 异常');
-    document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(proxyOk?'ok':'warn');});
+    setK('infra.proxy','<span class="'+(proxyOk?'up':'down')+'">●</span> '+(proxyOk?'运行中':'未运行'));
+    setK('infra.discord','未接入送达回执');
+    const infraOk=reach(mm.pm_signer)&&reach(mm.var_signer)&&proxyOk;
+    setK('infra.chip',infraOk?'正常':'需要核对');
+    document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(infraOk?'ok':'warn');});
   }
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
-
-  // 自动策略控制(A类:文件写,worker生效可逆)——自动运行开关 + 半/全自动模式
-  (function(){
-    const btn=document.getElementById('auto-edit-btn'), box=document.getElementById('auto-ctl-box');
-    if(!btn||!box) return;
-    const msg=document.getElementById('auto-msg'), sel=document.getElementById('auto-mode');
-    btn.addEventListener('click',()=>{
-      if(window.__writesEnabled===false){ box.style.display='block'; msg.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
-      box.style.display=box.style.display==='none'?'block':'none';
-      const a=window.__autoCtl||{};
-      if(a.mode) sel.value=a.mode;
-      msg.textContent='自动运行:'+(a.enabled?'开':'关')+' · 模式:'+(a.mode==='full_auto'?'全自动':'半自动');
-    });
-    document.getElementById('auto-cancel').addEventListener('click',()=>{box.style.display='none';});
-    async function post(body,label){
-      msg.textContent=label+'…';
-      try{ const r=await fetch('/api/varia/auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-        const j=await r.json(); msg.innerHTML=j.ok?'<span class="up">已保存</span>':'<span class="down">'+esc(j.error||'失败')+'</span>';
-        if(j.ok) setTimeout(refresh,800);
-      }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
-    }
-    document.getElementById('auto-toggle').addEventListener('click',()=>{
-      const cur=(window.__autoCtl||{}).enabled; post({enabled:!cur}, (cur?'关闭':'开启')+'自动运行');
-    });
-    sel.addEventListener('change',()=>post({mode:sel.value},'切换模式'));
-  })();
-
-  // 预算编辑器(受控写:POST /api/varia/budget;写通道由服务端 LATITUDE_ENABLE_WRITES 闸门)
-  (function(){
-    const btn=document.getElementById('budget-edit-btn'), box=document.getElementById('budget-edit-box');
-    if(!btn||!box) return;
-    const inp=document.getElementById('budget-input'), msg=document.getElementById('budget-msg');
-    btn.addEventListener('click',()=>{
-      if(window.__writesEnabled===false){ box.style.display='block'; msg.innerHTML='<span class="down">写通道未启用(只读)</span>'; inp.disabled=true; document.getElementById('budget-save').disabled=true; return; }
-      box.style.display=box.style.display==='none'?'block':'none';
-      const cur=(window.__budgetCap!=null)?window.__budgetCap:'';
-      inp.value=cur; msg.textContent='每 VPS 各自的周亏损上限 USDC(改动两台生效)';
-    });
-    document.getElementById('budget-cancel').addEventListener('click',()=>{box.style.display='none';});
-    document.getElementById('budget-save').addEventListener('click',async()=>{
-      const cap=parseFloat(inp.value);
-      if(isNaN(cap)||cap<0||cap>500){ msg.innerHTML='<span class="down">需 0–500 的数字</span>'; return; }
-      msg.textContent='写入中…';
-      try{
-        const r=await fetch('/api/varia/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cap})});
-        const j=await r.json();
-        msg.innerHTML=j.ok? '<span class="up">已保存:'+j.old+' → '+j.new+' USDC/台</span>' : '<span class="down">'+esc(j.error||'失败')+'</span>';
-        if(j.ok) setTimeout(refresh,800);
-      }catch(e){ msg.innerHTML='<span class="down">请求失败</span>'; }
-    });
-  })();
 
   // pmbot 操作(已迁移自 /alpha/):引擎启停/急停、账号软暂停、SA paper worker
   async function postOp(url, body, msgEl, label){
@@ -1561,38 +1522,14 @@
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
-    try{bindBudgetEditor(s);}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
-    document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>el.title='示例数据(真数据接入中)');
+    document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>{
+      if(el.matches('.value,.v,.sub')) el.textContent='—';
+      el.title='当前数据源未返回该字段';
+    });
   }
 
-  // 周预算编辑器:预算 KPI 卡加"改"按钮,弹输入 → POST /api/varia/budget
-  function bindBudgetEditor(s){
-    const vd=s.var_decibel||{}; const b=vd.budget||{};
-    if(!b.present) return;
-    const card=document.querySelector('[data-k="vdk.budget"]');
-    if(!card || card.dataset.editWired) return;
-    const kpi=card.closest('.kpi'); if(!kpi) return;
-    card.dataset.editWired='1';   // 修:守卫查 card 就设在 card(此前设在 kpi,守卫永不生效→每次刷新 append 一个按钮)
-    const btn=document.createElement('button');
-    btn.className='btn ghost'; btn.style.cssText='font-size:10px;padding:2px 8px;margin-top:6px';
-    btn.textContent=s.writes_enabled?'改预算':'改预算(待启用)';
-    btn.onclick=async()=>{
-      const cur=b.cap_each||0;
-      const v=prompt('每 VPS 周预算上限(USDC),当前每台 $'+cur+':', cur);
-      if(v===null) return;
-      const cap=parseFloat(v); if(isNaN(cap)){alert('请输入数字');return;}
-      btn.textContent='写入中…'; btn.disabled=true;
-      try{
-        const r=await fetch('/api/varia/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cap})});
-        const j=await r.json();
-        if(j.ok){ alert('已更新:每台 $'+cur+' → $'+cap+'\n'+(j.note||'')); refresh(); }
-        else{ alert('未生效:'+(j.error||'未知')); }
-      }catch(e){ alert('请求失败:'+e); }
-      btn.textContent=s.writes_enabled?'改预算':'改预算(待启用)'; btn.disabled=false;
-    };
-    kpi.appendChild(btn);
-  }
+  clearTemplateSamples();
   refresh(); setInterval(refresh, 15000);
 </script>
 </body>

@@ -1,7 +1,7 @@
 """Latitude Alpha 统一控制台(HTML shell + 只读数据 API)。
 
 - GET /            → console.html(前端每 15s 拉 /api/state 覆盖真数据)
-- GET /api/state   → 只读现有状态文件/库;缺失字段返回 null,前端保留模板示例值。
+- GET /api/state   → 只读现有状态文件/库;缺失或过期字段返回 null/未知,前端不展示样例值。
 
 四源不混算铁律:vps1/decibel、vps1/var、vps2/decibel、vps2/var 逐源独立读取,
 总计=真实来源相加;某源缺失就标缺失,绝不复制他源顶替。
@@ -34,6 +34,7 @@ IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/i
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
+PM_STATE_STALE_SEC = int(os.getenv("PM_STATE_STALE_SEC", "300"))
 
 app = FastAPI(title="Latitude Alpha Console", docs_url=None, redoc_url=None)
 
@@ -147,6 +148,8 @@ def _polymarket() -> Dict[str, Any]:
                     rewards_by_addr[str(row["address"]).lower()] = v
     accounts: List[dict] = []
     running = live_orders = 0
+    orders_unknown = False
+    fresh_states = 0
     volume_today = pnl_today = 0.0
     quotes_sent = fills_seen = 0
     cooldown = False
@@ -155,9 +158,13 @@ def _polymarket() -> Dict[str, Any]:
     for idx in range(1, 31):
         is_remote = idx in remotes
         base = PM_PEER_DIR if is_remote else DATA_DIR
-        state = _read_json(base / f"engine_state_{idx}.json")
+        state_path = base / f"engine_state_{idx}.json"
+        state = _read_json(state_path)
         if state is None and idx == 1 and not is_remote:
-            state = _read_json(DATA_DIR / "engine_state.json")
+            fallback = DATA_DIR / "engine_state.json"
+            state = _read_json(fallback)
+            if state is not None:
+                state_path = fallback
         if state is None:
             if is_remote:
                 state = {}          # 远程账号已配置但还没跑出状态:仍显示一行
@@ -167,17 +174,26 @@ def _polymarket() -> Dict[str, Any]:
             alive = _REMOTE_STATUS.get(idx, False)
             paused = (PM_PEER_DIR / f".account_{idx}.paused").exists()
         else:
-            alive = (DATA_DIR / f".engine_{idx}.pid").exists() or (DATA_DIR / ".engine.pid").exists()
+            alive = _pid_file_alive(DATA_DIR / f".engine_{idx}.pid",
+                                    DATA_DIR / ".engine.pid")
             paused = (DATA_DIR / f".account_{idx}.paused").exists()
+        state_age = _mtime_age(state_path)
+        state_fresh = state_age is not None and state_age <= PM_STATE_STALE_SEC
+        fresh_states += 1 if state_fresh else 0
+        # 停止的引擎无法证明交易所当前仍有/已无挂单。只有运行中且状态新鲜时，
+        # engine_state 的挂单数才作为“当前活跃挂单”展示。
+        orders_verified = bool(alive and state_fresh)
         markets = state.get("markets") if isinstance(state.get("markets"), dict) else {}
-        acct_orders = 0
+        last_seen_orders = 0
         for m in markets.values():
             if isinstance(m, dict):
                 orders = m.get("live_orders") or m.get("orders")
-                acct_orders += len(orders) if isinstance(orders, list) else int(_num(m.get("live_order_count")) or 0)
+                last_seen_orders += len(orders) if isinstance(orders, list) else int(_num(m.get("live_order_count")) or 0)
+        acct_orders = last_seen_orders if orders_verified else None
         fills = state.get("fills") if isinstance(state.get("fills"), list) else []
         cutoff = time.time() - 86400
-        ft = [f for f in fills if isinstance(f, dict) and (_num(f.get("ts")) or 0) >= cutoff]
+        ft = ([f for f in fills if isinstance(f, dict) and (_num(f.get("ts")) or 0) >= cutoff]
+              if state_fresh else [])
         vol = sum(abs((_num(f.get("price")) or 0) * (_num(f.get("size")) or 0)) for f in ft)
         pnl = sum(_num(f.get("pnl")) or 0 for f in ft if f.get("pnl") is not None)
         for f in ft[-3:]:
@@ -187,31 +203,49 @@ def _polymarket() -> Dict[str, Any]:
                 "epoch": ts, "sev": "info",
                 "msg": f"[PM·#{idx}] 成交 {f.get('side','')} {f.get('size','')} @{f.get('price','')}",
             })
-        sibling = state.get("sibling_registry") if isinstance(state.get("sibling_registry"), dict) else {}
+        sibling = (state.get("sibling_registry")
+                   if state_fresh and isinstance(state.get("sibling_registry"), dict) else {})
         running += 1 if (alive and not paused) else 0
-        live_orders += acct_orders
+        if acct_orders is None:
+            orders_unknown = True
+        else:
+            live_orders += acct_orders
         volume_today += vol
         pnl_today += pnl
-        quotes_sent += int(_num(state.get("quotes_sent")) or 0)
-        fills_seen += int(_num(state.get("fills_seen")) or 0)
-        cooldown = cooldown or bool(state.get("cooldown_active"))
+        if state_fresh:
+            quotes_sent += int(_num(state.get("quotes_sent")) or 0)
+            fills_seen += int(_num(state.get("fills_seen")) or 0)
+            cooldown = cooldown or bool(state.get("cooldown_active"))
         funder = str(state.get("funder") or "")
+        if paused:
+            status, status_cls = "已暂停", "warn"
+        elif alive and not state_fresh:
+            status, status_cls = "运行中·状态迟滞", "danger"
+        elif alive:
+            status, status_cls = "运行中", "ok"
+        else:
+            status, status_cls = "已停止", "danger"
         accounts.append({
             "idx": idx,
             "paused": paused,
             "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
             "rewards": rewards_by_addr.get(funder.lower()),
-            "status": "已暂停" if paused else ("运行中" if alive else "已停止"),
-            "status_cls": "warn" if paused else ("ok" if alive else "danger"),
-            "balance": _num(state.get("balance")),
+            "status": status,
+            "status_cls": status_cls,
+            "balance": _num(state.get("balance")) if state_fresh else None,
+            "balance_last_seen": _num(state.get("balance")),
             "orders": acct_orders,
-            "fills_today": len(ft),
-            "volume_today": round(vol, 2),
-            "pnl_today": round(pnl, 2),
+            "orders_last_seen": last_seen_orders,
+            "orders_verified": orders_verified,
+            "fills_today": len(ft) if state_fresh else None,
+            "volume_today": round(vol, 2) if state_fresh else None,
+            "pnl_today": round(pnl, 2) if state_fresh else None,
             "sibling_conflicts": sibling.get("conflicts_detected"),
             "sibling_mode": sibling.get("mode"),
-            "age": _age_text(_mtime_age(DATA_DIR / (f"engine_state_{idx}.json" if (DATA_DIR / f"engine_state_{idx}.json").exists() else "engine_state.json"))),
+            "state_stale": not state_fresh,
+            "age_sec": state_age,
+            "age": _age_text(state_age),
         })
     rewards_total = round(sum(rewards_by_addr.values()), 2) if rewards_by_addr else None
     curator = _read_json(DATA_DIR / "auto_curator_state.json")
@@ -231,12 +265,32 @@ def _polymarket() -> Dict[str, Any]:
     return {
         "curator": curator_out,
         "present": bool(accounts), "accounts": accounts,
-        "running": running, "total": len(accounts), "live_orders": live_orders,
-        "volume_today": round(volume_today, 2), "pnl_today": round(pnl_today, 2),
-        "quotes_sent": quotes_sent, "fills_seen": fills_seen,
-        "cooldown": cooldown, "rewards_total": rewards_total,
+        "running": running, "total": len(accounts),
+        "live_orders": None if orders_unknown else live_orders,
+        "orders_unknown": orders_unknown,
+        "fresh_state_count": fresh_states,
+        "volume_today": round(volume_today, 2) if fresh_states else None,
+        "pnl_today": round(pnl_today, 2) if fresh_states else None,
+        "quotes_sent": quotes_sent if fresh_states else None,
+        "fills_seen": fills_seen if fresh_states else None,
+        "cooldown": cooldown if fresh_states else None,
+        "rewards_total": rewards_total,
         "fill_events": pm_fill_events[-6:],
     }
+
+
+def _pid_file_alive(*paths: Path) -> bool:
+    """PID 文件只是提示；只有对应进程仍存在才算运行中。"""
+    for path in paths:
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
+            continue
+    return False
 
 
 # ---------- varia trades:今日量 / 损耗分解(本地 sqlite + peer,(host,id) 去重) ----------
@@ -410,8 +464,12 @@ def _var_decibel() -> Dict[str, Any]:
     points_dec = points_var = None
     vol_weekly = vol_total = 0.0
     vol_found = False
+    volume_weekly_hosts: set[str] = set()
+    volume_total_hosts: set[str] = set()
     single_leg: List[str] = []
     pairs: List[dict] = []
+    verified_hosts: List[str] = []
+    unverified_hosts: List[dict] = []
     for state in sources:
         if not isinstance(state, dict):
             continue
@@ -428,9 +486,12 @@ def _var_decibel() -> Dict[str, Any]:
             payload = exchanges.get(venue) if isinstance(exchanges.get(venue), dict) else {}
             bal = payload.get("balance") if isinstance(payload.get("balance"), dict) else {}
             eq = _num(bal.get("total_equity"))
-            h[f"equity_{venue[:3]}"] = eq
+            venue_ok = payload.get("ok") is True
+            trusted_eq = eq if (venue_ok and not h["stale"]) else None
+            h[f"equity_{venue[:3]}"] = trusted_eq
+            h[f"equity_{venue[:3]}_last_seen"] = eq
             h[f"ok_{venue[:3]}"] = payload.get("ok")
-            if eq is not None and not h["stale"]:
+            if trusted_eq is not None:
                 equity_total += eq
                 equity_found = True
             if venue == "decibel":
@@ -439,16 +500,41 @@ def _var_decibel() -> Dict[str, Any]:
                 rows = pts.get("breakdown") if isinstance(pts.get("breakdown"), list) else []
                 vals = [_num(r.get("points")) for r in rows if isinstance(r, dict)]
                 vals = [v for v in vals if v is not None]
-                if vals:
-                    points_dec = (points_dec or 0.0) + sum(vals)
+                total = _num(pts.get("total_points"))
+                if total is None and vals:
+                    total = sum(vals)
+                h["points_dec_available"] = bool(
+                    total is not None and venue_ok and not h["stale"]
+                )
+                if h["points_dec_available"]:
+                    points_dec = (points_dec or 0.0) + total
             else:
                 var_syms = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
                 pts = payload.get("points") if isinstance(payload.get("points"), dict) else {}
                 tp = _num(pts.get("total_points"))
-                if tp is not None:
+                h["points_var_available"] = bool(
+                    tp is not None and venue_ok and not h["stale"]
+                )
+                if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
+        # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
+        # 任何一源过期或失败都标“仓位未知”，不拿上次快照冒充当前状态。
+        symbols = sorted(set(dec_syms) | set(var_syms))
+        positions_verified = (not h["stale"] and h.get("ok_dec") is True
+                              and h.get("ok_var") is True)
+        h["positions_verified"] = positions_verified
+        if positions_verified:
+            verified_hosts.append(host)
+        else:
+            last_seen = [symbol for symbol in symbols
+                         if _pos_open(dec_syms.get(symbol)) or _pos_open(var_syms.get(symbol))]
+            reason = "快照过期" if h["stale"] else "交易所读取不完整"
+            unverified_hosts.append({
+                "host": host, "age": h.get("age"), "reason": reason,
+                "last_seen_symbols": last_seen,
+            })
         # 单腿检测 + 配对腿行(口径同 varia _host_exposure_status 的核心判断)
-        for symbol in sorted(set(dec_syms) | set(var_syms)):
+        for symbol in (symbols if positions_verified else []):
             d_pos = (dec_syms.get(symbol) or {}).get("position") if isinstance(dec_syms.get(symbol), dict) else {}
             v_pos = (var_syms.get(symbol) or {}).get("position") if isinstance(var_syms.get(symbol), dict) else {}
             d_pos = d_pos if isinstance(d_pos, dict) else {}
@@ -480,31 +566,67 @@ def _var_decibel() -> Dict[str, Any]:
                 "status": ("HEDGED" if (d_open and v_open) else
                            ("DEC 裸腿" if d_open else "VAR 裸腿")),
             })
-        tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
-        for venue_data in (tv.get("venues") or {}).values():
-            if isinstance(venue_data, dict):
-                w = _num(venue_data.get("weekly_notional_usdc"))
-                t = _num(venue_data.get("total_notional_usdc"))
-                if w is not None:
-                    vol_weekly += w
-                    vol_found = True
-                if t is not None:
-                    vol_total += t
+        if positions_verified:
+            tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
+            host_weekly_complete = tv.get("ok") is True
+            host_total_complete = tv.get("ok") is True
+            for venue_data in (tv.get("venues") or {}).values():
+                if isinstance(venue_data, dict):
+                    w = _num(venue_data.get("weekly_notional_usdc"))
+                    t = _num(venue_data.get("total_notional_usdc"))
+                    if w is not None:
+                        vol_weekly += w
+                        vol_found = True
+                    else:
+                        host_weekly_complete = False
+                    if t is not None:
+                        vol_total += t
+                    else:
+                        host_total_complete = False
+                else:
+                    host_weekly_complete = host_total_complete = False
+            if len(tv.get("venues") or {}) < 2:
+                host_weekly_complete = host_total_complete = False
+            if host_weekly_complete:
+                volume_weekly_hosts.add(host)
+            if host_total_complete:
+                volume_total_hosts.add(host)
         hosts[host] = h
     auto = _read_json(VARIA_DIR / "auto_strategy_state.json")
     auto_ctl = None
     if isinstance(auto, dict):
         auto_ctl = {"enabled": bool(auto.get("enabled")), "mode": auto.get("mode"),
                     "hosts": auto.get("hosts") if isinstance(auto.get("hosts"), dict) else {}}
+    equity_complete = bool(hosts) and all(
+        h.get("positions_verified") is True
+        and h.get("equity_dec") is not None
+        and h.get("equity_var") is not None
+        for h in hosts.values()
+    )
+    points_dec_complete = bool(hosts) and all(
+        h.get("points_dec_available") is True for h in hosts.values()
+    )
+    points_var_complete = bool(hosts) and all(
+        h.get("points_var_available") is True for h in hosts.values()
+    )
+    volume_weekly_complete = bool(hosts) and len(volume_weekly_hosts) == len(hosts)
+    volume_total_complete = bool(hosts) and len(volume_total_hosts) == len(hosts)
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
-        "equity_total": round(equity_total, 2) if equity_found else None,
-        "points_decibel": round(points_dec, 1) if points_dec is not None else None,
-        "points_variational": round(points_var, 1) if points_var is not None else None,
-        "volume_weekly": round(vol_weekly, 2) if vol_found else None,
-        "volume_total": round(vol_total, 2) if vol_found else None,
+        "equity_total": round(equity_total, 2) if equity_found and equity_complete else None,
+        "equity_complete": equity_complete,
+        "points_decibel": round(points_dec, 1) if points_dec_complete and points_dec is not None else None,
+        "points_variational": round(points_var, 1) if points_var_complete and points_var is not None else None,
+        "points_complete": {"decibel": points_dec_complete, "variational": points_var_complete},
+        "volume_weekly": round(vol_weekly, 2) if vol_found and volume_weekly_complete else None,
+        "volume_total": round(vol_total, 2) if vol_found and volume_total_complete else None,
+        "volume_complete": {"weekly": volume_weekly_complete, "total": volume_total_complete},
         "single_leg": single_leg,
         "pairs": pairs[:12],
+        "position_sources": {
+            "verified_hosts": verified_hosts,
+            "unverified": unverified_hosts,
+        },
         "today": (today := _varia_trades_today()),
         "budget": _varia_budget({h: today.get("loss_7d_by_host", {}).get(h, 0.0)
                                  for h in (hosts or {"vps1": {}})}),
@@ -724,18 +846,26 @@ _PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL]
 
 
 PM_SIGNER_HOSTPORT = os.getenv("PM_SIGNER_HOSTPORT", "100.91.159.54:8420")
+VAR_SIGNER_HOSTPORT = os.getenv("VAR_SIGNER_HOSTPORT", "100.91.159.54:8787")
 
 
-def _probe_pm_signer() -> bool:
-    """TCP 探活 mac-mini PM 签名器(不发请求不碰密钥)。6/8 引擎重启失败即因 signer 500,
-    且 :8420 不在任何监控里——死了没人知道,故纳入控制台告警。"""
+def _probe_tcp(hostport: str) -> bool:
+    """只做 TCP 可达性探测，不发应用请求、不读取密钥。"""
     import socket
-    host, port = PM_SIGNER_HOSTPORT.rsplit(":", 1)
+    host, port = hostport.rsplit(":", 1)
     try:
         with socket.create_connection((host, int(port)), timeout=4):
             return True
     except Exception:
         return False
+
+
+def _probe_pm_signer() -> bool:
+    return _probe_tcp(PM_SIGNER_HOSTPORT)
+
+
+def _probe_var_signer() -> bool:
+    return _probe_tcp(VAR_SIGNER_HOSTPORT)
 
 
 # ---------- 多 VPS PM 账号(一 VPS 一账号):远程账号路由 ----------
@@ -803,6 +933,7 @@ def _prefetch_loop() -> None:
                     continue
             _HTTP_CACHE[url] = (data, time.time())
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
+        _HTTP_CACHE["var_signer_up"] = (_probe_var_signer(), time.time())
         try:
             _refresh_pm_remotes()
         except Exception:
@@ -990,6 +1121,10 @@ def _macmini() -> Dict[str, Any]:
                        ("ai.codex.polymarket-signer", "pm_signer")):
         svc = services.get(label) if isinstance(services.get(label), dict) else {}
         out[key] = {"running": bool(svc.get("running")), "last_exit": svc.get("last_exit")}
+    for cache_key, key in (("pm_signer_up", "pm_signer"),
+                           ("var_signer_up", "var_signer")):
+        cached = _HTTP_CACHE.get(cache_key)
+        out[key]["reachable"] = cached[0] if cached is not None else None
     return out
 
 

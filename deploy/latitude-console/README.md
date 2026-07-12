@@ -7,9 +7,19 @@
 ## 构成
 
 - `console.html` — 模板本体(6 页:总览/Var·Decibel/Polymarket/Predict.fun/Single Account/打新)。
-  关键数值带 `data-k` 钩子,前端每 15s 拉 `/api/state` 覆盖真数据;无真数据则保留模板示例值。
+  关键数值带 `data-k` 钩子,前端每 15s 拉 `/api/state` 覆盖真数据;无真数据或数据过期时
+  显示“未知/待核验”,绝不保留模板示例值。
 - `console_app.py` — FastAPI:`/` 返回 console.html;`/api/state` 只读现有状态文件/库返回 JSON。
-  **只读,绝不写任何交易/worker/signer/密钥文件。**
+读取与呈现路径保持只读。受控写端点另受 `LATITUDE_ENABLE_WRITES` 总闸和审计日志约束。
+
+## 真实性规则
+
+- Var/Decibel 只有在同一主机的两家交易所读取均成功且快照未过期时，才判断空仓、对冲或单腿。
+- 过期/缺源快照只显示“仓位未知”，可附上次看到的币种，但不计入当前持仓或单腿告警。
+- Polymarket 引擎停止或状态文件过期时，活跃挂单显示“待核验”，不复用历史状态文件里的数量。
+- Mac mini signer 使用 TCP 可达性作为控制台健康信号；launchd 进程字段只作辅助信息。
+- Var/Decibel 与 Polymarket 生产面板的初始 HTML 不含仓位、事件或账号运行样例；
+  页面首次加载和接口失败时统一显示“读取中/未知”。
 
 ## 本地运行
 
