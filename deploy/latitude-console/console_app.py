@@ -464,6 +464,8 @@ def _var_decibel() -> Dict[str, Any]:
     points_dec = points_var = None
     vol_weekly = vol_total = 0.0
     vol_found = False
+    volume_weekly_hosts: set[str] = set()
+    volume_total_hosts: set[str] = set()
     single_leg: List[str] = []
     pairs: List[dict] = []
     verified_hosts: List[str] = []
@@ -498,13 +500,22 @@ def _var_decibel() -> Dict[str, Any]:
                 rows = pts.get("breakdown") if isinstance(pts.get("breakdown"), list) else []
                 vals = [_num(r.get("points")) for r in rows if isinstance(r, dict)]
                 vals = [v for v in vals if v is not None]
-                if vals and venue_ok and not h["stale"]:
-                    points_dec = (points_dec or 0.0) + sum(vals)
+                total = _num(pts.get("total_points"))
+                if total is None and vals:
+                    total = sum(vals)
+                h["points_dec_available"] = bool(
+                    total is not None and venue_ok and not h["stale"]
+                )
+                if h["points_dec_available"]:
+                    points_dec = (points_dec or 0.0) + total
             else:
                 var_syms = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
                 pts = payload.get("points") if isinstance(payload.get("points"), dict) else {}
                 tp = _num(pts.get("total_points"))
-                if tp is not None and venue_ok and not h["stale"]:
+                h["points_var_available"] = bool(
+                    tp is not None and venue_ok and not h["stale"]
+                )
+                if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
         # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
         # 任何一源过期或失败都标“仓位未知”，不拿上次快照冒充当前状态。
@@ -557,6 +568,8 @@ def _var_decibel() -> Dict[str, Any]:
             })
         if positions_verified:
             tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
+            host_weekly_complete = tv.get("ok") is True
+            host_total_complete = tv.get("ok") is True
             for venue_data in (tv.get("venues") or {}).values():
                 if isinstance(venue_data, dict):
                     w = _num(venue_data.get("weekly_notional_usdc"))
@@ -564,8 +577,20 @@ def _var_decibel() -> Dict[str, Any]:
                     if w is not None:
                         vol_weekly += w
                         vol_found = True
+                    else:
+                        host_weekly_complete = False
                     if t is not None:
                         vol_total += t
+                    else:
+                        host_total_complete = False
+                else:
+                    host_weekly_complete = host_total_complete = False
+            if len(tv.get("venues") or {}) < 2:
+                host_weekly_complete = host_total_complete = False
+            if host_weekly_complete:
+                volume_weekly_hosts.add(host)
+            if host_total_complete:
+                volume_total_hosts.add(host)
         hosts[host] = h
     auto = _read_json(VARIA_DIR / "auto_strategy_state.json")
     auto_ctl = None
@@ -578,14 +603,24 @@ def _var_decibel() -> Dict[str, Any]:
         and h.get("equity_var") is not None
         for h in hosts.values()
     )
+    points_dec_complete = bool(hosts) and all(
+        h.get("points_dec_available") is True for h in hosts.values()
+    )
+    points_var_complete = bool(hosts) and all(
+        h.get("points_var_available") is True for h in hosts.values()
+    )
+    volume_weekly_complete = bool(hosts) and len(volume_weekly_hosts) == len(hosts)
+    volume_total_complete = bool(hosts) and len(volume_total_hosts) == len(hosts)
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
         "equity_total": round(equity_total, 2) if equity_found and equity_complete else None,
         "equity_complete": equity_complete,
-        "points_decibel": round(points_dec, 1) if points_dec is not None else None,
-        "points_variational": round(points_var, 1) if points_var is not None else None,
-        "volume_weekly": round(vol_weekly, 2) if vol_found else None,
-        "volume_total": round(vol_total, 2) if vol_found else None,
+        "points_decibel": round(points_dec, 1) if points_dec_complete and points_dec is not None else None,
+        "points_variational": round(points_var, 1) if points_var_complete and points_var is not None else None,
+        "points_complete": {"decibel": points_dec_complete, "variational": points_var_complete},
+        "volume_weekly": round(vol_weekly, 2) if vol_found and volume_weekly_complete else None,
+        "volume_total": round(vol_total, 2) if vol_found and volume_total_complete else None,
+        "volume_complete": {"weekly": volume_weekly_complete, "total": volume_total_complete},
         "single_leg": single_leg,
         "pairs": pairs[:12],
         "position_sources": {

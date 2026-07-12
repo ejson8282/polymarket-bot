@@ -113,19 +113,47 @@ def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
 ) -> None:
     _patch_varia_dependencies(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc).isoformat()
+    states = []
+    for host, dec_points, var_points, volume in (
+        ("vps1", 1.0, 0.1, 10.0),
+        ("vps2", 2.0, 0.2, 20.0),
+    ):
+        state = _state(host, now, _venue(ok=True), _venue(ok=True))
+        state["exchanges"]["decibel"]["points"] = {"total_points": dec_points}
+        state["exchanges"]["variational"]["points"] = {"total_points": var_points}
+        state["trade_volume"] = {
+            "ok": True,
+            "venues": {
+                "decibel": {
+                    "weekly_notional_usdc": volume,
+                    "total_notional_usdc": volume * 10,
+                },
+                "variational": {
+                    "weekly_notional_usdc": volume,
+                    "total_notional_usdc": volume * 10,
+                },
+            },
+        }
+        states.append(state)
     _write_json(
         tmp_path / "ops_state.json",
-        _state("vps1", now, _venue(ok=True), _venue(ok=True)),
+        states[0],
     )
     _write_json(
         tmp_path / "ops_peer_state" / "vps2.json",
-        _state("vps2", now, _venue(ok=True), _venue(ok=True)),
+        states[1],
     )
 
     result = console._var_decibel()
 
     assert result["equity_complete"] is True
     assert result["equity_total"] == 400.0
+    assert result["points_complete"] == {"decibel": True, "variational": True}
+    assert result["points_decibel"] == 3.0
+    assert result["points_variational"] == 0.3
+    assert result["volume_complete"] == {"weekly": True, "total": True}
+    assert result["volume_weekly"] == 60.0
+    assert result["volume_total"] == 600.0
 
 
 def test_stopped_polymarket_engine_does_not_claim_historical_orders(
