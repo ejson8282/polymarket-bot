@@ -901,6 +901,17 @@
     const pb=document.getElementById('vd-pair-body');
     const hc=document.getElementById('vd-host-cards');
     if(!vd.present){
+      setK('vd.chip','<span class="chip warn">仓位待核验</span>');
+      setK('vd.equity','—');
+      setK('vd.vol','—');
+      setK('vd.hosts','—');
+      setK('vd.points','—');
+      setK('vdk.equity','—');
+      setK('vdk.equity_sub','四源权益不可达');
+      setK('vdk.vol','—');
+      setK('vdk.vol_sub','四源交易量不可达');
+      setK('vdk.points','—');
+      setK('vdk.points_sub','四源积分不可达');
       if(pb) pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">四源状态不可达，仓位未知</td></tr>';
       if(hc) hc.innerHTML='<div class="card alerted"><div class="head"><span class="name">状态不可达</span><span class="chip danger">UNKNOWN</span></div></div>';
       return;
@@ -916,21 +927,30 @@
       const dec=names.reduce((s,h)=>s+(hosts[h].equity_dec||0),0), vr=names.reduce((s,h)=>s+(hosts[h].equity_var||0),0);
       setK('vdk.equity', money(vd.equity_total));
       setK('vdk.equity_sub', 'V '+money(vr)+' / D '+money(dec)+'(四源相加)');
+    } else {
+      setK('vd.equity','—');
+      setK('vdk.equity','—');
+      setK('vdk.equity_sub','四源权益不完整');
     }
     setK('vd.vol_label','本周量 / 累计');
-    if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · '+money(vd.volume_total));
+    if(vd.volume_weekly!=null||vd.volume_total!=null) setK('vd.vol', money(vd.volume_weekly)+' · '+money(vd.volume_total));
+    else setK('vd.vol','—');
     setK('vdk.vol_label','本周交易量');
-    if(vd.volume_weekly!=null){ setK('vdk.vol', money(vd.volume_weekly)); setK('vdk.vol_sub','累计 '+money(vd.volume_total)); }
+    setK('vdk.vol', money(vd.volume_weekly));
+    setK('vdk.vol_sub', vd.volume_weekly!=null||vd.volume_total!=null?'累计 '+money(vd.volume_total):'四源交易量不完整');
     setK('vd.hosts', names.map(h=>{
       const x=hosts[h]; const cls=x.stale?'down':(x.single_leg?'down':'up');
       return '<span class="'+cls+'">● '+esc(x.age||'?')+'</span>';
     }).join(' / ')||null);
-    if(vd.points_decibel!=null||vd.points_variational!=null){
-      const tot=(vd.points_decibel||0)+(vd.points_variational||0);
+    if(vd.points_decibel!=null&&vd.points_variational!=null){
+      const tot=vd.points_decibel+vd.points_variational;
       setK('vd.points', Number(tot.toFixed(1)).toLocaleString());
       setK('vdk.points', Number(tot.toFixed(1)).toLocaleString());
-      setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
+    } else {
+      setK('vd.points','—');
+      setK('vdk.points','—');
     }
+    setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
     window.__autoCtl=vd.auto||{};
     const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec??999999),0);
     if(vd.auto){
