@@ -6934,11 +6934,21 @@ class PolyLPSMulti:
                         reward_upper = float(ru)
 
                     live_orders = self._market_live_orders.get(tid, [])
+                    active_exit_order_ids = {
+                        str(order_id) for order_id in self._active_exit_orders.values() if order_id
+                    }
                     orders_out = [
                         {
                             "id": str(o.get("id") or o.get("orderID") or ""),
                             "price": float(str(o.get("price", 0) or 0)),
                             "size": float(str(o.get("size", 0) or o.get("original_size", 0) or 0)),
+                            "price_raw": str(o.get("price", 0) or 0),
+                            "size_raw": str(o.get("size", 0) or o.get("original_size", 0) or 0),
+                            "size_matched_raw": str(o.get("size_matched", 0) or 0),
+                            "side": str(o.get("side") or "BUY").lower(),
+                            "status": str(o.get("status") or "open").lower(),
+                            "post_only": True,
+                            "is_exit": self._order_id(o) in active_exit_order_ids,
                         }
                         for o in live_orders
                     ]
@@ -6974,6 +6984,10 @@ class PolyLPSMulti:
                         "reward_lower": reward_lower,
                         "reward_upper": reward_upper,
                         "orders": orders_out,
+                        "desired_plan_sig": self._last_plan_sig.get(tid, ""),
+                        "condition_id": self._market_condition_ids.get(tid, ""),
+                        "paired_token_id": str(mcfg.get("paired_token_id") or ""),
+                        "price_tick": str(mcfg.get("tick") or ""),
                         "last_quote_ts": self.last_quote_ts.get(tid),
                         "status": status,
                         "event_state": event_state,
@@ -7029,6 +7043,8 @@ class PolyLPSMulti:
                 current_session = self._current_session()
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "account_index": self._account_idx,
+                    "account_id": f"pm-account-{self._account_idx or 1}",
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,

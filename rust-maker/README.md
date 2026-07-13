@@ -4,8 +4,8 @@ This workspace is a shared, deterministic core for the two prediction-market
 makers. It is deliberately separate from signing, credentials, HTTP clients,
 and production process control.
 
-Current phase: **dry-run only**. Nothing in this directory can submit or cancel
-a live order.
+Current phase: **read-only shadow / dry-run only**. Nothing in this directory
+or the shadow exporters can submit or cancel a live order.
 
 ## What is shared
 
@@ -84,7 +84,7 @@ the shared model. The Rust core must not weaken or bypass it.
    dry-run/live boundary.
 5. Move one venue/account cohort at a time only after replay and shadow parity.
 
-No production service should be switched to this workspace during phase one.
+No production service should be switched by the current Draft PR.
 
 ## Offline shadow parity
 
@@ -97,3 +97,52 @@ This verifies the shared order-lifecycle contract, not strategy alpha. The next
 step is to export real desired orders and read-only live-order snapshots from
 the existing Python planners into this same JSON contract. Only after offline
 and live shadow parity are stable should execution ownership be reconsidered.
+
+## Read-only Python state export
+
+The exporter converts state files already written by the Python engines. It
+does not start an engine, call an exchange, contact a signer, or mutate the
+source files.
+
+Freshness is conservative. Predict.fun uses the older of the plan and active
+order state timestamps. Polymarket adds the age already recorded for the book
+to the time elapsed since the engine state was written. A stale or unknown
+source can still be inspected, but the risk pass blocks an executable result.
+
+Predict.fun dry-run state:
+
+```bash
+python3 scripts/maker_shadow_export.py \
+  --output data/predictfun_rust_shadow.json \
+  predictfun \
+  --intents data/predictfun_mainnet_desired_orders.json \
+  --actual data/predictfun_mainnet_simulation_state.json \
+  --plans data/predictfun_mainnet_state.json
+
+python3 scripts/maker_shadow_compare.py data/predictfun_rust_shadow.json \
+  --rust-bin rust-maker/target/debug/maker-dry-run
+```
+
+Polymarket account states can be combined so the shared risk pass sees all
+managed accounts at once:
+
+```bash
+python3 scripts/maker_shadow_export.py \
+  --output data/polymarket_rust_shadow.json \
+  polymarket \
+  --state data/engine_state_1.json \
+  --state data/engine_state_2.json
+
+python3 scripts/maker_shadow_compare.py data/polymarket_rust_shadow.json \
+  --rust-bin rust-maker/target/debug/maker-dry-run
+```
+
+Polymarket state now exposes the last successfully synchronized plan signature,
+exact decimal strings, side, condition ID, and whether an order is an exit.
+Exit/manual orders remain unmanaged in the Rust plan and therefore cannot be
+cancelled by the shared reconciler. Older state files without the new plan
+field export no desired orders; restart is not required merely to inspect them,
+but true plan parity starts only after a Python engine writes the new fields.
+
+The first production-shaped, read-only check is recorded in
+`validation/2026-07-13-read-only-shadow.md`.

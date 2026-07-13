@@ -60,17 +60,20 @@
   退出阶梯降价=主人另有想法,暂缓;session-confirm 闭环=暂不做(且 `session.enabled=true` 但
   `confirm_required=false`,闸门实际不拦)。
 
-### Polymarket + Predict.fun 共用 Rust 内核(2026-07-13,第一阶段)
+### Polymarket + Predict.fun 共用 Rust 内核(2026-07-13,只读 shadow 阶段)
 - 仓库内 `rust-maker/` 已加入共用领域模型、确定性订单对账、风险限制、行情新鲜度检查、
   同一标准化 instrument 的跨账号自成交保护，以及两个平台的纯数据适配器。
 - 当前唯一可执行程序是 `maker-dry-run`，只读 JSON 并输出 create/keep/cancel/replace 计划；
   **没有签名、HTTP 写请求或实盘执行能力，不替换现有 Python worker。**
 - 外部/手工订单没有 `managed_slot` 时只报告、不撤单。Polymarket 现有 sibling/cross-side sentinel
   继续负责互补 outcome 语义，Rust 第一阶段不得绕过。
-- 下一步只能先做 Python shadow 对比和历史 replay；达到计划一致性后再单独评审执行接口。
-  详细边界、命令和迁移顺序见 `rust-maker/README.md`。
 - 离线 shadow 不要求原 worker 启动：`scripts/maker_shadow_compare.py` 会把同一 JSON 快照交给
   标准库 Python reference oracle 与 Rust CLI，对比风险结论和订单动作；任何差异都返回非零。
+- `scripts/maker_shadow_export.py` 已能把 Predict.fun 的 intents/simulation/plans 状态，以及一个或
+  多个 Polymarket `engine_state_N.json`，转成同一份只读 Rust 输入。Polymarket 状态新增
+  `desired_plan_sig`、精确价格/数量、side、condition 和 exit 标记，仅用于观测，不改变下单路径。
+- 下一步是积累真实状态快照并记录差异；达到稳定计划一致性后再单独评审执行接口。**当前 Draft PR
+  不启动旧 worker、不切生产、不赋予 Rust 任何实盘权限。**详细命令见 `rust-maker/README.md`。
 
 ### var/decibel(旧系统)现状 —— 主人已决定"该停了,后面新系统接"
 - **它是活的、全自动真钱交易**:`auto_strategy_state` enabled=True/full_auto,周亏 $15/VPS 封顶,
