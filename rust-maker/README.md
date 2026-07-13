@@ -146,3 +146,58 @@ but true plan parity starts only after a Python engine writes the new fields.
 
 The first production-shaped, read-only check is recorded in
 `validation/2026-07-13-read-only-shadow.md`.
+
+## Continuous difference collection
+
+Build the read-only binary once:
+
+```bash
+cd rust-maker
+cargo build --release --package maker-dry-run --bin maker-dry-run
+cd ..
+```
+
+Run one Predict.fun collection pass:
+
+```bash
+python3 scripts/maker_shadow_collect.py \
+  --database data/maker_shadow.sqlite3 \
+  --snapshot-dir data/maker-shadow \
+  --rust-bin rust-maker/target/release/maker-dry-run \
+  predictfun \
+  --intents data/predictfun_mainnet_desired_orders.json \
+  --actual data/predictfun_mainnet_simulation_state.json \
+  --plans data/predictfun_mainnet_state.json
+```
+
+Add `--loop --interval-seconds 15 --run-seconds 86400` before the venue name
+for the initial 24-hour run. Use the equivalent `polymarket --state ...`
+arguments from the export example above for Polymarket.
+
+The collector fingerprints the source-file contents and records only changed
+state bundles. Repeated polls update the heartbeat but do not inflate the
+sample count or parity rate. Every unique normalized snapshot is retained for
+replay under the configured snapshot directory. SQLite records exact parity,
+safety parity, action parity, freshness, errors, and source timestamps.
+
+```bash
+python3 scripts/maker_shadow_report.py \
+  --database data/maker_shadow.sqlite3 \
+  --json-output data/maker_shadow_report.json
+```
+
+The collector does not refresh an engine or create market data. If an upstream
+state writer is stopped, it reports `UNCHANGED` and collects no artificial new
+samples. The Predict.fun dry-run systemd unit uses `maker.runner --once`, which
+adds risk, reconciliation, and simulation-state updates while retaining the
+existing 30-minute timer and `DryRunExecutor`. It does not submit live orders.
+
+The supplied 24-hour collector units deny all IP networking and make the
+repository read-only except for `data/`:
+
+- `deploy/systemd/maker-shadow-predictfun.service`
+- `deploy/systemd/maker-shadow-polymarket.service`
+
+For the fast acceptance pass, review after 24 hours. Safety and action
+mismatches remain zero-tolerance. Any exact-result difference is retained for
+replay and never grants execution authority.

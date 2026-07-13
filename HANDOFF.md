@@ -72,6 +72,11 @@
 - `scripts/maker_shadow_export.py` 已能把 Predict.fun 的 intents/simulation/plans 状态，以及一个或
   多个 Polymarket `engine_state_N.json`，转成同一份只读 Rust 输入。Polymarket 状态新增
   `desired_plan_sig`、精确价格/数量、side、condition 和 exit 标记，仅用于观测，不改变下单路径。
+- `scripts/maker_shadow_collect.py` 只在源状态内容变化时保存样本，并用 SQLite 分别统计安全判断与
+  订单动作差异；`maker_shadow_report.py` 输出长期差异率。两份 systemd 模板强制禁网，初次运行
+  24 小时。采集器本身不会刷新行情或启动旧 worker，上游不更新时只记 heartbeat，不虚增样本。
+- Predict.fun 原 30 分钟 dry-run timer 的 service 模板改为执行 `maker.runner --once`，仍使用
+  `DryRunExecutor`，但会同步更新 risk/reconcile/simulation 状态，供 shadow 判断新鲜订单状态。
 - 下一步是积累真实状态快照并记录差异；达到稳定计划一致性后再单独评审执行接口。**当前 Draft PR
   不启动旧 worker、不切生产、不赋予 Rust 任何实盘权限。**详细命令见 `rust-maker/README.md`。
 
