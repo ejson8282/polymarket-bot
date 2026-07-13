@@ -142,6 +142,12 @@
 .fresh-badge.ok{color:#3fb950}.fresh-badge.warn{color:#d29922}.fresh-badge.danger{color:#f85149;border-color:#f85149}
 .page.nodata .panel{position:relative}
 .page.nodata .panel::after{content:"数据不可达 — 未验证内容已隐藏";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.94);color:#d29922;font-family:var(--mono);font-size:12px;letter-spacing:.06em;border-radius:inherit;z-index:5}
+.obsstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;margin:10px 0 14px;overflow:hidden}
+.obsstat{padding:12px 14px;background:var(--panel2);min-width:0}
+.obsstat+.obsstat{border-left:1px solid var(--line)}
+.obsstat .olabel{font-family:var(--mono);font-size:10px;color:var(--faint);text-transform:uppercase}
+.obsstat .oval{font-family:var(--mono);font-size:15px;font-weight:650;color:var(--text);margin-top:5px;white-space:normal;overflow-wrap:anywhere}
+@media (max-width:900px){.obsstats{grid-template-columns:repeat(2,minmax(0,1fr))}.obsstat:nth-child(3){border-left:0;border-top:1px solid var(--line)}.obsstat:nth-child(4){border-top:1px solid var(--line)}}
 </style>
 </head>
 <body>
@@ -182,6 +188,7 @@
       <div class="row"><span class="k">今日 PnL / 奖励估算</span><span class="v" data-k="pm.pnl">—</span></div>
       <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">—</span></div>
       <div class="row"><span class="k">quotes_sent（新鲜状态）</span><span class="v" data-k="pm.quotes">—</span></div>
+      <div class="row"><span class="k">只读行情 / Rust 对照</span><span class="v" data-k="shadow.home">—</span></div>
     </div>
     <div class="card" onclick="go('pf')">
       <div class="head"><span class="name">Predict.fun 做市</span><span class="chip" data-k="pf.chip">读取中</span></div>
@@ -287,7 +294,7 @@
   </div>
   <div class="subnav">
     <span class="on">账号矩阵(新首屏)</span><span>Markets <em class="feat f-old">现有</em></span><span>Fills <em class="feat f-old">现有</em></span>
-    <span>Scan <em class="feat f-old">现有</em></span><span>Proxy <em class="feat f-old">现有</em></span>
+    <span>Scan <em class="feat f-old">现有</em></span><span>Proxy <em class="feat f-old">现有</em></span><span>只读观察 <em class="feat f-new">新增</em></span>
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">—</div><div class="sub num" data-k="pmk.run_sub">等待实时数据</div></div>
@@ -1259,6 +1266,18 @@
     document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(infraOk?'ok':'warn');});
   }
 
+  function bindShadow(shadow){
+    if(!shadow||!shadow.present){
+      setK('shadow.home','<span style="color:var(--faint)">未启动</span>');
+      return;
+    }
+    const tier=shadow.overall_tier||'warn';
+    const cls=tier==='ok'?'up':(tier==='danger'?'down':'');
+    const pm=(shadow.venues||[]).find(v=>v.venue==='polymarket')||{};
+    const pf=(shadow.venues||[]).find(v=>v.venue==='predictfun')||{};
+    setK('shadow.home','<span class="'+cls+'">● '+esc(shadow.overall_label||'正在观察')+'</span> · PM '+(pm.samples??0)+' / PF '+(pf.samples??0));
+  }
+
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
   // pmbot 操作(已迁移自 /alpha/):引擎启停/急停、账号软暂停、SA paper worker
@@ -1486,7 +1505,27 @@
       }
     } else if(pid==='pm'){
       const pmd=s.pm_detail||{};
-      if(name.indexOf('Fills')>=0||name.indexOf('成交')>=0){
+      if(name.indexOf('只读观察')>=0){
+        const sh=s.maker_shadow||{}, ob=sh.observer||{};
+        const tier=ob.tier==='ok'?'ok':(ob.tier==='danger'?'danger':'warn');
+        const age=ob.last_poll_age==null?'—':_fmtAge(ob.last_poll_age);
+        html+='<div class="src">公共盘口与参考报价计划；不连接 signer，不读取私有挂单，不具备下单或撤单能力。</div>'+
+          '<div class="obsstats">'+
+          '<div class="obsstat"><div class="olabel">公共行情</div><div class="oval"><span class="chip '+tier+'">'+esc(ob.status||'未知')+'</span></div></div>'+
+          '<div class="obsstat"><div class="olabel">最近轮询</div><div class="oval">'+esc(age)+'</div></div>'+
+          '<div class="obsstat"><div class="olabel">盘口</div><div class="oval">'+(ob.ready_markets??0)+' / '+(ob.markets??0)+'</div></div>'+
+          '<div class="obsstat"><div class="olabel">参考计划</div><div class="oval">'+(ob.plans??0)+' 组</div></div></div>'+
+          '<h2 style="font-size:12px">Python / Rust 长期对照</h2>'+
+          _table(['平台','状态','样本','新鲜样本','差异率','安全差异','动作差异','错误','最近轮询'],sh.venues,r=>{
+            const rate=r.difference_rate==null?'—':(Number(r.difference_rate)*100).toFixed(2)+'%';
+            const chip=r.tier==='ok'?'ok':(r.tier==='danger'?'danger':'warn');
+            const poll=r.last_poll_age==null?'—':_fmtAge(r.last_poll_age);
+            return '<tr><td>'+esc(r.label)+'</td><td><span class="chip '+chip+'">'+esc(r.status)+'</span></td><td class="num">'+r.samples+'</td><td class="num">'+r.fresh_samples+'</td><td class="num">'+rate+'</td><td class="num">'+r.safety_mismatches+'</td><td class="num">'+r.action_mismatches+'</td><td class="num">'+r.errors+'</td><td class="num">'+esc(poll)+'</td></tr>';
+          })+
+          '<h2 style="font-size:12px;margin-top:14px">Polymarket 公共盘口与参考计划</h2><div class="src">参考计划只用于比较算法，不代表已提交、待提交或可执行订单。</div>'+
+          _table(['账号','市场','bid','ask','mid','参考买价 x 数量','档位','状态'],sh.markets,r=>
+            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.name)+'</td><td class="num">'+esc(r.bid??'—')+'</td><td class="num">'+esc(r.ask??'—')+'</td><td class="num">'+esc(r.mid??'—')+'</td><td class="num" style="white-space:normal">'+esc(r.reference_plan||'无可用计划')+'</td><td class="num">'+r.plan_levels+'</td><td><span class="chip '+(r.status==='ready'?'ok':'warn')+'">'+esc(r.status==='ready'?'可观察':'无参考计划')+'</span></td></tr>');
+      } else if(name.indexOf('Fills')>=0||name.indexOf('成交')>=0){
         html+='<div class="src">各账号成交流(engine_state fills)</div>'+
           _table(['账号','时间','市场','方向','价格','数量','PnL'],pmd.fills,r=>
             '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.t)+'</td><td class="num">'+esc(r.market||'—')+'</td><td class="num">'+esc(r.side||'—')+'</td><td class="num">'+(r.price??'—')+'</td><td class="num">'+(r.size??'—')+'</td><td class="num">'+(r.pnl!=null?pnlSpan(r.pnl):'—')+'</td></tr>');
@@ -1518,7 +1557,7 @@
     }
   }
   function bindMasks(s){
-    const nd={'page-pm':!(s.polymarket||{}).present,
+    const nd={'page-pm':!((s.polymarket||{}).present||((s.maker_shadow||{}).observer||{}).present),
               'page-vardec':!Object.keys(((s.var_decibel||{}).hosts)||{}).length,
               'page-pf':!(s.predictfun||{}).present,
               'page-sa':!(s.single_account||{}).present,
@@ -1541,6 +1580,7 @@
     try{bindIPO(s.ipo||{});}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
+    try{bindShadow(s.maker_shadow||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>{

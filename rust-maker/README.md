@@ -192,11 +192,36 @@ samples. The Predict.fun dry-run systemd unit uses `maker.runner --once`, which
 adds risk, reconciliation, and simulation-state updates while retaining the
 existing 30-minute timer and `DryRunExecutor`. It does not submit live orders.
 
+Polymarket has a separate public-book observer, so its shadow samples do not
+depend on a live-money engine being started:
+
+```bash
+python3 -m platforms.polymarket.maker.read_only_observer \
+  --config platforms/polymarket/maker/config_1.json \
+  --config platforms/polymarket/maker/config_2.json \
+  --output-dir data --once
+```
+
+The observer selects only public market/planner fields from each config,
+fetches unauthenticated CLOB books, and writes sanitized
+`polymarket_observer_state_N.json` files. It never imports the live engine,
+contacts a signer, reads private orders, or has an order/cancel path. Its quote
+grid is explicitly a `reference_only` plan: price levels mirror the mechanical
+planner subset, while size is only the configured quote size and is not a claim
+about a balance-aware executable order. Repeated identical books update the
+observer heartbeat without rewriting source state or inflating samples.
+
 The supplied 24-hour collector units deny all IP networking and make the
 repository read-only except for `data/`:
 
+- `deploy/systemd/polymarket-readonly-observer.service` (public GET only)
 - `deploy/systemd/maker-shadow-predictfun.service`
 - `deploy/systemd/maker-shadow-polymarket.service`
+
+The unified console shows one compact observer status on Home. Polymarket's
+`只读观察` subview contains public bid/ask, reference plans, sample counts, and
+Python/Rust safety/action difference rates; it never presents those plans as
+submitted orders.
 
 For the fast acceptance pass, review after 24 hours. Safety and action
 mismatches remain zero-tolerance. Any exact-result difference is retained for

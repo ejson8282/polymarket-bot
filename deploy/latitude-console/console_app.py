@@ -814,6 +814,165 @@ def _pm_detail() -> Dict[str, Any]:
     return {"present": bool(markets or fills), "markets": markets[:40], "fills": fills[:30]}
 
 
+def _maker_shadow() -> Dict[str, Any]:
+    """Public observer health plus long-running Python/Rust parity metrics."""
+    database = DATA_DIR / "maker_shadow.sqlite3"
+    observer = _read_json(DATA_DIR / "polymarket_observer_status.json") or {}
+    rows_by_venue: Dict[str, dict] = {}
+    status_by_venue: Dict[str, dict] = {}
+    errors_by_venue: Dict[str, int] = {}
+
+    if database.exists():
+        try:
+            with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    """
+                    SELECT venue, COUNT(*) AS samples, SUM(fresh) AS fresh_samples,
+                           SUM(CASE WHEN matched = 0 THEN 1 ELSE 0 END) AS mismatches,
+                           SUM(CASE WHEN safety_matched = 0 THEN 1 ELSE 0 END) AS safety_mismatches,
+                           SUM(CASE WHEN actions_matched = 0 THEN 1 ELSE 0 END) AS action_mismatches,
+                           SUM(CASE WHEN fresh = 1 AND matched = 0 THEN 1 ELSE 0 END) AS fresh_mismatches,
+                           MIN(observed_at) AS first_observed_at,
+                           MAX(observed_at) AS last_observed_at
+                    FROM shadow_samples GROUP BY venue ORDER BY venue
+                    """
+                ).fetchall()
+                statuses = connection.execute(
+                    """
+                    SELECT venue, last_poll_at, last_new_state_at, last_error
+                    FROM shadow_collector_status ORDER BY venue
+                    """
+                ).fetchall()
+                error_rows = connection.execute(
+                    "SELECT venue, COUNT(*) AS errors FROM shadow_errors GROUP BY venue"
+                ).fetchall()
+            rows_by_venue = {str(row["venue"]): dict(row) for row in rows}
+            status_by_venue = {str(row["venue"]): dict(row) for row in statuses}
+            errors_by_venue = {
+                str(row["venue"]): int(row["errors"] or 0) for row in error_rows
+            }
+        except (OSError, sqlite3.Error):
+            rows_by_venue = {}
+            status_by_venue = {}
+            errors_by_venue = {}
+
+    venues = []
+    for venue in ("polymarket", "predictfun"):
+        row = rows_by_venue.get(venue, {})
+        status = status_by_venue.get(venue, {})
+        samples = int(row.get("samples") or 0)
+        fresh_samples = int(row.get("fresh_samples") or 0)
+        mismatches = int(row.get("mismatches") or 0)
+        fresh_mismatches = int(row.get("fresh_mismatches") or 0)
+        safety_mismatches = int(row.get("safety_mismatches") or 0)
+        action_mismatches = int(row.get("action_mismatches") or 0)
+        poll_age = _iso_age(status.get("last_poll_at"))
+        last_error = str(status.get("last_error") or "")
+        if safety_mismatches or last_error or (poll_age is not None and poll_age > 120):
+            tier, label = "danger", "需要检查"
+        elif action_mismatches or fresh_mismatches or (poll_age is not None and poll_age > 45):
+            tier, label = "warn", "存在差异"
+        elif samples and fresh_samples:
+            tier, label = "ok", "一致"
+        else:
+            tier, label = "warn", "等待样本"
+        venues.append({
+            "venue": venue,
+            "label": "Polymarket" if venue == "polymarket" else "Predict.fun",
+            "tier": tier,
+            "status": label,
+            "samples": samples,
+            "fresh_samples": fresh_samples,
+            "mismatches": mismatches,
+            "difference_rate": (mismatches / samples) if samples else None,
+            "fresh_difference_rate": (fresh_mismatches / fresh_samples) if fresh_samples else None,
+            "safety_mismatches": safety_mismatches,
+            "action_mismatches": action_mismatches,
+            "errors": errors_by_venue.get(venue, 0),
+            "last_error": last_error[:200],
+            "last_poll_at": status.get("last_poll_at"),
+            "last_poll_age": poll_age,
+            "last_new_state_at": status.get("last_new_state_at"),
+            "last_observed_at": row.get("last_observed_at"),
+        })
+
+    observer_age = _iso_age(observer.get("last_poll_at"))
+    observer_summary = observer.get("summary") if isinstance(observer.get("summary"), dict) else {}
+    observer_present = bool(observer)
+    observer_errors = int(observer_summary.get("errors") or 0)
+    configured_markets = int(observer_summary.get("markets") or 0)
+    ready_markets = int(observer_summary.get("ready_markets") or 0)
+    if not observer_present or observer_age is None or observer_age > 120 or configured_markets <= 0 or not ready_markets:
+        observer_tier, observer_label = "danger", "公共行情不可用"
+    elif observer_errors or observer_age > 45 or ready_markets < configured_markets:
+        observer_tier, observer_label = "warn", "部分行情异常"
+    else:
+        observer_tier, observer_label = "ok", "公共行情正常"
+
+    markets = []
+    for path in sorted(DATA_DIR.glob("polymarket_observer_state_*.json")):
+        state = _read_json(path)
+        if not isinstance(state, dict):
+            continue
+        account = int(state.get("account_index") or 0)
+        state_age = _iso_age(state.get("ts"))
+        state_markets = state.get("markets") if isinstance(state.get("markets"), dict) else {}
+        for token_id, market in state_markets.items():
+            if not isinstance(market, dict):
+                continue
+            plan = market.get("reference_plan") if isinstance(market.get("reference_plan"), list) else []
+            plan_text = " / ".join(
+                f"{item.get('price')} x {item.get('quantity')}"
+                for item in plan if isinstance(item, dict)
+            )
+            token_text = str(token_id)
+            if len(token_text) > 18:
+                token_text = f"{token_text[:8]}...{token_text[-6:]}"
+            markets.append({
+                "account": account,
+                "token": token_text,
+                "name": str(market.get("display_name") or token_text),
+                "bid": market.get("best_bid"),
+                "ask": market.get("best_ask"),
+                "mid": market.get("mid"),
+                "reference_plan": plan_text,
+                "plan_levels": len(plan),
+                "status": market.get("status") or "unknown",
+                "state_age": state_age,
+                "state_at": state.get("ts"),
+                "actual_orders_available": False,
+            })
+
+    tiers = [observer_tier] + [row["tier"] for row in venues]
+    if "danger" in tiers:
+        overall_tier, overall_label = "danger", "需要检查"
+    elif "warn" in tiers:
+        overall_tier, overall_label = "warn", "正在采样"
+    else:
+        overall_tier, overall_label = "ok", "观察正常"
+    return {
+        "present": observer_present or database.exists(),
+        "mode": "read_only",
+        "overall_tier": overall_tier,
+        "overall_label": overall_label,
+        "observer": {
+            "present": observer_present,
+            "tier": observer_tier,
+            "status": observer_label,
+            "last_poll_at": observer.get("last_poll_at"),
+            "last_poll_age": observer_age,
+            "accounts": int(observer_summary.get("accounts") or 0),
+            "markets": configured_markets,
+            "ready_markets": ready_markets,
+            "plans": int(observer_summary.get("plans") or 0),
+            "errors": observer_errors,
+        },
+        "venues": venues,
+        "markets": markets[:60],
+    }
+
+
 # ---------- 跨机只读拉取(带缓存,拉不到显示离线不阻塞) ----------
 
 _HTTP_CACHE: Dict[str, tuple] = {}
@@ -1305,6 +1464,7 @@ def api_state() -> JSONResponse:
         "pf_intents": _pf_intents(),
         "varia_detail": _varia_detail(),
         "pm_detail": _pm_detail(),
+        "maker_shadow": _maker_shadow(),
         "macmini": mm,
         "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),

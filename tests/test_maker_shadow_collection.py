@@ -28,6 +28,24 @@ class MakerShadowCollectionTests(unittest.TestCase):
             self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
             self.assertIn("--run-seconds 86400", unit)
 
+    def test_polymarket_public_observer_is_separate_from_network_denied_collector(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        observer = (
+            root / "deploy" / "systemd" / "polymarket-readonly-observer.service"
+        ).read_text(encoding="utf-8")
+        collector = (
+            root / "deploy" / "systemd" / "maker-shadow-polymarket.service"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("read_only_observer", observer)
+        self.assertIn("config_1.json", observer)
+        self.assertIn("config_2.json", observer)
+        self.assertNotIn("signer", observer.lower())
+        self.assertNotIn("IPAddressDeny=any", observer)
+        self.assertIn("polymarket_observer_state_1.json", collector)
+        self.assertIn("polymarket_observer_state_2.json", collector)
+        self.assertNotIn("data/engine_state_1.json", collector)
+
     def test_predictfun_timer_runs_the_dry_simulation_runner(self) -> None:
         root = Path(__file__).resolve().parents[1]
         unit = (

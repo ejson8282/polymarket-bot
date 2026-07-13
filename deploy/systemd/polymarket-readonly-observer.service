@@ -1,0 +1,26 @@
+[Unit]
+Description=Polymarket public-book read-only observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python -m platforms.polymarket.maker.read_only_observer --config platforms/polymarket/maker/config_1.json --config platforms/polymarket/maker/config_2.json --output-dir data --interval-seconds 15
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/polymarket-bot/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=append:/home/ubuntu/polymarket-bot/data/polymarket-readonly-observer.log
+StandardError=append:/home/ubuntu/polymarket-bot/data/polymarket-readonly-observer.log
+
+[Install]
+WantedBy=multi-user.target

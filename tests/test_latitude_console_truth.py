@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -248,3 +249,117 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "四源权益不完整" in html
     assert "四源交易量不完整" in html
     assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
+
+
+def _shadow_database(path: Path, *, safety_matched: int = 1, actions_matched: int = 1) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE shadow_samples (
+                id INTEGER PRIMARY KEY, observed_at TEXT, venue TEXT,
+                source_fingerprint TEXT, source_timestamps_json TEXT,
+                desired_orders INTEGER, actual_orders INTEGER, books INTEGER,
+                fresh INTEGER, matched INTEGER, safety_matched INTEGER,
+                actions_matched INTEGER, python_can_execute INTEGER,
+                rust_can_execute INTEGER, snapshot_path TEXT,
+                python_result_json TEXT, rust_result_json TEXT
+            );
+            CREATE TABLE shadow_collector_status (
+                venue TEXT PRIMARY KEY, last_poll_at TEXT,
+                last_new_state_at TEXT, last_fingerprint TEXT, last_error TEXT
+            );
+            CREATE TABLE shadow_errors (
+                id INTEGER PRIMARY KEY, observed_at TEXT, venue TEXT, error TEXT
+            );
+            """
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        for venue in ("polymarket", "predictfun"):
+            matched = int(bool(safety_matched and actions_matched))
+            connection.execute(
+                """
+                INSERT INTO shadow_samples VALUES
+                (NULL, ?, ?, 'fingerprint', '{}', 1, 0, 1, 1, ?, ?, ?, 1, 1, 'snapshot', '{}', '{}')
+                """,
+                (now, venue, matched, safety_matched, actions_matched),
+            )
+            connection.execute(
+                "INSERT INTO shadow_collector_status VALUES (?, ?, ?, 'fingerprint', '')",
+                (venue, now, now),
+            )
+
+
+def _observer_files(path: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        path / "polymarket_observer_status.json",
+        {
+            "last_poll_at": now,
+            "healthy": True,
+            "summary": {"accounts": 2, "markets": 2, "ready_markets": 2, "plans": 2, "errors": 0},
+        },
+    )
+    _write_json(
+        path / "polymarket_observer_state_1.json",
+        {
+            "ts": now,
+            "account_index": 1,
+            "markets": {
+                "very-long-public-token-identifier": {
+                    "display_name": "World Cup market",
+                    "best_bid": "0.48",
+                    "best_ask": "0.52",
+                    "mid": "0.5",
+                    "reference_plan": [{"price": "0.47", "quantity": "20"}],
+                    "status": "ready",
+                }
+            },
+        },
+    )
+
+
+def test_maker_shadow_is_unknown_without_observer_or_database(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "DATA_DIR", tmp_path)
+
+    result = console._maker_shadow()
+
+    assert result["present"] is False
+    assert result["overall_tier"] == "danger"
+    assert result["observer"]["status"] == "公共行情不可用"
+
+
+def test_maker_shadow_reports_fresh_public_books_and_matching_core(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "DATA_DIR", tmp_path)
+    _observer_files(tmp_path)
+    _shadow_database(tmp_path / "maker_shadow.sqlite3")
+
+    result = console._maker_shadow()
+
+    assert result["present"] is True
+    assert result["overall_tier"] == "ok"
+    assert result["observer"]["ready_markets"] == 2
+    assert [row["tier"] for row in result["venues"]] == ["ok", "ok"]
+    assert result["markets"][0]["reference_plan"] == "0.47 x 20"
+    assert result["markets"][0]["actual_orders_available"] is False
+
+
+def test_maker_shadow_escalates_safety_differences(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "DATA_DIR", tmp_path)
+    _observer_files(tmp_path)
+    _shadow_database(tmp_path / "maker_shadow.sqlite3", safety_matched=0)
+
+    result = console._maker_shadow()
+
+    assert result["overall_tier"] == "danger"
+    assert all(row["safety_mismatches"] == 1 for row in result["venues"])
+    assert all(row["tier"] == "danger" for row in result["venues"])
+
+
+def test_console_contains_compact_shadow_status_and_native_observer_view() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'data-k="shadow.home"' in html
+    assert "只读观察" in html
+    assert "公共盘口与参考报价计划" in html
+    assert "不连接 signer" in html
+    assert "polymarket_observer_state_1.json" not in html

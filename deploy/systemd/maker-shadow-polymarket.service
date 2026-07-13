@@ -1,13 +1,15 @@
 [Unit]
 Description=Polymarket Python/Rust read-only shadow collector
-After=local-fs.target
+After=local-fs.target polymarket-readonly-observer.service
+Wants=polymarket-readonly-observer.service
 
 [Service]
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/polymarket-bot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python scripts/maker_shadow_collect.py --database data/maker_shadow.sqlite3 --snapshot-dir data/maker-shadow --rust-bin rust-maker/target/release/maker-dry-run --interval-seconds 15 --loop --run-seconds 86400 polymarket --state data/engine_state_1.json --state data/engine_state_2.json
+ExecStartPre=/bin/sh -c 'n=0; while [ "$n" -lt 30 ]; do test -s data/polymarket_observer_state_1.json && test -s data/polymarket_observer_state_2.json && exit 0; n=$((n+1)); sleep 1; done; exit 1'
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python scripts/maker_shadow_collect.py --database data/maker_shadow.sqlite3 --snapshot-dir data/maker-shadow --rust-bin rust-maker/target/release/maker-dry-run --interval-seconds 15 --loop --run-seconds 86400 polymarket --state data/polymarket_observer_state_1.json --state data/polymarket_observer_state_2.json
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=15

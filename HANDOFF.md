@@ -75,6 +75,10 @@
 - `scripts/maker_shadow_collect.py` 只在源状态内容变化时保存样本，并用 SQLite 分别统计安全判断与
   订单动作差异；`maker_shadow_report.py` 输出长期差异率。两份 systemd 模板强制禁网，初次运行
   24 小时。采集器本身不会刷新行情或启动旧 worker，上游不更新时只记 heartbeat，不虚增样本。
+- Polymarket 新增独立公共行情观察器 `platforms/polymarket/maker/read_only_observer.py`，不导入 live
+  engine、不接 signer、不读私有挂单，只读取公开 CLOB 盘口并生成明确标记为 `reference_only` 的
+  参考计划。生产服务模板为 `polymarket-readonly-observer.service`；其脱敏状态供禁网 collector 和
+  统一控制台 Polymarket→“只读观察”页消费。参考计划不是已提交或可执行订单。
 - Predict.fun 原 30 分钟 dry-run timer 的 service 模板改为执行 `maker.runner --once`，仍使用
   `DryRunExecutor`，但会同步更新 risk/reconcile/simulation 状态，供 shadow 判断新鲜订单状态。
 - 下一步是积累真实状态快照并记录差异；达到稳定计划一致性后再单独评审执行接口。**当前 Draft PR
