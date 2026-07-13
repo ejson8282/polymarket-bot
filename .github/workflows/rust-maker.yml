@@ -58,6 +58,15 @@ jobs:
       - run: cargo test --workspace
       - name: Build shadow comparison binary
         run: cargo build --package maker-dry-run --bin maker-dry-run
+      - name: Build Linux release binary
+        run: cargo build --release --locked --package maker-dry-run --bin maker-dry-run
+      - name: Upload Linux release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: maker-dry-run-linux-x86_64
+          path: rust-maker/target/release/maker-dry-run
+          if-no-files-found: error
+          retention-days: 7
       - name: Test Python shadow tooling
         working-directory: .
         run: |
