@@ -1,0 +1,61 @@
+{
+  "desired": [
+    {
+      "slot_id": "pf-a:42:yes:buy:l0",
+      "account_id": "pf-account-a",
+      "strategy_id": "two-sided-maker",
+      "venue": "predict_fun",
+      "instrument": {
+        "market_id": "42",
+        "outcome_id": "YES"
+      },
+      "side": "buy",
+      "price": "0.61",
+      "quantity": "20",
+      "post_only": true,
+      "reduce_only": false
+    },
+    {
+      "slot_id": "pf-b:42:yes:sell:l0",
+      "account_id": "pf-account-b",
+      "strategy_id": "two-sided-maker",
+      "venue": "predict_fun",
+      "instrument": {
+        "market_id": "42",
+        "outcome_id": "YES"
+      },
+      "side": "sell",
+      "price": "0.60",
+      "quantity": "20",
+      "post_only": true,
+      "reduce_only": false
+    }
+  ],
+  "actual": [],
+  "books": [
+    {
+      "venue": "predict_fun",
+      "instrument": {
+        "market_id": "42",
+        "outcome_id": "YES"
+      },
+      "age_ms": 100
+    }
+  ],
+  "risk_limits": {
+    "min_price": "0.01",
+    "max_price": "0.99",
+    "max_quantity": "1000",
+    "max_order_notional": "250",
+    "max_account_notional": "1000",
+    "max_account_market_notional": "500",
+    "max_open_orders_per_account": 20,
+    "max_book_age_ms": 2000,
+    "require_book_age": true
+  },
+  "reconcile_policy": {
+    "price_epsilon": "0",
+    "quantity_epsilon": "0"
+  }
+}
+

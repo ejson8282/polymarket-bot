@@ -1,0 +1,26 @@
+[Unit]
+Description=Polymarket Python/Rust read-only shadow collector
+After=local-fs.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python scripts/maker_shadow_collect.py --database data/maker_shadow.sqlite3 --snapshot-dir data/maker-shadow --rust-bin rust-maker/target/release/maker-dry-run --interval-seconds 15 --loop --run-seconds 86400 polymarket --state data/engine_state_1.json --state data/engine_state_2.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/polymarket-bot/data
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+StandardOutput=append:/home/ubuntu/polymarket-bot/data/maker-shadow-polymarket.log
+StandardError=append:/home/ubuntu/polymarket-bot/data/maker-shadow-polymarket.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "bins/maker-dry-run",
+    "crates/maker-core",
+    "crates/maker-domain",
+    "crates/maker-risk",
+    "crates/venue-polymarket",
+    "crates/venue-predictfun",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+version = "0.1.0"
+
+[workspace.dependencies]
+maker-core = { path = "crates/maker-core" }
+maker-domain = { path = "crates/maker-domain" }
+maker-risk = { path = "crates/maker-risk" }
+rust_decimal = { version = "1.36", features = ["serde-with-str"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+

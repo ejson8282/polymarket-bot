@@ -1,0 +1,66 @@
+name: Rust maker core
+
+on:
+  pull_request:
+    paths:
+      - "rust-maker/**"
+      - "core/maker_shadow_export.py"
+      - "core/maker_shadow_collection.py"
+      - "core/maker_shadow_compare.py"
+      - "core/maker_shadow_reference.py"
+      - "scripts/maker_shadow_collect.py"
+      - "scripts/maker_shadow_export.py"
+      - "scripts/maker_shadow_compare.py"
+      - "scripts/maker_shadow_report.py"
+      - "tests/test_maker_shadow_collection.py"
+      - "tests/test_maker_shadow_export.py"
+      - "tests/test_maker_shadow_reference.py"
+      - "deploy/systemd/maker-shadow-*.service"
+      - "deploy/systemd/predictfun-dryrun.service"
+      - "platforms/polymarket/maker/engine.py"
+      - ".github/workflows/rust-maker.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rust-maker/**"
+      - "core/maker_shadow_export.py"
+      - "core/maker_shadow_collection.py"
+      - "core/maker_shadow_compare.py"
+      - "core/maker_shadow_reference.py"
+      - "scripts/maker_shadow_collect.py"
+      - "scripts/maker_shadow_export.py"
+      - "scripts/maker_shadow_compare.py"
+      - "scripts/maker_shadow_report.py"
+      - "tests/test_maker_shadow_collection.py"
+      - "tests/test_maker_shadow_export.py"
+      - "tests/test_maker_shadow_reference.py"
+      - "deploy/systemd/maker-shadow-*.service"
+      - "deploy/systemd/predictfun-dryrun.service"
+      - "platforms/polymarket/maker/engine.py"
+      - ".github/workflows/rust-maker.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust-maker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Build shadow comparison binary
+        run: cargo build --package maker-dry-run --bin maker-dry-run
+      - name: Test Python shadow tooling
+        working-directory: .
+        run: |
+          python3 -m unittest tests.test_maker_shadow_reference tests.test_maker_shadow_export tests.test_maker_shadow_collection
+          python3 -m platforms.predictfun.maker.selftest >/dev/null
+      - run: python3 ../scripts/maker_shadow_compare.py fixtures --rust-bin target/debug/maker-dry-run
