@@ -1,0 +1,105 @@
+{
+  "desired": [
+    {
+      "slot_id": "pm-account-1:condition-1:yes:buy:l0",
+      "account_id": "pm-account-1",
+      "strategy_id": "two-sided-maker",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.48",
+      "quantity": "25",
+      "post_only": true,
+      "reduce_only": false
+    },
+    {
+      "slot_id": "pf-account-1:42:yes:sell:l0",
+      "account_id": "pf-account-1",
+      "strategy_id": "two-sided-maker",
+      "venue": "predict_fun",
+      "instrument": {
+        "market_id": "42",
+        "outcome_id": "YES"
+      },
+      "side": "sell",
+      "price": "0.62",
+      "quantity": "20",
+      "post_only": true,
+      "reduce_only": false
+    }
+  ],
+  "actual": [
+    {
+      "order_id": "pm-live-1",
+      "managed_slot": "pm-account-1:condition-1:yes:buy:l0",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.47",
+      "quantity": "25",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    },
+    {
+      "order_id": "external-order",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-2",
+        "outcome_id": "NO",
+        "token_id": "token-no"
+      },
+      "side": "sell",
+      "price": "0.71",
+      "quantity": "5",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    }
+  ],
+  "books": [
+    {
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "age_ms": 180
+    },
+    {
+      "venue": "predict_fun",
+      "instrument": {
+        "market_id": "42",
+        "outcome_id": "YES"
+      },
+      "age_ms": 240
+    }
+  ],
+  "risk_limits": {
+    "min_price": "0.01",
+    "max_price": "0.99",
+    "max_quantity": "1000",
+    "max_order_notional": "250",
+    "max_account_notional": "1000",
+    "max_account_market_notional": "500",
+    "max_open_orders_per_account": 20,
+    "max_book_age_ms": 2000,
+    "require_book_age": true
+  },
+  "reconcile_policy": {
+    "price_epsilon": "0",
+    "quantity_epsilon": "0"
+  }
+}
+

@@ -1,0 +1,11 @@
+[package]
+name = "maker-domain"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+rust_decimal.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+

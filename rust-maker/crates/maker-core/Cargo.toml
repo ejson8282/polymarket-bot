@@ -1,0 +1,12 @@
+[package]
+name = "maker-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+maker-domain.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+

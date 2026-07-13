@@ -52,3 +52,6 @@ platforms/polymarket/maker/engine.py.preSigterm
 platforms/polymarket/maker/remote_signer.py.preBumppool
 platforms/polymarket/maker/remote_signer.py.preTimeout
 .git.openclaw-bad-20260608143122/
+
+# Rust maker workspace
+rust-maker/target/

@@ -1,0 +1,13 @@
+[package]
+name = "maker-dry-run"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+maker-core.workspace = true
+maker-domain.workspace = true
+maker-risk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+

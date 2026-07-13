@@ -14,6 +14,14 @@
 | Research Data | Home 只读卡片 | 预留为数据采集、回测、报告入口 |
 | HK/US Accounts | Home 只读卡片 | 预留为港股/美股账户管理入口 |
 
+## Polymarket + Predict.fun 共用 Rust 内核
+
+`rust-maker/` 是第一阶段的共用做市内核：统一订单模型、确定性对账、
+风险限制、行情过期检查和跨账号自成交保护。当前 CLI 仅生成 dry-run
+计划，不能签名、下单或撤单，也不会替换现有 Python 生产服务。
+
+架构边界、测试命令和迁移步骤见 [`rust-maker/README.md`](rust-maker/README.md)。
+
 ## 安全边界
 
 1. Dashboard 先做只读聚合和清晰入口，不迁移私钥，不把 key 写入 git、日志、聊天或页面。
