@@ -69,6 +69,8 @@
   继续负责互补 outcome 语义，Rust 第一阶段不得绕过。
 - 下一步只能先做 Python shadow 对比和历史 replay；达到计划一致性后再单独评审执行接口。
   详细边界、命令和迁移顺序见 `rust-maker/README.md`。
+- 离线 shadow 不要求原 worker 启动：`scripts/maker_shadow_compare.py` 会把同一 JSON 快照交给
+  标准库 Python reference oracle 与 Rust CLI，对比风险结论和订单动作；任何差异都返回非零。
 
 ### var/decibel(旧系统)现状 —— 主人已决定"该停了,后面新系统接"
 - **它是活的、全自动真钱交易**:`auto_strategy_state` enabled=True/full_auto,周亏 $15/VPS 封顶,

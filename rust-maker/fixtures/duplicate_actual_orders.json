@@ -1,0 +1,116 @@
+{
+  "desired": [
+    {
+      "slot_id": "pm-account-1:condition-1:yes:buy:l0",
+      "account_id": "pm-account-1",
+      "strategy_id": "layered-maker",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.48",
+      "quantity": "10",
+      "post_only": true,
+      "reduce_only": false
+    }
+  ],
+  "actual": [
+    {
+      "order_id": "managed-primary",
+      "managed_slot": "pm-account-1:condition-1:yes:buy:l0",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.475",
+      "quantity": "10.05",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    },
+    {
+      "order_id": "managed-duplicate",
+      "managed_slot": "pm-account-1:condition-1:yes:buy:l0",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.46",
+      "quantity": "10",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    },
+    {
+      "order_id": "managed-old-slot",
+      "managed_slot": "pm-account-1:condition-1:yes:buy:l1",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "buy",
+      "price": "0.44",
+      "quantity": "5",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    },
+    {
+      "order_id": "manual-order",
+      "account_id": "pm-account-1",
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "side": "sell",
+      "price": "0.70",
+      "quantity": "3",
+      "filled_quantity": "0",
+      "status": "open",
+      "post_only": true
+    }
+  ],
+  "books": [
+    {
+      "venue": "polymarket",
+      "instrument": {
+        "market_id": "condition-1",
+        "outcome_id": "YES",
+        "token_id": "token-yes"
+      },
+      "age_ms": 120
+    }
+  ],
+  "risk_limits": {
+    "min_price": "0.01",
+    "max_price": "0.99",
+    "max_quantity": "1000",
+    "max_order_notional": "250",
+    "max_account_notional": "1000",
+    "max_account_market_notional": "500",
+    "max_open_orders_per_account": 20,
+    "max_book_age_ms": 2000,
+    "require_book_age": true
+  },
+  "reconcile_policy": {
+    "price_epsilon": "0.01",
+    "quantity_epsilon": "0.10"
+  }
+}
+

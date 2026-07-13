@@ -47,6 +47,9 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p maker-dry-run -- fixtures/shared_plan.json
+python3 ../scripts/maker_shadow_compare.py fixtures \
+  --rust-bin target/debug/maker-dry-run \
+  --report ../data/maker_shadow_report.json
 ```
 
 The fixture should produce a risk-approved plan that:
@@ -82,3 +85,15 @@ the shared model. The Rust core must not weaken or bypass it.
 5. Move one venue/account cohort at a time only after replay and shadow parity.
 
 No production service should be switched to this workspace during phase one.
+
+## Offline shadow parity
+
+`scripts/maker_shadow_compare.py` does not require either production engine to
+be running. It feeds each fixture to a standard-library Python reference oracle
+and the Rust binary, then compares normalized risk decisions and order actions.
+The command exits non-zero when any case differs.
+
+This verifies the shared order-lifecycle contract, not strategy alpha. The next
+step is to export real desired orders and read-only live-order snapshots from
+the existing Python planners into this same JSON contract. Only after offline
+and live shadow parity are stable should execution ownership be reconsidered.

@@ -4,11 +4,17 @@ on:
   pull_request:
     paths:
       - "rust-maker/**"
+      - "core/maker_shadow_reference.py"
+      - "scripts/maker_shadow_compare.py"
+      - "tests/test_maker_shadow_reference.py"
       - ".github/workflows/rust-maker.yml"
   push:
     branches: [main]
     paths:
       - "rust-maker/**"
+      - "core/maker_shadow_reference.py"
+      - "scripts/maker_shadow_compare.py"
+      - "tests/test_maker_shadow_reference.py"
       - ".github/workflows/rust-maker.yml"
 
 permissions:
@@ -28,3 +34,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Test Python reference oracle
+        working-directory: .
+        run: python3 -m unittest tests.test_maker_shadow_reference
+      - run: python3 ../scripts/maker_shadow_compare.py fixtures --rust-bin target/debug/maker-dry-run
