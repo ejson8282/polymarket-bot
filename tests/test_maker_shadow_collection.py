@@ -44,6 +44,7 @@ class MakerShadowCollectionTests(unittest.TestCase):
         self.assertNotIn("IPAddressDeny=any", observer)
         self.assertIn("polymarket_observer_state_1.json", collector)
         self.assertIn("polymarket_observer_state_2.json", collector)
+        self.assertIn("--interval-seconds 2", collector)
         self.assertNotIn("data/engine_state_1.json", collector)
 
     def test_predictfun_timer_runs_the_dry_simulation_runner(self) -> None:
