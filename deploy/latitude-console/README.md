@@ -9,8 +9,13 @@
 - `console.html` — 模板本体(6 页:总览/Var·Decibel/Polymarket/Predict.fun/Single Account/打新)。
   关键数值带 `data-k` 钩子,前端每 15s 拉 `/api/state` 覆盖真数据;无真数据或数据过期时
   显示“未知/待核验”,绝不保留模板示例值。
-- `console_app.py` — FastAPI:`/` 返回 console.html;`/api/state` 只读现有状态文件/库返回 JSON。
-读取与呈现路径保持只读。受控写端点另受 `LATITUDE_ENABLE_WRITES` 总闸和审计日志约束。
+- `console_app.py` — FastAPI:`/` 返回 console.html;`/api/state` 读取现有状态文件/库。
+  Var/Decibel 原生操作端点复用既有 `dashboard_jobs` 安全队列，不读取或迁移私钥。
+- `varia-decibel-manual-job.service` — 一次性人工任务 worker；每次只消费一条已提交任务，
+  完成即退出，不恢复旧自动化循环。
+
+所有受控写端点受 `LATITUDE_ENABLE_WRITES` 总闸和审计日志约束。真实 Var/Decibel
+开仓和平仓仅允许 Tailscale 内网入口；公网反代保持只读。
 
 ## 真实性规则
 
@@ -41,9 +46,18 @@ location / {
 }
 ```
 
-现有 Streamlit 页保留为**二级详情页**(模板 subnav 指向):`/varia/`→8503、
-pmbot 引擎控制页仍可从 `/legacy/`(或保留 8501 某路径)进入。**本次不动 Streamlit,
-只加一个新入口;确认控制台无误后再切 nginx 的 `/`,可随时切回。**
+Var/Decibel 的仓位、报价、开仓参数、止盈止损、开仓、一键平仓和后台任务结果均在
+统一站点内原生呈现，不使用 iframe，也不跳转旧 Streamlit 页面。旧 8503 服务可在迁移
+验收期保留为内部诊断工具，但不再是用户操作入口。
+
+安装一次性 worker：
+
+```bash
+sudo install -m 0644 deploy/latitude-console/varia-decibel-manual-job.service \
+  /etc/systemd/system/varia-decibel-manual-job.service
+sudo systemctl daemon-reload
+# 不 enable；由控制台每次提交人工任务时 start，执行一条后自动退出。
+```
 
 ## 数据接入进度(有真数据先接,其余占位)
 

@@ -257,11 +257,110 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
         assert duplicate_tab not in html
     assert "进入 Var/Decibel 操作面板" not in html
     assert "window.open('/varia/'" not in html
-    assert 'src="/varia/?embed=true"' in html
-    assert 'title="Var / Decibel 仓位控制"' in html
-    assert "操作区已连接" in html
+    assert 'src="/varia/?embed=true"' not in html
+    assert "operation-frame" not in html
+    assert 'id="vdctl-host"' in html
+    assert 'id="vdctl-symbol"' in html
+    assert 'id="vdctl-open"' in html
+    assert 'id="vdctl-close"' in html
+    assert "/api/varia/control/open" in html
+    assert "/api/varia/control/close-all" in html
+    assert "原生操作区" in html
     assert "人工开仓与真实 reduce-only 平仓统一在本页“仓位控制”中完成" in html
     assert "打开旧只读详情" not in html
+
+
+def test_varia_quote_direction_uses_lower_cross_venue_entry_cost() -> None:
+    result = console._varia_quote_direction({
+        "var_bid": 99.0, "var_ask": 100.0,
+        "decibel_bid": 101.0, "decibel_ask": 102.0,
+    })
+
+    assert result["recommended"] == "var_buy"
+    assert result["costs"]["var_buy"] < result["costs"]["var_sell"]
+
+
+def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path / "data")
+    command = console._varia_live_command(
+        host="vps2", symbol="SOL", var_side="buy", quantity=1.25,
+        leverage=6, notional=100,
+    )
+
+    assert command[0] == "ssh"
+    assert console.VARIA_VPS2_SSH in command
+    assert "ubuntu@100.101.50.40" in command
+    assert "--symbol SOL" in command[-1]
+    assert "--leverage 6" in command[-1]
+    assert "--leverage-cap 40" in command[-1]
+    assert "private" not in " ".join(command).lower()
+
+
+def test_varia_close_commands_require_fresh_verified_two_leg_positions(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    state = _state(
+        "vps1", datetime.now(timezone.utc).isoformat(),
+        _venue(ok=True, side="sell", size="-2"),
+        _venue(ok=True, side="buy", size="2"),
+    )
+    _write_json(tmp_path / "ops_state.json", state)
+
+    commands, blocks = console._varia_close_commands()
+
+    assert blocks == []
+    assert len(commands) == 1
+    assert commands[0]["symbol"] == "SOL"
+    assert commands[0]["planned_var_side"] == "sell"
+    assert "--reduce-only" in commands[0]["command"]
+
+
+def test_varia_close_commands_block_single_leg(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    state = _state(
+        "vps1", datetime.now(timezone.utc).isoformat(),
+        _venue(ok=True, side="sell", size="-2"), _venue(ok=True),
+    )
+    _write_json(tmp_path / "ops_state.json", state)
+
+    commands, blocks = console._varia_close_commands()
+
+    assert commands == []
+    assert blocks == ["VPS1·SOL 是单腿仓位"]
+
+
+def test_varia_manual_queue_allows_only_one_active_job(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    with sqlite3.connect(tmp_path / "hedge_bot.sqlite3") as connection:
+        connection.execute(
+            "CREATE TABLE dashboard_jobs ("
+            "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+            "started_at TEXT, finished_at TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, "
+            "payload_json TEXT, command_json TEXT, result_json TEXT, error_message TEXT, "
+            "worker_id TEXT, attempts INTEGER DEFAULT 0)"
+        )
+
+    job_id = console._enqueue_varia_job(
+        kind="manual_live", command={"mode": "single", "commands": []},
+        payload={"host": "vps1", "symbol": "BTC"},
+    )
+
+    assert job_id == 1
+    with sqlite3.connect(tmp_path / "hedge_bot.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT status, payload_json FROM dashboard_jobs WHERE id=1"
+        ).fetchone()
+    assert row is not None and row[0] == "queued"
+    assert json.loads(row[1])["symbol"] == "BTC"
+    try:
+        console._enqueue_varia_job(
+            kind="manual_live", command={"mode": "single", "commands": []}, payload={},
+        )
+    except RuntimeError as exc:
+        assert "已有任务 #1" in str(exc)
+    else:
+        raise AssertionError("second active dashboard job should be rejected")
 
 
 def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) -> None:

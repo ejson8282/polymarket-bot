@@ -1,11 +1,12 @@
-"""Latitude Alpha 统一控制台(HTML shell + 只读数据 API)。
+"""Latitude Alpha 统一控制台(HTML shell + 状态与受控操作 API)。
 
 - GET /            → console.html(前端每 15s 拉 /api/state 覆盖真数据)
 - GET /api/state   → 只读现有状态文件/库;缺失或过期字段返回 null/未知,前端不展示样例值。
+- POST /api/varia/control/* → Tailscale 内网受控人工任务；复用原队列和一次性 worker。
 
 四源不混算铁律:vps1/decibel、vps1/var、vps2/decibel、vps2/var 逐源独立读取,
 总计=真实来源相加;某源缺失就标缺失,绝不复制他源顶替。
-只读:绝不写任何交易/worker/signer 文件。
+签名密钥不进入本服务；真实操作仍由原 Var/Decibel 执行环境完成。
 
 环境变量:
   LATITUDE_DATA_DIR  pmbot 数据目录(默认仓库 data/;VPS=/home/ubuntu/polymarket-bot/data)
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -28,6 +30,10 @@ APP_DIR = Path(__file__).resolve().parent
 CONSOLE_HTML = APP_DIR / "console.html"
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", APP_DIR.parents[1] / "data"))
 VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming-live/data"))
+VARIA_MANUAL_JOB_UNIT = os.getenv(
+    "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
+)
+VARIA_VPS2_SSH = os.getenv("VARIA_VPS2_SSH", "ubuntu@100.101.50.40")
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
@@ -776,6 +782,304 @@ def _varia_detail() -> Dict[str, Any]:
             "by_host": _agg(by_host), "by_symbol": _agg(by_symbol)}
 
 
+def _varia_latest_quotes() -> List[dict]:
+    """每个 symbol 最近一条完整双边报价；缺腿报价不参与自动方向。"""
+    path = VARIA_DIR / "hedge_bot.sqlite3"
+    rows: List[dict] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        cur = conn.execute(
+            "SELECT m.symbol, m.timestamp, m.var_bid_1k, m.var_ask_1k, "
+            "m.decibel_bid, m.decibel_ask FROM market_snapshots m "
+            "JOIN (SELECT symbol, MAX(id) AS max_id FROM market_snapshots "
+            "WHERE var_bid_1k IS NOT NULL AND var_ask_1k IS NOT NULL "
+            "AND decibel_bid IS NOT NULL AND decibel_ask IS NOT NULL GROUP BY symbol) latest "
+            "ON m.id = latest.max_id ORDER BY m.symbol"
+        )
+        for symbol, timestamp, var_bid, var_ask, dec_bid, dec_ask in cur.fetchall():
+            quote = {
+                "symbol": str(symbol or "").upper(),
+                "timestamp": str(timestamp or ""),
+                "var_bid": _num(var_bid), "var_ask": _num(var_ask),
+                "decibel_bid": _num(dec_bid), "decibel_ask": _num(dec_ask),
+            }
+            ts = _parse_ts(timestamp)
+            quote["age_sec"] = max(0, int(time.time() - ts)) if ts is not None else None
+            quote.update(_varia_quote_direction(quote))
+            rows.append(quote)
+        conn.close()
+    except Exception:
+        return []
+    return rows
+
+
+def _varia_quote_direction(quote: dict) -> Dict[str, Any]:
+    vb, va = _num(quote.get("var_bid")), _num(quote.get("var_ask"))
+    db, da = _num(quote.get("decibel_bid")), _num(quote.get("decibel_ask"))
+    if None in (vb, va, db, da):
+        return {"recommended": None, "costs": {}}
+    mid = (vb + va + db + da) / 4
+    if mid <= 0:
+        return {"recommended": None, "costs": {}}
+    costs = {
+        "var_buy": round((va - db) / mid * 10000, 4),
+        "var_sell": round((da - vb) / mid * 10000, 4),
+    }
+    return {"recommended": min(costs, key=costs.get), "costs": costs}
+
+
+def _varia_recent_jobs(limit: int = 8) -> List[dict]:
+    path = VARIA_DIR / "hedge_bot.sqlite3"
+    jobs: List[dict] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        cur = conn.execute(
+            "SELECT id, kind, status, created_at, started_at, finished_at, "
+            "payload_json, result_json, error_message FROM dashboard_jobs "
+            "WHERE kind IN ('manual_live','close_all') ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        for row in cur.fetchall():
+            payload = _json_object(row[6])
+            result = _json_object(row[7])
+            status = str(row[2] or "")
+            jobs.append({
+                "id": row[0], "kind": row[1], "status": status,
+                "created_at": str(row[3] or ""), "started_at": str(row[4] or ""),
+                "finished_at": str(row[5] or ""), "symbol": payload.get("symbol"),
+                "host": payload.get("host"), "error": _varia_job_error(row[8], result),
+                "summary": _varia_job_summary(status, result),
+            })
+        conn.close()
+    except Exception:
+        return []
+    return jobs
+
+
+def _varia_active_job() -> Optional[dict]:
+    path = VARIA_DIR / "hedge_bot.sqlite3"
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT id, kind, status FROM dashboard_jobs "
+                "WHERE status IN ('queued','running') ORDER BY id LIMIT 1"
+            ).fetchone()
+        return {"id": row[0], "kind": row[1], "status": row[2]} if row else None
+    except Exception:
+        return None
+
+
+def _json_object(value: Any) -> dict:
+    try:
+        parsed = json.loads(str(value or "{}"))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _varia_job_error(error: Any, result: dict) -> str:
+    raw = str(error or result.get("stderr") or "").strip()
+    return raw[:240]
+
+
+def _varia_job_summary(status: str, result: dict) -> str:
+    if status in {"queued", "running"}:
+        return "已提交，后台执行中" if status == "queued" else "正在执行"
+    if status == "succeeded":
+        return "执行成功"
+    if status == "blocked":
+        return "预检拦截，未下单"
+    if status == "failed":
+        return "执行失败"
+    return status or "未知"
+
+
+def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
+    vd = vd if isinstance(vd, dict) else _var_decibel()
+    quotes = _varia_latest_quotes()
+    symbols = sorted({q["symbol"] for q in quotes if q.get("symbol")})
+    symbols = sorted(set(symbols) | {str(p.get("symbol") or "").upper()
+                                    for p in vd.get("pairs", [])})
+    jobs = _varia_recent_jobs()
+    return {
+        "symbols": symbols, "quotes": quotes, "pairs": vd.get("pairs", []),
+        "single_leg": vd.get("single_leg", []), "hosts": vd.get("hosts", {}),
+        "jobs": jobs, "active_job": _varia_active_job(),
+        "max_leverage": 40,
+    }
+
+
+def _varia_root() -> Path:
+    return VARIA_DIR.parent
+
+
+def _varia_python() -> str:
+    return str(_varia_root() / ".venv" / "bin" / "python")
+
+
+def _varia_raw_states() -> Dict[str, dict]:
+    """Return the newest raw ops snapshot per host without copying one host to another."""
+    states: Dict[str, dict] = {}
+    peer_dir = VARIA_DIR / "ops_peer_state"
+    for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
+        state = _read_json(path)
+        if not isinstance(state, dict):
+            continue
+        host = str(state.get("host_id") or path.stem).lower()
+        host = "vps1" if host.startswith("vm-") else host
+        states[host] = state
+    local = _read_json(VARIA_DIR / "ops_state.json")
+    if isinstance(local, dict) and local.get("host_id"):
+        host = str(local["host_id"]).lower()
+        host = "vps1" if host.startswith("vm-") else host
+        states[host] = local
+    return states
+
+
+def _position_payload(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    payload = value.get("position")
+    return payload if isinstance(payload, dict) else value
+
+
+def _signed_position_size(position: dict) -> float:
+    size = _num(position.get("size"))
+    if size is None:
+        size = _num(position.get("position_size"))
+    if size is None:
+        size = _num(position.get("qty"))
+    size = size or 0.0
+    side = str(position.get("side") or "").lower()
+    if side in {"short", "sell"}:
+        return -abs(size)
+    if side in {"long", "buy"}:
+        return abs(size)
+    return size
+
+
+def _varia_live_command(
+    *, host: str, symbol: str, var_side: str, quantity: float, leverage: float,
+    notional: Optional[float] = None, reduce_only: bool = False,
+    take_profit: Optional[float] = None, stop_loss: Optional[float] = None,
+) -> List[str]:
+    command = [
+        _varia_python(), "-m", "src.main", "--mode", "live", "--config", "config.yaml",
+        "--symbol", symbol.upper(), "--side", var_side,
+        "--quantity", f"{quantity:.10f}".rstrip("0").rstrip("."),
+        "--leverage", f"{leverage:g}", "--leverage-cap", "40",
+    ]
+    if notional is not None and not reduce_only:
+        command.extend(["--notional", f"{notional:.8f}".rstrip("0").rstrip(".")])
+    if reduce_only:
+        command.append("--reduce-only")
+    if take_profit is not None and not reduce_only:
+        command.extend(["--take-profit", f"{take_profit:.10f}".rstrip("0").rstrip(".")])
+    if stop_loss is not None and not reduce_only:
+        command.extend(["--stop-loss", f"{stop_loss:.10f}".rstrip("0").rstrip(".")])
+    if host == "vps1":
+        return command
+    if host != "vps2":
+        raise ValueError("host must be vps1 or vps2")
+    remote_command = command.copy()
+    remote_command[0] = ".venv/bin/python"
+    shell = (
+        "cd /home/ubuntu/varia-decibel-farming-live && "
+        "set -a && . ./.env.dashboard && set +a && exec " + shlex.join(remote_command)
+    )
+    return [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=yes", VARIA_VPS2_SSH, shell,
+    ]
+
+
+def _varia_close_commands() -> tuple[List[dict], List[str]]:
+    commands: List[dict] = []
+    blocked: List[str] = []
+    for host, state in _varia_raw_states().items():
+        age = _iso_age(state.get("generated_at"))
+        exchanges = state.get("exchanges") if isinstance(state.get("exchanges"), dict) else {}
+        dec = exchanges.get("decibel") if isinstance(exchanges.get("decibel"), dict) else {}
+        var = exchanges.get("variational") if isinstance(exchanges.get("variational"), dict) else {}
+        verified = age is not None and age <= STALE_SEC and dec.get("ok") is True and var.get("ok") is True
+        if not verified:
+            blocked.append(f"{host.upper()} 仓位快照未核验")
+            continue
+        ds = dec.get("symbols") if isinstance(dec.get("symbols"), dict) else {}
+        vs = var.get("symbols") if isinstance(var.get("symbols"), dict) else {}
+        for symbol in sorted(set(ds) | set(vs)):
+            dp, vp = _position_payload(ds.get(symbol)), _position_payload(vs.get(symbol))
+            d_open, v_open = _pos_open(ds.get(symbol)), _pos_open(vs.get(symbol))
+            if not d_open and not v_open:
+                continue
+            if d_open != v_open:
+                blocked.append(f"{host.upper()}·{symbol} 是单腿仓位")
+                continue
+            d_size, v_size = _signed_position_size(dp), _signed_position_size(vp)
+            quantity = min(abs(d_size), abs(v_size))
+            if quantity <= 0:
+                blocked.append(f"{host.upper()}·{symbol} 数量不可读")
+                continue
+            var_side = "sell" if v_size > 0 else "buy"
+            command = _varia_live_command(
+                host=host, symbol=symbol, var_side=var_side, quantity=quantity,
+                leverage=1, reduce_only=True,
+            )
+            commands.append({
+                "command": command, "host": host, "symbol": symbol.upper(),
+                "planned_var_side": var_side, "planned_quantity": f"{quantity:.10f}",
+            })
+    return commands, blocked
+
+
+def _enqueue_varia_job(*, kind: str, command: dict, payload: dict) -> int:
+    path = VARIA_DIR / "hedge_bot.sqlite3"
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+    conn = sqlite3.connect(path, timeout=5)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            "SELECT id FROM dashboard_jobs WHERE status IN ('queued','running') ORDER BY id LIMIT 1"
+        ).fetchone()
+        if active:
+            raise RuntimeError(f"已有任务 #{active[0]} 正在执行")
+        cur = conn.execute(
+            "INSERT INTO dashboard_jobs "
+            "(created_at, updated_at, kind, status, payload_json, command_json, attempts) "
+            "VALUES (?, ?, ?, 'queued', ?, ?, 0)",
+            (now, now, kind, json.dumps(payload, ensure_ascii=False),
+             json.dumps(command, ensure_ascii=False)),
+        )
+        job_id = int(cur.lastrowid)
+        conn.commit()
+        return job_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _start_varia_manual_worker() -> Dict[str, Any]:
+    return _run_cmd(
+        ["sudo", "-n", "systemctl", "start", "--no-block", VARIA_MANUAL_JOB_UNIT],
+        timeout=8,
+    )
+
+
+def _refresh_varia_quote(symbol: str) -> Dict[str, Any]:
+    return _run_cmd(
+        [_varia_python(), "src/tools/sample_var_spread.py", "--once", "--symbol", symbol,
+         "--db", "sqlite:///data/hedge_bot.sqlite3"],
+        timeout=150, cwd=_varia_root(),
+    )
+
+
+def _quote_for_symbol(symbol: str) -> Optional[dict]:
+    wanted = symbol.upper()
+    return next((q for q in _varia_latest_quotes() if q.get("symbol") == wanted), None)
+
+
 def _pm_detail() -> Dict[str, Any]:
     """pm 二级页原生数据:各账号在做市场明细 + 成交流(engine_state)。"""
     markets: List[dict] = []
@@ -1472,6 +1776,7 @@ def api_state() -> JSONResponse:
         "ipo": _ipo(),
         "pf_intents": _pf_intents(),
         "varia_detail": _varia_detail(),
+        "varia_control": _varia_control_state(vd),
         "pm_detail": _pm_detail(),
         "maker_shadow": _maker_shadow(),
         "macmini": mm,
@@ -1522,6 +1827,157 @@ def _run_cmd(cmd: List[str], timeout: float, cwd: Optional[Path] = None) -> Dict
         return {"rc": -1, "out": "", "err": "timeout"}
     except Exception as e:
         return {"rc": -1, "out": "", "err": f"{type(e).__name__}: {str(e)[:80]}"}
+
+
+def _fail_varia_job(job_id: int, error: str) -> None:
+    path = VARIA_DIR / "hedge_bot.sqlite3"
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+    try:
+        with sqlite3.connect(path, timeout=5) as conn:
+            conn.execute(
+                "UPDATE dashboard_jobs SET status='failed', updated_at=?, finished_at=?, "
+                "error_message=? WHERE id=? AND status='queued'",
+                (now, now, error[:500], job_id),
+            )
+    except Exception:
+        pass
+
+
+def _varia_write_guard(request: Request) -> Optional[JSONResponse]:
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    if _is_cloudflare(request):
+        return JSONResponse(
+            {"ok": False, "error": "真实交易只允许通过 Tailscale 内网页面操作"},
+            status_code=403,
+        )
+    return None
+
+
+@app.get("/api/varia/control")
+def varia_control_get() -> JSONResponse:
+    return JSONResponse(_varia_control_state())
+
+
+@app.post("/api/varia/control/refresh")
+async def varia_control_refresh(payload: dict, request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    symbol = str((payload or {}).get("symbol") or "").strip().upper()
+    if not symbol or len(symbol) > 16 or not symbol.replace("-", "").isalnum():
+        return JSONResponse({"ok": False, "error": "交易对格式不正确"}, status_code=400)
+    result = _refresh_varia_quote(symbol)
+    quote = _quote_for_symbol(symbol)
+    ok = result.get("rc") == 0 and bool(quote) and (quote.get("age_sec") or 10**9) <= 120
+    return JSONResponse({
+        "ok": ok, "quote": quote, "state": _varia_control_state(),
+        "error": None if ok else (result.get("err") or result.get("out") or "双边报价刷新失败"),
+    }, status_code=200 if ok else 502)
+
+
+@app.post("/api/varia/control/open")
+async def varia_control_open(payload: dict, request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    data = payload or {}
+    host = str(data.get("host") or "").lower()
+    symbol = str(data.get("symbol") or "").strip().upper()
+    direction = str(data.get("direction") or "auto").lower()
+    leverage = _num(data.get("leverage"))
+    notional = _num(data.get("notional"))
+    take_profit = _num(data.get("take_profit")) if data.get("take_profit") not in (None, "") else None
+    stop_loss = _num(data.get("stop_loss")) if data.get("stop_loss") not in (None, "") else None
+    if host not in {"vps1", "vps2"}:
+        return JSONResponse({"ok": False, "error": "请选择 VPS1 或 VPS2"}, status_code=400)
+    if not symbol or len(symbol) > 16 or not symbol.replace("-", "").isalnum():
+        return JSONResponse({"ok": False, "error": "交易对格式不正确"}, status_code=400)
+    if direction not in {"auto", "var_buy", "var_sell"}:
+        return JSONResponse({"ok": False, "error": "方向参数不正确"}, status_code=400)
+    if leverage is None or not (1 <= leverage <= 40):
+        return JSONResponse({"ok": False, "error": "杠杆须为 1–40 倍"}, status_code=400)
+    if notional is None or not (5 <= notional <= 10000):
+        return JSONResponse({"ok": False, "error": "名义金额须为 5–10000 USDC"}, status_code=400)
+    if any(value is not None and value <= 0 for value in (take_profit, stop_loss)):
+        return JSONResponse({"ok": False, "error": "止盈止损价格必须大于 0"}, status_code=400)
+
+    refresh_result = _refresh_varia_quote(symbol)
+    quote = _quote_for_symbol(symbol)
+    if refresh_result.get("rc") != 0 or not quote or (quote.get("age_sec") or 10**9) > 120:
+        return JSONResponse({
+            "ok": False,
+            "error": refresh_result.get("err") or refresh_result.get("out") or "没有最新双边报价，未提交订单",
+        }, status_code=409)
+    chosen = quote.get("recommended") if direction == "auto" else direction
+    if chosen not in {"var_buy", "var_sell"}:
+        return JSONResponse({"ok": False, "error": "无法计算低成本方向，未提交订单"}, status_code=409)
+    var_side = "buy" if chosen == "var_buy" else "sell"
+    reference_price = _num(quote.get("var_ask" if chosen == "var_buy" else "var_bid"))
+    if reference_price is None or reference_price <= 0:
+        return JSONResponse({"ok": False, "error": "Var 报价不可用，未提交订单"}, status_code=409)
+    quantity = notional / reference_price
+    command = _varia_live_command(
+        host=host, symbol=symbol, var_side=var_side, quantity=quantity,
+        leverage=leverage, notional=notional, take_profit=take_profit, stop_loss=stop_loss,
+    )
+    spec = {"mode": "single", "commands": [{
+        "command": command, "host": host, "symbol": symbol,
+        "planned_var_side": var_side, "planned_quantity": f"{quantity:.10f}",
+    }]}
+    job_payload = {
+        "host": host, "symbol": symbol, "var_side": var_side,
+        "direction": chosen, "leverage": leverage, "notional": notional,
+        "take_profit": take_profit, "stop_loss": stop_loss,
+        "quote_timestamp": quote.get("timestamp"), "estimated_cost_bps": (quote.get("costs") or {}).get(chosen),
+    }
+    try:
+        job_id = _enqueue_varia_job(kind="manual_live", command=spec, payload=job_payload)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"任务写入失败：{type(exc).__name__}"}, status_code=500)
+    started = _start_varia_manual_worker()
+    if started.get("rc") != 0:
+        _fail_varia_job(job_id, started.get("err") or "一次性 worker 启动失败")
+        return JSONResponse({"ok": False, "error": "任务未启动，未执行订单"}, status_code=500)
+    _audit("varia_manual_open", job_id=job_id, host=host, symbol=symbol,
+           direction=chosen, notional=notional, leverage=leverage, source="tailnet")
+    return JSONResponse({
+        "ok": True, "job_id": job_id, "note": f"开仓任务 #{job_id} 已提交，正在后台执行",
+        "direction": chosen, "quantity": quantity, "costs": quote.get("costs"),
+    })
+
+
+@app.post("/api/varia/control/close-all")
+async def varia_control_close_all(request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    commands, safety_blocks = _varia_close_commands()
+    if safety_blocks:
+        return JSONResponse({
+            "ok": False, "error": "；".join(safety_blocks) + "。为避免误平，未提交任务。"
+        }, status_code=409)
+    if not commands:
+        return JSONResponse({"ok": False, "error": "当前没有已核验的双腿仓位"}, status_code=409)
+    payload = {"host": "all", "command_count": len(commands),
+               "symbols": [f"{c['host']}:{c['symbol']}" for c in commands]}
+    try:
+        job_id = _enqueue_varia_job(
+            kind="close_all", command={"mode": "close_all", "commands": commands}, payload=payload,
+        )
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"任务写入失败：{type(exc).__name__}"}, status_code=500)
+    started = _start_varia_manual_worker()
+    if started.get("rc") != 0:
+        _fail_varia_job(job_id, started.get("err") or "一次性 worker 启动失败")
+        return JSONResponse({"ok": False, "error": "任务未启动，未执行平仓"}, status_code=500)
+    _audit("varia_close_all", job_id=job_id, commands=len(commands), source="tailnet")
+    return JSONResponse({"ok": True, "job_id": job_id,
+                         "note": f"一键平仓任务 #{job_id} 已提交，正在后台执行"})
 
 
 def _engine_ctl() -> Dict[str, Any]:

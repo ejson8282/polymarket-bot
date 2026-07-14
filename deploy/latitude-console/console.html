@@ -160,8 +160,37 @@
 .operation-note{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:2px}
 .operation-state{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap}
 .operation-state i{width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px rgba(231,197,71,.10)}
-.operation-frame{display:block;width:100%;height:calc(100vh - 164px);min-height:780px;border:0;background:var(--bg)}
-@media (max-width:900px){.operation-head{align-items:flex-start;flex-direction:column;gap:6px}.operation-frame{height:calc(100vh - 205px);min-height:660px}}
+.vdctl-band{border-top:1px solid var(--line);padding:18px 0}
+.vdctl-band:first-of-type{border-top:0}
+.vdctl-form{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:12px}
+.vdctl-field{min-width:0}
+.vdctl-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px;text-transform:uppercase}
+.vdctl-field select,.vdctl-field input{width:100%;height:38px;box-sizing:border-box;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12px;padding:0 10px;outline:none}
+.vdctl-field select:focus,.vdctl-field input:focus{border-color:var(--var)}
+.vdctl-slider{display:grid;grid-template-columns:1fr 72px;gap:8px;align-items:center}
+.vdctl-slider input[type=range]{padding:0;border:0;background:transparent}
+.vdctl-quote{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.vdctl-q{padding:13px 14px;background:var(--panel2);min-width:0}
+.vdctl-q+.vdctl-q{border-left:1px solid var(--line)}
+.vdctl-q span{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:5px}
+.vdctl-q b{font-family:var(--mono);font-size:15px;color:var(--text);font-weight:650;overflow-wrap:anywhere}
+.vdctl-costs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.vdctl-cost{border:1px solid var(--line);border-radius:6px;padding:11px 13px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.vdctl-cost.recommended{border-color:var(--ok);background:rgba(70,178,107,.08);color:var(--ok)}
+.vdctl-cost b{display:block;font-size:13px;margin-top:4px;color:inherit}
+.vdctl-tpsl{display:grid;grid-template-columns:auto 1fr 1fr;gap:12px;align-items:end;margin-top:12px}
+.vdctl-tpsl.off{opacity:.38}
+.vdctl-tpsl .vdctl-field input:disabled{cursor:not-allowed}
+.vdctl-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+.vdctl-actions .btn{min-width:140px}
+.vdctl-actions .btn:disabled{opacity:.38;cursor:not-allowed}
+.vdctl-message{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+.vdctl-message.ok{color:var(--ok)}.vdctl-message.bad{color:var(--danger)}
+.vdctl-job{display:grid;grid-template-columns:56px 88px 1fr 120px;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;align-items:center}
+.vdctl-job:last-child{border-bottom:0}
+.vdctl-empty{font-family:var(--mono);font-size:11px;color:var(--faint);padding:10px 0}
+@media (max-width:1050px){.vdctl-form{grid-template-columns:repeat(3,minmax(120px,1fr))}}
+@media (max-width:700px){.operation-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form{grid-template-columns:1fr 1fr}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message{width:100%;margin-left:0}}
 </style>
 </head>
 <body>
@@ -802,7 +831,7 @@
 
 <footer>
   标签图例:<span class="feat f-old">现有</span> 你 dashboard 里已存在的功能,位置迁移但保留 · <span class="feat f-new">新增</span> 纯呈现层新增(数据已有) · <span class="feat f-plan">规划</span> 待建模块占位。<br>
-  合并架构:导航统一(本 shell)+ 进程隔离。varia(:8503)与 pmbot(:8501)保持独立 Streamlit,由 nginx/caddy 在 Tailscale 入口按路径反代;港股为新系统按本 shell 规范新建(可跑 Mac mini);"总览"页是独立只读聚合器,消费各系统 status.json。任何系统崩溃不影响其他页面。
+  合并架构:统一站点原生展示与控制 + 各交易执行进程隔离。Var/Decibel 人工任务通过现有安全队列交给一次性 worker，执行后退出；账户密钥仍留在原签名环境。任何交易引擎故障不影响其他页面。
 </footer>
 
 <script>
@@ -1503,17 +1532,118 @@
     return '<table><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'+
       rows.map(rowfn).join('')+'</tbody></table>';
   }
+
+  function _vdDirectionLabel(v){return v==='var_buy'?'Var 买 / Decibel 卖':v==='var_sell'?'Var 卖 / Decibel 买':'自动选择低成本方向';}
+  function _vdStatusLabel(v){return ({queued:'排队中',running:'执行中',succeeded:'成功',failed:'失败',blocked:'预检拦截'})[v]||v||'未知';}
+  function _vdPrice(v){return v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});}
+
+  function renderVarDecControl(box){
+    if(!document.getElementById('vdctl-root')){
+      box.innerHTML='<div id="vdctl-root">'+
+        '<div class="operation-head"><div><div class="operation-title">Var / Decibel 仓位控制</div><div class="operation-note">原生操作区 · 独立读取 VPS1 / VPS2 · 任务后台执行，页面无需等待</div></div><div class="operation-state" id="vdctl-state"><i></i><span>正在核对状态</span></div></div>'+
+        '<div class="vdctl-band"><div class="vdctl-form">'+
+          '<div class="vdctl-field"><label>执行账户</label><select id="vdctl-host"><option value="vps1">VPS1</option><option value="vps2">VPS2</option></select></div>'+
+          '<div class="vdctl-field"><label>交易对</label><select id="vdctl-symbol"></select></div>'+
+          '<div class="vdctl-field"><label>对冲方向</label><select id="vdctl-direction"><option value="auto">自动选择低成本方向</option><option value="var_buy">Var 买 / Decibel 卖</option><option value="var_sell">Var 卖 / Decibel 买</option></select></div>'+
+          '<div class="vdctl-field"><label>杠杆</label><div class="vdctl-slider"><input id="vdctl-lev-range" type="range" min="1" max="40" step="1" value="5"><input id="vdctl-lev" type="number" min="1" max="40" step="1" value="5"></div></div>'+
+          '<div class="vdctl-field"><label>名义金额 USDC</label><input id="vdctl-notional" type="number" min="5" step="1" value="50"></div>'+
+        '</div></div>'+
+        '<div class="vdctl-band"><div class="vdctl-quote" id="vdctl-quote"></div><div class="vdctl-costs" id="vdctl-costs"></div></div>'+
+        '<div class="vdctl-band"><div class="vdctl-quote" id="vdctl-preview"></div></div>'+
+        '<div class="vdctl-band"><div class="vdctl-tpsl off" id="vdctl-tpsl-row"><label style="font-family:var(--mono);font-size:11px;color:var(--muted);padding-bottom:10px"><input id="vdctl-tpsl" type="checkbox"> 启用止盈止损</label><div class="vdctl-field"><label>止盈平仓价</label><input id="vdctl-tp" type="number" step="any" disabled></div><div class="vdctl-field"><label>止损平仓价</label><input id="vdctl-sl" type="number" step="any" disabled></div></div>'+
+          '<div class="vdctl-actions"><button class="btn ghost" id="vdctl-refresh">刷新所选报价</button><button class="btn" id="vdctl-open">执行开仓</button><button class="btn danger" id="vdctl-close">一键平仓全部双腿</button><span class="vdctl-message" id="vdctl-msg"></span></div></div>'+
+        '<div class="vdctl-band"><h2 style="font-size:12px">当前真实仓位</h2><div id="vdctl-positions"></div></div>'+
+        '<div class="vdctl-band"><h2 style="font-size:12px">最近任务</h2><div id="vdctl-jobs"></div></div></div>';
+
+      const lr=document.getElementById('vdctl-lev-range'), ln=document.getElementById('vdctl-lev');
+      lr.addEventListener('input',()=>{ln.value=lr.value;vdUpdateControl();});
+      ln.addEventListener('input',()=>{const n=Math.max(1,Math.min(40,parseInt(ln.value||'1',10)));lr.value=String(n);vdUpdateControl();});
+      document.getElementById('vdctl-notional').addEventListener('input',vdUpdateControl);
+      document.getElementById('vdctl-symbol').addEventListener('change',vdUpdateControl);
+      document.getElementById('vdctl-direction').addEventListener('change',vdUpdateControl);
+      document.getElementById('vdctl-tpsl').addEventListener('change',e=>{
+        const on=e.target.checked; document.getElementById('vdctl-tpsl-row').classList.toggle('off',!on);
+        document.getElementById('vdctl-tp').disabled=!on; document.getElementById('vdctl-sl').disabled=!on;
+      });
+      document.getElementById('vdctl-refresh').addEventListener('click',()=>vdControlAction('refresh'));
+      document.getElementById('vdctl-open').addEventListener('click',()=>vdControlAction('open'));
+      document.getElementById('vdctl-close').addEventListener('click',()=>vdControlAction('close'));
+    }
+    const state=(window.__state||{}).varia_control||window.__vdControlState||{};
+    vdUpdateControl(state);
+    if(!window.__vdControlTimer) window.__vdControlTimer=setInterval(vdFetchControl,4000);
+  }
+
+  function vdUpdateControl(state){
+    if(state) window.__vdControlState=state;
+    state=window.__vdControlState||{};
+    const symbolEl=document.getElementById('vdctl-symbol'); if(!symbolEl) return;
+    const selected=symbolEl.value;
+    const symbols=state.symbols||[];
+    const signature=symbols.join('|');
+    if(symbolEl.dataset.sig!==signature){
+      symbolEl.innerHTML=symbols.length?symbols.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join(''):'<option value="">暂无共同交易对</option>';
+      symbolEl.dataset.sig=signature;
+      if(symbols.includes(selected)) symbolEl.value=selected; else if(symbols.includes('BTC')) symbolEl.value='BTC';
+    }
+    const hosts=state.hosts||{}, hostEl=document.getElementById('vdctl-host');
+    ['vps1','vps2'].forEach((h,i)=>{const o=hostEl.options[i], x=hosts[h]||{};if(o)o.textContent=h.toUpperCase()+' · Var '+money(x.equity_var)+' / Dec '+money(x.equity_dec);});
+    const quote=(state.quotes||[]).find(q=>q.symbol===symbolEl.value)||{};
+    const age=quote.age_sec==null?'未知':_fmtAge(quote.age_sec);
+    const q=document.getElementById('vdctl-quote');
+    q.innerHTML='<div class="vdctl-q"><span>VAR BID · '+age+'</span><b>'+_vdPrice(quote.var_bid)+'</b></div><div class="vdctl-q"><span>VAR ASK</span><b>'+_vdPrice(quote.var_ask)+'</b></div><div class="vdctl-q"><span>DECIBEL BID</span><b>'+_vdPrice(quote.decibel_bid)+'</b></div><div class="vdctl-q"><span>DECIBEL ASK</span><b>'+_vdPrice(quote.decibel_ask)+'</b></div>';
+    const costs=quote.costs||{}, recommended=quote.recommended;
+    document.getElementById('vdctl-costs').innerHTML=['var_buy','var_sell'].map(k=>'<div class="vdctl-cost '+(recommended===k?'recommended':'')+'"><span>'+(recommended===k?'推荐 · ':'')+_vdDirectionLabel(k)+'</span><b>'+(costs[k]==null?'等待双边报价':Number(costs[k]).toFixed(4)+' bps')+'</b></div>').join('');
+    const direction=document.getElementById('vdctl-direction').value==='auto'?recommended:document.getElementById('vdctl-direction').value;
+    const lev=Math.max(1,Number(document.getElementById('vdctl-lev').value)||1), notional=Math.max(0,Number(document.getElementById('vdctl-notional').value)||0);
+    const ref=Number(quote[direction==='var_buy'?'var_ask':'var_bid'])||0, qty=ref?notional/ref:0;
+    const varLong=direction==='var_buy', varLiq=ref*(varLong?1-1/lev:1+1/lev), decLiq=ref*(varLong?1+1/lev:1-1/lev);
+    document.getElementById('vdctl-preview').innerHTML='<div class="vdctl-q"><span>预计数量</span><b>'+(qty?qty.toFixed(6)+' '+esc(symbolEl.value):'—')+'</b></div><div class="vdctl-q"><span>预计保证金</span><b>'+(notional?money(notional/lev):'—')+'</b></div><div class="vdctl-q"><span>VAR 估算强平价</span><b>'+(ref?_vdPrice(varLiq):'—')+'</b></div><div class="vdctl-q"><span>DECIBEL 估算强平价</span><b>'+(ref?_vdPrice(decLiq):'—')+'</b></div>';
+    const pairs=state.pairs||[], singles=state.single_leg||[];
+    let positions=_table(['VPS','交易对','状态','Var','Decibel','净敞口'],pairs,r=>'<tr><td class="num">'+esc(String(r.host||'').toUpperCase())+'</td><td class="num">'+esc(r.symbol)+'</td><td><span class="chip '+(r.status==='HEDGED'?'ok':'danger')+'">'+esc(r.status)+'</span></td><td class="num">'+esc((r.var||{}).side||'—')+' · '+money((r.var||{}).notional)+'</td><td class="num">'+esc((r.dec||{}).side||'—')+' · '+money((r.dec||{}).notional)+'</td><td class="num">'+money(r.net)+'</td></tr>');
+    if(singles.length) positions='<div class="banner livewarn" style="margin-bottom:10px">单腿风险：'+singles.map(esc).join('、')+'；一键平仓已自动禁用。</div>'+positions;
+    document.getElementById('vdctl-positions').innerHTML=positions;
+    const jobs=state.jobs||[];
+    document.getElementById('vdctl-jobs').innerHTML=jobs.length?jobs.map(j=>'<div class="vdctl-job"><b>#'+j.id+'</b><span class="chip '+(j.status==='succeeded'?'ok':j.status==='failed'||j.status==='blocked'?'danger':'warn')+'">'+esc(_vdStatusLabel(j.status))+'</span><span>'+esc((j.host||'').toUpperCase()+' '+(j.symbol||'全部')+' · '+(j.error||j.summary||''))+'</span><span class="vdctl-job-time">'+esc((j.created_at||'').slice(5,16))+'</span></div>').join(''):'<div class="vdctl-empty">暂无人工交易任务</div>';
+    const active=state.active_job;
+    document.getElementById('vdctl-open').disabled=!!active||!symbolEl.value;
+    document.getElementById('vdctl-close').disabled=!!active||!!singles.length||!pairs.length;
+    const lamp=document.getElementById('vdctl-state');
+    lamp.innerHTML='<i style="background:'+(active?'var(--warn)':'var(--ok)')+';box-shadow:0 0 0 3px '+(active?'rgba(231,197,71,.10)':'rgba(70,178,107,.12)')+'"></i><span>'+(active?'后台任务 #'+active.id+' '+_vdStatusLabel(active.status):'仓位与任务状态已连接')+'</span>';
+  }
+
+  async function vdFetchControl(){
+    if(window.__detail.vardec!=='仓位控制') return;
+    try{const r=await fetch('/api/varia/control',{cache:'no-store'});if(r.ok)vdUpdateControl(await r.json());}catch(e){}
+  }
+
+  async function vdControlAction(action){
+    const msg=document.getElementById('vdctl-msg'), symbol=document.getElementById('vdctl-symbol').value;
+    if(!symbol&&action!=='close'){msg.className='vdctl-message bad';msg.textContent='请先选择交易对';return;}
+    if(window.__writesEnabled===false){msg.className='vdctl-message bad';msg.textContent='写通道未启用';return;}
+    const urls={refresh:'/api/varia/control/refresh',open:'/api/varia/control/open',close:'/api/varia/control/close-all'};
+    let body={symbol:symbol};
+    if(action==='open'){
+      const tpsl=document.getElementById('vdctl-tpsl').checked;
+      body={host:document.getElementById('vdctl-host').value,symbol:symbol,direction:document.getElementById('vdctl-direction').value,leverage:Number(document.getElementById('vdctl-lev').value),notional:Number(document.getElementById('vdctl-notional').value),take_profit:tpsl?document.getElementById('vdctl-tp').value:null,stop_loss:tpsl?document.getElementById('vdctl-sl').value:null};
+    }
+    msg.className='vdctl-message';msg.textContent=action==='refresh'?'正在刷新双边报价…':action==='open'?'正在提交开仓任务…':'正在提交一键平仓任务…';
+    ['vdctl-refresh','vdctl-open','vdctl-close'].forEach(id=>document.getElementById(id).disabled=true);
+    try{
+      const r=await fetch(urls[action],{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}), j=await r.json();
+      msg.className='vdctl-message '+(j.ok?'ok':'bad');msg.textContent=j.note||j.error||(j.ok?'完成':'失败');
+      if(j.state)vdUpdateControl(j.state);else setTimeout(vdFetchControl,700);
+    }catch(e){msg.className='vdctl-message bad';msg.textContent='网络请求失败，未确认执行';}
+    finally{setTimeout(vdFetchControl,1200);}
+  }
+
   function renderDetail(pid){
     const box=document.getElementById('detail-'+pid); if(!box) return;
     const s=window.__state||{}; const name=window.__detail[pid]; if(!name){box.style.display='none';return;}
     box.className='panel';
     if(pid==='vardec'&&name.indexOf('仓位控制')>=0){
       box.className='operation-workspace';
-      box.innerHTML='<div class="operation-head"><div><div class="operation-title">Var / Decibel 仓位控制</div>'+
-        '<div class="operation-note">真实开仓、平仓与参数设置沿用既有执行链路；当前页面不会启动任何交易 worker。</div></div>'+
-        '<div class="operation-state" id="varia-frame-state"><i></i><span>正在载入操作区</span></div></div>'+
-        '<iframe class="operation-frame" title="Var / Decibel 仓位控制" src="/varia/?embed=true" loading="eager" '+
-        'onload="document.getElementById(\'varia-frame-state\').innerHTML=\'<i style=&quot;background:var(--ok);box-shadow:0 0 0 3px rgba(70,178,107,.12)&quot;></i><span>操作区已连接</span>\'"></iframe>';
+      renderVarDecControl(box);
       return;
     }
     let html='<h2>'+esc(name)+' <span class="feat f-new">原生视图</span></h2>';

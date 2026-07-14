@@ -1,0 +1,20 @@
+[Unit]
+Description=Var/Decibel one-shot manual dashboard job
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/varia-decibel-farming-live
+Environment=PYTHONPATH=src
+EnvironmentFile=/home/ubuntu/varia-decibel-farming-live/.env.dashboard
+ExecStart=/home/ubuntu/varia-decibel-farming-live/.venv/bin/python -m dashboard.job_worker --db sqlite:///data/hedge_bot.sqlite3 --once
+TimeoutStartSec=300
+
+# This unit consumes one queued manual job and exits. It never starts the old
+# persistent automation loop.
+NoNewPrivileges=true
+PrivateTmp=true
+
