@@ -130,6 +130,34 @@
 - 不绕地域限制(Binance VPN 不碰);不读 mac-mini 密钥内容。
 - 展示收益数字标可信度层级(quant_project 尤其)。
 
+## 7. 打新 & Alpha 页原生化(未做,已勘探好,主人待定分工)
+
+主人要求:打新 & Alpha 页(`page-hk`)**所有内容和操作都原生内嵌,不跳转、不绕飞书 Bot**
+(与全项目"完全融入不跳转"一贯规矩一致)。现状:此页大半是**模板样例数据**(张三/李四、
+"某科技 2688.HK" 均占位),操作按钮(一键生成申购清单/结束本轮)是**死占位**,流程图⑥⑦
+仍写着走飞书 Bot。**尚未动手**——因当时有并行会话在改同一批文件的 IPO 部分,主人要先理清分工。
+
+**已勘探好:router(Windows `100.82.86.62:8080`)暴露了全部打新操作接口,原生化可行:**
+
+| 打新操作 | router 接口(POST) | 关键参数 |
+|---|---|---|
+| IPO 导入(HKEX) | `/dashboard/ipo/import/hkex` | `include_pdf_details` |
+| 标记状态(已申购/跳过/中签/未中签) | `/dashboard/ipo/action` | `action` + `account_id` + `status` |
+| 生成本轮排班 / 结束本轮 | `/dashboard/ipo/action` | `action` + `round`/`entries` |
+| OpenClaw 观点提炼→排班 | `/dashboard/ipo/openclaw/strategy` | `text` + `round` + `stocks` |
+| 读状态 | `GET /dashboard/ipo/state` | — |
+
+做法照 PM/SA 的模式:console 加受控写端点代理到 router(WRITES_ENABLED 闸门 + 审计),
+按钮原生接线;表格再绑真实 account-ops 数据(`ACCOUNT_OPS_URL` :8081 + ipo state :8080)。
+**注意:8081 无 openapi(不是 FastAPI);写操作走 8080 router 的 `/account-ops/dashboard/ipo/*` 同名端点亦可。**
+
+## 8. 其他借鉴笔记(3xx-wangge 网格机器人,github.com/ZAIJIN88/3xx-wangge)
+
+外部开源三所网格机器人(Node.js,也接 Decibel)。**值得借的是纪律不是策略**:
+① "AI 永不进交易快回路、只提议、用户确认、硬约束卡死在代码里" 应升为我们明文架构原则;
+② 崩溃续跑"要么对账续跑、要么撤单拒跑,绝不半知半解"的状态机;③ 它的 `decibel.js` 可作
+varia Decibel 腿的参考实现。**别借网格策略本身**(吃震荡扛趋势,有库存/方向风险,不符非方向铁律)。
+
 ---
 
 *最后更新:2026-07-09,由 Claude(Opus 4.8 / Fable 5 交替)。git log 是更细的时间线。*
