@@ -252,11 +252,15 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "四源交易量不完整" in html
     assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
     assert "旧自动化" not in html
-    assert "<span class=\"on\">总览</span><span>成交记录</span><span>统计汇总</span>" in html
+    assert "<span class=\"on\">总览</span><span>仓位控制</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
         assert duplicate_tab not in html
-    assert html.count("进入 Var/Decibel 操作面板") == 1
-    assert "打开后选择 Trade，可手动开仓或执行真实 reduce-only 平仓" in html
+    assert "进入 Var/Decibel 操作面板" not in html
+    assert "window.open('/varia/'" not in html
+    assert 'src="/varia/?embed=true"' in html
+    assert 'title="Var / Decibel 仓位控制"' in html
+    assert "操作区已连接" in html
+    assert "人工开仓与真实 reduce-only 平仓统一在本页“仓位控制”中完成" in html
     assert "打开旧只读详情" not in html
 
 

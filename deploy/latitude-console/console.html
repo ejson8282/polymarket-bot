@@ -154,6 +154,14 @@
 .obsstat .olabel{font-family:var(--mono);font-size:10px;color:var(--faint);text-transform:uppercase}
 .obsstat .oval{font-family:var(--mono);font-size:15px;font-weight:650;color:var(--text);margin-top:5px;white-space:normal;overflow-wrap:anywhere}
 @media (max-width:900px){.obsstats{grid-template-columns:repeat(2,minmax(0,1fr))}.obsstat:nth-child(3){border-left:0;border-top:1px solid var(--line)}.obsstat:nth-child(4){border-top:1px solid var(--line)}}
+.operation-workspace{margin-top:16px;border-top:1px solid var(--line);background:var(--bg)}
+.operation-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 2px 12px}
+.operation-title{font-size:14px;font-weight:650}
+.operation-note{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:2px}
+.operation-state{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap}
+.operation-state i{width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px rgba(231,197,71,.10)}
+.operation-frame{display:block;width:100%;height:calc(100vh - 164px);min-height:780px;border:0;background:var(--bg)}
+@media (max-width:900px){.operation-head{align-items:flex-start;flex-direction:column;gap:6px}.operation-frame{height:calc(100vh - 205px);min-height:660px}}
 </style>
 </head>
 <body>
@@ -235,14 +243,10 @@
   </div>
 </section>
 
-<!-- ════════════ 页面 2 · Var/Decibel(退役系统只读总览) ════════════ -->
+<!-- ════════════ 页面 2 · Var/Decibel(统一总览 + 原生操作区) ════════════ -->
 <section class="page" id="page-vardec">
   <div class="subnav">
-    <span class="on">总览</span><span>成交记录</span><span>统计汇总</span>
-  </div>
-  <div class="btnrow" style="margin-top:12px;align-items:center">
-    <button class="btn" style="font-weight:650" onclick="window.open('/varia/','_blank')">进入 Var/Decibel 操作面板</button>
-    <span class="src" style="margin:0">打开后选择 Trade，可手动开仓或执行真实 reduce-only 平仓。</span>
+    <span class="on">总览</span><span>仓位控制</span><span>成交记录</span><span>统计汇总</span>
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
@@ -288,7 +292,7 @@
       </div>
       <div class="panel">
         <h2>旧系统状态</h2>
-        <div class="src">旧 Var/Decibel worker 已退出生产。上方入口仍可进入原操作面板进行人工开仓和平仓。</div>
+        <div class="src">旧 Var/Decibel worker 已退出生产。人工开仓与真实 reduce-only 平仓统一在本页“仓位控制”中完成。</div>
       </div>
     </aside>
   </div>
@@ -1502,6 +1506,16 @@
   function renderDetail(pid){
     const box=document.getElementById('detail-'+pid); if(!box) return;
     const s=window.__state||{}; const name=window.__detail[pid]; if(!name){box.style.display='none';return;}
+    box.className='panel';
+    if(pid==='vardec'&&name.indexOf('仓位控制')>=0){
+      box.className='operation-workspace';
+      box.innerHTML='<div class="operation-head"><div><div class="operation-title">Var / Decibel 仓位控制</div>'+
+        '<div class="operation-note">真实开仓、平仓与参数设置沿用既有执行链路；当前页面不会启动任何交易 worker。</div></div>'+
+        '<div class="operation-state" id="varia-frame-state"><i></i><span>正在载入操作区</span></div></div>'+
+        '<iframe class="operation-frame" title="Var / Decibel 仓位控制" src="/varia/?embed=true" loading="eager" '+
+        'onload="document.getElementById(\'varia-frame-state\').innerHTML=\'<i style=&quot;background:var(--ok);box-shadow:0 0 0 3px rgba(70,178,107,.12)&quot;></i><span>操作区已连接</span>\'"></iframe>';
+      return;
+    }
     let html='<h2>'+esc(name)+' <span class="feat f-new">原生视图</span></h2>';
     if(pid==='vardec'){
       const vdt=s.varia_detail||{};
@@ -1549,8 +1563,8 @@
             '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.token)+'</td><td class="num">'+(r.mid??'—')+'</td><td class="num">'+(r.bid??'—')+'</td><td class="num">'+(r.ask??'—')+'</td><td class="num">'+r.orders+'</td><td><span class="chip">'+esc(r.status)+'</span></td></tr>');
       }
     }
-    html+='<div class="src" style="margin-top:10px">需要在原系统操作(启停/下单)? 从下方按钮打开 varia/pmbot 完整面板 → '+
-      '<button class="btn ghost" style="font-size:11px" onclick="window.open(\''+(pid==='vardec'?'/varia/':'/alpha/')+'\',\'_blank\')">打开完整面板</button></div>';
+    if(pid==='pm') html+='<div class="src" style="margin-top:10px">需要进入 Polymarket 完整面板? '+
+      '<button class="btn ghost" style="font-size:11px" onclick="window.open(\'/alpha/\',\'_blank\')">打开完整面板</button></div>';
     box.innerHTML=html;
   }
 
