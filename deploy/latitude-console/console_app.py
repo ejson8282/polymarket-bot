@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shlex
@@ -1025,6 +1026,79 @@ def _varia_auto_runtime(host: str) -> Dict[str, Any]:
     }
 
 
+def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
+    """Read the worker's configured pools without importing the trading process."""
+    fallback = {
+        "major_symbols": ["BTC", "ETH"],
+        "opportunity_symbols": [
+            symbol for symbol in VARIA_MARKET_CANDIDATES
+            if symbol not in {"BTC", "ETH", "HYPE"}
+        ],
+    }
+    path = VARIA_DIR.parent / "config.yaml"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return fallback
+    result = dict(fallback)
+    for key in ("major_symbols", "opportunity_symbols"):
+        prefix = f"{key}:"
+        line = next((item.strip() for item in lines if item.strip().startswith(prefix)), "")
+        if not line:
+            continue
+        try:
+            parsed = ast.literal_eval(line.split(":", 1)[1].strip())
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(parsed, list):
+            symbols = []
+            for value in parsed:
+                symbol = str(value or "").strip().upper()
+                if symbol and symbol not in symbols:
+                    symbols.append(symbol)
+            if symbols:
+                result[key] = symbols
+    return result
+
+
+def _varia_strategy_pools() -> Dict[str, Any]:
+    """Expose the real worker pools and fresh-quote readiness to the console."""
+    configured = _varia_strategy_symbol_config()
+    all_symbols = list(dict.fromkeys(VARIA_MARKET_CANDIDATES))
+    all_set = set(all_symbols)
+    majors = [symbol for symbol in configured["major_symbols"] if symbol in all_set]
+    opportunities = [
+        symbol for symbol in configured["opportunity_symbols"]
+        if symbol in all_set and symbol not in majors
+    ]
+    others = [
+        symbol for symbol in all_symbols
+        if symbol not in set(majors) and symbol not in set(opportunities)
+    ]
+    opportunity_pool = opportunities + others
+    ready = [
+        str(quote.get("symbol") or "").upper()
+        for quote in _varia_latest_quotes()
+        if quote.get("age_sec") is not None and int(quote["age_sec"]) <= 120
+    ]
+    return {
+        "total": len(all_symbols),
+        "major": majors,
+        "opportunity": opportunity_pool,
+        "quote_ready": [symbol for symbol in all_symbols if symbol in set(ready)],
+        "strategy_a": {
+            "eligible": all_symbols,
+            "major": majors,
+            "opportunity": opportunity_pool,
+        },
+        "strategy_b": {
+            "priority": opportunity_pool,
+            "fallback": majors,
+            "eligible": opportunity_pool + majors,
+        },
+    }
+
+
 def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
     vd = vd if isinstance(vd, dict) else _var_decibel()
@@ -1062,6 +1136,7 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         "running_hosts": running,
         "hosts": hosts,
         "budget": budget,
+        "strategy_pools": _varia_strategy_pools(),
     }
 
 

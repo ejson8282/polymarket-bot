@@ -268,6 +268,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-stop"' in html
     assert 'id="vdauto-vps1-strategy"' in html
     assert 'id="vdauto-vps2-strategy"' in html
+    assert 'id="vdauto-major-symbols"' in html
+    assert 'id="vdauto-opportunity-symbols"' in html
+    assert "2 分钟内已有 Var 与 Decibel 完整双边报价" in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
     assert "'/api/varia/automation/'+action" in html
@@ -345,6 +348,33 @@ def test_varia_automation_status_requires_config_and_live_worker(
     assert result["running_hosts"] == ["vps1"]
     assert result["hosts"]["vps1"]["running"] is True
     assert result["hosts"]["vps2"]["running"] is False
+
+
+def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("BTC", "ETH", "HYPE", "SOL", "XAU"))
+    (tmp_path / "config.yaml").write_text(
+        'strategy:\n  major_symbols: ["BTC", "ETH"]\n'
+        '  opportunity_symbols: ["XAU", "SOL"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [
+        {"symbol": "BTC", "age_sec": 30},
+        {"symbol": "SOL", "age_sec": 121},
+    ])
+
+    result = console._varia_strategy_pools()
+
+    assert result["major"] == ["BTC", "ETH"]
+    assert result["opportunity"] == ["XAU", "SOL", "HYPE"]
+    assert result["strategy_a"]["eligible"] == ["BTC", "ETH", "HYPE", "SOL", "XAU"]
+    assert result["strategy_b"]["priority"] == ["XAU", "SOL", "HYPE"]
+    assert result["strategy_b"]["fallback"] == ["BTC", "ETH"]
+    assert result["quote_ready"] == ["BTC"]
 
 
 def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:

@@ -205,6 +205,17 @@
 .vdauto-host-name{font-family:var(--mono);font-size:13px;font-weight:600}
 .vdauto-host-state{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .vdauto-strategy-note{grid-column:1/-1;font-size:11px;color:var(--faint)}
+.vdauto-pools{margin-top:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:13px 0}
+.vdauto-pools-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
+.vdauto-pools-title{font-size:13px;font-weight:650}.vdauto-pools-meta{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.vdauto-pool-rules{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-bottom:11px}
+.vdauto-pool-rule{padding:11px 13px;background:var(--panel)}.vdauto-pool-rule+.vdauto-pool-rule{border-left:1px solid var(--line)}
+.vdauto-pool-rule b{font-family:var(--mono);font-size:12px}.vdauto-pool-rule span{display:block;margin-top:4px;font-size:10.5px;color:var(--muted)}
+.vdauto-pool-row{display:grid;grid-template-columns:130px 1fr;gap:12px;align-items:start;padding:7px 0}
+.vdauto-pool-label{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding-top:4px}
+.vdauto-symbols{display:flex;gap:5px;flex-wrap:wrap}.vdauto-symbol{position:relative;border:1px solid var(--line);border-radius:5px;padding:3px 7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel)}
+.vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
+.vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
 .vdauto-settings{display:grid;grid-template-columns:1.1fr .8fr 1fr 1.5fr;gap:12px;margin-top:12px}
 .vdauto-field{min-width:0}
 .vdauto-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px}
@@ -221,7 +232,7 @@
 .vdauto-foot{font-size:11px;color:var(--faint);margin-top:10px}
 @media (max-width:1050px){.vdctl-form{grid-template-columns:repeat(3,minmax(120px,1fr))}}
 @media (max-width:1050px){.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-hosts{grid-template-columns:1fr}.vdauto-host+.vdauto-host{border-left:0;border-top:1px solid var(--line)}}
-@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
+@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-pool-rules{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
 </style>
 </head>
 <body>
@@ -326,6 +337,16 @@
         <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A">策略 A · 高交易量</option><option value="B">策略 B · 高权重长持仓</option></select></div>
         <div class="vdauto-strategy-note" id="vdauto-vps2-note"></div>
       </div>
+    </div>
+    <div class="vdauto-pools">
+      <div class="vdauto-pools-head"><div class="vdauto-pools-title">策略可选币种</div><div class="vdauto-pools-meta" id="vdauto-pools-meta">正在读取实际候选池</div></div>
+      <div class="vdauto-pool-rules">
+        <div class="vdauto-pool-rule"><b>策略 A · 高交易量</b><span id="vdauto-pool-a-rule">按设定比例交错选择主流币与机会币</span></div>
+        <div class="vdauto-pool-rule"><b>策略 B · 高权重长持仓</b><span id="vdauto-pool-b-rule">机会币优先，主流币仅作兜底</span></div>
+      </div>
+      <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
+      <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他共同币</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
+      <div class="vdauto-pool-foot">绿色圆点表示 2 分钟内已有 Var 与 Decibel 完整双边报价；没有圆点仍在候选池，worker 启动后会刷新并继续检查成本、资金费率、预算和仓位。</div>
     </div>
     <div class="vdauto-settings">
       <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
@@ -1558,6 +1579,19 @@
   function _vdAutoServiceLabel(value){return ({active:'后台在线',activating:'启动中',deactivating:'停止中',inactive:'已停止',failed:'后台异常',unknown:'状态未知'})[value]||value||'状态未知';}
   function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
 
+  function _vdAutoRenderPools(state){
+    const pools=state.strategy_pools||{}, major=pools.major||[], opportunity=pools.opportunity||[], ready=new Set(pools.quote_ready||[]);
+    const chips=items=>items.length?items.map(symbol=>'<span class="vdauto-symbol '+(ready.has(symbol)?'ready':'')+'">'+esc(symbol)+'</span>').join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
+    document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
+    document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
+    document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
+    document.getElementById('vdauto-pools-meta').textContent=(pools.total??major.length+opportunity.length)+' 个候选 · '+ready.size+' 个报价就绪';
+    const ratio=document.getElementById('vdauto-ratio').value||80;
+    document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
+    document.getElementById('vdauto-pool-b-rule').textContent='优先 '+(pools.strategy_b?.priority?.length??opportunity.length)+' 个机会币；BTC / ETH 等主流币兜底';
+  }
+
   function bindVDAuto(state){
     state=state||{}; window.__vdAutoState=state;
     const root=document.getElementById('vdauto-root'); if(!root) return;
@@ -1586,6 +1620,7 @@
       document.getElementById('vdauto-max').value=p.max_open_interval_minutes??180;
     }
     const major=document.getElementById('vdauto-ratio').value||80;
+    _vdAutoRenderPools(state);
     ['vps1','vps2'].forEach(host=>{
       const strategy=document.getElementById('vdauto-'+host+'-strategy').value;
       document.getElementById('vdauto-'+host+'-note').textContent=strategy==='A'
