@@ -941,6 +941,7 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     min_minutes = int(raw_min_minutes if raw_min_minutes is not None else 30)
     max_minutes = int(raw_max_minutes if raw_max_minutes is not None else 180)
     cap = _num(raw.get("weekly_loss_cap_usdc"))
+    max_spread = _num(raw.get("max_auto_spread_bps"))
     ratio = _num(raw.get("major_ratio"))
     hosts: Dict[str, dict] = {}
     for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
@@ -954,6 +955,7 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         "enabled": bool(raw.get("enabled")),
         "mode": mode,
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
+        "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 5)),
         "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
@@ -1061,7 +1063,7 @@ def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
     return result
 
 
-def _varia_strategy_pools() -> Dict[str, Any]:
+def _varia_strategy_pools(max_spread_bps: float = 5.0) -> Dict[str, Any]:
     """Expose the real worker pools and fresh-quote readiness to the console."""
     configured = _varia_strategy_symbol_config()
     all_symbols = list(dict.fromkeys(VARIA_MARKET_CANDIDATES))
@@ -1076,16 +1078,50 @@ def _varia_strategy_pools() -> Dict[str, Any]:
         if symbol not in set(majors) and symbol not in set(opportunities)
     ]
     opportunity_pool = opportunities + others
-    ready = [
-        str(quote.get("symbol") or "").upper()
-        for quote in _varia_latest_quotes()
-        if quote.get("age_sec") is not None and int(quote["age_sec"]) <= 120
-    ]
+    ready: List[str] = []
+    allowed: List[str] = []
+    blocked: List[str] = []
+    metrics: Dict[str, dict] = {}
+    for quote in _varia_latest_quotes():
+        symbol = str(quote.get("symbol") or "").upper()
+        age = quote.get("age_sec")
+        if not symbol or age is None or int(age) > 600:
+            continue
+        ready.append(symbol)
+        var_bid, var_ask = _num(quote.get("var_bid")), _num(quote.get("var_ask"))
+        dec_bid, dec_ask = _num(quote.get("decibel_bid")), _num(quote.get("decibel_ask"))
+        if None in (var_bid, var_ask, dec_bid, dec_ask):
+            continue
+        var_mid = (var_bid + var_ask) / 2
+        dec_mid = (dec_bid + dec_ask) / 2
+        if var_mid <= 0 or dec_mid <= 0:
+            continue
+        var_spread = (var_ask - var_bid) / var_mid * 10000
+        dec_spread = (dec_ask - dec_bid) / dec_mid * 10000
+        costs = quote.get("costs") if isinstance(quote.get("costs"), dict) else {}
+        numeric_costs = [value for value in (_num(item) for item in costs.values()) if value is not None]
+        entry_cost = max(0.0, min(numeric_costs)) if numeric_costs else None
+        observed = [var_spread, dec_spread] + ([entry_cost] if entry_cost is not None else [])
+        worst = max(observed)
+        can_trade = worst <= max_spread_bps
+        metrics[symbol] = {
+            "var_spread_bps": round(var_spread, 2),
+            "decibel_spread_bps": round(dec_spread, 2),
+            "entry_cost_bps": round(entry_cost, 2) if entry_cost is not None else None,
+            "display_bps": round(worst, 2),
+            "allowed": can_trade,
+            "age_sec": int(age),
+        }
+        (allowed if can_trade else blocked).append(symbol)
     return {
         "total": len(all_symbols),
         "major": majors,
         "opportunity": opportunity_pool,
         "quote_ready": [symbol for symbol in all_symbols if symbol in set(ready)],
+        "allowed": [symbol for symbol in all_symbols if symbol in set(allowed)],
+        "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
+        "metrics": metrics,
+        "max_spread_bps": max_spread_bps,
         "strategy_a": {
             "eligible": all_symbols,
             "major": majors,
@@ -1136,7 +1172,7 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         "running_hosts": running,
         "hosts": hosts,
         "budget": budget,
-        "strategy_pools": _varia_strategy_pools(),
+        "strategy_pools": _varia_strategy_pools(float(state["max_auto_spread_bps"])),
     }
 
 
@@ -2783,6 +2819,7 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
     if mode not in {"semi_auto", "full_auto"}:
         raise ValueError("自动模式须为半自动或全自动")
     cap = _num(payload.get("weekly_loss_cap_usdc"))
+    max_spread = _num(payload.get("max_auto_spread_bps"))
     ratio = _num(payload.get("major_ratio"))
     pressure = payload.get("pressure_test") if isinstance(payload.get("pressure_test"), dict) else {}
     min_minutes = _num(pressure.get("min_open_interval_minutes"))
@@ -2790,6 +2827,8 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
     hosts = payload.get("hosts") if isinstance(payload.get("hosts"), dict) else {}
     if cap is None or not 0 <= cap <= 500:
         raise ValueError("每周预算须为 0–500 USDC")
+    if max_spread is None or not 0.1 <= max_spread <= 100:
+        raise ValueError("最高综合点差须为 0.1–100 bps")
     if ratio is None or not 0 <= ratio <= 1:
         raise ValueError("A 策略主流币比例须为 0–100%")
     if min_minutes is None or max_minutes is None or not 1 <= min_minutes <= max_minutes <= 1440:
@@ -2805,6 +2844,7 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
     return {
         "mode": mode,
         "weekly_loss_cap_usdc": str(cap),
+        "max_auto_spread_bps": str(max_spread),
         "major_ratio": str(ratio),
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),

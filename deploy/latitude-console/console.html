@@ -215,8 +215,9 @@
 .vdauto-pool-label{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding-top:4px}
 .vdauto-symbols{display:flex;gap:5px;flex-wrap:wrap}.vdauto-symbol{position:relative;border:1px solid var(--line);border-radius:5px;padding:3px 7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel)}
 .vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
+.vdauto-symbol.blocked{border-color:rgba(229,72,77,.5);color:var(--danger);padding-left:15px}.vdauto-symbol.blocked:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--danger)}
 .vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
-.vdauto-settings{display:grid;grid-template-columns:1.1fr .8fr 1fr 1.5fr;gap:12px;margin-top:12px}
+.vdauto-settings{display:grid;grid-template-columns:1.1fr .8fr .8fr 1fr 1.5fr;gap:12px;margin-top:12px}
 .vdauto-field{min-width:0}
 .vdauto-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px}
 .vdauto-field select,.vdauto-field input[type=number]{width:100%;height:38px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--text);padding:0 10px;font-family:var(--mono);font-size:12px;outline:none}
@@ -346,11 +347,12 @@
       </div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他共同币</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
-      <div class="vdauto-pool-foot">绿色圆点表示 2 分钟内已有 Var 与 Decibel 完整双边报价；没有圆点仍在候选池，worker 启动后会刷新并继续检查成本、资金费率、预算和仓位。</div>
+      <div class="vdauto-pool-foot">绿色：报价新鲜且点差合格；红色：任一平台点差或跨平台开仓成本超过上限；灰色：等待新鲜报价。自动策略只会从绿色币种中下单。</div>
     </div>
     <div class="vdauto-settings">
       <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
       <div class="vdauto-field"><label>每台 VPS 每周预算 USDC</label><input id="vdauto-cap" type="number" min="0" max="500" step="1"></div>
+      <div class="vdauto-field"><label>最高综合点差 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
       <div class="vdauto-field"><label>A 策略主流币比例</label><div class="vdauto-ratio"><input id="vdauto-ratio" type="range" min="0" max="100" step="5"><output id="vdauto-ratio-out">80%</output></div></div>
       <div class="vdauto-field"><label>新开仓间隔</label><div class="vdauto-interval"><label class="vdauto-check"><input id="vdauto-pressure" type="checkbox"> 启用</label><input id="vdauto-min" type="number" min="1" max="1440" step="5"><span>至</span><input id="vdauto-max" type="number" min="1" max="1440" step="5"></div></div>
     </div>
@@ -1580,13 +1582,13 @@
   function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
 
   function _vdAutoRenderPools(state){
-    const pools=state.strategy_pools||{}, major=pools.major||[], opportunity=pools.opportunity||[], ready=new Set(pools.quote_ready||[]);
-    const chips=items=>items.length?items.map(symbol=>'<span class="vdauto-symbol '+(ready.has(symbol)?'ready':'')+'">'+esc(symbol)+'</span>').join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    const pools=state.strategy_pools||{}, major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(pools.allowed||[]), blocked=new Set(pools.blocked||[]), metrics=pools.metrics||{};
+    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待新鲜报价':('Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 开仓 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
     document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
-    document.getElementById('vdauto-pools-meta').textContent=(pools.total??major.length+opportunity.length)+' 个候选 · '+ready.size+' 个报价就绪';
+    document.getElementById('vdauto-pools-meta').textContent=(pools.total??major.length+opportunity.length)+' 个候选 · '+allowed.size+' 个可做 · '+blocked.size+' 个点差过高';
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
     document.getElementById('vdauto-pool-b-rule').textContent='优先 '+(pools.strategy_b?.priority?.length??opportunity.length)+' 个机会币；BTC / ETH 等主流币兜底';
@@ -1612,6 +1614,7 @@
       document.getElementById('vdauto-vps2-strategy').value=(hosts.vps2||{}).strategy||'B';
       document.getElementById('vdauto-mode').value=state.mode||'full_auto';
       document.getElementById('vdauto-cap').value=state.weekly_loss_cap_usdc??15;
+      document.getElementById('vdauto-spread').value=state.max_auto_spread_bps??5;
       document.getElementById('vdauto-ratio').value=Math.round(Number(state.major_ratio??.8)*100);
       document.getElementById('vdauto-ratio-out').value=document.getElementById('vdauto-ratio').value+'%';
       const p=state.pressure_test||{};
@@ -1635,6 +1638,7 @@
   function vdAutoPayload(){
     return {mode:document.getElementById('vdauto-mode').value,
       weekly_loss_cap_usdc:Number(document.getElementById('vdauto-cap').value),
+      max_auto_spread_bps:Number(document.getElementById('vdauto-spread').value),
       major_ratio:Number(document.getElementById('vdauto-ratio').value)/100,
       pressure_test:{enabled:document.getElementById('vdauto-pressure').checked,
         min_open_interval_minutes:Number(document.getElementById('vdauto-min').value),max_open_interval_minutes:Number(document.getElementById('vdauto-max').value)},
@@ -1669,7 +1673,7 @@
     try{const r=await fetch('/api/varia/automation',{cache:'no-store'});if(r.ok){const j=await r.json();if(window.__state)window.__state.varia_automation=j;bindVDAuto(j);}}catch(e){}
   }
   (function(){
-    const ids=['vdauto-vps1-enabled','vdauto-vps2-enabled','vdauto-vps1-strategy','vdauto-vps2-strategy','vdauto-mode','vdauto-cap','vdauto-ratio','vdauto-pressure','vdauto-min','vdauto-max'];
+    const ids=['vdauto-vps1-enabled','vdauto-vps2-enabled','vdauto-vps1-strategy','vdauto-vps2-strategy','vdauto-mode','vdauto-cap','vdauto-spread','vdauto-ratio','vdauto-pressure','vdauto-min','vdauto-max'];
     ids.forEach(id=>document.getElementById(id).addEventListener('input',()=>{window.__vdAutoDirty=true;if(id==='vdauto-ratio')document.getElementById('vdauto-ratio-out').value=document.getElementById(id).value+'%';bindVDAuto(window.__vdAutoState||{});}));
     document.getElementById('vdauto-save').addEventListener('click',()=>vdAutoSave(false));
     document.getElementById('vdauto-start').addEventListener('click',()=>vdAutoAction('start'));

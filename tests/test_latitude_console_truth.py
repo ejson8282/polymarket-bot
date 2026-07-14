@@ -270,7 +270,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-strategy"' in html
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
-    assert "2 分钟内已有 Var 与 Decibel 完整双边报价" in html
+    assert "自动策略只会从绿色币种中下单" in html
+    assert 'id="vdauto-spread"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
     assert "'/api/varia/automation/'+action" in html
@@ -284,6 +285,7 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
         "enabled": True,
         "mode": "full_auto",
         "weekly_loss_cap_usdc": 0,
+        "max_auto_spread_bps": 5,
         "major_ratio": 0,
         "pressure_test": {
             "enabled": True,
@@ -298,6 +300,7 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
 
     assert result["enabled"] is True
     assert result["weekly_loss_cap_usdc"] == "0.0"
+    assert result["max_auto_spread_bps"] == "5.0"
     assert result["major_ratio"] == "0.0"
     assert result["hosts"] == {
         "vps1": {"enabled": True, "strategy": "B"},
@@ -309,6 +312,7 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
     result = console._varia_auto_payload({
         "mode": "full_auto",
         "weekly_loss_cap_usdc": 15,
+        "max_auto_spread_bps": 5,
         "major_ratio": 0.8,
         "pressure_test": {
             "enabled": True,
@@ -323,6 +327,7 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
 
     assert result["hosts"]["vps1"] == {"enabled": True, "strategy": "A"}
     assert result["hosts"]["vps2"] == {"enabled": True, "strategy": "B"}
+    assert result["max_auto_spread_bps"] == "5.0"
     assert result["pressure_test"]["max_open_interval_minutes"] == 180
 
 
@@ -363,8 +368,9 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
         encoding="utf-8",
     )
     monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [
-        {"symbol": "BTC", "age_sec": 30},
-        {"symbol": "SOL", "age_sec": 121},
+        {"symbol": "BTC", "age_sec": 30, "var_bid": 99.99, "var_ask": 100.01,
+         "decibel_bid": 99.99, "decibel_ask": 100.01, "costs": {"var_buy": 2, "var_sell": 2}},
+        {"symbol": "SOL", "age_sec": 601},
     ])
 
     result = console._varia_strategy_pools()
@@ -375,6 +381,28 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
     assert result["strategy_b"]["priority"] == ["XAU", "SOL", "HYPE"]
     assert result["strategy_b"]["fallback"] == ["BTC", "ETH"]
     assert result["quote_ready"] == ["BTC"]
+    assert result["allowed"] == ["BTC"]
+    assert result["blocked"] == []
+    assert result["metrics"]["BTC"]["display_bps"] == 2.0
+
+
+def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("SOL",))
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": [], "opportunity_symbols": ["SOL"],
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [{
+        "symbol": "SOL", "age_sec": 20,
+        "var_bid": 99.9, "var_ask": 100.1,
+        "decibel_bid": 99.5, "decibel_ask": 100.5,
+        "costs": {"var_buy": 6, "var_sell": 6},
+    }])
+
+    result = console._varia_strategy_pools(5)
+
+    assert result["allowed"] == []
+    assert result["blocked"] == ["SOL"]
+    assert result["metrics"]["SOL"]["display_bps"] > 5
 
 
 def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:
