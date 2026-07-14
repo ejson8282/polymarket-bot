@@ -2486,6 +2486,114 @@ async def sa_paper(payload: dict, request: Request) -> JSONResponse:
     return JSONResponse({**result, "worker_pid": _sa_worker_pid()})
 
 
+# ---------- 打新 & Alpha:代理 router 打新操作(原生内嵌,不跳转不走飞书 Bot) ----------
+# router(Windows :8080)是操作真源;控制台受控写端点代理到它,带闸门+审计。
+# 关键安全:router 的 /ipo/action 是"提交完整状态+动作"模式——精简 payload 会冲空排班。
+# 故 set_status/set_mode/finish_round 等一律走"拉当前状态→改一处→回传完整状态"。
+IPO_ROUTER_BASE = os.getenv("IPO_ROUTER_BASE", "http://100.82.86.62:8080")
+
+
+def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, Any]:
+    import urllib.request
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            try:
+                return {"ok": True, "status": resp.status, "data": json.loads(raw)}
+            except Exception:
+                return {"ok": True, "status": resp.status, "data": raw[:300]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+
+def _ipo_current_state() -> Optional[dict]:
+    """拉 router 当前打新状态(内层 ipo dict),回传式操作的基底。"""
+    d = _do_fetch(f"{IPO_ROUTER_BASE}/dashboard/ipo/state", timeout=8.0)
+    if not isinstance(d, dict):
+        return None
+    return d.get("ipo") if isinstance(d.get("ipo"), dict) else d
+
+
+@app.post("/api/ipo/import")
+async def ipo_import(payload: dict, request: Request) -> JSONResponse:
+    """立即导入新股(HKEX)——独立端点、无状态、最安全。等价日 cron 的 on-demand 版。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    body = {"include_pdf_details": bool((payload or {}).get("include_pdf_details"))}
+    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/import/hkex", body, timeout=90.0)
+    _audit("ipo_import", ok=r.get("ok"), body=body,
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
+    n = len((data.get("ipo") or data).get("stocks") or []) if isinstance(data, dict) else 0
+    return JSONResponse({"ok": True, "msg": f"HKEX 新股已导入(新股池 {n} 只)", "stocks": n})
+
+
+@app.post("/api/ipo/action")
+async def ipo_action(payload: dict, request: Request) -> JSONResponse:
+    """打新操作:set_mode / set_status / subscribe_active / subscribe_all / finish_round。
+    回传式安全:拉当前完整状态 → 按 action 改动一处 → 整体回传 router,绝不冲空排班。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    allowed = {"set_mode", "set_status", "subscribe_active", "subscribe_all", "finish_round"}
+    if action not in allowed:
+        return JSONResponse({"ok": False, "error": f"action 须为 {sorted(allowed)}"}, status_code=400)
+    st = _ipo_current_state()
+    if st is None:
+        return JSONResponse({"ok": False, "error": "拉取 router 当前打新状态失败,已中止(不冒险空提交)"}, status_code=502)
+    mode = st.get("mode")
+    round_ = st.get("round") or {}
+    stocks = st.get("stocks") or []
+    entries = [dict(e) for e in (st.get("entries") or []) if isinstance(e, dict)]
+
+    detail = ""
+    if action == "set_mode":
+        new_mode = str((payload or {}).get("mode") or "")
+        if new_mode not in ("conservative", "balanced", "aggressive"):
+            return JSONResponse({"ok": False, "error": "mode 须为 conservative/balanced/aggressive"}, status_code=400)
+        mode = new_mode
+        detail = f"策略模式 → {new_mode}"
+    elif action == "set_status":
+        acc = str((payload or {}).get("account_id") or "")
+        status = str((payload or {}).get("status") or "")
+        if not acc or not status:
+            return JSONResponse({"ok": False, "error": "set_status 需 account_id + status"}, status_code=400)
+        hit = False
+        for e in entries:
+            if str(e.get("accountId")) == acc:
+                e["status"] = status
+                hit = True
+        if not hit:
+            return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
+        detail = f"{acc} 状态 → {status}"
+    elif action in ("subscribe_active", "subscribe_all"):
+        target_all = action == "subscribe_all"
+        n = 0
+        for e in entries:
+            if e.get("status") == "跳过" and not target_all:
+                continue
+            if e.get("status") in (None, "", "待申购") or target_all:
+                if e.get("status") != "跳过" or target_all:
+                    e["status"] = "已申购"
+                    n += 1
+        detail = f"标记{'全部' if target_all else '活跃'}为已申购({n} 个)"
+    elif action == "finish_round":
+        detail = "结束本轮(router 生成手续费流水)"
+
+    body = {"action": action, "mode": mode, "round": round_, "stocks": stocks, "entries": entries}
+    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/action", body, timeout=40.0)
+    _audit("ipo_action", action=action, detail=detail, ok=r.get("ok"),
+           source="cloudflare" if _is_cloudflare(request) else "tailnet")
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    return JSONResponse({"ok": True, "msg": detail or (action + " 已提交")})
+
+
 # ---------- 二期:Scan 后台任务 / 市场配置应用 / 代理池 / SA 草稿 ----------
 
 PM_CONFIG = MAKER_DIR / "config.json"
