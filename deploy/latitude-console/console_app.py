@@ -1416,7 +1416,9 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
     if not mm.get("present"):
         alerts.append({"tag": "INFRA", "msg": "<b>mac-mini 状态导出器失联</b>(:8620;影响 signer/pf-proxy 可见性)", "page": "vardec", "sev": "warn"})
     eq = vd.get("equity_history") or {}
-    if eq.get("present"):
+    auto_active = bool((vd.get("auto") or {}).get("enabled"))
+    exposure_active = bool(vd.get("pairs"))
+    if eq.get("present") and (auto_active or exposure_active):
         try:
             last_d = datetime.fromisoformat(str(eq["points"][-1]["t"]))
             if (datetime.now() - last_d).total_seconds() > 2 * 86400:

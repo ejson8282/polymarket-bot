@@ -245,10 +245,30 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "无真数据宁可显示未知" in html
     assert "旧 Var/Decibel worker 已退出生产" in html
     assert 'id="alertbar" style="display:none"' in html
+    assert "查看全部 '+alerts.length+' 条" in html
+    assert 'class="alert-more"' in html
     assert "hosts[h].age_sec??999999" in html
     assert "四源权益不完整" in html
     assert "四源交易量不完整" in html
     assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
+
+
+def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> None:
+    monkeypatch.setattr(console, "_mtime_age", lambda _: None)
+    old_equity = {
+        "present": True,
+        "points": [{"t": "2026-01-01", "v": 100.0}, {"t": "2026-01-02", "v": 99.0}],
+    }
+    base = {"equity_history": old_equity, "auto": {"enabled": False}, "pairs": []}
+
+    quiet = console._alerts(base, {}, {}, {"present": True}, {"present": True}, {})
+    assert not any("权益曲线断更" in item["msg"] for item in quiet)
+
+    active = console._alerts(
+        {**base, "auto": {"enabled": True}},
+        {}, {}, {"present": True}, {"present": True}, {},
+    )
+    assert any("权益曲线断更" in item["msg"] for item in active)
 
 
 def _shadow_database(path: Path, *, safety_matched: int = 1, actions_matched: int = 1) -> None:
