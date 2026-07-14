@@ -1540,7 +1540,7 @@
   function renderVarDecControl(box){
     if(!document.getElementById('vdctl-root')){
       box.innerHTML='<div id="vdctl-root">'+
-        '<div class="operation-head"><div><div class="operation-title">Var / Decibel 仓位控制</div><div class="operation-note">原生操作区 · 独立读取 VPS1 / VPS2 · 任务后台执行，页面无需等待</div></div><div class="operation-state" id="vdctl-state"><i></i><span>正在核对状态</span></div></div>'+
+        '<div class="operation-head"><div><div class="operation-title">Var / Decibel 仓位控制</div><div class="operation-note">原生操作区 · 独立读取 VPS1 / VPS2 · 候选交易对按历史 24h 量排序，提交前实时验证双边支持</div></div><div class="operation-state" id="vdctl-state"><i></i><span>正在核对状态</span></div></div>'+
         '<div class="vdctl-band"><div class="vdctl-form">'+
           '<div class="vdctl-field"><label>执行账户</label><select id="vdctl-host"><option value="vps1">VPS1</option><option value="vps2">VPS2</option></select></div>'+
           '<div class="vdctl-field"><label>交易对</label><select id="vdctl-symbol"></select></div>'+

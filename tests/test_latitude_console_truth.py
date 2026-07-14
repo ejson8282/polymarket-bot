@@ -280,6 +280,18 @@ def test_varia_quote_direction_uses_lower_cross_venue_entry_cost() -> None:
     assert result["costs"]["var_buy"] < result["costs"]["var_sell"]
 
 
+def test_varia_control_lists_full_ranked_market_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [])
+    monkeypatch.setattr(console, "_varia_recent_jobs", lambda: [])
+    monkeypatch.setattr(console, "_varia_active_job", lambda: None)
+
+    state = console._varia_control_state({"pairs": [], "single_leg": [], "hosts": {}})
+
+    assert len(state["symbols"]) == 34
+    assert state["symbols"][:6] == ["BTC", "ETH", "HYPE", "XAU", "SPCX", "SOL"]
+    assert state["symbols"][-3:] == ["CBRS", "ZRO", "CHIP"]
+
+
 def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", tmp_path / "data")
     command = console._varia_live_command(

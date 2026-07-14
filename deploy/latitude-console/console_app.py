@@ -34,6 +34,14 @@ VARIA_MANUAL_JOB_UNIT = os.getenv(
     "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
 )
 VARIA_VPS2_SSH = os.getenv("VARIA_VPS2_SSH", "ubuntu@100.101.50.40")
+VARIA_MARKET_CANDIDATES = tuple(
+    item.strip().upper() for item in os.getenv(
+        "VARIA_MARKET_CANDIDATES",
+        "BTC,ETH,HYPE,XAU,SPCX,SOL,MU,XRP,QQQ,CL,ZEC,XPL,NEAR,TAO,ADA,BNB,"
+        "NVDA,TSLA,SNDK,SUI,FARTCOIN,COPPER,NATGAS,EWY,AAVE,DOGE,APT,LINK,MEGA,"
+        "TRUMP,WLFI,CBRS,ZRO,CHIP",
+    ).split(",") if item.strip()
+)
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
@@ -897,9 +905,14 @@ def _varia_job_summary(status: str, result: dict) -> str:
 def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     vd = vd if isinstance(vd, dict) else _var_decibel()
     quotes = _varia_latest_quotes()
-    symbols = sorted({q["symbol"] for q in quotes if q.get("symbol")})
-    symbols = sorted(set(symbols) | {str(p.get("symbol") or "").upper()
-                                    for p in vd.get("pairs", [])})
+    symbols: List[str] = []
+    for symbol in (
+        list(VARIA_MARKET_CANDIDATES)
+        + [str(q.get("symbol") or "").upper() for q in quotes]
+        + [str(p.get("symbol") or "").upper() for p in vd.get("pairs", [])]
+    ):
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
     jobs = _varia_recent_jobs()
     return {
         "symbols": symbols, "quotes": quotes, "pairs": vd.get("pairs", []),
