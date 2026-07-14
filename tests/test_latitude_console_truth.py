@@ -260,6 +260,38 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "打开旧只读详情" not in html
 
 
+def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda *_args, **_kwargs: {
+            "ipo": {
+                "stocks": [
+                    {
+                        "code": "2523",
+                        "name": "永康控股有限公司",
+                        "nameZh": "永康控股有限公司",
+                        "nameEn": "EKH LIMITED",
+                    }
+                ]
+            }
+        },
+    )
+
+    result = console._ipo()
+
+    assert result["stocks"][0]["name"] == "永康控股有限公司"
+    assert result["stocks"][0]["name_zh"] == "永康控股有限公司"
+    assert result["stocks"][0]["name_en"] == "EKH LIMITED"
+
+
+def test_console_renders_chinese_stock_name_before_english() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "const primary=x.name_zh||x.name||x.name_en||'—'" in html
+    assert 'class="stock-name-en"' in html
+
+
 def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> None:
     monkeypatch.setattr(console, "_mtime_age", lambda _: None)
     old_equity = {

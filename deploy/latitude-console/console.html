@@ -113,6 +113,7 @@
   .ipo3 h3{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px}
   .ipo{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12.5px}
   .ipo .nm{font-weight:600}.ipo .dt{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px}
+  .stock-name-en{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:3px;line-height:1.35}
   /* Single Account 驾驶舱专用 */
   .phases{display:flex;gap:0;margin-top:16px}
   .phase{flex:1;position:relative;padding:10px 14px 12px;border:1px solid var(--line);background:var(--panel);font-size:12px}
@@ -1088,11 +1089,13 @@
         '<span class="chip info" style="cursor:pointer" onclick="window.open(\'http://100.82.86.62:8081/\',\'_blank\')">操作在核算台 →</span>';
     }
     const st=document.getElementById('hk-stocks');
-    if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>
-      '<tr><td><b>'+esc(x.name||'—')+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+'</td>'+
+    if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>{
+      const primary=x.name_zh||x.name||x.name_en||'—';
+      const secondary=x.name_en&&x.name_en!==primary?'<div class="stock-name-en">'+esc(x.name_en)+'</div>':'';
+      return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+secondary+'</td>'+
       '<td class="num">'+(x.score??'—')+'</td><td class="num">—</td><td class="num">'+(x.fee??'—')+'</td>'+
       '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
-      '<td style="color:var(--muted)">'+esc(x.note||'')+'</td></tr>').join('')
+      '<td style="color:var(--muted)">'+esc(x.note||'')+'</td></tr>'}).join('')
       : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
     const en=document.getElementById('hk-entries');
     if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>

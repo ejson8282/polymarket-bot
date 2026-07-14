@@ -1178,7 +1178,14 @@ def _ipo() -> Dict[str, Any]:
     entries = inner.get("entries") if isinstance(inner.get("entries"), list) else []
 
     def _stock(s: dict) -> dict:
-        return {"name": str(s.get("name") or s.get("title") or s.get("code") or "")[:24],
+        name_zh = str(
+            s.get("nameZh") or s.get("name_zh") or s.get("chineseName") or ""
+        ).strip()
+        name_en = str(s.get("nameEn") or s.get("name_en") or "").strip()
+        name = str(s.get("name") or s.get("title") or s.get("code") or "").strip()
+        return {"name": (name_zh or name or name_en)[:40],
+                "name_zh": name_zh[:40],
+                "name_en": name_en[:72],
                 "code": str(s.get("code") or ""),
                 "score": s.get("score"),
                 "fee": s.get("fee") or s.get("entryFee") or s.get("entry_fee"),
