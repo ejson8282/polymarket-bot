@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -243,7 +244,6 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     ):
         assert fake not in html
     assert "无真数据宁可显示未知" in html
-    assert "旧 Var/Decibel worker 已退出生产" in html
     assert 'id="alertbar" style="display:none"' in html
     assert "查看全部 '+alerts.length+' 条" in html
     assert 'class="alert-more"' in html
@@ -252,7 +252,7 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "四源交易量不完整" in html
     assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
     assert "旧自动化" not in html
-    assert "<span class=\"on\">总览</span><span>仓位控制</span><span>成交记录</span><span>统计汇总</span>" in html
+    assert "<span class=\"on\">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
         assert duplicate_tab not in html
     assert "进入 Var/Decibel 操作面板" not in html
@@ -263,11 +263,200 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdctl-symbol"' in html
     assert 'id="vdctl-open"' in html
     assert 'id="vdctl-close"' in html
+    assert 'id="vdauto-root"' in html
+    assert 'id="vdauto-start"' in html
+    assert 'id="vdauto-stop"' in html
+    assert 'id="vdauto-vps1-strategy"' in html
+    assert 'id="vdauto-vps2-strategy"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
-    assert "原生操作区" in html
-    assert "人工开仓与真实 reduce-only 平仓统一在本页“仓位控制”中完成" in html
+    assert "'/api/varia/automation/'+action" in html
+    assert "保存配置不会启动后台" in html
+    assert "自动运行的补充入口" in html
     assert "打开旧只读详情" not in html
+
+
+def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
+    result = console._normalize_varia_auto_state({
+        "enabled": True,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 0,
+        "major_ratio": 0,
+        "pressure_test": {
+            "enabled": True,
+            "min_open_interval_minutes": 30,
+            "max_open_interval_minutes": 180,
+        },
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "b"},
+            "vps2": {"enabled": False, "strategy": "invalid"},
+        },
+    })
+
+    assert result["enabled"] is True
+    assert result["weekly_loss_cap_usdc"] == "0.0"
+    assert result["major_ratio"] == "0.0"
+    assert result["hosts"] == {
+        "vps1": {"enabled": True, "strategy": "B"},
+        "vps2": {"enabled": False, "strategy": "A"},
+    }
+
+
+def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
+    result = console._varia_auto_payload({
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "pressure_test": {
+            "enabled": True,
+            "min_open_interval_minutes": 30,
+            "max_open_interval_minutes": 180,
+        },
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+
+    assert result["hosts"]["vps1"] == {"enabled": True, "strategy": "A"}
+    assert result["hosts"]["vps2"] == {"enabled": True, "strategy": "B"}
+    assert result["pressure_test"]["max_open_interval_minutes"] == 180
+
+
+def test_varia_automation_status_requires_config_and_live_worker(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": True,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    monkeypatch.setattr(console, "_varia_worker_status", lambda host: "active" if host == "vps1" else "inactive")
+
+    result = console._varia_automation_state({"budget": {"hosts": {}}})
+
+    assert result["status"] == "partial"
+    assert result["running_hosts"] == ["vps1"]
+    assert result["hosts"]["vps1"]["running"] is True
+    assert result["hosts"]["vps2"]["running"] is False
+
+
+def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(cmd, timeout, cwd=None, env=None):
+        calls.append((cmd, timeout, env))
+        return {"rc": 0, "out": "inactive", "err": ""}
+
+    monkeypatch.setattr(console, "_run_cmd", fake_run)
+
+    console._varia_worker_action("vps1", "is-active")
+    console._varia_worker_action("vps2", "is-active")
+
+    assert calls[0][0] == [
+        "systemctl", "--user", "is-active", "var-decibel-worker@vps1.service"
+    ]
+    assert calls[0][2]["XDG_RUNTIME_DIR"].startswith("/run/user/")
+    assert calls[1][0][-1] == "systemctl --user is-active var-decibel-worker@vps2.service || true"
+    assert any("100.101.50.40" in part for part in calls[1][0])
+
+
+def test_write_auto_strategy_preserves_future_fields(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": False,
+        "mode": "semi_auto",
+        "weekly_loss_cap_usdc": "15",
+        "major_ratio": "0.8",
+        "hosts": {},
+        "future_worker_setting": {"keep": True},
+    })
+
+    result = console._write_auto_strategy({"enabled": True})
+    saved = json.loads((tmp_path / "auto_strategy_state.json").read_text())
+
+    assert result["ok"] is True
+    assert saved["enabled"] is True
+    assert saved["future_worker_setting"] == {"keep": True}
+
+
+def test_start_automation_reconciles_selected_hosts_without_trading(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": False,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": False, "strategy": "B"},
+        },
+    })
+    monkeypatch.setattr(console, "_sync_varia_auto_state_to_vps2", lambda: {"ok": True})
+    monkeypatch.setattr(console, "_varia_automation_state", lambda vd=None: {"status": "running"})
+    actions = []
+
+    def fake_action(host, action):
+        actions.append((host, action))
+        return {"rc": 0, "out": "active" if host == "vps1" else "inactive", "err": ""}
+
+    monkeypatch.setattr(console, "_varia_worker_action", fake_action)
+    request = type("RequestStub", (), {"headers": {}})()
+
+    response = asyncio.run(console.varia_automation_start(request))
+    saved = json.loads((tmp_path / "auto_strategy_state.json").read_text())
+
+    assert response.status_code == 200
+    assert saved["enabled"] is True
+    assert ("vps1", "start") in actions
+    assert ("vps2", "stop") in actions
+    assert not any("open" in action or "close" in action for _, action in actions)
+
+
+def test_stop_automation_only_stops_workers_and_leaves_positions_alone(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": True,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    monkeypatch.setattr(console, "_sync_varia_auto_state_to_vps2", lambda: {"ok": True})
+    monkeypatch.setattr(console, "_varia_automation_state", lambda vd=None: {"status": "stopped"})
+    actions = []
+
+    def fake_action(host, action):
+        actions.append((host, action))
+        return {"rc": 0, "out": "inactive", "err": ""}
+
+    monkeypatch.setattr(console, "_varia_worker_action", fake_action)
+    request = type("RequestStub", (), {"headers": {}})()
+
+    response = asyncio.run(console.varia_automation_stop(request))
+    saved = json.loads((tmp_path / "auto_strategy_state.json").read_text())
+
+    assert response.status_code == 200
+    assert saved["enabled"] is False
+    assert actions == [("vps1", "stop"), ("vps2", "stop")]
 
 
 def test_varia_quote_direction_uses_lower_cross_venue_entry_cost() -> None:

@@ -34,6 +34,12 @@ VARIA_MANUAL_JOB_UNIT = os.getenv(
     "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
 )
 VARIA_VPS2_SSH = os.getenv("VARIA_VPS2_SSH", "ubuntu@100.101.50.40")
+VARIA_AUTO_WORKER_TEMPLATE = os.getenv(
+    "VARIA_AUTO_WORKER_TEMPLATE", "var-decibel-worker@{host}.service"
+)
+VARIA_VPS2_REPO = os.getenv(
+    "VARIA_VPS2_REPO", "/home/ubuntu/varia-decibel-farming-live"
+)
 VARIA_MARKET_CANDIDATES = tuple(
     item.strip().upper() for item in os.getenv(
         "VARIA_MARKET_CANDIDATES",
@@ -922,6 +928,143 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     }
 
 
+def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    raw_hosts = raw.get("hosts") if isinstance(raw.get("hosts"), dict) else {}
+    pressure = raw.get("pressure_test") if isinstance(raw.get("pressure_test"), dict) else {}
+    mode = str(raw.get("mode") or "semi_auto")
+    if mode not in {"semi_auto", "full_auto"}:
+        mode = "semi_auto"
+    raw_min_minutes = _num(pressure.get("min_open_interval_minutes"))
+    raw_max_minutes = _num(pressure.get("max_open_interval_minutes"))
+    min_minutes = int(raw_min_minutes if raw_min_minutes is not None else 30)
+    max_minutes = int(raw_max_minutes if raw_max_minutes is not None else 180)
+    cap = _num(raw.get("weekly_loss_cap_usdc"))
+    ratio = _num(raw.get("major_ratio"))
+    hosts: Dict[str, dict] = {}
+    for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
+        configured = raw_hosts.get(host) if isinstance(raw_hosts.get(host), dict) else {}
+        strategy = str(configured.get("strategy") or default_strategy).upper()
+        hosts[host] = {
+            "enabled": bool(configured.get("enabled")),
+            "strategy": "B" if strategy == "B" else "A",
+        }
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "mode": mode,
+        "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
+        "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
+        "pressure_test": {
+            "enabled": bool(pressure.get("enabled")),
+            "min_open_interval_minutes": max(1, min_minutes),
+            "max_open_interval_minutes": max(max(1, min_minutes), max_minutes),
+        },
+        "hosts": hosts,
+        "updated_at": str(raw.get("updated_at") or ""),
+    }
+
+
+def _varia_auto_state_file() -> Path:
+    return VARIA_DIR / "auto_strategy_state.json"
+
+
+def _varia_auto_unit(host: str) -> str:
+    return VARIA_AUTO_WORKER_TEMPLATE.format(host=host)
+
+
+def _systemd_user_env() -> Dict[str, str]:
+    env = dict(os.environ)
+    runtime_dir = f"/run/user/{os.getuid()}"
+    env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
+    return env
+
+
+def _varia_worker_action(host: str, action: str) -> Dict[str, Any]:
+    if host not in {"vps1", "vps2"} or action not in {"start", "stop", "is-active"}:
+        return {"rc": -1, "out": "", "err": "invalid worker action"}
+    unit = _varia_auto_unit(host)
+    if host == "vps1":
+        return _run_cmd(
+            ["systemctl", "--user", action, unit], timeout=20,
+            env=_systemd_user_env(),
+        )
+    remote_action = f"systemctl --user {action} {shlex.quote(unit)}"
+    if action == "is-active":
+        remote_action += " || true"
+    return _run_cmd([
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=yes", VARIA_VPS2_SSH, remote_action,
+    ], timeout=25)
+
+
+def _varia_worker_status(host: str) -> str:
+    result = _varia_worker_action(host, "is-active")
+    status = str(result.get("out") or result.get("err") or "unknown").splitlines()
+    value = status[-1].strip() if status else "unknown"
+    return value if value in {
+        "active", "activating", "deactivating", "failed", "inactive", "reloading"
+    } else "unknown"
+
+
+def _varia_auto_runtime(host: str) -> Dict[str, Any]:
+    path = (VARIA_DIR / "auto_strategy_runtime.json" if host == "vps1" else
+            VARIA_DIR / "auto_strategy_peer_runtime" / "vps2.json")
+    runtime = _read_json(path)
+    if not isinstance(runtime, dict):
+        return {"present": False, "age_sec": None}
+    updated = runtime.get("updated_at") or runtime.get("last_checked_at")
+    return {
+        "present": True,
+        "age_sec": _iso_age(updated),
+        "status": str(runtime.get("status") or ""),
+        "message": str(runtime.get("message") or "")[:180],
+        "last_checked_at": runtime.get("last_checked_at"),
+        "last_action_at": runtime.get("last_action_at"),
+        "pressure_test": runtime.get("pressure_test") if isinstance(runtime.get("pressure_test"), dict) else {},
+    }
+
+
+def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
+    state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
+    vd = vd if isinstance(vd, dict) else _var_decibel()
+    budget = vd.get("budget") if isinstance(vd.get("budget"), dict) else {}
+    host_budget = budget.get("hosts") if isinstance(budget.get("hosts"), dict) else {}
+    hosts: Dict[str, dict] = {}
+    for host in ("vps1", "vps2"):
+        configured = state["hosts"][host]
+        service = _varia_worker_status(host)
+        runtime = _varia_auto_runtime(host)
+        hosts[host] = {
+            **configured,
+            "service": service,
+            "running": bool(state["enabled"] and configured["enabled"] and service == "active"),
+            "runtime": runtime,
+            "budget": host_budget.get(host) if isinstance(host_budget.get(host), dict) else None,
+        }
+    selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
+    running = [host for host, item in hosts.items() if item.get("running")]
+    starting = [host for host, item in hosts.items() if item.get("service") == "activating"]
+    if not state["enabled"]:
+        status = "stopped"
+    elif starting:
+        status = "starting"
+    elif selected and len(running) == len(selected):
+        status = "running"
+    elif running:
+        status = "partial"
+    else:
+        status = "attention"
+    return {
+        **state,
+        "status": status,
+        "selected_hosts": selected,
+        "running_hosts": running,
+        "hosts": hosts,
+        "budget": budget,
+    }
+
+
 def _varia_root() -> Path:
     return VARIA_DIR.parent
 
@@ -1790,6 +1933,7 @@ def api_state() -> JSONResponse:
         "pf_intents": _pf_intents(),
         "varia_detail": _varia_detail(),
         "varia_control": _varia_control_state(vd),
+        "varia_automation": _varia_automation_state(vd),
         "pm_detail": _pm_detail(),
         "maker_shadow": _maker_shadow(),
         "macmini": mm,
@@ -1829,11 +1973,14 @@ def _is_cloudflare(request: Request) -> bool:
     return str(request.headers.get("X-Dashboard-Source", "")).lower() == "cloudflare"
 
 
-def _run_cmd(cmd: List[str], timeout: float, cwd: Optional[Path] = None) -> Dict[str, Any]:
+def _run_cmd(
+    cmd: List[str], timeout: float, cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     import subprocess
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           cwd=str(cwd) if cwd else None)
+                           cwd=str(cwd) if cwd else None, env=env)
         return {"rc": r.returncode, "out": (r.stdout or "").strip()[:400],
                 "err": (r.stderr or "").strip()[:200]}
     except subprocess.TimeoutExpired:
@@ -1904,6 +2051,14 @@ async def varia_control_open(payload: dict, request: Request) -> JSONResponse:
     stop_loss = _num(data.get("stop_loss")) if data.get("stop_loss") not in (None, "") else None
     if host not in {"vps1", "vps2"}:
         return JSONResponse({"ok": False, "error": "请选择 VPS1 或 VPS2"}, status_code=400)
+    auto_state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
+    auto_host = auto_state.get("hosts", {}).get(host, {})
+    if (auto_state.get("enabled") and auto_host.get("enabled")
+            and _varia_worker_status(host) in {"active", "activating"}):
+        return JSONResponse({
+            "ok": False,
+            "error": f"{host.upper()} 自动运行中；请先停止自动化，再进行手动开仓",
+        }, status_code=409)
     if not symbol or len(symbol) > 16 or not symbol.replace("-", "").isalnum():
         return JSONResponse({"ok": False, "error": "交易对格式不正确"}, status_code=400)
     if direction not in {"auto", "var_buy", "var_sell"}:
@@ -2495,7 +2650,7 @@ async def set_varia_budget(payload: dict, request: Request) -> JSONResponse:
     if not isinstance(state, dict):
         return JSONResponse({"ok": False, "error": "auto_strategy_state.json 不可读"}, status_code=500)
     old = state.get("weekly_loss_cap_usdc")
-    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S%f')}")
     backup.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     state["weekly_loss_cap_usdc"] = str(cap)
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -2514,13 +2669,16 @@ def _write_auto_strategy(updates: Dict[str, Any]) -> Dict[str, Any]:
     """A 类操作:部分更新 auto_strategy_state.json(保留其余字段),读改写+备份+审计。
     与 varia dashboard 自身 _write_auto_strategy_state 同一文件、同一 worker 消费路径。"""
     path = VARIA_DIR / "auto_strategy_state.json"
-    state = _read_json(path)
-    if not isinstance(state, dict):
+    raw = _read_json(path)
+    if not isinstance(raw, dict):
         return {"ok": False, "error": "auto_strategy_state.json 不可读", "code": 500}
+    state = dict(raw)
+    state.update(_normalize_varia_auto_state(raw))
     before = {k: state.get(k) for k in updates}
-    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    backup = path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S%f')}")
     backup.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     state.update(updates)
+    state.update(_normalize_varia_auto_state(state))
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2530,6 +2688,141 @@ def _write_auto_strategy(updates: Dict[str, Any]) -> Dict[str, Any]:
                              "action": "set_auto_strategy", "before": before,
                              "after": updates, "backup": backup.name}, ensure_ascii=False) + "\n")
     return {"ok": True, "before": before, "after": updates}
+
+
+def _sync_varia_auto_state_to_vps2() -> Dict[str, Any]:
+    path = _varia_auto_state_file()
+    result = _run_cmd([
+        "scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+        "-o", "StrictHostKeyChecking=yes", str(path),
+        f"{VARIA_VPS2_SSH}:{VARIA_VPS2_REPO}/data/auto_strategy_state.json",
+    ], timeout=20)
+    return {
+        "ok": result.get("rc") == 0,
+        "error": result.get("err") or result.get("out") or "VPS2 配置同步失败",
+    }
+
+
+def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
+    mode = str(payload.get("mode") or "")
+    if mode not in {"semi_auto", "full_auto"}:
+        raise ValueError("自动模式须为半自动或全自动")
+    cap = _num(payload.get("weekly_loss_cap_usdc"))
+    ratio = _num(payload.get("major_ratio"))
+    pressure = payload.get("pressure_test") if isinstance(payload.get("pressure_test"), dict) else {}
+    min_minutes = _num(pressure.get("min_open_interval_minutes"))
+    max_minutes = _num(pressure.get("max_open_interval_minutes"))
+    hosts = payload.get("hosts") if isinstance(payload.get("hosts"), dict) else {}
+    if cap is None or not 0 <= cap <= 500:
+        raise ValueError("每周预算须为 0–500 USDC")
+    if ratio is None or not 0 <= ratio <= 1:
+        raise ValueError("A 策略主流币比例须为 0–100%")
+    if min_minutes is None or max_minutes is None or not 1 <= min_minutes <= max_minutes <= 1440:
+        raise ValueError("开仓间隔须为 1–1440 分钟，且最长不小于最短")
+    normalized_hosts: Dict[str, dict] = {}
+    for host, default in (("vps1", "A"), ("vps2", "B")):
+        item = hosts.get(host) if isinstance(hosts.get(host), dict) else {}
+        strategy = str(item.get("strategy") or default).upper()
+        normalized_hosts[host] = {
+            "enabled": bool(item.get("enabled")),
+            "strategy": "B" if strategy == "B" else "A",
+        }
+    return {
+        "mode": mode,
+        "weekly_loss_cap_usdc": str(cap),
+        "major_ratio": str(ratio),
+        "pressure_test": {
+            "enabled": bool(pressure.get("enabled")),
+            "min_open_interval_minutes": int(min_minutes),
+            "max_open_interval_minutes": int(max_minutes),
+        },
+        "hosts": normalized_hosts,
+    }
+
+
+def _stop_all_varia_auto_workers() -> Dict[str, Dict[str, Any]]:
+    return {host: _varia_worker_action(host, "stop") for host in ("vps1", "vps2")}
+
+
+@app.get("/api/varia/automation")
+def varia_automation_get() -> JSONResponse:
+    return JSONResponse(_varia_automation_state())
+
+
+@app.post("/api/varia/automation/config")
+async def varia_automation_config(payload: dict, request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    try:
+        updates = _varia_auto_payload(payload or {})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    result = _write_auto_strategy(updates)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=int(result.pop("code", 500)))
+    sync = _sync_varia_auto_state_to_vps2()
+    _audit("varia_auto_config", config=updates, vps2_sync=sync.get("ok"), source="tailnet")
+    note = "自动策略配置已保存，并同步到 VPS2。" if sync.get("ok") else "VPS1 已保存，但 VPS2 同步失败；未改变后台运行状态。"
+    return JSONResponse({
+        "ok": bool(sync.get("ok")), "saved": True, "sync_ok": bool(sync.get("ok")),
+        "note": note, "error": None if sync.get("ok") else sync.get("error"),
+        "state": _varia_automation_state(),
+    }, status_code=200 if sync.get("ok") else 502)
+
+
+@app.post("/api/varia/automation/start")
+async def varia_automation_start(request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
+    selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
+    if not selected:
+        return JSONResponse({"ok": False, "error": "请先至少启用一台 VPS 并保存配置"}, status_code=409)
+    written = _write_auto_strategy({"enabled": True})
+    if not written.get("ok"):
+        return JSONResponse(written, status_code=int(written.pop("code", 500)))
+    sync = _sync_varia_auto_state_to_vps2()
+    if not sync.get("ok"):
+        _write_auto_strategy({"enabled": False})
+        _sync_varia_auto_state_to_vps2()
+        _stop_all_varia_auto_workers()
+        return JSONResponse({"ok": False, "error": "VPS2 配置同步失败，自动化未启动"}, status_code=502)
+    results: Dict[str, Dict[str, Any]] = {}
+    for host in ("vps1", "vps2"):
+        results[host] = _varia_worker_action(host, "start" if host in selected else "stop")
+    if any(item.get("rc") != 0 for item in results.values()):
+        _stop_all_varia_auto_workers()
+        _write_auto_strategy({"enabled": False})
+        _sync_varia_auto_state_to_vps2()
+        _audit("varia_auto_start_failed", selected=selected, source="tailnet")
+        return JSONResponse({
+            "ok": False, "error": "后台未能全部按配置启动，已回滚并停止两台 worker",
+            "state": _varia_automation_state(),
+        }, status_code=502)
+    _audit("varia_auto_start", selected=selected, source="tailnet")
+    return JSONResponse({
+        "ok": True, "note": "自动化启动命令已发送，后台正在接管所选 VPS。",
+        "state": _varia_automation_state(),
+    })
+
+
+@app.post("/api/varia/automation/stop")
+async def varia_automation_stop(request: Request) -> JSONResponse:
+    blocked = _varia_write_guard(request)
+    if blocked is not None:
+        return blocked
+    written = _write_auto_strategy({"enabled": False})
+    sync = _sync_varia_auto_state_to_vps2() if written.get("ok") else {"ok": False}
+    results = _stop_all_varia_auto_workers()
+    ok = bool(written.get("ok")) and all(item.get("rc") == 0 for item in results.values())
+    _audit("varia_auto_stop", vps2_sync=sync.get("ok"), workers_ok=ok, source="tailnet")
+    return JSONResponse({
+        "ok": ok, "note": "自动调度已停止；此操作不会自动平掉现有仓位。" if ok else None,
+        "error": None if ok else "部分 worker 停止失败，请检查运行状态",
+        "state": _varia_automation_state(),
+    }, status_code=200 if ok else 502)
 
 
 @app.post("/api/varia/auto")
