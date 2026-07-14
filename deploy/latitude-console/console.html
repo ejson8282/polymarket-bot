@@ -239,6 +239,10 @@
   <div class="subnav">
     <span class="on">总览</span><span>成交记录</span><span>统计汇总</span>
   </div>
+  <div class="btnrow" style="margin-top:12px;align-items:center">
+    <button class="btn" style="font-weight:650" onclick="window.open('/varia/','_blank')">进入 Var/Decibel 操作面板</button>
+    <span class="src" style="margin:0">打开后选择 Trade，可手动开仓或执行真实 reduce-only 平仓。</span>
+  </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label">今日净损耗</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">等待实时数据</div></div>
@@ -283,8 +287,7 @@
       </div>
       <div class="panel">
         <h2>旧系统状态</h2>
-        <div class="src">旧 Var/Decibel worker 已退出生产。本页只读，不提供未接线的交易按钮。</div>
-        <div class="btnrow"><button class="btn ghost" onclick="window.open('/varia/','_blank')">打开旧只读详情</button></div>
+        <div class="src">旧 Var/Decibel worker 已退出生产。上方入口仍可进入原操作面板进行人工开仓和平仓。</div>
       </div>
     </aside>
   </div>

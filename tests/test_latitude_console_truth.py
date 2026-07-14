@@ -255,6 +255,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "<span class=\"on\">总览</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
         assert duplicate_tab not in html
+    assert html.count("进入 Var/Decibel 操作面板") == 1
+    assert "打开后选择 Trade，可手动开仓或执行真实 reduce-only 平仓" in html
+    assert "打开旧只读详情" not in html
 
 
 def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> None:
