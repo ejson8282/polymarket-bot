@@ -234,11 +234,10 @@
   </div>
 </section>
 
-<!-- ════════════ 页面 2 · Var/Decibel(首屏,原 6 tab 保留为二级导航) ════════════ -->
+<!-- ════════════ 页面 2 · Var/Decibel(退役系统只读总览) ════════════ -->
 <section class="page" id="page-vardec">
   <div class="subnav">
-    <span class="on">总览(新首屏)</span><span>Trade <em class="feat f-old">现有</em></span><span>Statistics <em class="feat f-old">现有</em></span>
-    <span>Research <em class="feat f-old">现有</em></span><span>Execution <em class="feat f-old">现有</em></span><span>Advanced <em class="feat f-old">现有</em></span>
+    <span class="on">总览</span><span>成交记录</span><span>统计汇总</span>
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
@@ -246,7 +245,6 @@
     <div class="kpi"><div class="label" data-k="vdk.vol_label">交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label">旧周预算（只读）</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">旧 worker 已退出生产</div></div>
     <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">旧自动化</div><div class="value" style="font-size:16px" data-k="vdk.auto">读取中</div><div class="sub num" data-k="vdk.auto_sub">旧 worker 已退出生产</div></div>
   </div>
   <div class="grid2">
     <div>
@@ -1501,15 +1499,15 @@
     let html='<h2>'+esc(name)+' <span class="feat f-new">原生视图</span></h2>';
     if(pid==='vardec'){
       const vdt=s.varia_detail||{};
-      if(name.indexOf('Statistics')>=0||name.indexOf('统计')>=0){
+      if(name.indexOf('统计汇总')>=0){
         html+='<div class="src">按 host / symbol 聚合(近40笔成交)</div>'+
           '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
           _table(['VPS','笔数','名义','净PnL','胜率'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
           '</div><div><h2 style="font-size:12px">按 SYMBOL</h2>'+
           _table(['SYMBOL','笔数','名义','净PnL','胜率'],vdt.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
           '</div></div>';
-      } else {
-        html+='<div class="src">近 40 笔对冲成交('+esc(name)+')· 数据来自 trades 表</div>'+
+      } else if(name.indexOf('成交记录')>=0){
+        html+='<div class="src">近 40 笔对冲成交 · 数据来自 trades 表</div>'+
           _table(['时间','VPS','SYMBOL','策略','名义','方向 V/D','basis','净PnL','状态'],vdt.trades,r=>
             '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
       }

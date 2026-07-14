@@ -251,6 +251,10 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "四源权益不完整" in html
     assert "四源交易量不完整" in html
     assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
+    assert "旧自动化" not in html
+    assert "<span class=\"on\">总览</span><span>成交记录</span><span>统计汇总</span>" in html
+    for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
+        assert duplicate_tab not in html
 
 
 def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> None:
