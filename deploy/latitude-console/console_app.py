@@ -2510,8 +2510,13 @@ def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, An
 
 
 def _ipo_current_state() -> Optional[dict]:
-    """拉 router 当前打新状态(内层 ipo dict),回传式操作的基底。"""
-    d = _do_fetch(f"{IPO_ROUTER_BASE}/dashboard/ipo/state", timeout=8.0)
+    """拉 router 当前打新状态(内层 ipo dict),回传式操作的基底。
+    Windows 源偶尔慢:先较长超时新拉;失败回退到 prefetch 热缓存(~20s 新鲜,IPO 手动操作
+    频率低,可接受),两者皆空才中止(绝不空提交)。"""
+    d = _do_fetch(f"{IPO_ROUTER_BASE}/dashboard/ipo/state", timeout=15.0)
+    if not isinstance(d, dict):
+        cached = _HTTP_CACHE.get(IPO_STATE_URL)
+        d = cached[0] if cached and isinstance(cached[0], dict) else None
     if not isinstance(d, dict):
         return None
     return d.get("ipo") if isinstance(d.get("ipo"), dict) else d
