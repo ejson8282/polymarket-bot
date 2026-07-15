@@ -130,26 +130,21 @@
 - 不绕地域限制(Binance VPN 不碰);不读 mac-mini 密钥内容。
 - 展示收益数字标可信度层级(quant_project 尤其)。
 
-## 7. 打新 & Alpha 页原生化(未做,已勘探好,主人待定分工)
+## 7. 打新 & Alpha 页操作原生化(✅ 已完成 PR#22,2026-07-15)
 
-主人要求:打新 & Alpha 页(`page-hk`)**所有内容和操作都原生内嵌,不跳转、不绕飞书 Bot**
-(与全项目"完全融入不跳转"一贯规矩一致)。现状:此页大半是**模板样例数据**(张三/李四、
-"某科技 2688.HK" 均占位),操作按钮(一键生成申购清单/结束本轮)是**死占位**,流程图⑥⑦
-仍写着走飞书 Bot。**尚未动手**——因当时有并行会话在改同一批文件的 IPO 部分,主人要先理清分工。
+主人要求:打新 & Alpha 页(`page-hk`)操作原生内嵌、不跳转、不绕飞书 Bot。**已做**:
+- 删掉 bindIPO 里 `window.open('...:8081')` 的「操作在核算台 →」跳转 chip。
+- 原生操作栏(代理 router `:8080`,`WRITES_ENABLED` 闸门 + 审计):
+  立即导入新股(HKEX)`/api/ipo/import`;策略 保守/均衡/进攻、一键申购(活跃)、结束本轮、
+  每条排班标记状态(已申购/中签/未中签/跳过)`/api/ipo/action`(动作词:
+  `import_hkex/set_mode/set_status/subscribe_active/finish_round`)。
+- **关键安全(已验证):router `/ipo/action` 是"提交完整状态+动作"模式,精简 payload 会冲空
+  排班。故一律"拉当前完整状态→改一处→整体回传";拉状态失败即中止不空提交。回传式已实测
+  非破坏(set_mode 同值前后 stocks 19→19 / entries 15→15 无损)。破坏性操作前端二次确认。**
 
-**已勘探好:router(Windows `100.82.86.62:8080`)暴露了全部打新操作接口,原生化可行:**
-
-| 打新操作 | router 接口(POST) | 关键参数 |
-|---|---|---|
-| IPO 导入(HKEX) | `/dashboard/ipo/import/hkex` | `include_pdf_details` |
-| 标记状态(已申购/跳过/中签/未中签) | `/dashboard/ipo/action` | `action` + `account_id` + `status` |
-| 生成本轮排班 / 结束本轮 | `/dashboard/ipo/action` | `action` + `round`/`entries` |
-| OpenClaw 观点提炼→排班 | `/dashboard/ipo/openclaw/strategy` | `text` + `round` + `stocks` |
-| 读状态 | `GET /dashboard/ipo/state` | — |
-
-做法照 PM/SA 的模式:console 加受控写端点代理到 router(WRITES_ENABLED 闸门 + 审计),
-按钮原生接线;表格再绑真实 account-ops 数据(`ACCOUNT_OPS_URL` :8081 + ipo state :8080)。
-**注意:8081 无 openapi(不是 FastAPI);写操作走 8080 router 的 `/account-ops/dashboard/ipo/*` 同名端点亦可。**
+**仍是模板样例的部分(未来可做,非本次范围)**:此页人员排行/明细/经营总览等表格仍有占位
+样例数据(张三/李四),真实 account-ops 数据只绑了顶部 KPI + 打新工作台。要全绑真数据是另一档活。
+其余 router 端点未用:`/openclaw/strategy`(观点提炼排班)、`save_stocks`/`reset_preview`/`clear_strategy`。
 
 ## 8. 其他借鉴笔记(3xx-wangge 网格机器人,github.com/ZAIJIN88/3xx-wangge)
 
