@@ -348,12 +348,12 @@
       </div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他共同币</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
-      <div class="vdauto-pool-foot">绿色：报价新鲜且点差合格；红色：任一平台点差或跨平台开仓成本超过上限；灰色：等待新鲜报价。自动策略只会从绿色币种中下单。</div>
+      <div class="vdauto-pool-foot">绿色：报价新鲜且点差合格；红色：任一平台单边点差或跨平台开仓成本超过上限；灰色：等待新鲜报价。自动策略只会从绿色币种中下单。</div>
     </div>
     <div class="vdauto-settings">
       <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
       <div class="vdauto-field"><label>每台 VPS 每周预算 USDC</label><input id="vdauto-cap" type="number" min="0" max="500" step="1"></div>
-      <div class="vdauto-field"><label>最高综合点差 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
+      <div class="vdauto-field"><label>单边点差上限 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
       <div class="vdauto-field"><label>A 策略主流币比例</label><div class="vdauto-ratio"><input id="vdauto-ratio" type="range" min="0" max="100" step="5"><output id="vdauto-ratio-out">80%</output></div></div>
       <div class="vdauto-field"><label>新开仓间隔</label><div class="vdauto-interval"><label class="vdauto-check"><input id="vdauto-pressure" type="checkbox"> 启用</label><input id="vdauto-min" type="number" min="1" max="1440" step="5"><span>至</span><input id="vdauto-max" type="number" min="1" max="1440" step="5"></div></div>
     </div>
@@ -1651,7 +1651,7 @@
       document.getElementById('vdauto-vps2-strategy').value=(hosts.vps2||{}).strategy||'B';
       document.getElementById('vdauto-mode').value=state.mode||'full_auto';
       document.getElementById('vdauto-cap').value=state.weekly_loss_cap_usdc??15;
-      document.getElementById('vdauto-spread').value=state.max_auto_spread_bps??5;
+      document.getElementById('vdauto-spread').value=state.max_auto_spread_bps??2;
       document.getElementById('vdauto-ratio').value=Math.round(Number(state.major_ratio??.8)*100);
       document.getElementById('vdauto-ratio-out').value=document.getElementById('vdauto-ratio').value+'%';
       const p=state.pressure_test||{};

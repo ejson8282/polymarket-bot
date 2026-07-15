@@ -955,7 +955,7 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         "enabled": bool(raw.get("enabled")),
         "mode": mode,
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
-        "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 5)),
+        "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 2)),
         "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
@@ -1063,7 +1063,7 @@ def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
     return result
 
 
-def _varia_strategy_pools(max_spread_bps: float = 5.0) -> Dict[str, Any]:
+def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
     """Expose the real worker pools and fresh-quote readiness to the console."""
     configured = _varia_strategy_symbol_config()
     all_symbols = list(dict.fromkeys(VARIA_MARKET_CANDIDATES))
@@ -1096,8 +1096,8 @@ def _varia_strategy_pools(max_spread_bps: float = 5.0) -> Dict[str, Any]:
         dec_mid = (dec_bid + dec_ask) / 2
         if var_mid <= 0 or dec_mid <= 0:
             continue
-        var_spread = (var_ask - var_bid) / var_mid * 10000
-        dec_spread = (dec_ask - dec_bid) / dec_mid * 10000
+        var_spread = (var_ask - var_bid) / var_mid * 10000 / 2
+        dec_spread = (dec_ask - dec_bid) / dec_mid * 10000 / 2
         costs = quote.get("costs") if isinstance(quote.get("costs"), dict) else {}
         numeric_costs = [value for value in (_num(item) for item in costs.values()) if value is not None]
         entry_cost = max(0.0, min(numeric_costs)) if numeric_costs else None

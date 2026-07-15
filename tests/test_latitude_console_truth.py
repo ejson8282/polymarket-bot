@@ -398,7 +398,7 @@ def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
         "costs": {"var_buy": 6, "var_sell": 6},
     }])
 
-    result = console._varia_strategy_pools(5)
+    result = console._varia_strategy_pools(2)
 
     assert result["allowed"] == []
     assert result["blocked"] == ["SOL"]
