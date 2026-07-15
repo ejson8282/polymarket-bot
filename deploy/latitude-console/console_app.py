@@ -2592,7 +2592,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
 
     body = {"action": action, "mode": mode, "round": round_, "stocks": stocks, "entries": entries}
     r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/action", body, timeout=40.0)
-    _audit("ipo_action", action=action, detail=detail, ok=r.get("ok"),
+    _audit("ipo_action", request_action=action, detail=detail, ok=r.get("ok"),
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     if not r.get("ok"):
         return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
