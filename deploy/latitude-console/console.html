@@ -767,12 +767,21 @@
         <div class="flow">
           <span>① 新股数据导入<br>HKEX/AASTOCKS</span><span>② 人工观点<br>飞书群</span><span>③ 观点提炼<br>OpenClaw</span><span>④ 排班计算<br>Router(代码)</span><span class="here">⑤ 方案对比+老板确认<br>本页(策略交互层)</span><span>⑥ 提醒执行<br>飞书 Bot</span><span>⑦ 状态/结果回填<br>群回复→本页</span>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px" id="hk-round-chips">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px" id="hk-round-chips">
           <span class="chip ok">轮次 R-27 · 执行中</span>
           <span class="chip">截止 07-08 16:00</span>
-          <span class="chip warn">锁资冲突检查:1 账号与下一轮冲突</span>
-          <button class="btn ghost" style="font-size:11px">一键生成申购清单</button>
-          <button class="btn ghost" style="font-size:11px">结束本轮(自动生成手续费流水)</button>
+        </div>
+        <!-- 原生操作栏(已迁移):代理 router,不跳转、不走飞书 Bot -->
+        <div class="btnrow" style="margin-bottom:12px;flex-wrap:wrap;gap:6px;align-items:center">
+          <button class="btn" id="ipo-import-btn">立即导入新股(HKEX)</button>
+          <span style="font-size:11px;color:var(--faint);margin-left:4px">策略</span>
+          <button class="btn ghost ipo-mode" data-mode="conservative">保守</button>
+          <button class="btn ghost ipo-mode" data-mode="balanced">均衡</button>
+          <button class="btn ghost ipo-mode" data-mode="aggressive">进攻</button>
+          <button class="btn ghost" id="ipo-sub-active" style="margin-left:8px">一键申购(活跃)</button>
+          <button class="btn ghost" id="ipo-finish">结束本轮</button>
+          <span class="feat f-new">已迁移</span>
+          <span id="ipo-op-msg" class="src" style="margin-left:6px"></span>
         </div>
         <table>
           <thead><tr><th>新股池评分</th><th>评分</th><th>预计中签率</th><th>入场费</th><th>风险</th><th>OpenClaw 摘要</th></tr></thead>
@@ -1202,8 +1211,7 @@
       chips.innerHTML='<span class="chip ok">'+esc(r.title||r.code||'本轮')+(ipo.mode?' · '+esc(ipo.mode):'')+'</span>'+
         (r.deadline?'<span class="chip">截止 '+esc(r.deadline)+'</span>':'')+
         '<span class="chip">新股池 '+(ipo.stocks_total??0)+' · 排班 '+(ipo.entries_total??0)+'</span>'+
-        '<span class="chip">'+esc(ipo.updated_age||'?')+'更新</span>'+
-        '<span class="chip info" style="cursor:pointer" onclick="window.open(\'http://100.82.86.62:8081/\',\'_blank\')">操作在核算台 →</span>';
+        '<span class="chip">'+esc(ipo.updated_age||'?')+'更新</span>';
     }
     const st=document.getElementById('hk-stocks');
     if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>{
@@ -1215,11 +1223,16 @@
       '<td style="color:var(--muted)">'+esc(x.note||'')+'</td></tr>'}).join('')
       : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
     const en=document.getElementById('hk-entries');
-    if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>
-      '<tr><td class="num">'+esc(e.account||'—')+'</td><td>'+esc(e.person||'—')+'</td>'+
+    if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>{
+      const acc=esc(e.account||'');
+      const marks=window.__writesEnabled===false?'':
+        ['已申购','中签','未中签','跳过'].map(s=>
+          '<button class="btn ghost ipo-mark" style="font-size:10px;padding:1px 5px" data-acc="'+acc+'" data-status="'+s+'">'+s+'</button>').join('');
+      return '<tr><td class="num">'+(acc||'—')+'</td><td>'+esc(e.person||'—')+'</td>'+
       '<td class="num">'+esc(e.stock||'—')+'</td><td class="num">'+(e.fee??'—')+'</td>'+
       '<td class="num">'+esc(e.due||'—')+'</td><td><span class="chip">'+esc(e.status||'—')+'</span></td>'+
-      '<td style="color:var(--muted)">'+esc(e.reason||'')+'</td></tr>').join('')
+      '<td style="color:var(--muted)">'+esc(e.reason||'')+(marks?'<div class="btnrow" style="margin-top:3px;gap:3px">'+marks+'</div>':'')+'</td></tr>';
+    }).join('')
       : '<tr><td colspan="7" style="color:var(--faint)">本轮暂无排班</td></tr>';
   }
 
@@ -1423,6 +1436,29 @@
       return j;
     }catch(e){ if(msgEl) msgEl.innerHTML='<span class="down">请求失败</span>'; return null; }
   }
+  // 打新 & Alpha 操作(已迁移自飞书 Bot/核算台):代理 router,原生内嵌
+  (function(){
+    const msg=document.getElementById('ipo-op-msg'); if(!document.getElementById('ipo-import-btn')) return;
+    document.getElementById('ipo-import-btn').addEventListener('click',()=>{
+      if(!confirm('立即从 HKEX 抓取并导入今日新股到新股池?')) return;
+      postOp('/api/ipo/import',{include_pdf_details:false},msg,'导入新股(约30-60s)');
+    });
+    document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',()=>
+      postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」')));
+    const sa=document.getElementById('ipo-sub-active');
+    if(sa) sa.addEventListener('click',()=>{ if(!confirm('把本轮所有「待申购」账号标记为已申购?')) return;
+      postOp('/api/ipo/action',{action:'subscribe_active'},msg,'一键申购(活跃)'); });
+    const fin=document.getElementById('ipo-finish');
+    if(fin) fin.addEventListener('click',()=>{ if(!confirm('结束本轮?router 将据此生成手续费流水,不可撤销。')) return;
+      postOp('/api/ipo/action',{action:'finish_round'},msg,'结束本轮'); });
+    // 每条排班的标记状态(事件委托,bindIPO 每次重渲染也生效)
+    const en=document.getElementById('hk-entries');
+    if(en) en.addEventListener('click',(ev)=>{
+      const b=ev.target.closest('.ipo-mark'); if(!b) return;
+      postOp('/api/ipo/action',{action:'set_status',account_id:b.dataset.acc,status:b.dataset.status},
+             msg,b.dataset.acc+' → '+b.dataset.status);
+    });
+  })();
   (function(){
     const emsg=document.getElementById('pm-engine-msg');
     const bmsg=document.getElementById('pm-op-msg');
