@@ -202,8 +202,13 @@ def run_digest() -> None:
             for k, v in fresh.items()]
     vd = s.get("var_decibel") or {}
     eq = vd.get("equity_history") or {}
-    eq_line = (f"权益 ${eq.get('last')}(区间 {('+' if (eq.get('change') or 0) >= 0 else '')}{eq.get('change')})"
-               if eq.get("present") else "权益曲线无数据")
+    if not eq.get("present"):
+        eq_line = "权益曲线无数据"
+    elif eq.get("valid") is False:
+        # 曲线标为无效(未逐笔扣充提)→ 不当收益数报,只说明,避免误导
+        eq_line = f"权益曲线暂不可用({eq.get('reason') or '未扣充提,非真实收益'})"
+    else:
+        eq_line = f"权益 ${eq.get('last')}(区间 {('+' if (eq.get('change') or 0) >= 0 else '')}{eq.get('change')})"
     bud = vd.get("budget") or {}
     bud_line = " · ".join(f"{h} 剩 ${v.get('remaining')}/{v.get('cap')}"
                           for h, v in (bud.get("hosts") or {}).items()) or "预算无数据"
