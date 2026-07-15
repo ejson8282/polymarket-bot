@@ -1951,14 +1951,24 @@ def _ipo() -> Dict[str, Any]:
         ).strip()
         name_en = str(s.get("nameEn") or s.get("name_en") or "").strip()
         name = str(s.get("name") or s.get("title") or s.get("code") or "").strip()
+        status = str(s.get("status") or "")[:10]
+        # 真字段修正(2026-07-15):router 原始数据里入场费=minCapital、评分=expectedScore,
+        # 此前读的 fee/score 键不存在故全 null。一并带出状态/日期/评分拆解/招股书链接。
         return {"name": (name_zh or name or name_en)[:40],
                 "name_zh": name_zh[:40],
                 "name_en": name_en[:72],
                 "code": str(s.get("code") or ""),
-                "score": s.get("score"),
-                "fee": s.get("fee") or s.get("entryFee") or s.get("entry_fee"),
+                "score": s.get("expectedScore") if s.get("expectedScore") is not None else s.get("score"),
+                "hit_rate": s.get("hitRateScore"),
+                "turnover": s.get("turnoverScore"),
+                "fee": _num(s.get("minCapital")) or _num(s.get("fee")) or _num(s.get("entryFee")),
                 "risk": str(s.get("risk") or s.get("riskLabel") or "")[:12],
-                "note": str(s.get("note") or s.get("summary") or s.get("comment") or "")[:48]}
+                "status": status,
+                "close_at": str(s.get("closeAt") or s.get("deadlineAt") or "")[:16],
+                "listing_at": str(s.get("listingAt") or "")[:16],
+                "refund_days": s.get("refundDays"),
+                "prospectus": str(s.get("prospectusUrl") or "")[:200],
+                "note": str(s.get("note") or s.get("view") or s.get("summary") or "")[:60]}
 
     def _entry(e: dict) -> dict:
         return {"account": str(e.get("account") or e.get("accountId") or "")[:14],
@@ -1969,14 +1979,18 @@ def _ipo() -> Dict[str, Any]:
                 "status": str(e.get("status") or "")[:14],
                 "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
 
+    stock_rows = [_stock(s) for s in stocks[:20] if isinstance(s, dict)]
+    # 申购中的只数(数据里 status 可能滞后,仅作参考展示;彻底过滤过期股需 router 补 detail)
+    active_n = sum(1 for s in stock_rows if s.get("status") in ("申购中", "招股中", "待申购"))
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
                   "deadline": rnd.get("deadline"), "currency": rnd.get("currency")},
         "updated_age": _age_text(_iso_age(inner.get("updated_at"))),
-        "stocks": [_stock(s) for s in stocks[:6] if isinstance(s, dict)],
-        "entries": [_entry(e) for e in entries[:8] if isinstance(e, dict)],
+        "stocks": stock_rows,
+        "entries": [_entry(e) for e in entries[:12] if isinstance(e, dict)],
         "stocks_total": len(stocks), "entries_total": len(entries),
+        "active_stocks": active_n,
     }
 
 

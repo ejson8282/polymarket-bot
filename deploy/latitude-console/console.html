@@ -1319,10 +1319,15 @@
     if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>{
       const primary=x.name_zh||x.name||x.name_en||'—';
       const secondary=x.name_en&&x.name_en!==primary?'<div class="stock-name-en">'+esc(x.name_en)+'</div>':'';
-      return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+secondary+'</td>'+
-      '<td class="num">'+(x.score??'—')+'</td><td class="num">—</td><td class="num">'+(x.fee??'—')+'</td>'+
+      const stCls=x.status==='申购中'?'ok':(x.status==='待结果'?'info':'');
+      const statusChip=x.status?' <span class="chip '+stCls+'" style="font-size:10px">'+esc(x.status)+'</span>':'';
+      const feeTxt=x.fee!=null?'HK$'+Math.round(x.fee).toLocaleString():'—';
+      const linkTxt=x.prospectus?' <a href="'+esc(x.prospectus)+'" target="_blank" style="color:var(--var);font-size:10px">招股书</a>':'';
+      return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+statusChip+secondary+
+      (x.close_at&&x.close_at!=='待确认'?'<div class="dt">截止 '+esc(x.close_at)+(x.listing_at&&x.listing_at!=='待确认'?' · 上市 '+esc(x.listing_at):'')+'</div>':'')+'</td>'+
+      '<td class="num">'+(x.score??'—')+'</td><td class="num">'+(x.hit_rate!=null?x.hit_rate:'—')+'</td><td class="num">'+feeTxt+'</td>'+
       '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
-      '<td style="color:var(--muted)">'+esc(x.note||'')+'</td></tr>'}).join('')
+      '<td style="color:var(--muted)">'+esc(x.note||'')+linkTxt+'</td></tr>'}).join('')
       : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
     const en=document.getElementById('hk-entries');
     if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>{
