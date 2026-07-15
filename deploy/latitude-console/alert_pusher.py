@@ -42,8 +42,11 @@ def _webhook(path: Path) -> str:
 
 
 def _post(url: str, payload: dict) -> None:
+    # 必带 User-Agent:Discord 的 Cloudflare 对无 UA 请求一律 403(2026-07-15 查明——
+    # 此前 Discord 推送全 403、误以为 webhook 失效、warn 全涌飞书,根因即缺此头)。
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "Latitude-Alert/1.0"})
     with _opener.open(req, timeout=10) as resp:
         resp.read()
 
