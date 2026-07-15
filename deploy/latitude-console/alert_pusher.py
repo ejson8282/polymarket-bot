@@ -202,13 +202,8 @@ def run_digest() -> None:
             for k, v in fresh.items()]
     vd = s.get("var_decibel") or {}
     eq = vd.get("equity_history") or {}
-    if not eq.get("present"):
-        eq_line = "权益曲线无数据"
-    elif eq.get("stale"):
-        # 权益历史停更(varia dashboard 首页无人渲染)→ 不拿冻结值冒充当前
-        eq_line = f"权益 ⚠️停更{eq.get('last_age') or ''}(末值 ${eq.get('last')},非当前,以交易所为准)"
-    else:
-        eq_line = f"权益 ${eq.get('last')}(区间 {('+' if (eq.get('change') or 0) >= 0 else '')}{eq.get('change')})"
+    eq_line = (f"权益 ${eq.get('last')}(区间 {('+' if (eq.get('change') or 0) >= 0 else '')}{eq.get('change')})"
+               if eq.get("present") else "权益曲线无数据")
     bud = vd.get("budget") or {}
     bud_line = " · ".join(f"{h} 剩 ${v.get('remaining')}/{v.get('cap')}"
                           for h, v in (bud.get("hosts") or {}).items()) or "预算无数据"

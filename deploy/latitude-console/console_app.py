@@ -656,31 +656,24 @@ def _var_decibel() -> Dict[str, Any]:
 
 
 def _equity_history() -> Dict[str, Any]:
-    """总权益历史曲线(home_active_total_equity_history,带 principal ledger 校正)。
-    注意:此文件由 varia Streamlit dashboard 首页渲染时写(非后台任务),没人看那个页面
-    就会停更。故必须带 last_age_sec,前端/早报据此标注"可能停更",绝不拿冻结值冒充当前。"""
+    """总权益历史曲线(home_active_total_equity_history,带 principal ledger 校正)。"""
     rows = _read_json(VARIA_DIR / "home_active_total_equity_history.json")
     if not isinstance(rows, list) or not rows:
         return {"present": False}
     pts = []
-    last_ts_raw = None
     for r in rows:
         v = _num(r.get("value")) if isinstance(r, dict) else None
-        ts = str(r.get("timestamp") or "") if isinstance(r, dict) else ""
+        ts = str(r.get("timestamp") or "")[:10] if isinstance(r, dict) else ""
         if v is not None:
-            pts.append({"t": ts[:10], "v": round(v, 2)})
-            last_ts_raw = ts
+            pts.append({"t": ts, "v": round(v, 2)})
     if len(pts) < 2:
         return {"present": False}
     vals = [p["v"] for p in pts]
     first, last = vals[0], vals[-1]
-    age = _iso_age(last_ts_raw)  # 最后一点距今秒数
     return {"present": True, "points": pts[-30:], "first": first, "last": last,
             "min": round(min(vals), 2), "max": round(max(vals), 2),
             "change": round(last - first, 2),
-            "change_pct": round((last - first) / first * 100, 2) if first else None,
-            "last_age_sec": age, "last_age": _age_text(age),
-            "stale": age is not None and age > 3 * 3600}
+            "change_pct": round((last - first) / first * 100, 2) if first else None}
 
 
 # ---------- Single Account ----------
@@ -2003,10 +1996,13 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
     eq = vd.get("equity_history") or {}
     auto_active = bool((vd.get("auto") or {}).get("enabled"))
     exposure_active = bool(vd.get("pairs"))
-    # 权益历史由 varia Streamlit 首页渲染时写,没人看就停更(3h 阈值,此前 2 天太松,冻 21h 都不报)
-    if eq.get("present") and eq.get("stale") and (auto_active or exposure_active):
-        alerts.append({"tag": "VAR/DEC", "msg": f"<b>权益历史停更</b>:{eq.get('last_age') or '?'}未更新"
-                                               "(dashboard 首页无人渲染,早报数已不可信)", "page": "vardec", "sev": "warn"})
+    if eq.get("present") and (auto_active or exposure_active):
+        try:
+            last_d = datetime.fromisoformat(str(eq["points"][-1]["t"]))
+            if (datetime.now() - last_d).total_seconds() > 2 * 86400:
+                alerts.append({"tag": "VAR/DEC", "msg": f"<b>权益曲线断更</b>:最后一点 {eq['points'][-1]['t']}", "page": "vardec", "sev": "warn"})
+        except Exception:
+            pass
     for host, h in ((vd.get("budget") or {}).get("hosts") or {}).items():
         cap, rem = _num(h.get("cap")) or 0.0, _num(h.get("remaining")) or 0.0
         if cap and rem < max(1.0, 0.2 * cap):
