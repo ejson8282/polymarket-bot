@@ -55,6 +55,7 @@ VARIA_MARKET_CANDIDATES = tuple(
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
+GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
 PM_STATE_STALE_SEC = int(os.getenv("PM_STATE_STALE_SEC", "300"))
@@ -1758,7 +1759,17 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
     return data
 
 
-_PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL]
+_PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL, GRID_CONSOLE_URL]
+
+
+def _grid() -> Dict[str, Any]:
+    """varxyz-grid 网格系统(独立仓库,本机 :8610 只读控制台)的状态转发。"""
+    data = _fetch_json(GRID_CONSOLE_URL, ttl=30.0)
+    if not isinstance(data, dict) or "runners" not in data:
+        return {"present": False}
+    out = dict(data)
+    out["present"] = True
+    return out
 
 
 PM_SIGNER_HOSTPORT = os.getenv("PM_SIGNER_HOSTPORT", "100.91.159.54:8420")
@@ -2160,8 +2171,24 @@ def _freshness(vd: Dict[str, Any], ao: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
-            ao: Dict[str, Any], mm: Dict[str, Any], fresh: Dict[str, Any]) -> List[dict]:
+            ao: Dict[str, Any], mm: Dict[str, Any], fresh: Dict[str, Any],
+            grid: Optional[Dict[str, Any]] = None) -> List[dict]:
     alerts: List[dict] = []
+    # 网格(varxyz-grid):KILL/停机/失联/agent 到期
+    g = grid or {}
+    if g.get("present"):
+        if g.get("kill"):
+            alerts.append({"tag": "GRID", "msg": "<b>网格 KILL 急停已触发</b>:引擎全撤停机", "page": "grid", "sev": "crit"})
+        for r in g.get("runners") or []:
+            if r.get("halted"):
+                alerts.append({"tag": "GRID", "msg": f"<b>网格 {r.get('coin')} 停机</b>:{r.get('halt_reason') or '未知原因'}", "page": "grid", "sev": "crit"})
+            elif not r.get("running"):
+                alerts.append({"tag": "GRID", "msg": f"<b>网格 {r.get('coin')} 失联</b>:state 心跳 {r.get('state_age_s')}s 未更新", "page": "grid", "sev": "warn"})
+            if r.get("frozen"):
+                alerts.append({"tag": "GRID", "msg": f"<b>网格 {r.get('coin')} 冻结格线 {r['frozen']}</b>:挂单无故消失,待人工 resume", "page": "grid", "sev": "warn"})
+        for a in (g.get("account") or {}).get("agents") or []:
+            if isinstance(a.get("days_left"), (int, float)) and a["days_left"] < 30:
+                alerts.append({"tag": "GRID", "msg": f"<b>HL agent「{a.get('name')}」{a['days_left']:.0f} 天后到期</b>:需在 app.hyperliquid.xyz/API 续签", "page": "grid", "sev": "warn"})
     for item in vd.get("single_leg") or []:
         alerts.append({"tag": "VAR/DEC", "msg": f"<b>{item} 单腿</b>:双腿不对称,janitor 应在处置", "page": "vardec", "sev": "crit"})
     for host, h in (vd.get("hosts") or {}).items():
@@ -2218,6 +2245,7 @@ def api_state() -> JSONResponse:
     ao = _account_ops()
     mm = _macmini()
     fresh = _freshness(vd, ao)
+    grid = _grid()
     return JSONResponse({
         "ts": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),
         "polymarket": pm,
@@ -2236,7 +2264,8 @@ def api_state() -> JSONResponse:
         "macmini": mm,
         "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),
-        "alerts": _alerts(vd, pm, sa, ao, mm, fresh),
+        "grid": grid,
+        "alerts": _alerts(vd, pm, sa, ao, mm, fresh, grid),
         "writes_enabled": WRITES_ENABLED,
     })
 

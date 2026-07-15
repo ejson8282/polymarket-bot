@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Latitude Alpha · 统一控制台(全页面模板)</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBiMTIyMCIvPjxjaXJjbGUgY3g9IjE2IiBjeT0iMTYiIHI9IjkuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMWYyYjNkIiBzdHJva2Utd2lkdGg9IjEuNCIvPjxwYXRoIGQ9Ik02LjggMTZIMjUuMiIgc3Ryb2tlPSIjMWYyYjNkIiBzdHJva2Utd2lkdGg9IjEuNCIvPjxwYXRoIGQ9Ik04LjUgMTYgMTQgOC41IDE4IDE4LjUgMjMuNSAxMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmRkNGJmIiBzdHJva2Utd2lkdGg9IjIuNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PGNpcmNsZSBjeD0iMjMuNSIgY3k9IjExIiByPSIyIiBmaWxsPSIjMmRkNGJmIi8+PC9zdmc+">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBiMTIyMCIvPjxjaXJjbGUgY3g9IjguNiIgY3k9IjExIiByPSI0LjgiIGZpbGw9IiM5YWE3YjQiLz48Y2lyY2xlIGN4PSIyMy40IiBjeT0iMTEiIHI9IjQuOCIgZmlsbD0iIzlhYTdiNCIvPjxjaXJjbGUgY3g9IjguNiIgY3k9IjExIiByPSIyLjUiIGZpbGw9IiNjOWQzZGQiLz48Y2lyY2xlIGN4PSIyMy40IiBjeT0iMTEiIHI9IjIuNSIgZmlsbD0iI2M5ZDNkZCIvPjxjaXJjbGUgY3g9IjE2IiBjeT0iMTcuNSIgcj0iOC4yIiBmaWxsPSIjYjdjMmNkIi8+PGNpcmNsZSBjeD0iMTIuNCIgY3k9IjE2LjIiIHI9IjEuNCIgZmlsbD0iIzFhMjIzMCIvPjxjaXJjbGUgY3g9IjE5LjYiIGN5PSIxNi4yIiByPSIxLjQiIGZpbGw9IiMxYTIyMzAiLz48ZWxsaXBzZSBjeD0iMTYiIGN5PSIyMC42IiByeD0iMy4xIiByeT0iMi41IiBmaWxsPSIjM2E0NjU2Ii8+PC9zdmc+">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -28,7 +28,7 @@
   nav a:hover{color:var(--text);background:var(--panel2)}
   nav a.active{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--var)}
   nav a .b{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;vertical-align:1px}
-  .b-live{background:var(--danger);color:#fff}.b-test{background:#2B3A55;color:#9DB4E8}.b-paper{background:#2E3A2E;color:#8FCF9B}.b-ro{background:#333;color:#AAA}
+  .b-live{background:var(--danger);color:#fff}.b-test{background:#2B3A55;color:#9DB4E8}.b-paper{background:#2E3A2E;color:#8FCF9B}.b-ro{background:#333;color:#AAA}.b-shadow{background:#352B4E;color:#BC8CFF}
   .status-cluster{display:flex;align-items:center;gap:8px;white-space:nowrap}
   .pill{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);letter-spacing:.05em}
   .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.danger{color:var(--danger);border-color:rgba(229,72,77,.5)}
@@ -247,6 +247,7 @@
     <a data-page="pm">Polymarket<span class="b b-live">LIVE</span></a>
     <a data-page="pf">Predict.fun<span class="b b-test">TESTNET</span></a>
     <a data-page="sa">Single Account<span class="b b-paper">PAPER</span></a>
+    <a data-page="grid">网格 Grid<span class="b b-shadow">SHADOW</span></a>
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
   </nav>
   <div class="status-cluster">
@@ -290,6 +291,13 @@
       <div class="row"><span class="k">最高分</span><span class="v" data-k="sa.top">—</span></div>
       <div class="row"><span class="k">最近评分</span><span class="v" data-k="sa.age">—</span></div>
       <div class="row"><span class="k">模拟结果</span><span class="v" data-k="sa.sim">—</span></div>
+    </div>
+    <div class="card" onclick="go('grid')">
+      <div class="head"><span class="name">网格 Grid</span><span class="chip" data-k="grid.chip">读取中</span></div>
+      <div class="row"><span class="k">模拟权益(shadow)</span><span class="v" data-k="grid.equity">—</span></div>
+      <div class="row"><span class="k">成交量 / rungs</span><span class="v" data-k="grid.vol">—</span></div>
+      <div class="row"><span class="k">账户 spot/perp/xyz</span><span class="v" data-k="grid.pockets">—</span></div>
+      <div class="row"><span class="k">引擎</span><span class="v" data-k="grid.engines">—</span></div>
     </div>
     <div class="card" onclick="go('hk')">
       <div class="head"><span class="name">打新 & Alpha 核算台</span><span class="chip" data-k="hk.chip">读取中</span></div>
@@ -728,6 +736,34 @@
 </section>
 
 <!-- ════════════ 页面 6 · 打新 & Alpha 账户运营核算台(现有系统,原样接入) ════════════ -->
+<!-- ════════════ 页面 · 网格 Grid(varxyz-grid 独立系统,原生只读视图) ════════════ -->
+<section class="page" id="page-grid">
+  <div class="banner readonly">网格系统 varxyz-grid — 独立仓库 / 独立账户(与 varia 完全隔离) · trade.xyz(HL HIP-3)+ Variational · 当前 SHADOW 阶段:真实行情 × 模拟撮合,不发真实订单
+    <span style="flex:1"></span><span class="feat f-new">G3b soak</span>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="label">模拟权益(全部引擎)</div><div class="value" data-k="gd.equity">—</div><div class="sub num" data-k="gd.equity_sub">等待数据</div></div>
+    <div class="kpi"><div class="label">成交量 / 笔数</div><div class="value" data-k="gd.vol">—</div><div class="sub num" data-k="gd.rungs">rungs —</div></div>
+    <div class="kpi"><div class="label">真实账户三口袋</div><div class="value num" data-k="gd.pockets">—</div><div class="sub num">spot / perp / xyz(网格用)</div></div>
+    <div class="kpi"><div class="label">HL agent 有效期</div><div class="value" data-k="gd.agent">—</div><div class="sub num">剩余天数,&lt;30 天告警</div></div>
+  </div>
+  <div class="panel">
+    <h2>引擎</h2>
+    <div class="src">source · varxyz-grid :8610 /api/state(state.json 心跳 + fills.csv 聚合),30s 预取缓存</div>
+    <table><thead><tr><th>市场</th><th>模式</th><th>状态</th><th>gap/格</th><th>库存</th><th>权益 $</th><th>量 $</th><th>rungs</th><th>冻结线</th></tr></thead>
+    <tbody id="gd-runners"><tr><td colspan="9">等待数据</td></tr></tbody></table>
+  </div>
+  <div class="panel">
+    <h2>最近成交(shadow 模拟)</h2>
+    <table><thead><tr><th>时间</th><th>市场</th><th>方向</th><th>价格</th><th>数量</th></tr></thead>
+    <tbody id="gd-fills"><tr><td colspan="5">等待数据</td></tr></tbody></table>
+  </div>
+  <div class="panel">
+    <h2>完整面板</h2>
+    <div class="src">独立控制台(网格位置条 / 5s 刷新 / 回合归档):<a href="http://100.122.255.98:8610/" target="_blank" style="color:var(--ok)">100.122.255.98:8610</a>(tailnet) · 写操作(KILL/调参/resume)G3e 交付</div>
+  </div>
+</section>
+
 <section class="page" id="page-hk">
   <div class="banner readonly">账户运营核算台 — 飞书账务群 → 账务 Bot → OpenClaw → 多维表格(人员/账号/流水/汇率/结算五表)→ 本页 · 一切走流水,先确认后入账
     <span style="flex:1"></span><span class="feat f-old">整站现有,反代原样接入(路由已自带 /account-ops/ 前缀)</span>
@@ -1038,6 +1074,53 @@
     }
   }
 
+  function bindGrid(g){
+    g=g||{};
+    const present=!!g.present, rs=g.runners||[];
+    const sum=(f)=>rs.reduce((a,r)=>a+(Number(r[f])||0),0);
+    const eq=sum('equity'), vol=sum('volume'), fills=sum('fills'), rungs=sum('rungs');
+    const running=rs.filter(r=>r.running).length, halted=rs.filter(r=>r.halted).length;
+    const acct=g.account||{};
+    // 总览卡
+    const chip=!present?'源不可达':g.kill?'KILL 急停':halted?('停机 '+halted):running?('运行 '+running+'/'+rs.length):'无引擎';
+    setK('grid.chip',chip);
+    document.querySelectorAll('[data-k="grid.chip"]').forEach(c=>{c.className='chip '+((!present||g.kill||halted)?'danger':(running?'ok':''));});
+    setK('grid.equity',present?money(eq):'—');
+    setK('grid.vol',present?(money(vol)+' / '+rungs):'—');
+    setK('grid.pockets',acct.master?(money(acct.spot_usdc)+' / '+money(acct.perp_value)+' / '+money(acct.xyz_value)):'—');
+    setK('grid.engines',rs.length?rs.map(r=>r.coin+'·'+r.mode).join('，'):'—');
+    if(!present) return;
+    // 页面 KPI
+    setK('gd.equity',money(eq));
+    setK('gd.equity_sub',rs.map(r=>r.coin+' '+money(r.equity)).join(' · ')||'无引擎');
+    setK('gd.vol',money(vol)+' · '+fills+' 笔');
+    setK('gd.rungs','rungs '+rungs);
+    setK('gd.pockets',acct.master?(money(acct.spot_usdc)+' / '+money(acct.perp_value)+' / '+money(acct.xyz_value)):'—');
+    const ag=(acct.agents||[])[0];
+    setK('gd.agent',ag?(ag.days_left+' 天'):'—');
+    // 引擎表
+    const rtb=document.getElementById('gd-runners');
+    if(rtb) rtb.innerHTML=rs.length?rs.map(r=>{
+      const st=r.halted?'<span style="color:var(--danger)">停机·'+(r.halt_reason||'')+'</span>'
+        :r.running?'<span style="color:var(--ok)">运行中</span>'
+        :'<span style="color:var(--warn)">失联 '+r.state_age_s+'s</span>';
+      const gtot=(r.grid||{}).levels!=null?r.gap+'/'+r.grid.levels:String(r.gap??'—');
+      return '<tr><td>'+r.coin+'</td><td>'+r.mode+'</td><td>'+st+'</td><td class="num">'+gtot
+        +'</td><td class="num">'+(r.inventory??'—')+'</td><td class="num">'+money(r.equity)
+        +'</td><td class="num">'+money(r.volume)+'</td><td class="num">'+r.rungs
+        +'</td><td>'+((r.frozen||[]).join(',')||'—')+'</td></tr>';
+    }).join(''):'<tr><td colspan="9">无引擎</td></tr>';
+    // 成交流水(全引擎归并,新的在前)
+    const fl=[];
+    rs.forEach(r=>(r.recent_fills||[]).forEach(f=>fl.push({...f,coin:r.coin})));
+    fl.sort((a,b)=>b.ts-a.ts);
+    const ftb=document.getElementById('gd-fills');
+    if(ftb) ftb.innerHTML=fl.length?fl.slice(0,12).map(f=>
+      '<tr><td>'+new Date(f.ts).toLocaleTimeString('zh-CN',{hour12:false})+'</td><td>'+f.coin
+      +'</td><td style="color:var(--'+(f.side==='buy'?'ok':'danger')+')">'+(f.side==='buy'?'买':'卖')
+      +'</td><td class="num">'+money(f.px)+'</td><td class="num">'+f.qty+'</td></tr>').join('')
+      :'<tr><td colspan="5">暂无成交</td></tr>';
+  }
   function bindVD(vd){
     const pb=document.getElementById('vd-pair-body');
     const hc=document.getElementById('vd-host-cards');
@@ -1946,7 +2029,7 @@
 
   // P5:每页核心源新鲜度徽章(🟢<15m/🟡迟滞/🔴停摆·附日期);P7:缺源页面盖"数据不可达"遮罩
   function bindFresh(f){
-    const map={pm:'page-pm',vardec:'page-vardec',pf:'page-pf',sa:'page-sa',hk:'page-hk'};
+    const map={pm:'page-pm',vardec:'page-vardec',pf:'page-pf',sa:'page-sa',grid:'page-grid',hk:'page-hk'};
     for(const k in map){
       const pg=document.getElementById(map[k]); if(!pg||!f[k]) continue;
       let b=pg.querySelector('.fresh-badge');
@@ -1965,6 +2048,7 @@
               'page-vardec':!Object.keys(((s.var_decibel||{}).hosts)||{}).length,
               'page-pf':!(s.predictfun||{}).present,
               'page-sa':!(s.single_account||{}).present,
+              'page-grid':!(s.grid||{}).present,
               'page-hk':!(s.account_ops||{}).present};
     for(const id in nd){ const el=document.getElementById(id); if(el) el.classList.toggle('nodata',!!nd[id]); }
   }
@@ -1981,6 +2065,7 @@
     try{bindVDAuto(s.varia_automation||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}
     try{bindSA(s.single_account||{});}catch(e){}
+    try{bindGrid(s.grid||{});}catch(e){}
     try{bindHK(s.account_ops||{});}catch(e){}
     try{bindIPO(s.ipo||{});}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
