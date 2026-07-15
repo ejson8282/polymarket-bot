@@ -1,0 +1,11 @@
+[Unit]
+Description=Record reconciled Var/Decibel equity and PnL snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot/deploy/latitude-console
+Environment=LATITUDE_DATA_DIR=/home/ubuntu/polymarket-bot/data
+ExecStart=/home/ubuntu/polymarket-bot/.venv/bin/python record_reconciled_equity.py

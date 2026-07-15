@@ -201,14 +201,7 @@ def run_digest() -> None:
     rows = [f"{icon.get(v.get('tier'), '⚪')} {names.get(k, k)} {v.get('label', '')}"
             for k, v in fresh.items()]
     vd = s.get("var_decibel") or {}
-    eq = vd.get("equity_history") or {}
-    if not eq.get("present"):
-        eq_line = "权益曲线无数据"
-    elif eq.get("valid") is False:
-        # 曲线标为无效(未逐笔扣充提)→ 不当收益数报,只说明,避免误导
-        eq_line = f"权益曲线暂不可用({eq.get('reason') or '未扣充提,非真实收益'})"
-    else:
-        eq_line = f"权益 ${eq.get('last')}(区间 {('+' if (eq.get('change') or 0) >= 0 else '')}{eq.get('change')})"
+    eq_line = _equity_digest_line(vd)
     bud = vd.get("budget") or {}
     bud_line = " · ".join(f"{h} 剩 ${v.get('remaining')}/{v.get('cap')}"
                           for h, v in (bud.get("hosts") or {}).items()) or "预算无数据"
@@ -219,6 +212,32 @@ def run_digest() -> None:
             + "\n".join(rows) + "\n" + eq_line + "\n" + bud_line + "\n" + a_line
             + "\n" + CONSOLE_URL)
     send_discord(body)  # 每日汇总只走 Discord;Discord 不通则不推(不淹没飞书,汇总非紧急)
+
+
+def _equity_digest_line(vd: dict) -> str:
+    """Format only reconciled PnL; deposits and withdrawals are never PnL."""
+    capital = vd.get("capital") if isinstance(vd.get("capital"), dict) else {}
+    if capital.get("complete") is True:
+        try:
+            equity = float(capital["current_equity"])
+            pnl = float(capital["pnl"])
+            pnl_pct = float(capital["pnl_pct"])
+        except (KeyError, TypeError, ValueError):
+            return "权益对账暂不可用(已对账字段不完整)"
+        up = pnl >= 0
+        arrow, sign = ("▲", "+") if up else ("▼", "-")
+        return (
+            f"总权益 ${equity:,.2f} · 相对投入 {arrow}{sign}${abs(pnl):,.2f} "
+            f"({sign}{abs(pnl_pct):.2f}%)"
+        )
+
+    eq = vd.get("equity_history") if isinstance(vd.get("equity_history"), dict) else {}
+    if not eq.get("present"):
+        return "权益曲线无数据"
+    if eq.get("valid") is False:
+        # 曲线标为无效(未逐笔扣充提)→ 不当收益数报,只说明,避免误导
+        return f"权益曲线暂不可用({eq.get('reason') or '未扣充提,非真实收益'})"
+    return "权益对账暂不可用(本金账本未完成)"
 
 
 def main() -> int:

@@ -20,7 +20,7 @@ import os
 import shlex
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +31,8 @@ APP_DIR = Path(__file__).resolve().parent
 CONSOLE_HTML = APP_DIR / "console.html"
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", APP_DIR.parents[1] / "data"))
 VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming-live/data"))
+VARIA_CAPITAL_LEDGER = VARIA_DIR / "home_equity_principal.json"
+VARIA_RECONCILED_PNL_HISTORY = VARIA_DIR / "reconciled_pnl_history.json"
 VARIA_MANUAL_JOB_UNIT = os.getenv(
     "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
 )
@@ -527,6 +529,7 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_dec_available"] = bool(
                     total is not None and venue_ok and not h["stale"]
                 )
+                h["points_decibel"] = total if h["points_dec_available"] else None
                 if h["points_dec_available"]:
                     points_dec = (points_dec or 0.0) + total
             else:
@@ -536,6 +539,7 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_var_available"] = bool(
                     tp is not None and venue_ok and not h["stale"]
                 )
+                h["points_variational"] = tp if h["points_var_available"] else None
                 if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
         # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
@@ -632,13 +636,38 @@ def _var_decibel() -> Dict[str, Any]:
     )
     volume_weekly_complete = bool(hosts) and len(volume_weekly_hosts) == len(hosts)
     volume_total_complete = bool(hosts) and len(volume_total_hosts) == len(hosts)
+    capital = _capital_accounting(hosts)
+    equity_history = _reconciled_pnl_history(capital)
+    points_by_venue = {
+        "decibel": {
+            "total": round(points_dec, 4) if points_dec_complete and points_dec is not None else None,
+            "hosts": {
+                host: round(_num(data.get("points_decibel")), 4)
+                if data.get("points_decibel") is not None else None
+                for host, data in sorted(hosts.items())
+            },
+            "complete": points_dec_complete,
+        },
+        "variational": {
+            "total": round(points_var, 4) if points_var_complete and points_var is not None else None,
+            "hosts": {
+                host: round(_num(data.get("points_variational")), 4)
+                if data.get("points_variational") is not None else None
+                for host, data in sorted(hosts.items())
+            },
+            "complete": points_var_complete,
+        },
+    }
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
         "equity_total": round(equity_total, 2) if equity_found and equity_complete else None,
         "equity_complete": equity_complete,
-        "points_decibel": round(points_dec, 1) if points_dec_complete and points_dec is not None else None,
-        "points_variational": round(points_var, 1) if points_var_complete and points_var is not None else None,
+        # Legacy totals remain for older readers. New clients should use the
+        # source-auditable points_by_venue structure below.
+        "points_decibel": round(points_dec, 4) if points_dec_complete and points_dec is not None else None,
+        "points_variational": round(points_var, 4) if points_var_complete and points_var is not None else None,
         "points_complete": {"decibel": points_dec_complete, "variational": points_var_complete},
+        "points_by_venue": points_by_venue,
         "volume_weekly": round(vol_weekly, 2) if vol_found and volume_weekly_complete else None,
         "volume_total": round(vol_total, 2) if vol_found and volume_total_complete else None,
         "volume_complete": {"weekly": volume_weekly_complete, "total": volume_total_complete},
@@ -651,29 +680,186 @@ def _var_decibel() -> Dict[str, Any]:
         "today": (today := _varia_trades_today()),
         "budget": _varia_budget({h: today.get("loss_7d_by_host", {}).get(h, 0.0)
                                  for h in (hosts or {"vps1": {}})}),
-        "equity_history": _equity_history(),
+        "capital": capital,
+        "equity_history": equity_history,
     }
 
 
 def _equity_history() -> Dict[str, Any]:
-    """总权益历史曲线(home_active_total_equity_history,带 principal ledger 校正)。"""
-    rows = _read_json(VARIA_DIR / "home_active_total_equity_history.json")
-    if not isinstance(rows, list) or not rows:
+    """Deprecated aggregate series; retained only for extension compatibility.
+
+    It predates the reconciled cashflow ledger and must never be shown as
+    investment performance. `_reconciled_pnl_history` is the only UI source.
+    """
+    return {"present": False, "valid": False, "reason": "legacy aggregate series disabled"}
+
+
+def _reconciled_pnl_history(capital: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only snapshots written after four-source cashflow reconciliation.
+
+    The old aggregate-equity file remains preserved for operations debugging, but
+    is intentionally excluded from investment reporting because it predates the
+    verified cashflow ledger.
+    """
+    if not capital.get("complete"):
         return {"present": False}
-    pts = []
-    for r in rows:
-        v = _num(r.get("value")) if isinstance(r, dict) else None
-        ts = str(r.get("timestamp") or "")[:10] if isinstance(r, dict) else ""
-        if v is not None:
-            pts.append({"t": ts, "v": round(v, 2)})
-    if len(pts) < 2:
-        return {"present": False}
-    vals = [p["v"] for p in pts]
-    first, last = vals[0], vals[-1]
-    return {"present": True, "points": pts[-30:], "first": first, "last": last,
-            "min": round(min(vals), 2), "max": round(max(vals), 2),
-            "change": round(last - first, 2),
-            "change_pct": round((last - first) / first * 100, 2) if first else None}
+    raw = _read_json(VARIA_RECONCILED_PNL_HISTORY)
+    points: List[dict] = []
+    if isinstance(raw, list):
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            pnl = _num(row.get("pnl"))
+            equity = _num(row.get("equity"))
+            principal = _num(row.get("principal"))
+            timestamp = str(row.get("timestamp") or "")
+            if pnl is None or equity is None or principal is None or not timestamp:
+                continue
+            try:
+                display_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
+                    timezone(timedelta(hours=8))
+                ).strftime("%m-%d %H:%M")
+            except ValueError:
+                display_time = timestamp[:16].replace("T", " ")
+            points.append({
+                "t": display_time,
+                "v": round(pnl, 2),
+                "equity": round(equity, 2),
+                "principal": round(principal, 2),
+            })
+    current = {
+        "t": datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%m-%d %H:%M"),
+        "v": round(_num(capital.get("pnl")) or 0.0, 2),
+        "equity": round(_num(capital.get("current_equity")) or 0.0, 2),
+        "principal": round(_num(capital.get("principal_total")) or 0.0, 2),
+    }
+    if not points or points[-1]["v"] != current["v"] or points[-1]["equity"] != current["equity"]:
+        points.append(current)
+    values = [point["v"] for point in points]
+    first, last = values[0], values[-1]
+    return {
+        "present": True,
+        "valid": True,
+        "recording": True,
+        "points": points[-144:],
+        "first": first,
+        "last": last,
+        "min": round(min(values), 2),
+        "max": round(max(values), 2),
+        "change": round(last - first, 2),
+        "change_pct": round((last - first) / first * 100, 2) if first else None,
+        "metric": "reconciled_pnl",
+        "change_basis": "recorded_interval",
+    }
+
+
+def record_reconciled_pnl_snapshot() -> Dict[str, Any]:
+    """Persist one verified four-source PnL sample for the read-only timer."""
+    # Reuse the exact four-source state mapping used by the console so a timer
+    # can never record a different accounting view from the one the user sees.
+    capital = (_var_decibel().get("capital") or {})
+    if not capital.get("complete"):
+        return {"ok": False, "reason": capital.get("reason", "四源未完成对账")}
+    point = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pnl": round(_num(capital.get("pnl")) or 0.0, 6),
+        "equity": round(_num(capital.get("current_equity")) or 0.0, 6),
+        "principal": round(_num(capital.get("principal_total")) or 0.0, 6),
+    }
+    raw = _read_json(VARIA_RECONCILED_PNL_HISTORY)
+    rows = raw if isinstance(raw, list) else []
+    last = rows[-1] if rows and isinstance(rows[-1], dict) else {}
+    last_time = None
+    try:
+        last_time = datetime.fromisoformat(str(last.get("timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    last_pnl = _num(last.get("pnl"))
+    due = last_time is None or (datetime.now(timezone.utc) - last_time.astimezone(timezone.utc)).total_seconds() >= 300
+    changed = last_pnl is None or abs(point["pnl"] - last_pnl) >= 0.005
+    if due or changed:
+        rows.append(point)
+        VARIA_RECONCILED_PNL_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        VARIA_RECONCILED_PNL_HISTORY.write_text(json.dumps(rows[-2016:], ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "point": point, "written": bool(due or changed)}
+
+
+def _capital_flow_amount(flow: Any) -> Optional[float]:
+    """Return a signed external cashflow without treating it as trading PnL."""
+    if not isinstance(flow, dict):
+        return None
+    amount = _num(flow.get("amount", flow.get("amount_usdc")))
+    if amount is None:
+        return None
+    kind = str(flow.get("type") or "").strip().lower()
+    if kind in {"withdraw", "withdrawal", "out"} and amount > 0:
+        return -amount
+    return amount
+
+
+def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
+    """Separate capital flows from equity so deposits can never be reported as PnL.
+
+    The ledger is intentionally append-only and only contains reconciled external
+    transfers. A missing source makes PnL unavailable instead of guessing.
+    """
+    ledger = _read_json(VARIA_CAPITAL_LEDGER)
+    if not isinstance(ledger, dict):
+        return {"present": False, "complete": False, "reason": "本金账本不存在"}
+
+    initial_total = net_cashflow = current_total = 0.0
+    complete = bool(hosts)
+    rows: List[dict] = []
+    missing: List[str] = []
+    for host in sorted(hosts):
+        host_ledger = ledger.get(host) if isinstance(ledger.get(host), dict) else {}
+        values = (("decibel", "equity_dec", "Decibel"), ("variational", "equity_var", "Var"))
+        for venue, equity_key, label in values:
+            entry = host_ledger.get(venue) if isinstance(host_ledger, dict) else None
+            current = _num(hosts.get(host, {}).get(equity_key))
+            initial = _num(entry.get("initial")) if isinstance(entry, dict) else None
+            flows = entry.get("cashflows") if isinstance(entry, dict) else None
+            reconciled = bool(entry.get("reconciled")) if isinstance(entry, dict) else False
+            if current is None or initial is None or not isinstance(flows, list) or not reconciled:
+                complete = False
+                missing.append(f"{host.upper()} {label}")
+                continue
+            flow_total = sum(
+                amount for amount in (_capital_flow_amount(flow) for flow in flows)
+                if amount is not None
+            )
+            principal = initial + flow_total
+            initial_total += initial
+            net_cashflow += flow_total
+            current_total += current
+            rows.append({
+                "host": host,
+                "venue": venue,
+                "initial": round(initial, 6),
+                "cashflow": round(flow_total, 6),
+                "principal": round(principal, 6),
+                "current": round(current, 6),
+                "pnl": round(current - principal, 6),
+            })
+
+    if not complete:
+        return {
+            "present": True, "complete": False,
+            "reason": "待对账：" + "、".join(missing), "sources": rows,
+        }
+    principal_total = initial_total + net_cashflow
+    return {
+        "present": True,
+        "complete": True,
+        "initial_principal": round(initial_total, 2),
+        "net_cashflow": round(net_cashflow, 2),
+        "principal_total": round(principal_total, 2),
+        "current_equity": round(current_total, 2),
+        "pnl": round(current_total - principal_total, 2),
+        "pnl_pct": round((current_total - principal_total) / principal_total * 100, 2)
+        if principal_total else None,
+        "sources": rows,
+    }
 
 
 # ---------- Single Account ----------

@@ -59,16 +59,41 @@ sudo systemctl daemon-reload
 # 不 enable；由控制台每次提交人工任务时 start，执行一条后自动退出。
 ```
 
+## Var/Decibel 权益与积分口径
+
+- 四个独立来源为 `VPS1/VPS2 × Decibel/Variational`。任一来源过期或读取失败时，
+  不显示合计权益、积分或盈亏。
+- `home_equity_principal.json` 是运营侧的追加式本金账本，不提交 Git。每个来源记录
+  `initial`、外部 `cashflows`（充值为正、提现为负）和 `reconciled: true`。
+- 控制台的“总权益”是四源当前权益之和；其下方的 `▲/▼` 是
+  `当前总权益 - (初始本金 + 累计净充值/提现)`，即真实净交易结果，而非充值带来的账面增长。
+- `points_by_venue` 同时返回 Decibel/Var 的总积分和 VPS1/VPS2 分项，前端不再把两个
+  平台的积分混成一个不可核查的估算值。
+- 旧的 `home_active_total_equity_history.json` 是调试遗留聚合快照，不参与收益展示。
+  新曲线只使用已对账后的 `reconciled_pnl_history.json`，其 `last` 为当前真实净交易结果，
+  `change` 为本次已记录区间内的变化。
+
+安装五分钟只读快照任务：
+
+```bash
+sudo install -m 0644 deploy/systemd/latitude-reconciled-equity.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/latitude-reconciled-equity.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now latitude-reconciled-equity.timer
+```
+
+该任务只读取四源状态并写入本地报告 JSON；不启动 worker、不下单、不接触私钥。
+
 ## 数据接入进度(有真数据先接,其余占位)
 
 已接真数据(`/api/state`):
 - **Polymarket**:engine_state_N.json 聚合(运行账号/挂单/今日量/PnL/sibling 统计)
 - **Single Account**:paper 状态 JSON(候选/可执行/最高分)+ 模拟器库虚拟权益
 - **Research 数据**:记录器心跳 + market.db 存在性
-- **Var/Decibel**:本机 ops_state.json(host/时间)
+- **Var/Decibel**:VPS1 本机状态 + VPS2 peer 快照的四源权益、积分、仓位与交易量；
+  已对账本金账本与五分钟净交易结果快照
 
 占位待接(模板示例值,数据表/字段建成后接入):
-- Var/Decibel 双 VPS 权益/损耗聚合(需 peer 快照目录 + 四源不混算聚合)
 - Single Account 战绩矩阵/权益曲线/持仓(需 strategy_daily/positions_closed/equity_snapshots——
   施工包01 已建表,记录器出数据后即可接)
 - Predict.fun 风险闸门、打新核算台明细

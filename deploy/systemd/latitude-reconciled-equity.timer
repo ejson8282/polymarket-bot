@@ -1,0 +1,11 @@
+[Unit]
+Description=Five-minute reconciled Var/Decibel PnL snapshot timer
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=5min
+Persistent=true
+Unit=latitude-reconciled-equity.service
+
+[Install]
+WantedBy=timers.target

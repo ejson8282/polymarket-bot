@@ -45,6 +45,8 @@ def _state(host: str, generated_at: str, decibel: dict, variational: dict) -> di
 
 def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "VARIA_CAPITAL_LEDGER", data_dir / "home_equity_principal.json")
+    monkeypatch.setattr(console, "VARIA_RECONCILED_PNL_HISTORY", data_dir / "reconciled_pnl_history.json")
     monkeypatch.setattr(console, "_varia_trades_today", lambda: {"present": False})
     monkeypatch.setattr(console, "_varia_budget", lambda _: {"present": False})
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
@@ -153,9 +155,49 @@ def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
     assert result["points_complete"] == {"decibel": True, "variational": True}
     assert result["points_decibel"] == 3.0
     assert result["points_variational"] == 0.3
+    assert result["points_by_venue"] == {
+        "decibel": {"total": 3.0, "hosts": {"vps1": 1.0, "vps2": 2.0}, "complete": True},
+        "variational": {"total": 0.3, "hosts": {"vps1": 0.1, "vps2": 0.2}, "complete": True},
+    }
     assert result["volume_complete"] == {"weekly": True, "total": True}
     assert result["volume_weekly"] == 60.0
     assert result["volume_total"] == 600.0
+
+
+def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    for host in ("vps1", "vps2"):
+        state = _state(host, now.isoformat(), _venue(ok=True), _venue(ok=True))
+        for venue in ("decibel", "variational"):
+            state["exchanges"][venue]["points"] = {"total_points": "1"}
+        target = tmp_path / ("ops_state.json" if host == "vps1" else "ops_peer_state/vps2.json")
+        _write_json(target, state)
+    _write_json(
+        tmp_path / "home_equity_principal.json",
+        {
+            "vps1": {
+                "decibel": {"initial": 80, "cashflows": [{"type": "deposit", "amount": 10}], "reconciled": True},
+                "variational": {"initial": 100, "cashflows": [], "reconciled": True},
+            },
+            "vps2": {
+                "decibel": {"initial": 90, "cashflows": [], "reconciled": True},
+                "variational": {"initial": 100, "cashflows": [], "reconciled": True},
+            },
+        },
+    )
+
+    capital = console._var_decibel()["capital"]
+
+    assert capital["complete"] is True
+    assert capital["initial_principal"] == 370.0
+    assert capital["net_cashflow"] == 10.0
+    assert capital["principal_total"] == 380.0
+    assert capital["current_equity"] == 400.0
+    assert capital["pnl"] == 20.0
+    assert capital["pnl_pct"] == 5.26
 
 
 def test_stopped_polymarket_engine_does_not_claim_historical_orders(
@@ -250,7 +292,7 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "hosts[h].age_sec??999999" in html
     assert "四源权益不完整" in html
     assert "四源交易量不完整" in html
-    assert "vd.points_decibel!=null&&vd.points_variational!=null" in html
+    assert "const score=vd.points_by_venue||{}" in html
     assert "旧自动化" not in html
     assert "<span class=\"on\">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):

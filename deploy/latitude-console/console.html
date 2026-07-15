@@ -267,7 +267,7 @@
       <div class="row"><span class="k">总权益(两VPS)</span><span class="v" data-k="vd.equity">—</span></div>
       <div class="row"><span class="k" data-k="vd.vol_label">交易量 / 损耗</span><span class="v" data-k="vd.vol">—</span></div>
       <div class="row"><span class="k">VPS1 / VPS2</span><span class="v" data-k="vd.hosts">—</span></div>
-      <div class="row"><span class="k">积分估算</span><span class="v" data-k="vd.points">—</span></div>
+      <div class="row"><span class="k">积分（Dec / Var）</span><span class="v" data-k="vd.points">—</span></div>
     </div>
     <div class="card" onclick="go('pm')">
       <div class="head"><span class="name">Polymarket 做市</span><span class="chip" data-k="pm.run">读取中</span></div>
@@ -370,7 +370,7 @@
     <div class="kpi"><div class="label">今日净损耗</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label" data-k="vdk.vol_label">交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label">旧周预算（只读）</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">旧 worker 已退出生产</div></div>
-    <div class="kpi"><div class="label">积分估算</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">积分（Dec / Var）</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
   </div>
   <div class="grid2">
     <div>
@@ -393,10 +393,11 @@
         <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
       </div>
       <div class="panel" id="vd-equity-panel" style="display:none">
-        <h2>总权益曲线 <span class="feat f-new">新增</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
-        <div class="src">source · home_active_total_equity_history(两 VPS 合计,principal ledger 校正)</div>
+        <h2>真实净交易结果 <span class="feat f-new">四源已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
+        <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
         <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" style="margin-top:8px"></svg>
         <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
+        <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
       </div>
     </div>
     <aside>
@@ -1062,11 +1063,19 @@
     setK('vd.chip', legs.length? '<span class="chip danger">单腿 ×'+legs.length+'</span>':
       (unverified.length?'<span class="chip warn">仓位待核验 ×'+unverified.length+'</span>':'四源仓位已核验'));
     const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0||unverified.length>0);
+    const capital=vd.capital||{};
     if(vd.equity_total!=null){
       setK('vd.equity', money(vd.equity_total));
       const dec=names.reduce((s,h)=>s+(hosts[h].equity_dec||0),0), vr=names.reduce((s,h)=>s+(hosts[h].equity_var||0),0);
-      setK('vdk.equity', money(vd.equity_total));
-      setK('vdk.equity_sub', 'V '+money(vr)+' / D '+money(dec)+'(四源相加)');
+      setK('vdk.equity', money(capital.complete?capital.current_equity:vd.equity_total));
+      if(capital.complete){
+        const pnl=Number(capital.pnl||0), up=pnl>=0, arrow=up?'▲':'▼';
+        const cls=up?'up':'down', pct=capital.pnl_pct!=null?' ('+(up?'+':'')+Number(capital.pnl_pct).toFixed(2)+'%)':'';
+        setK('vdk.equity_sub','<span class="'+cls+'">'+arrow+' '+(up?'+':'−')+money(Math.abs(pnl))+pct+'</span> · 投入 '+money(capital.principal_total));
+        setK('vd.equity',money(capital.current_equity));
+      } else {
+        setK('vdk.equity_sub','V '+money(vr)+' / D '+money(dec)+' · 本金待对账');
+      }
     } else {
       setK('vd.equity','—');
       setK('vdk.equity','—');
@@ -1082,15 +1091,18 @@
       const x=hosts[h]; const cls=x.stale?'down':(x.single_leg?'down':'up');
       return '<span class="'+cls+'">● '+esc(x.age||'?')+'</span>';
     }).join(' / ')||null);
-    if(vd.points_decibel!=null&&vd.points_variational!=null){
-      const tot=vd.points_decibel+vd.points_variational;
-      setK('vd.points', Number(tot.toFixed(1)).toLocaleString());
-      setK('vdk.points', Number(tot.toFixed(1)).toLocaleString());
+    const score=vd.points_by_venue||{};
+    const decScore=score.decibel||{}, varScore=score.variational||{};
+    const fmtPoints=v=>v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    if(decScore.total!=null&&varScore.total!=null){
+      setK('vd.points','<span style="color:var(--dec)">'+fmtPoints(decScore.total)+'</span> / <span style="color:var(--var)">'+fmtPoints(varScore.total)+'</span>');
+      setK('vdk.points','<span style="color:var(--dec)">'+fmtPoints(decScore.total)+'</span><span style="font-size:16px;color:var(--faint)"> / </span><span style="color:var(--var)">'+fmtPoints(varScore.total)+'</span>');
     } else {
       setK('vd.points','—');
       setK('vdk.points','—');
     }
-    setK('vdk.points_sub','<span style="color:var(--var)">Var '+(vd.points_variational??'—')+'</span> · <span style="color:var(--dec)">Dec '+(vd.points_decibel??'—')+'</span>');
+    const hostPoints=venue=>Object.entries((venue.hosts||{})).map(([host,value])=>host.toUpperCase()+' '+fmtPoints(value)).join(' · ');
+    setK('vdk.points_sub','<span style="color:var(--dec)">Decibel: '+hostPoints(decScore)+'</span><br><span style="color:var(--var)">Var: '+hostPoints(varScore)+'</span>');
     window.__autoCtl=vd.auto||{};
     const worst=names.reduce((m,h)=>Math.max(m,hosts[h].age_sec??999999),0);
     if(vd.auto){
@@ -1159,13 +1171,14 @@
       if(bar) bar.innerHTML='<span style="width:100%;display:flex;align-items:center;color:var(--faint)">近24小时没有可核验的已执行交易</span>';
       setK('vd.loss_src','没有已执行交易数据，不计算损耗、费率或滑点');
     }
-    // 总权益曲线(原生 SVG;真实历史序列)
+    // 四源本金账本扣除后，才是可解释的净交易结果曲线。
     const eq=vd.equity_history||{};
     const eqp=document.getElementById('vd-equity-panel');
-    if(eq.present && eqp){
+    if(eq.present && eq.valid===true && eqp){
       eqp.style.display='block';
       const pts=eq.points||[], n=pts.length;
-      const lo=eq.min, hi=eq.max, span=(hi-lo)||1, W=860, H=120, pad=10;
+      const hasTrend=n>1;
+      const lo=hasTrend?eq.min:eq.min-1, hi=hasTrend?eq.max:eq.max+1, span=(hi-lo)||1, W=860, H=120, pad=10;
       const x=i=>pad+(W-2*pad)*i/(Math.max(1,n-1));
       const y=v=>H-pad-(H-2*pad)*(v-lo)/span;
       const line=pts.map((p,i)=>(i?'L':'M')+x(i).toFixed(1)+','+y(p.v).toFixed(1)).join(' ');
@@ -1175,9 +1188,15 @@
       if(svg) svg.innerHTML='<path d="'+area+'" fill="'+(up?'rgba(70,178,107,.12)':'rgba(229,72,77,.12)')+'"/>'+
         '<path d="'+line+'" fill="none" stroke="'+(up?'var(--ok)':'var(--danger)')+'" stroke-width="2"/>'+
         '<circle cx="'+x(n-1).toFixed(1)+'" cy="'+y(pts[n-1].v).toFixed(1)+'" r="3" fill="'+(up?'var(--ok)':'var(--danger)')+'"/>';
-      setK('vd.eq_head', pts[0].t+' → '+pts[n-1].t+' · '+n+'点');
-      setK('vd.eq_foot', '当前 '+money(eq.last)+' · 区间变化 '+(up?'+':'')+money(Math.abs(eq.change)).replace('$',up?'$':'−$')+
-        (eq.change_pct!=null?'('+(up?'+':'')+eq.change_pct+'%)':'')+' · 区间 '+money(eq.min)+'–'+money(eq.max));
+      setK('vd.eq_head', hasTrend?(pts[0].t+' → '+pts[n-1].t+' · '+n+'点'):('已开始记录 · 下一点约5分钟后'));
+      setK('vd.eq_foot', '当前净结果 '+pnlSpan(eq.last)+' · 区间变化 '+(up?'+':'')+money(Math.abs(eq.change)).replace('$',up?'$':'−$')+
+        (hasTrend && eq.change_pct!=null?'('+(up?'+':'')+eq.change_pct+'%)':'')+
+        (hasTrend?(' · 区间 '+money(eq.min)+'–'+money(eq.max)):' · 已开始每5分钟四源对账记录'));
+      const pieces=(capital.sources||[]).map(s=>{
+        const name=(s.host||'').toUpperCase()+' '+(s.venue==='variational'?'Var':'Decibel');
+        return name+' '+pnlSpan(s.pnl||0);
+      });
+      setK('vd.eq_sources', pieces.length?'四账户：'+pieces.join(' · '):'四账户拆分待最新快照');
     }
     // 本周预算:每 VPS 各 cap − 各自近7日损耗(每VPS独立;总卡显示合计,悬停看分解)
     const b=vd.budget||{};
