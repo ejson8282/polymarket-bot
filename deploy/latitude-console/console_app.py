@@ -1982,6 +1982,18 @@ def _ipo() -> Dict[str, Any]:
     stock_rows = [_stock(s) for s in stocks[:20] if isinstance(s, dict)]
     # 申购中的只数(数据里 status 可能滞后,仅作参考展示;彻底过滤过期股需 router 补 detail)
     active_n = sum(1 for s in stock_rows if s.get("status") in ("申购中", "招股中", "待申购"))
+    # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
+    pack = _read_json(DATA_DIR / "ipo_judgment_pack.json")
+    judged_at = None
+    if isinstance(pack, dict):
+        judged_at = pack.get("judged_at")
+        jmap = {str(s.get("code")): s for s in (pack.get("stocks") or []) if isinstance(s, dict)}
+        for row in stock_rows:
+            j = jmap.get(row["code"])
+            if j and j.get("verdict"):
+                row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                row["ai_expected"] = j.get("expected_net")    # 期望净收益
+                row["ai_reason"] = str(j.get("reason") or "")[:80]
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
@@ -1991,6 +2003,8 @@ def _ipo() -> Dict[str, Any]:
         "entries": [_entry(e) for e in entries[:12] if isinstance(e, dict)],
         "stocks_total": len(stocks), "entries_total": len(entries),
         "active_stocks": active_n,
+        "ai_judged_at": judged_at,
+        "ai_judged_age": _age_text(_iso_age(judged_at)) if judged_at else None,
     }
 
 

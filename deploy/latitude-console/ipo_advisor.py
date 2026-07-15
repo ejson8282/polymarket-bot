@@ -84,18 +84,32 @@ def _lockup_cost(fee: float, refund_days) -> float:
     return (fee or 0) * MARGIN_APR * days / 365.0
 
 
+AI_FIELDS = ("margin_subscription", "cornerstone", "sector_recent_day1",
+             "expected_net", "verdict", "reason")
+
+
+def _load_pack() -> dict:
+    try:
+        return json.loads(PACK_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def build_pack() -> dict:
-    """组装判研包:每只申购中的股的确定性事实 + 老板观点。给第二层 Claude 当输入。"""
+    """组装判研包:每只申购中的股的确定性事实 + 老板观点。给第二层 Claude 当输入。
+    重跑时保留已有 AI 判断(按代码 merge),不把第二层的 verdict/reason 冲掉。"""
     st = _get_state()
     ipo = st.get("ipo") or {}
     views = _load_views()
+    prev = {str(s.get("code")): s for s in (_load_pack().get("stocks") or [])}
     active = [s for s in (ipo.get("stocks") or []) if s.get("status") in ("申购中", "招股中", "待申购")]
     items = []
     for s in active:
         code = str(s.get("code") or "")
         fee = s.get("fee")
         lock = _lockup_cost(fee, s.get("refund_days"))
-        items.append({
+        old = prev.get(code) or {}
+        item = {
             "code": code, "name": s.get("name"),
             "fee_hkd": fee, "refund_days": s.get("refund_days"),
             "lockup_cost_hkd": round(lock, 2),
@@ -103,10 +117,10 @@ def build_pack() -> dict:
             "risk": s.get("risk"), "close_at": s.get("close_at"),
             "listing_at": s.get("listing_at"), "prospectus": s.get("prospectus"),
             "boss_views": views.get(code.upper()) or [],
-            # 以下留给第二层 Claude 上网查后填:
-            "margin_subscription": None, "cornerstone": None,
-            "sector_recent_day1": None, "expected_net": None, "verdict": None, "reason": None,
-        })
+        }
+        for f in AI_FIELDS:                      # 保留已有 AI 判断(第二层填的)
+            item[f] = old.get(f)
+        items.append(item)
     # 账户可用资金(排班要用):从 account_ops owners 聚合
     ao = st.get("account_ops") or {}
     pack = {
@@ -116,10 +130,35 @@ def build_pack() -> dict:
         "accounts_capital": ao.get("capital"), "accounts_n": ao.get("accounts"),
         "note": "router_score/hit_rate 目前是导入占位默认值,不可信;真实判断以第二层上网查为准。",
     }
+    pack["judged_at"] = _load_pack().get("judged_at")   # 保留上次 AI 判研时间
     tmp = PACK_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, PACK_FILE)
     return pack
+
+
+def apply_verdicts(verdicts: dict) -> None:
+    """第二层 Claude 判研完成后调用:把 {code: {verdict, expected_net, reason, cornerstone,
+    margin_subscription, sector_recent_day1}} 写回判研包,并盖 judged_at 时间戳。
+    这样控制台读同一个包就能把 AI 判断显示在打新页,和确定性事实并排。"""
+    pack = _load_pack()
+    if not pack.get("stocks"):
+        pack = build_pack()
+    by_code = {str(s.get("code")): s for s in pack.get("stocks") or []}
+    n = 0
+    for code, v in (verdicts or {}).items():
+        s = by_code.get(str(code))
+        if not s:
+            continue
+        for f in AI_FIELDS:
+            if f in v:
+                s[f] = v[f]
+        n += 1
+    pack["judged_at"] = datetime.now(BJT).isoformat(timespec="minutes")
+    tmp = PACK_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PACK_FILE)
+    print(f"已写回 {n} 只 AI 判断 · judged_at={pack['judged_at']}")
 
 
 def brief() -> None:
@@ -148,6 +187,10 @@ def main() -> int:
         add_view(sys.argv[2], sys.argv[3])
     elif cmd == "show-pack":
         print(json.dumps(build_pack(), ensure_ascii=False, indent=2))
+    elif cmd == "apply-verdicts":
+        # 从 stdin 读 {code:{verdict,expected_net,reason,...}} JSON,写回包
+        raw = sys.stdin.read()
+        apply_verdicts(json.loads(raw) if raw.strip() else {})
     else:
         print(__doc__)
         return 1

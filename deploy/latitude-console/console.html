@@ -1352,12 +1352,24 @@
       const statusChip=x.status?' <span class="chip '+stCls+'" style="font-size:10px">'+esc(x.status)+'</span>':'';
       const feeTxt=x.fee!=null?'HK$'+Math.round(x.fee).toLocaleString():'—';
       const linkTxt=x.prospectus?' <a href="'+esc(x.prospectus)+'" target="_blank" style="color:var(--var);font-size:10px">招股书</a>':'';
+      // 最后一列:有 AI 判研就显示 打/跳徽章+期望值+理由,否则回落到导入摘要
+      let aiCell;
+      if(x.ai_verdict){
+        const v=x.ai_verdict, cls=v.includes('打')?'ok':(v.includes('跳')?'danger':'warn');
+        const exp=x.ai_expected!=null?' <b class="'+(x.ai_expected>=0?'up':'down')+'">'+(x.ai_expected>=0?'+':'')+'$'+Math.round(x.ai_expected)+'</b>':'';
+        aiCell='<span class="chip '+cls+'">'+esc(v)+'</span>'+exp+(x.ai_reason?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(x.ai_reason)+'</div>':'')+linkTxt;
+      } else {
+        aiCell='<span style="color:var(--faint);font-size:11px">待 AI 判研</span>'+(x.note?'<div style="color:var(--muted);font-size:11px">'+esc(x.note)+'</div>':'')+linkTxt;
+      }
       return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+statusChip+secondary+
       (x.close_at&&x.close_at!=='待确认'?'<div class="dt">截止 '+esc(x.close_at)+(x.listing_at&&x.listing_at!=='待确认'?' · 上市 '+esc(x.listing_at):'')+'</div>':'')+'</td>'+
       '<td class="num">'+(x.score??'—')+'</td><td class="num">'+(x.hit_rate!=null?x.hit_rate:'—')+'</td><td class="num">'+feeTxt+'</td>'+
       '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
-      '<td style="color:var(--muted)">'+esc(x.note||'')+linkTxt+'</td></tr>'}).join('')
+      '<td>'+aiCell+'</td></tr>'}).join('')
       : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
+    // 表头「OpenClaw 摘要」→「AI 判研」+ 判研时间
+    const stHead=st&&st.closest('table')?st.closest('table').querySelector('thead th:last-child'):null;
+    if(stHead) stHead.innerHTML='AI 判研'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
     const en=document.getElementById('hk-entries');
     if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>{
       const acc=esc(e.account||'');
