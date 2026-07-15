@@ -215,6 +215,7 @@
 .vdauto-pool-row{display:grid;grid-template-columns:130px 1fr;gap:12px;align-items:start;padding:7px 0}
 .vdauto-pool-label{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding-top:4px}
 .vdauto-symbols{display:flex;gap:5px;flex-wrap:wrap}.vdauto-symbol{position:relative;border:1px solid var(--line);border-radius:5px;padding:3px 7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel)}
+.equity-chart{position:relative;margin-top:8px}.equity-chart svg{display:block;cursor:crosshair}.equity-tooltip{position:absolute;z-index:2;min-width:122px;padding:7px 9px;border:1px solid var(--line);border-radius:5px;background:rgba(14,17,22,.96);box-shadow:0 6px 18px rgba(0,0,0,.28);font-family:var(--mono);font-size:11px;line-height:1.5;pointer-events:none;transform:translateX(-50%);white-space:nowrap}.equity-tooltip b{color:var(--muted);font-weight:500}.equity-tooltip .up{font-weight:600}.equity-tooltip .down{font-weight:600}
 .vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
 .vdauto-symbol.blocked{border-color:rgba(229,72,77,.5);color:var(--danger);padding-left:15px}.vdauto-symbol.blocked:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--danger)}
 .vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
@@ -403,7 +404,10 @@
       <div class="panel" id="vd-equity-panel" style="display:none">
         <h2>真实净交易结果 <span class="feat f-new">四源已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
         <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
-        <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" style="margin-top:8px"></svg>
+        <div class="equity-chart" id="vd-equity-chart">
+          <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
+          <div class="equity-tooltip" id="vd-equity-tooltip" hidden></div>
+        </div>
         <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
         <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
       </div>
@@ -1268,9 +1272,34 @@
       const area=line+' L'+x(n-1).toFixed(1)+','+(H-pad)+' L'+x(0).toFixed(1)+','+(H-pad)+' Z';
       const up=eq.change>=0;
       const svg=document.getElementById('vd-equity-svg');
-      if(svg) svg.innerHTML='<path d="'+area+'" fill="'+(up?'rgba(70,178,107,.12)':'rgba(229,72,77,.12)')+'"/>'+
-        '<path d="'+line+'" fill="none" stroke="'+(up?'var(--ok)':'var(--danger)')+'" stroke-width="2"/>'+
-        '<circle cx="'+x(n-1).toFixed(1)+'" cy="'+y(pts[n-1].v).toFixed(1)+'" r="3" fill="'+(up?'var(--ok)':'var(--danger)')+'"/>';
+      if(svg) {
+        const color=up?'var(--ok)':'var(--danger)';
+        svg.innerHTML='<path d="'+area+'" fill="'+(up?'rgba(70,178,107,.12)':'rgba(229,72,77,.12)')+'"/>'+
+          '<path d="'+line+'" fill="none" stroke="'+color+'" stroke-width="2"/>'+
+          '<circle cx="'+x(n-1).toFixed(1)+'" cy="'+y(pts[n-1].v).toFixed(1)+'" r="3" fill="'+color+'"/>'+
+          '<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="transparent"/>'+
+          '<g id="vd-equity-hover" style="display:none;pointer-events:none"><line id="vd-equity-guide" y1="'+pad+'" y2="'+(H-pad)+'" stroke="var(--muted)" stroke-dasharray="3 3" stroke-width="1"/><circle id="vd-equity-hover-dot" r="4" fill="'+color+'" stroke="var(--panel)" stroke-width="2"/></g>';
+        const chart=document.getElementById('vd-equity-chart');
+        const tooltip=document.getElementById('vd-equity-tooltip');
+        const hover=document.getElementById('vd-equity-hover');
+        const guide=document.getElementById('vd-equity-guide');
+        const dot=document.getElementById('vd-equity-hover-dot');
+        svg.onmousemove=event=>{
+          const bounds=svg.getBoundingClientRect();
+          if(!bounds.width || !tooltip || !hover || !guide || !dot || !chart) return;
+          const index=Math.max(0,Math.min(n-1,Math.round((event.clientX-bounds.left)/bounds.width*(n-1))));
+          const point=pts[index], px=x(index), py=y(point.v), value=Number(point.v)||0, positive=value>=0;
+          guide.setAttribute('x1',px.toFixed(1)); guide.setAttribute('x2',px.toFixed(1));
+          dot.setAttribute('cx',px.toFixed(1)); dot.setAttribute('cy',py.toFixed(1));
+          hover.style.display='block';
+          tooltip.hidden=false;
+          tooltip.innerHTML='<b>'+esc(point.t)+'</b><br><span class="'+(positive?'up':'down')+'">'+(positive?'+':'−')+money(Math.abs(value))+'</span>';
+          const left=Math.max(66,Math.min(bounds.width-66,px/W*bounds.width));
+          const top=Math.max(4,Math.min(bounds.height-48,py/H*bounds.height-46));
+          tooltip.style.left=left+'px'; tooltip.style.top=top+'px';
+        };
+        svg.onmouseleave=()=>{ if(tooltip) tooltip.hidden=true; if(hover) hover.style.display='none'; };
+      }
       setK('vd.eq_head', hasTrend?(pts[0].t+' → '+pts[n-1].t+' · '+n+'点'):('已开始记录 · 下一点约5分钟后'));
       setK('vd.eq_foot', '当前净结果 '+pnlSpan(eq.last)+' · 区间变化 '+(up?'+':'')+money(Math.abs(eq.change)).replace('$',up?'$':'−$')+
         (hasTrend && eq.change_pct!=null?'('+(up?'+':'')+eq.change_pct+'%)':'')+

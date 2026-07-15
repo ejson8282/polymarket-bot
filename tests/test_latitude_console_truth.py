@@ -293,6 +293,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "四源权益不完整" in html
     assert "四源交易量不完整" in html
     assert "const score=vd.points_by_venue||{}" in html
+    assert 'id="vd-equity-tooltip"' in html
+    assert "svg.onmousemove=event=>" in html
     assert "旧自动化" not in html
     assert "<span class=\"on\">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
