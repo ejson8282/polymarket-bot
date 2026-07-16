@@ -322,6 +322,48 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "打开旧只读详情" not in html
 
 
+def test_grid_state_forwards_versioned_identity_as_read_only_data(monkeypatch) -> None:
+    payload = {
+        "runners": [{
+            "coin": "BTC",
+            "release_sha": "1" * 40,
+            "config_sha": "2" * 64,
+            "resolved_spec_sha": "3" * 64,
+            "venue": "variational",
+            "market_data_source": "hyperliquid",
+            "proxy_market_data": True,
+        }],
+    }
+    monkeypatch.setattr(console, "_fetch_json", lambda *_args, **_kwargs: payload)
+
+    result = console._grid()
+
+    assert result["present"] is True
+    assert result["runners"][0] == payload["runners"][0]
+
+
+def test_grid_identity_table_shortens_shas_and_escapes_dynamic_strings() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    for heading in ("代码身份", "拟实盘场所", "SHADOW 行情源", "PROXY"):
+        assert f"<th>{heading}</th>" in html
+    assert 'colspan="13"' in html
+    assert "return /^[0-9a-f]{7,64}$/i.test(sha)?esc(sha.slice(0,8)):'—'" in html
+    for field in ("release_sha", "config_sha", "resolved_spec_sha"):
+        assert f"shortSha(r.{field})" in html
+    for escaped in (
+        "esc(r.venue||'—')",
+        "esc(r.market_data_source||'—')",
+        "esc(r.coin||'—')",
+        "esc(r.mode||'—')",
+        "esc(r.halt_reason||'未知原因')",
+    ):
+        assert escaped in html
+    assert "r.proxy_market_data===true" in html
+    assert "r.proxy_market_data===false" in html
+    assert "PROXY · 未知" in html
+
+
 def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
     result = console._normalize_varia_auto_state({
         "enabled": True,

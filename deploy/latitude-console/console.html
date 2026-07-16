@@ -68,6 +68,10 @@
   th{font-family:var(--mono);font-size:10.5px;font-weight:500;color:var(--faint);text-align:left;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--line)}
   td{padding:8px;border-bottom:1px solid var(--panel2);vertical-align:middle}
   td.num{font-family:var(--mono)}
+  .gd-runner-scroll{overflow-x:auto}
+  .gd-runner-scroll table{min-width:1240px}
+  .gd-identity{font-family:var(--mono);font-size:10.5px;line-height:1.55;white-space:nowrap}
+  .gd-identity span{display:inline-block;width:38px;color:var(--faint)}
   .chip{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
   .chip.ok{color:var(--ok);border-color:rgba(70,178,107,.4)}
   .chip.warn{color:var(--warn);border-color:rgba(231,197,71,.4)}
@@ -785,9 +789,9 @@
   </div>
   <div class="panel">
     <h2>引擎</h2>
-    <div class="src">source · varxyz-grid :8610 /api/state(state.json 心跳 + fills.csv 聚合),30s 预取缓存</div>
-    <table><thead><tr><th>市场</th><th>模式</th><th>状态</th><th>gap/格</th><th>库存</th><th>权益 $</th><th>量 $</th><th>rungs</th><th>冻结线</th></tr></thead>
-    <tbody id="gd-runners"><tr><td colspan="9">等待数据</td></tr></tbody></table>
+    <div class="src">source · varxyz-grid :8610 /api/state(state.json 心跳 + runner manifest + fills.csv 聚合),30s 预取缓存 · 身份 SHA 显示前 8 位</div>
+    <div class="gd-runner-scroll"><table><thead><tr><th>市场</th><th>模式</th><th>状态</th><th>代码身份</th><th>拟实盘场所</th><th>SHADOW 行情源</th><th>PROXY</th><th>gap/格</th><th>库存</th><th>权益 $</th><th>量 $</th><th>rungs</th><th>冻结线</th></tr></thead>
+    <tbody id="gd-runners"><tr><td colspan="13">等待数据</td></tr></tbody></table></div>
   </div>
   <div class="panel">
     <h2>最近成交(shadow 模拟)</h2>
@@ -1027,6 +1031,10 @@
 
   // ── 真数据绑定:每 15s 拉 /api/state。无真数据宁可显示未知，绝不保留模板样例。 ──
   function esc(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML;}
+  function shortSha(value){
+    const sha=typeof value==='string'?value.trim():'';
+    return /^[0-9a-f]{7,64}$/i.test(sha)?esc(sha.slice(0,8)):'—';
+  }
   function money(v){return v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
   function setK(key, html){
     if(html===null||html===undefined) return;
@@ -1133,11 +1141,11 @@
     setK('grid.equity',present?money(eq):'—');
     setK('grid.vol',present?(money(vol)+' / '+rungs):'—');
     setK('grid.pockets',acct.master?(money(acct.spot_usdc)+' / '+money(acct.perp_value)+' / '+money(acct.xyz_value)):'—');
-    setK('grid.engines',rs.length?rs.map(r=>r.coin+'·'+r.mode).join('，'):'—');
+    setK('grid.engines',rs.length?rs.map(r=>esc(r.coin||'—')+'·'+esc(r.mode||'—')).join('，'):'—');
     if(!present) return;
     // 页面 KPI
     setK('gd.equity',money(eq));
-    setK('gd.equity_sub',rs.map(r=>r.coin+' '+money(r.equity)).join(' · ')||'无引擎');
+    setK('gd.equity_sub',rs.map(r=>esc(r.coin||'—')+' '+money(r.equity)).join(' · ')||'无引擎');
     setK('gd.vol',money(vol)+' · '+fills+' 笔');
     setK('gd.rungs','rungs '+rungs);
     setK('gd.pockets',acct.master?(money(acct.spot_usdc)+' / '+money(acct.perp_value)+' / '+money(acct.xyz_value)):'—');
@@ -1146,24 +1154,30 @@
     // 引擎表
     const rtb=document.getElementById('gd-runners');
     if(rtb) rtb.innerHTML=rs.length?rs.map(r=>{
-      const st=r.halted?'<span style="color:var(--danger)">停机·'+(r.halt_reason||'')+'</span>'
+      const st=r.halted?'<span style="color:var(--danger)">停机·'+esc(r.halt_reason||'未知原因')+'</span>'
         :r.running?'<span style="color:var(--ok)">运行中</span>'
-        :'<span style="color:var(--warn)">失联 '+r.state_age_s+'s</span>';
+        :'<span style="color:var(--warn)">失联 '+esc(r.state_age_s??'—')+'s</span>';
       const gtot=(r.grid||{}).levels!=null?r.gap+'/'+r.grid.levels:String(r.gap??'—');
-      return '<tr><td>'+r.coin+'</td><td>'+r.mode+'</td><td>'+st+'</td><td class="num">'+gtot
-        +'</td><td class="num">'+(r.inventory??'—')+'</td><td class="num">'+money(r.equity)
-        +'</td><td class="num">'+money(r.volume)+'</td><td class="num">'+r.rungs
-        +'</td><td>'+((r.frozen||[]).join(',')||'—')+'</td></tr>';
-    }).join(''):'<tr><td colspan="9">无引擎</td></tr>';
+      const identity='<div class="gd-identity"><span>release</span>'+shortSha(r.release_sha)+'<br>'
+        +'<span>config</span>'+shortSha(r.config_sha)+'<br><span>spec</span>'+shortSha(r.resolved_spec_sha)+'</div>';
+      const proxy=r.proxy_market_data===true?'<span class="chip warn">PROXY · 是</span>'
+        :r.proxy_market_data===false?'<span class="chip ok">PROXY · 否</span>'
+        :'<span class="chip warn">PROXY · 未知</span>';
+      return '<tr><td>'+esc(r.coin||'—')+'</td><td>'+esc(r.mode||'—')+'</td><td>'+st+'</td><td>'+identity
+        +'</td><td>'+esc(r.venue||'—')+'</td><td>'+esc(r.market_data_source||'—')+'</td><td>'+proxy
+        +'</td><td class="num">'+esc(gtot)+'</td><td class="num">'+esc(r.inventory??'—')+'</td><td class="num">'+money(r.equity)
+        +'</td><td class="num">'+money(r.volume)+'</td><td class="num">'+esc(r.rungs??'—')
+        +'</td><td>'+esc((r.frozen||[]).join(',')||'—')+'</td></tr>';
+    }).join(''):'<tr><td colspan="13">无引擎</td></tr>';
     // 成交流水(全引擎归并,新的在前)
     const fl=[];
     rs.forEach(r=>(r.recent_fills||[]).forEach(f=>fl.push({...f,coin:r.coin})));
     fl.sort((a,b)=>b.ts-a.ts);
     const ftb=document.getElementById('gd-fills');
     if(ftb) ftb.innerHTML=fl.length?fl.slice(0,12).map(f=>
-      '<tr><td>'+new Date(f.ts).toLocaleTimeString('zh-CN',{hour12:false})+'</td><td>'+f.coin
+      '<tr><td>'+new Date(f.ts).toLocaleTimeString('zh-CN',{hour12:false})+'</td><td>'+esc(f.coin||'—')
       +'</td><td style="color:var(--'+(f.side==='buy'?'ok':'danger')+')">'+(f.side==='buy'?'买':'卖')
-      +'</td><td class="num">'+money(f.px)+'</td><td class="num">'+f.qty+'</td></tr>').join('')
+      +'</td><td class="num">'+money(f.px)+'</td><td class="num">'+esc(f.qty??'—')+'</td></tr>').join('')
       :'<tr><td colspan="5">暂无成交</td></tr>';
   }
   function bindVD(vd){
