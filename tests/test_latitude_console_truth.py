@@ -676,6 +676,7 @@ def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) 
                         "name": "永康控股有限公司",
                         "nameZh": "永康控股有限公司",
                         "nameEn": "EKH LIMITED",
+                        "status": "申购中",
                     }
                 ]
             }
@@ -687,6 +688,40 @@ def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) 
     assert result["stocks"][0]["name"] == "永康控股有限公司"
     assert result["stocks"][0]["name_zh"] == "永康控股有限公司"
     assert result["stocks"][0]["name_en"] == "EKH LIMITED"
+
+
+def test_ipo_only_returns_currently_subscribing_stocks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda url, **_kwargs: {
+            "ipo": {
+                "stocks": [
+                    {"code": "1001", "name": "可申购", "status": "申购中"},
+                    {"code": "1002", "name": "等待结果", "status": "待结果"},
+                    {"code": "1003", "name": "已经上市", "status": "已上市"},
+                ]
+            }
+        } if url == console.IPO_STATE_URL else {},
+    )
+
+    result = console._ipo()
+
+    assert [stock["code"] for stock in result["stocks"]] == ["1001"]
+    assert result["stocks_total"] == 1
+    assert result["active_stocks"] == 1
+
+
+def test_ipo_console_uses_contextual_account_actions() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "function ipoActionButtons(entry)" in html
+    assert "if(entry.status==='待申购')" in html
+    assert "if(entry.status==='已申购')" in html
+    assert "当前可申购新股" in html
+    assert "每个账号只显示当前可执行的下一步" in html
+    assert "一键申购(活跃)" not in html
+    assert "结束本轮" not in html
 
 
 def test_console_renders_chinese_stock_name_before_english() -> None:
