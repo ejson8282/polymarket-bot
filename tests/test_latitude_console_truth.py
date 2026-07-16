@@ -701,9 +701,12 @@ def test_ipo_only_returns_currently_subscribing_stocks(monkeypatch) -> None:
                     {"code": "1002", "name": "等待结果", "status": "待结果"},
                     {"code": "1003", "name": "已经上市", "status": "已上市"},
                     {"code": "IPO-A", "name": "演示占位", "status": "申购中"},
+                    {"code": "1004", "name": "上游状态滞后", "status": "申购中"},
                 ]
             }
-        } if url == console.IPO_STATE_URL else {},
+        } if url == console.IPO_STATE_URL else {
+            "stocks": [{"code": "1004", "verdict": "跳(已过期)"}]
+        },
     )
 
     result = console._ipo()
