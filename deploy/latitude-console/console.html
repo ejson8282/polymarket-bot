@@ -1201,9 +1201,15 @@
       hc.innerHTML=names.map(h=>{
         const x=hosts[h]; const unknown=x.positions_verified===false; const bad=x.single_leg||unknown;
         const chip=x.single_leg?'<span class="chip danger">SINGLE-LEG</span>':(unknown?'<span class="chip warn">仓位未知</span>':'<span class="chip ok">已核验</span>');
+        const reads=x.venue_reads||{};
+        const readText=unknown?Object.entries(reads).map(([venue,row])=>{
+          const label=venue==='variational'?'Var':'Decibel';
+          return label+' '+(row&&row.ok?'正常':'失败');
+        }).join(' · '):'';
         return '<div class="card'+(bad?' alerted':'')+'"><div class="head"><span class="name num">'+h.toUpperCase()+'</span>'+chip+'</div>'+
           '<div class="row"><span class="k">权益 V/D</span><span class="v">'+(x.stale?'— · —':money(x.equity_var)+' · '+money(x.equity_dec))+'</span></div>'+
-          '<div class="row"><span class="k">心跳</span><span class="v">'+esc(x.age||'—')+'</span></div></div>';
+          '<div class="row"><span class="k">心跳</span><span class="v">'+esc(x.age||'—')+'</span></div>'+
+          (readText?'<div class="row"><span class="k">读取</span><span class="v">'+esc(readText)+'</span></div>':'')+'</div>';
       }).join('');
     }
     setK('infra.peer', names.map(h=>h+' '+esc(hosts[h].age||'?')).join(' · ')||null);
@@ -1212,7 +1218,9 @@
     // 配对腿表(真实持仓;两腿条宽按名义占比)
     const unknownRows=unverified.map(x=>{
       const seen=(x.last_seen_symbols||[]).length?'；上次快照曾见 '+x.last_seen_symbols.map(esc).join('/') : '';
-      return '<tr style="background:rgba(231,180,67,.06)"><td><b>'+esc((x.host||'').toUpperCase())+'</b></td><td colspan="4" style="color:var(--warn)">'+esc(x.reason||'数据不完整')+'，当前仓位未知'+seen+'</td><td><span class="chip warn">UNKNOWN</span></td></tr>';
+      const failures=(x.failed_venues||[]).map(row=>esc(row.label||row.venue||'交易所')+'：'+esc(row.error||'状态未返回')).join('；');
+      const detail=failures?'<br><span style="color:var(--muted);font-size:11px">'+failures+'</span>':'';
+      return '<tr style="background:rgba(231,180,67,.06)"><td><b>'+esc((x.host||'').toUpperCase())+'</b><br><span style="color:var(--faint);font-size:10px">快照 '+esc(x.age||'—')+'</span></td><td colspan="4" style="color:var(--warn)">'+esc(x.summary||x.reason||'数据不完整')+'，当前仓位未知'+seen+detail+'</td><td><span class="chip warn">待恢复</span></td></tr>';
     });
     if(pb && (vd.pairs||[]).length){
       const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs(p.dec.notional||0))));

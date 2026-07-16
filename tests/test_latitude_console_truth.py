@@ -81,6 +81,8 @@ def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_pat
             "host": "vps2",
             "age": "60m 前",
             "reason": "快照过期",
+            "summary": "快照过期",
+            "failed_venues": [],
             "last_seen_symbols": ["SOL"],
         }
     ]
@@ -109,7 +111,34 @@ def test_var_decibel_does_not_report_single_leg_when_one_venue_failed(
     assert result["hosts"]["vps1"]["equity_dec"] == 100.0
     assert result["hosts"]["vps1"]["equity_var"] is None
     assert result["position_sources"]["unverified"][0]["reason"] == "交易所读取不完整"
+    assert result["position_sources"]["unverified"][0]["summary"] == "Var 读取失败"
+    assert result["position_sources"]["unverified"][0]["failed_venues"] == [
+        {"venue": "variational", "label": "Var", "error": "状态未返回"}
+    ]
     assert result["position_sources"]["unverified"][0]["last_seen_symbols"] == ["SOL"]
+
+
+def test_var_decibel_exposes_redacted_venue_error_details(monkeypatch, tmp_path: Path) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    variational = _venue(ok=False)
+    variational["error"] = {"type": "TimeoutError", "message": "Mac signer timeout"}
+    _write_json(
+        tmp_path / "ops_state.json",
+        _state(
+            "vps1",
+            datetime.now(timezone.utc).isoformat(),
+            _venue(ok=True),
+            variational,
+        ),
+    )
+
+    result = console._var_decibel()
+
+    assert result["hosts"]["vps1"]["venue_reads"] == {
+        "decibel": {"ok": True, "error": None},
+        "variational": {"ok": False, "error": "Mac signer timeout"},
+    }
+    assert result["position_sources"]["unverified"][0]["failed_venues"][0]["error"] == "Mac signer timeout"
 
 
 def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(

@@ -468,6 +468,16 @@ def _pos_open(payload: Any) -> bool:
     return side in {"long", "short", "buy", "sell"}
 
 
+def _venue_read_error(payload: dict) -> str:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("detail") or error.get("type")
+    else:
+        message = error
+    text = str(message or "状态未返回").strip()
+    return text[:180]
+
+
 def _var_decibel() -> Dict[str, Any]:
     peer_dir = VARIA_DIR / "ops_peer_state"
     hosts: Dict[str, dict] = {}
@@ -507,11 +517,16 @@ def _var_decibel() -> Dict[str, Any]:
                              "stale": (age is None or age > STALE_SEC)}
         dec_syms = {}
         var_syms = {}
+        venue_reads: Dict[str, dict] = {}
         for venue in ("decibel", "variational"):
             payload = exchanges.get(venue) if isinstance(exchanges.get(venue), dict) else {}
             bal = payload.get("balance") if isinstance(payload.get("balance"), dict) else {}
             eq = _num(bal.get("total_equity"))
             venue_ok = payload.get("ok") is True
+            venue_reads[venue] = {
+                "ok": venue_ok,
+                "error": None if venue_ok else _venue_read_error(payload),
+            }
             trusted_eq = eq if (venue_ok and not h["stale"]) else None
             h[f"equity_{venue[:3]}"] = trusted_eq
             h[f"equity_{venue[:3]}_last_seen"] = eq
@@ -544,6 +559,7 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_variational"] = tp if h["points_var_available"] else None
                 if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
+        h["venue_reads"] = venue_reads
         # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
         # 任何一源过期或失败都标“仓位未知”，不拿上次快照冒充当前状态。
         symbols = sorted(set(dec_syms) | set(var_syms))
@@ -556,8 +572,22 @@ def _var_decibel() -> Dict[str, Any]:
             last_seen = [symbol for symbol in symbols
                          if _pos_open(dec_syms.get(symbol)) or _pos_open(var_syms.get(symbol))]
             reason = "快照过期" if h["stale"] else "交易所读取不完整"
+            failed_venues = [
+                {
+                    "venue": venue,
+                    "label": "Decibel" if venue == "decibel" else "Var",
+                    "error": read.get("error") or "状态未返回",
+                }
+                for venue, read in venue_reads.items()
+                if read.get("ok") is not True
+            ]
+            summary = reason if h["stale"] else (
+                "、".join(row["label"] for row in failed_venues) + " 读取失败"
+                if failed_venues else reason
+            )
             unverified_hosts.append({
                 "host": host, "age": h.get("age"), "reason": reason,
+                "summary": summary, "failed_venues": failed_venues,
                 "last_seen_symbols": last_seen,
             })
         # 单腿检测 + 配对腿行(口径同 varia _host_exposure_status 的核心判断)
