@@ -1984,6 +1984,7 @@ def _ipo() -> Dict[str, Any]:
     stock_rows = [
         row for row in (_stock(s) for s in stocks if isinstance(s, dict))
         if row.get("status") in active_statuses
+        and not str(row.get("code") or "").upper().startswith(("IPO-", "STR-"))
     ][:20]
     active_n = len(stock_rows)
     # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
