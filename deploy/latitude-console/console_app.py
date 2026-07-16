@@ -1986,7 +1986,6 @@ def _ipo() -> Dict[str, Any]:
         if row.get("status") in active_statuses
         and not str(row.get("code") or "").upper().startswith(("IPO-", "STR-"))
     ][:20]
-    active_n = len(stock_rows)
     # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
     pack = _fetch_json(IPO_PACK_URL, ttl=120.0)
     judged_at = None
@@ -1999,6 +1998,10 @@ def _ipo() -> Dict[str, Any]:
                 row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
                 row["ai_expected"] = j.get("expected_net")    # 期望净收益
                 row["ai_reason"] = str(j.get("reason") or "")[:80]
+    # 上游 status 偶尔没有随招股截止更新。AI 明确判为“已过期”时，不能继续在
+    # “当前可申购”里展示，避免同一行同时出现“申购中 / 已过期”的自相矛盾。
+    stock_rows = [row for row in stock_rows if "已过期" not in str(row.get("ai_verdict") or "")]
+    active_n = len(stock_rows)
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
