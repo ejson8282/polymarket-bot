@@ -1974,7 +1974,8 @@ def _ipo() -> Dict[str, Any]:
     def _entry(e: dict) -> dict:
         return {"account": str(e.get("account") or e.get("accountId") or "")[:14],
                 "person": str(e.get("person") or e.get("owner") or "")[:10],
-                "stock": str(e.get("stock") or e.get("code") or e.get("suggestion") or "")[:20],
+                "stock": str(e.get("stockName") or e.get("stock") or e.get("stockCode")
+                             or e.get("code") or e.get("suggestion") or "")[:20],
                 "fee": e.get("fee") or e.get("entryFee"),
                 "due": str(e.get("due") or e.get("lockUntil") or e.get("deadline") or "")[:12],
                 "status": str(e.get("status") or "")[:14],

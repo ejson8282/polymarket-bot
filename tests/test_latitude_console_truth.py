@@ -716,6 +716,29 @@ def test_ipo_only_returns_currently_subscribing_stocks(monkeypatch) -> None:
     assert result["active_stocks"] == 1
 
 
+def test_ipo_entries_read_router_stock_name_and_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda url, **_kwargs: {
+            "ipo": {
+                "stocks": [{"code": "9001", "name": "模拟新股", "status": "申购中"}],
+                "entries": [
+                    {"accountId": "Hk-001", "owner": "测试员", "status": "待申购",
+                     "stockCode": "9001", "stockName": "模拟新股"},
+                    {"accountId": "Hk-002", "owner": "测试员", "status": "已申购",
+                     "stockCode": "9002"},
+                ],
+            }
+        } if url == console.IPO_STATE_URL else {},
+    )
+
+    result = console._ipo()
+
+    assert result["entries"][0]["stock"] == "模拟新股"
+    assert result["entries"][1]["stock"] == "9002"
+
+
 def test_ipo_console_uses_contextual_account_actions() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
