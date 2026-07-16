@@ -54,6 +54,7 @@ VARIA_MARKET_CANDIDATES = tuple(
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
+IPO_PACK_URL = os.getenv("IPO_PACK_URL", "http://100.82.86.62:8085/ipo_judgment_pack.json")
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 
@@ -1951,14 +1952,24 @@ def _ipo() -> Dict[str, Any]:
         ).strip()
         name_en = str(s.get("nameEn") or s.get("name_en") or "").strip()
         name = str(s.get("name") or s.get("title") or s.get("code") or "").strip()
+        status = str(s.get("status") or "")[:10]
+        # 真字段修正(2026-07-15):router 原始数据里入场费=minCapital、评分=expectedScore,
+        # 此前读的 fee/score 键不存在故全 null。一并带出状态/日期/评分拆解/招股书链接。
         return {"name": (name_zh or name or name_en)[:40],
                 "name_zh": name_zh[:40],
                 "name_en": name_en[:72],
                 "code": str(s.get("code") or ""),
-                "score": s.get("score"),
-                "fee": s.get("fee") or s.get("entryFee") or s.get("entry_fee"),
+                "score": s.get("expectedScore") if s.get("expectedScore") is not None else s.get("score"),
+                "hit_rate": s.get("hitRateScore"),
+                "turnover": s.get("turnoverScore"),
+                "fee": _num(s.get("minCapital")) or _num(s.get("fee")) or _num(s.get("entryFee")),
                 "risk": str(s.get("risk") or s.get("riskLabel") or "")[:12],
-                "note": str(s.get("note") or s.get("summary") or s.get("comment") or "")[:48]}
+                "status": status,
+                "close_at": str(s.get("closeAt") or s.get("deadlineAt") or "")[:16],
+                "listing_at": str(s.get("listingAt") or "")[:16],
+                "refund_days": s.get("refundDays"),
+                "prospectus": str(s.get("prospectusUrl") or "")[:200],
+                "note": str(s.get("note") or s.get("view") or s.get("summary") or "")[:60]}
 
     def _entry(e: dict) -> dict:
         return {"account": str(e.get("account") or e.get("accountId") or "")[:14],
@@ -1969,14 +1980,36 @@ def _ipo() -> Dict[str, Any]:
                 "status": str(e.get("status") or "")[:14],
                 "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
 
+    active_statuses = {"申购中", "招股中", "待申购"}
+    stock_rows = [
+        row for row in (_stock(s) for s in stocks if isinstance(s, dict))
+        if row.get("status") in active_statuses
+        and not str(row.get("code") or "").upper().startswith(("IPO-", "STR-"))
+    ][:20]
+    active_n = len(stock_rows)
+    # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
+    pack = _fetch_json(IPO_PACK_URL, ttl=120.0)
+    judged_at = None
+    if isinstance(pack, dict):
+        judged_at = pack.get("judged_at")
+        jmap = {str(s.get("code")): s for s in (pack.get("stocks") or []) if isinstance(s, dict)}
+        for row in stock_rows:
+            j = jmap.get(row["code"])
+            if j and j.get("verdict"):
+                row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                row["ai_expected"] = j.get("expected_net")    # 期望净收益
+                row["ai_reason"] = str(j.get("reason") or "")[:80]
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
                   "deadline": rnd.get("deadline"), "currency": rnd.get("currency")},
         "updated_age": _age_text(_iso_age(inner.get("updated_at"))),
-        "stocks": [_stock(s) for s in stocks[:6] if isinstance(s, dict)],
-        "entries": [_entry(e) for e in entries[:8] if isinstance(e, dict)],
-        "stocks_total": len(stocks), "entries_total": len(entries),
+        "stocks": stock_rows,
+        "entries": [_entry(e) for e in entries[:12] if isinstance(e, dict)],
+        "stocks_total": active_n, "entries_total": len(entries),
+        "active_stocks": active_n,
+        "ai_judged_at": judged_at,
+        "ai_judged_age": _age_text(_iso_age(judged_at)) if judged_at else None,
     }
 
 
