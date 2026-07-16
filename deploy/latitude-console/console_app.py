@@ -54,6 +54,7 @@ VARIA_MARKET_CANDIDATES = tuple(
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
+IPO_PACK_URL = os.getenv("IPO_PACK_URL", "http://100.82.86.62:8085/ipo_judgment_pack.json")  # Windows 判研包服务
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 
@@ -1982,8 +1983,9 @@ def _ipo() -> Dict[str, Any]:
     stock_rows = [_stock(s) for s in stocks[:20] if isinstance(s, dict)]
     # 申购中的只数(数据里 status 可能滞后,仅作参考展示;彻底过滤过期股需 router 补 detail)
     active_n = sum(1 for s in stock_rows if s.get("status") in ("申购中", "招股中", "待申购"))
-    # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
-    pack = _read_json(DATA_DIR / "ipo_judgment_pack.json")
+    # AI 判研(判研包)——现在判研整套跑在 Windows(常开、router 本机、Claude Code 已装),
+    # 判研包由 Windows :8085 pack 服务对 tailnet 暴露,控制台 HTTP 拉取(不再读本地文件)。
+    pack = _fetch_json(IPO_PACK_URL, ttl=120.0)
     judged_at = None
     if isinstance(pack, dict):
         judged_at = pack.get("judged_at")
