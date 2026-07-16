@@ -138,9 +138,15 @@
   .ipo-table-wrap{overflow-x:auto}
   .ipo-next-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
   .ipo-next-actions .btn{font-size:10px;padding:3px 7px}
+  .ipo-console .btn:disabled{cursor:not-allowed;opacity:.45}
   .ipo-mode.active{color:var(--var);border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.10)}
   .ipo-done{font-family:var(--mono);font-size:10px;color:var(--faint)}
+  .ipo-step-note.paused{color:var(--warn)}
+  .ipo-row-msg{width:100%;font-family:var(--mono);font-size:10px;text-align:right;color:var(--faint)}
+  .ipo-row-msg.ok{color:var(--ok)}.ipo-row-msg.error{color:var(--danger)}
   #ipo-op-msg{min-height:18px;margin:0;padding:0 16px 12px;text-align:right}
+  .ipo-toast{position:fixed;right:22px;bottom:22px;z-index:60;max-width:min(420px,calc(100vw - 44px));padding:11px 14px;border:1px solid var(--line);border-radius:8px;background:rgba(18,24,32,.97);box-shadow:0 10px 30px rgba(0,0,0,.38);font-family:var(--mono);font-size:11px;line-height:1.45;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+  .ipo-toast.show{opacity:1;transform:translateY(0)}.ipo-toast.ok{border-color:rgba(63,185,80,.55);color:var(--ok)}.ipo-toast.error{border-color:rgba(248,81,73,.55);color:var(--danger)}
   @media (max-width:900px){.hk-page-head,.ipo-console-head{align-items:flex-start;flex-direction:column}.ipo-console-actions{justify-content:flex-start}.ipo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ipo-summary-item:nth-child(3){border-left:0;border-top:1px solid var(--line)}.ipo-summary-item:nth-child(4){border-top:1px solid var(--line)}}
   /* Single Account 驾驶舱专用 */
   .phases{display:flex;gap:0;margin-top:16px}
@@ -846,10 +852,10 @@
           </div>
         </div>
         <div class="ipo-summary">
-          <div class="ipo-summary-item"><div class="ipo-summary-label">申购中新股</div><div class="ipo-summary-value" id="ipo-active-count">—</div></div>
-          <div class="ipo-summary-item"><div class="ipo-summary-label">待执行账号</div><div class="ipo-summary-value" id="ipo-pending-count">—</div></div>
-          <div class="ipo-summary-item"><div class="ipo-summary-label">已申购</div><div class="ipo-summary-value" id="ipo-subscribed-count">—</div></div>
-          <div class="ipo-summary-item"><div class="ipo-summary-label">最近更新</div><div class="ipo-summary-value" id="ipo-updated-age">—</div></div>
+          <div class="ipo-summary-item"><div class="ipo-summary-label">申购中新股</div><div class="ipo-summary-value" id="ipo-active-count" data-k="ipo-active-count">—</div></div>
+          <div class="ipo-summary-item"><div class="ipo-summary-label">待执行账号</div><div class="ipo-summary-value" id="ipo-pending-count" data-k="ipo-pending-count">—</div></div>
+          <div class="ipo-summary-item"><div class="ipo-summary-label">已申购</div><div class="ipo-summary-value" id="ipo-subscribed-count" data-k="ipo-subscribed-count">—</div></div>
+          <div class="ipo-summary-item"><div class="ipo-summary-label">最近更新</div><div class="ipo-summary-value" id="ipo-updated-age" data-k="ipo-updated-age">—</div></div>
         </div>
         <div class="ipo-step">
           <div class="ipo-step-head">
@@ -866,7 +872,7 @@
         <div class="ipo-step">
           <div class="ipo-step-head">
             <div class="ipo-step-title"><span class="ipo-step-num">2</span>账号执行</div>
-            <div class="ipo-step-note">每个账号只显示当前可执行的下一步</div>
+            <div class="ipo-step-note" id="ipo-account-note">每个账号只显示当前可执行的下一步</div>
           </div>
           <div class="ipo-table-wrap">
             <table>
@@ -876,6 +882,7 @@
           </div>
         </div>
         <div id="ipo-op-msg" class="src" aria-live="polite">操作后会自动保存</div>
+        <div id="ipo-toast" class="ipo-toast" role="status" aria-live="polite"></div>
       </div>
 
       <!-- 排行 -->
@@ -1387,9 +1394,11 @@
   function bindIPO(ipo){
     if(!ipo.present) return;
     const entries=ipo.entries||[];
-    const pending=entries.filter(e=>e.status==='待申购').length;
-    const subscribed=entries.filter(e=>e.status==='已申购').length;
-    setK('ipo-active-count',(ipo.active_stocks??(ipo.stocks||[]).length)+' 只');
+    const activeCount=ipo.active_stocks??(ipo.stocks||[]).length;
+    const hasActiveStocks=activeCount>0;
+    const pending=hasActiveStocks?entries.filter(e=>e.status==='待申购').length:0;
+    const subscribed=hasActiveStocks?entries.filter(e=>e.status==='已申购').length:0;
+    setK('ipo-active-count',activeCount+' 只');
     setK('ipo-pending-count',pending+' 个');
     setK('ipo-subscribed-count',subscribed+' 个');
     setK('ipo-updated-age',esc(ipo.updated_age||'—'));
@@ -1423,20 +1432,28 @@
       '<td class="num">'+(x.score??'—')+'</td><td class="num">'+(x.hit_rate!=null?x.hit_rate:'—')+'</td><td class="num">'+feeTxt+'</td>'+
       '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
       '<td>'+aiCell+'</td></tr>'}).join('')
-      : '<tr><td colspan="6" style="color:var(--faint)">新股池为空</td></tr>';
+      : '<tr><td colspan="6" style="color:var(--faint)">当前没有申购中的新股；请点击“刷新申购中新股”重新检查</td></tr>';
     // 表头「OpenClaw 摘要」→「AI 判研」+ 判研时间
     const stHead=st&&st.closest('table')?st.closest('table').querySelector('thead th:last-child'):null;
     if(stHead) stHead.innerHTML='AI 判研'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
+    const accountNote=document.getElementById('ipo-account-note');
+    if(accountNote){
+      accountNote.textContent=hasActiveStocks?'每个账号只显示当前可执行的下一步':'当前无申购中新股，账户状态操作已暂停';
+      accountNote.classList.toggle('paused',!hasActiveStocks);
+    }
     const en=document.getElementById('hk-entries');
-    if(en) en.innerHTML=(ipo.entries||[]).length? ipo.entries.map(e=>{
+    if(en) en.innerHTML=!hasActiveStocks?
+      '<tr><td colspan="7" style="color:var(--faint)">当前没有可执行的账号任务；等待申购中新股</td></tr>':
+      ((ipo.entries||[]).length? ipo.entries.map(e=>{
       const acc=esc(e.account||'');
-      const actions=window.__writesEnabled===false?'<span class="ipo-done">只读</span>':ipoActionButtons(e);
+      const actions=window.__writesEnabled===false?'<span class="ipo-done">只读</span>':
+        (!hasActiveStocks?'<span class="ipo-done">等待申购中新股</span>':ipoActionButtons(e));
       return '<tr title="'+esc(e.reason||'')+'"><td class="num">'+(acc||'—')+'</td><td>'+esc(e.person||'—')+'</td>'+
       '<td class="num">'+esc(e.stock||'—')+'</td><td class="num">'+(e.fee??'—')+'</td>'+
       '<td class="num">'+esc(e.due||'—')+'</td><td><span class="chip">'+esc(e.status||'—')+'</span></td>'+
       '<td><div class="ipo-next-actions">'+actions+'</div></td></tr>';
     }).join('')
-      : '<tr><td colspan="7" style="color:var(--faint)">本轮暂无排班</td></tr>';
+      : '<tr><td colspan="7" style="color:var(--faint)">本轮暂无排班</td></tr>');
   }
 
   window.__owners=[]; window.__ownerIdx=0;
@@ -1639,27 +1656,53 @@
       return j;
     }catch(e){ if(msgEl) msgEl.innerHTML='<span class="down">请求失败</span>'; return null; }
   }
+  let ipoToastTimer=null;
+  function showIpoToast(text,kind){
+    const toast=document.getElementById('ipo-toast'); if(!toast) return;
+    toast.textContent=text;
+    toast.className='ipo-toast show '+(kind||'');
+    clearTimeout(ipoToastTimer);
+    ipoToastTimer=setTimeout(()=>toast.classList.remove('show'),3600);
+  }
+  function showIpoRowStatus(button,text,kind){
+    const actions=button&&button.closest('.ipo-next-actions'); if(!actions) return;
+    let status=actions.querySelector('.ipo-row-msg');
+    if(!status){ status=document.createElement('span'); status.className='ipo-row-msg'; actions.appendChild(status); }
+    status.className='ipo-row-msg '+(kind||'');
+    status.textContent=text;
+  }
   // 打新 & Alpha 操作(已迁移自飞书 Bot/核算台):代理 router,原生内嵌
   (function(){
     const msg=document.getElementById('ipo-op-msg'); if(!document.getElementById('ipo-import-btn')) return;
     document.getElementById('ipo-import-btn').addEventListener('click',async ev=>{
       const button=ev.currentTarget;
+      const original=button.textContent;
       button.disabled=true;
-      await postOp('/api/ipo/import',{include_pdf_details:false},msg,'刷新申购中新股(约30-60s)');
+      button.textContent='刷新中…';
+      showIpoToast('正在刷新申购中新股，通常需要 30–60 秒','');
+      const result=await postOp('/api/ipo/import',{include_pdf_details:false},msg,'刷新申购中新股(约30-60s)');
+      showIpoToast(result&&result.ok?(result.msg||'新股池已刷新'):(result&&result.error||'刷新失败'),result&&result.ok?'ok':'error');
+      button.textContent=original;
       button.disabled=false;
     });
     document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
       b.disabled=true;
-      await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
+      const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
+      showIpoToast(result&&result.ok?(result.msg||'策略已切换'):(result&&result.error||'策略切换失败'),result&&result.ok?'ok':'error');
       b.disabled=false;
     }));
     // 每条排班的标记状态(事件委托,bindIPO 每次重渲染也生效)
     const en=document.getElementById('hk-entries');
     if(en) en.addEventListener('click',async(ev)=>{
       const b=ev.target.closest('.ipo-mark'); if(!b) return;
+      if(!window.confirm('确认将 '+b.dataset.acc+' 标记为“'+b.dataset.status+'”？')) return;
       b.disabled=true;
-      await postOp('/api/ipo/action',{action:'set_status',account_id:b.dataset.acc,status:b.dataset.status},
-                   msg,b.dataset.acc+' → '+b.dataset.status);
+      showIpoRowStatus(b,'处理中…','');
+      const result=await postOp('/api/ipo/action',{action:'set_status',account_id:b.dataset.acc,status:b.dataset.status},
+                                msg,b.dataset.acc+' → '+b.dataset.status);
+      const text=result&&result.ok?(result.msg||'已保存'):(result&&result.error||'操作失败');
+      showIpoRowStatus(b,text,result&&result.ok?'ok':'error');
+      showIpoToast(text,result&&result.ok?'ok':'error');
       b.disabled=false;
     });
   })();

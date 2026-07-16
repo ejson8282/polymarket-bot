@@ -728,6 +728,19 @@ def test_ipo_console_uses_contextual_account_actions() -> None:
     assert "结束本轮" not in html
 
 
+def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    for key in ("ipo-active-count", "ipo-pending-count", "ipo-subscribed-count", "ipo-updated-age"):
+        assert f'data-k="{key}"' in html
+    assert "const hasActiveStocks=activeCount>0" in html
+    assert "当前无申购中新股，账户状态操作已暂停" in html
+    assert "等待申购中新股" in html
+    assert "function showIpoToast(text,kind)" in html
+    assert "function showIpoRowStatus(button,text,kind)" in html
+    assert "window.confirm('确认将 '" in html
+
+
 def test_console_renders_chinese_stock_name_before_english() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
