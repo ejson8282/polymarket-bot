@@ -764,7 +764,7 @@
   </div>
   <div class="panel">
     <h2>完整面板</h2>
-    <div class="src">独立控制台(网格位置条 / 5s 刷新 / 回合归档):<a href="http://100.122.255.98:8610/" target="_blank" style="color:var(--ok)">100.122.255.98:8610</a>(tailnet) · 写操作(KILL/调参/resume)G3e 交付</div>
+    <div class="src">独立控制台(网格位置条 / 5s 刷新 / 回合归档):<a href="/grid-cockpit/" target="_blank" rel="noopener" style="color:var(--ok)">/grid-cockpit/</a>(8502) · 写操作(KILL/调参/resume)G3e 交付</div>
   </div>
 </section>
 
@@ -970,6 +970,10 @@
 
 <script>
   function go(p){
+    if(p==='grid'){
+      window.location.assign('/grid-cockpit/');
+      return;
+    }
     document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
     document.getElementById('page-'+p).classList.add('on');
     document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===p));
