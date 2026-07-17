@@ -26,6 +26,15 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_all_grid_entries_use_same_origin_8502_cockpit_route() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'href="/grid-cockpit/"' in html
+    assert 'href="http://100.122.255.98:8610/"' not in html
+    assert "window.location.assign('/grid-cockpit/')" in html
+    assert 'rel="noopener"' in html
+
+
 def _venue(*, ok: bool, side: Optional[str] = None, size: str = "0") -> dict:
     symbols = {}
     if side is not None:
