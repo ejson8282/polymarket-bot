@@ -52,6 +52,75 @@ def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
 
 
+def test_account_ops_exposes_real_alpha_accounts_and_booster_tasks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda _: {
+            "meta": {"as_of": "2026-07-17T20:00:00+08:00"},
+            "accounts": [
+                {
+                    "id": "BN-001",
+                    "platform": "Binance Alpha",
+                    "owner": "张三",
+                    "currency": "USDT",
+                    "capital": 1000,
+                    "wear": 10,
+                    "income": 120,
+                    "status": "运行中",
+                },
+                {
+                    "id": "HK-001",
+                    "platform": "港股",
+                    "owner": "张三",
+                    "capital": 5000,
+                    "wear": 0,
+                    "income": 0,
+                },
+            ],
+            "ledger": [
+                {"account": "BN-001", "type": "本金 / 入金", "amount": 1000},
+                {"account": "BN-001", "type": "本金 / 出金", "amount": -200},
+                {"account": "BN-001", "type": "奖励 / Alpha 奖励", "amount": 70},
+            ],
+            "people": [{"name": "张三", "share": 0.2}],
+            "reminders": {"summary": {}},
+            "risks": [],
+            "alpha_booster": {
+                "updated_at": "2026-07-17T20:05:00+08:00",
+                "tasks": [
+                    {
+                        "id": "alpha-test",
+                        "title": "完成 Booster",
+                        "accounts": [{"accountId": "BN-001", "status": "可领取"}],
+                    }
+                ],
+            },
+        },
+    )
+
+    result = console._account_ops()
+    alpha = result["alpha"]
+
+    assert alpha["account_count"] == 1
+    assert alpha["accounts"][0]["deposits"] == 1000
+    assert alpha["accounts"][0]["withdrawals"] == 200
+    assert alpha["accounts"][0]["rewards"] == 70
+    assert alpha["accounts"][0]["profit"] == 50
+    assert alpha["accounts"][0]["net"] == 110
+    assert alpha["active_tasks"] == 1
+    assert alpha["claimable"] == 1
+
+
+def test_console_contains_alpha_booster_workflow() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "Binance Alpha · Booster" in html
+    assert "待完成 → 已完成/等发奖 → 可领取 → 已领取" in html
+    assert "/api/alpha/action" in html
+    assert "领取后仍需通过飞书流水确认实际奖励" in html
+
+
 def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_path: Path) -> None:
     _patch_varia_dependencies(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)

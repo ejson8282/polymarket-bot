@@ -1945,8 +1945,97 @@ def _account_ops() -> Dict[str, Any]:
             "wear_pct": round(o["wear"] / o["capital"] * 100, 2) if o["capital"] else None,
             "share": share_by_name.get(o["name"]),
         })
+    alpha_accounts_raw = [
+        a
+        for a in accounts
+        if isinstance(a, dict)
+        and (
+            str(a.get("platform") or "").strip().lower() in {"binance alpha", "alpha", "binance"}
+            or str(a.get("id") or "").upper().startswith("BN-")
+        )
+    ]
+    ledger = d.get("ledger") if isinstance(d.get("ledger"), list) else []
+    alpha_account_ids = {str(a.get("id") or "") for a in alpha_accounts_raw}
+    alpha_rows = []
+    for account in alpha_accounts_raw:
+        account_id = str(account.get("id") or "")
+        account_ledger = [
+            row
+            for row in ledger
+            if isinstance(row, dict) and str(row.get("account") or "") == account_id
+        ]
+        deposits = 0.0
+        withdrawals = 0.0
+        rewards = 0.0
+        for row in account_ledger:
+            amount = _num(row.get("amount")) or 0.0
+            row_type = str(row.get("type") or "")
+            if row_type.startswith("本金"):
+                if amount >= 0:
+                    deposits += amount
+                else:
+                    withdrawals += abs(amount)
+            elif row_type.startswith("奖励"):
+                rewards += max(0.0, amount)
+        account_income = _num(account.get("income")) or 0.0
+        account_wear = _num(account.get("wear")) or 0.0
+        alpha_rows.append(
+            {
+                "id": account_id,
+                "owner": str(account.get("owner") or ""),
+                "status": str(account.get("status") or ""),
+                "currency": str(account.get("currency") or "USDT"),
+                "capital": round(_num(account.get("capital")) or 0.0, 2),
+                "deposits": round(deposits, 2),
+                "withdrawals": round(withdrawals, 2),
+                "wear": round(account_wear, 2),
+                "rewards": round(rewards, 2),
+                "profit": round(account_income - rewards, 2),
+                "net": round(account_income - account_wear, 2),
+            }
+        )
+    booster_state = (
+        d.get("alpha_booster")
+        if isinstance(d.get("alpha_booster"), dict)
+        else {"tasks": [], "updated_at": ""}
+    )
+    booster_tasks = [
+        task
+        for task in booster_state.get("tasks", [])
+        if isinstance(task, dict) and not task.get("archived")
+    ]
+    booster_accounts = [
+        item
+        for task in booster_tasks
+        for item in (task.get("accounts") or [])
+        if isinstance(item, dict)
+        and (not alpha_account_ids or str(item.get("accountId") or "") in alpha_account_ids)
+    ]
+    alpha = {
+        "accounts": alpha_rows,
+        "account_count": len(alpha_rows),
+        "capital": round(sum(row["capital"] for row in alpha_rows), 2),
+        "wear": round(sum(row["wear"] for row in alpha_rows), 2),
+        "rewards": round(sum(row["rewards"] for row in alpha_rows), 2),
+        "profit": round(sum(row["profit"] for row in alpha_rows), 2),
+        "net": round(sum(row["net"] for row in alpha_rows), 2),
+        "tasks": booster_tasks,
+        "active_tasks": sum(
+            1
+            for item in booster_accounts
+            if str(item.get("status") or "待完成") in {"待完成", "已完成", "可领取"}
+        ),
+        "claimable": sum(
+            1 for item in booster_accounts if str(item.get("status") or "") == "可领取"
+        ),
+        "claimed": sum(
+            1 for item in booster_accounts if str(item.get("status") or "") == "已领取"
+        ),
+        "updated_at": str(booster_state.get("updated_at") or ""),
+    }
     return {
         "owners": owner_rows,
+        "alpha": alpha,
         "present": True,
         "accounts": len(accounts),
         "people": len(d.get("people") or []),
@@ -2980,6 +3069,40 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     if not r.get("ok"):
         return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
     return JSONResponse({"ok": True, "msg": detail or (action + " 已提交")})
+
+
+@app.post("/api/alpha/action")
+async def alpha_action(payload: dict, request: Request) -> JSONResponse:
+    """Persist Binance Alpha Booster task progress through the account router."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    if action not in {"add_task", "set_status", "archive_task"}:
+        return JSONResponse({"ok": False, "error": "不支持的 Alpha 操作"}, status_code=400)
+    body = dict(payload or {})
+    body["action"] = action
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/alpha/action",
+        body,
+        timeout=40.0,
+    )
+    _audit(
+        "alpha_action",
+        request_action=action,
+        task_id=str(body.get("task_id") or ""),
+        account_id=str(body.get("account_id") or ""),
+        ok=r.get("ok"),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    _HTTP_CACHE.pop(ACCOUNT_OPS_URL, None)
+    detail = {
+        "add_task": "Booster 任务已保存",
+        "set_status": "Booster 状态已更新",
+        "archive_task": "Booster 任务已归档",
+    }[action]
+    return JSONResponse({"ok": True, "msg": detail})
 
 
 # ---------- 二期:Scan 后台任务 / 市场配置应用 / 代理池 / SA 草稿 ----------
