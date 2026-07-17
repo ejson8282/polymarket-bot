@@ -1970,6 +1970,56 @@ def _account_ops() -> Dict[str, Any]:
     }
 
 
+def _parse_ipo_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw or raw in {"待确认", "—"}:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return parsed
+    except ValueError:
+        pass
+    normalized = (
+        raw.replace(" noon ", " PM ")
+        .replace(" a.m. ", " AM ")
+        .replace(" p.m. ", " PM ")
+        .replace("a.m.", "AM")
+        .replace("p.m.", "PM")
+    )
+    for pattern in (
+        "%I:%M %p on %A, %d %B %Y",
+        "%I:%M %p on %A, %B %d, %Y",
+        "%A, %d %B %Y",
+        "%A, %B %d, %Y",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.strptime(normalized, pattern)
+            return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        except ValueError:
+            continue
+    return None
+
+
+def _ipo_stock_is_open(stock: dict, now: Optional[datetime] = None) -> bool:
+    code = str(stock.get("code") or "").strip().upper()
+    if not code or code.startswith(("IPO-", "STR-", "SIM")):
+        return False
+    if str(stock.get("status") or "").strip() not in {"申购中", "招股中", "待申购"}:
+        return False
+    current = now or datetime.now().astimezone()
+    close_at = _parse_ipo_datetime(stock.get("closeAt") or stock.get("deadlineAt"))
+    if close_at is not None and close_at <= current:
+        return False
+    listing_at = _parse_ipo_datetime(stock.get("listingAt"))
+    if listing_at is not None and listing_at <= current:
+        return False
+    return True
+
+
 def _ipo() -> Dict[str, Any]:
     """① 打新工作台:router /dashboard/ipo/state(只读)。"""
     d = _fetch_json(IPO_STATE_URL, ttl=120.0)
@@ -2015,11 +2065,10 @@ def _ipo() -> Dict[str, Any]:
                 "status": str(e.get("status") or "")[:14],
                 "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
 
-    active_statuses = {"申购中", "招股中", "待申购"}
     stock_rows = [
-        row for row in (_stock(s) for s in stocks if isinstance(s, dict))
-        if row.get("status") in active_statuses
-        and not str(row.get("code") or "").upper().startswith(("IPO-", "STR-"))
+        _stock(s)
+        for s in stocks
+        if isinstance(s, dict) and _ipo_stock_is_open(s)
     ][:20]
     # AI 判研由 Windows OpenClaw/GPT 写入 router judgment-pack,按代码贴到确定性事实旁。
     pack = _fetch_json(IPO_PACK_URL, ttl=120.0)

@@ -901,3 +901,33 @@ def test_console_contains_compact_shadow_status_and_native_observer_view() -> No
     assert "公共盘口与参考报价计划" in html
     assert "不连接 signer" in html
     assert "polymarket_observer_state_1.json" not in html
+
+
+def test_ipo_open_filter_rejects_expired_listed_and_synthetic_rows() -> None:
+    now = datetime.fromisoformat("2026-07-17T15:00:00+08:00")
+
+    assert not console._ipo_stock_is_open(
+        {
+            "code": "2523",
+            "status": "申购中",
+            "closeAt": "12:00 noon on Wednesday, 8 July 2026",
+        },
+        now,
+    )
+    assert not console._ipo_stock_is_open(
+        {"code": "SIM20260716", "status": "申购中", "closeAt": "2026-07-17 23:29"},
+        now,
+    )
+    assert console._ipo_stock_is_open(
+        {"code": "9999", "status": "申购中", "closeAt": "2026-07-18 12:00"},
+        now,
+    )
+
+
+def test_console_has_gpt_judgment_and_real_account_readiness() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'id="ipo-judge-btn"' in html
+    assert 'id="ipo-research-input"' in html
+    assert "账户准备度" in html
+    assert "不生成虚假申购方案" in html
