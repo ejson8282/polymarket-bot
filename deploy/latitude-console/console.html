@@ -1031,6 +1031,9 @@
 </footer>
 
 <script>
+  const IPO_DEMO_MODE=new URLSearchParams(window.location.search).get('ipo_demo')==='1';
+  window.__ipoDemoMode=IPO_DEMO_MODE;
+
   function go(p){
     document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
     document.getElementById('page-'+p).classList.add('on');
@@ -1405,6 +1408,69 @@
     return button('设为待申购','待申购','ghost');
   }
 
+  function buildIpoDemo(accountOps){
+    if(window.__ipoDemoState) return window.__ipoDemoState;
+    const accounts=[];
+    (accountOps.owners||[]).forEach(owner=>{
+      (owner.accounts||[]).forEach(account=>accounts.push({
+        id:account.id||'—',
+        person:owner.name||owner.owner||'—'
+      }));
+    });
+    const fallback=[
+      {id:'HK-DEMO-01',person:'演示账号一'},
+      {id:'HK-DEMO-02',person:'演示账号二'},
+      {id:'HK-DEMO-03',person:'演示账号三'}
+    ];
+    const selected=(accounts.length?accounts:fallback).slice(0,8);
+    window.__ipoDemoState={
+      present:true,
+      mode:'balanced',
+      updated_age:'演示数据',
+      ai_judged_age:'演示',
+      active_stocks:1,
+      round:{title:'演示模式 · 不写入生产',code:'DEMO-IPO',deadline:'明日 12:00'},
+      stocks:[{
+        name_zh:'【演示】星港科技',
+        name_en:'STAR HARBOR TECHNOLOGY LIMITED',
+        code:'DEMO-IPO',
+        status:'申购中',
+        score:82,
+        hit_rate:68,
+        fee:4280,
+        risk:'中',
+        close_at:'明日 12:00',
+        ai_verdict:'谨慎参与',
+        ai_reason:'演示判研：基本面尚可；最终手数仍需券商额度、现金与融资成本校验。'
+      }],
+      entries:selected.map((account,index)=>({
+        account:account.id,
+        person:account.person,
+        stock:'DEMO-IPO',
+        fee:'HK$4,280',
+        due:'演示 +5 日',
+        status:index<2?'待申购':(index===2?'已申购':'待申购'),
+        reason:'演示任务；操作仅保存在当前浏览器页面，不会写入生产。'
+      }))
+    };
+    return window.__ipoDemoState;
+  }
+
+  function activateIpoDemoChrome(){
+    if(!IPO_DEMO_MODE) return;
+    const importButton=document.getElementById('ipo-import-btn');
+    const judgeButton=document.getElementById('ipo-judge-btn');
+    [importButton,judgeButton].forEach(button=>{
+      if(!button) return;
+      button.disabled=true;
+      button.title='演示模式不会调用生产接口';
+    });
+    if(importButton) importButton.textContent='演示数据';
+    if(judgeButton) judgeButton.textContent='GPT 判研（演示）';
+    const op=document.getElementById('ipo-op-msg');
+    if(op) op.textContent='演示模式：账号按钮可本地试点，不会写入正式账户、飞书或执行端';
+  }
+
   (function buildCleanIpoPage(){
     const page=document.getElementById('page-hk');
     const workbench=page&&page.querySelector('.ipo-console');
@@ -1451,7 +1517,8 @@
       chips.innerHTML=hasActiveStocks?
         ('<span class="chip ok">'+esc(r.title||r.code||'当前轮次')+'</span>'+
          (r.deadline?'<span class="chip">截止 '+esc(r.deadline)+'</span>':'')+
-         '<span class="chip">'+esc(ipo.mode||'balanced')+'</span>'):
+         '<span class="chip">'+esc(ipo.mode||'balanced')+'</span>'+
+         (IPO_DEMO_MODE?'<span class="chip warn">仅当前页面 · 不保存</span>':'')):
         '<span class="chip">当前无申购中新股</span>';
     }
     const st=document.getElementById('hk-stocks');
@@ -1765,6 +1832,13 @@
     const en=document.getElementById('hk-entries');
     if(en) en.addEventListener('click',async(ev)=>{
       const b=ev.target.closest('.ipo-mark'); if(!b) return;
+      if(IPO_DEMO_MODE){
+        const entry=(window.__ipoDemoState&&window.__ipoDemoState.entries||[]).find(x=>String(x.account)===String(b.dataset.acc));
+        if(entry) entry.status=b.dataset.status;
+        bindIPO(window.__ipoDemoState||{});
+        showIpoToast(b.dataset.acc+' → '+b.dataset.status+'（演示，未保存）','ok');
+        return;
+      }
       if(!window.confirm('确认将 '+b.dataset.acc+' 标记为“'+b.dataset.status+'”？')) return;
       b.disabled=true;
       showIpoRowStatus(b,'处理中…','');
@@ -2282,7 +2356,7 @@
     try{bindSA(s.single_account||{});}catch(e){}
     try{bindGrid(s.grid||{});}catch(e){}
     try{bindHK(s.account_ops||{});}catch(e){}
-    try{bindIPO(s.ipo||{});}catch(e){}
+    try{bindIPO(IPO_DEMO_MODE?buildIpoDemo(s.account_ops||{}):(s.ipo||{}));}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
     try{bindShadow(s.maker_shadow||{});}catch(e){}
@@ -2295,6 +2369,7 @@
   }
 
   clearTemplateSamples();
+  activateIpoDemoChrome();
   refresh(); setInterval(refresh, 15000);
 </script>
 </body>
