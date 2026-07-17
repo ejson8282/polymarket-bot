@@ -1448,9 +1448,11 @@
     const chips=document.getElementById('hk-round-chips');
     if(chips){
       const r=ipo.round||{};
-      chips.innerHTML='<span class="chip ok">'+esc(r.title||r.code||'当前轮次')+'</span>'+
-        (r.deadline?'<span class="chip">截止 '+esc(r.deadline)+'</span>':'')+
-        '<span class="chip">'+esc(ipo.mode||'balanced')+'</span>';
+      chips.innerHTML=hasActiveStocks?
+        ('<span class="chip ok">'+esc(r.title||r.code||'当前轮次')+'</span>'+
+         (r.deadline?'<span class="chip">截止 '+esc(r.deadline)+'</span>':'')+
+         '<span class="chip">'+esc(ipo.mode||'balanced')+'</span>'):
+        '<span class="chip">当前无申购中新股</span>';
     }
     const st=document.getElementById('hk-stocks');
     if(st) st.innerHTML=(ipo.stocks||[]).length? ipo.stocks.map(x=>{
