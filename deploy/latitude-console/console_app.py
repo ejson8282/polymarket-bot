@@ -2878,8 +2878,22 @@ async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
     """让 Windows OpenClaw 使用固定的 OpenAI 模型生成当前轮次判研包。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    state = _ipo_current_state()
+    if state is None:
+        return JSONResponse({"ok": False, "error": "当前新股状态不可达"}, status_code=502)
+    active_stocks = [
+        item
+        for item in state.get("stocks", [])
+        if isinstance(item, dict) and _ipo_stock_is_open(item)
+    ]
+    if not active_stocks:
+        return JSONResponse(
+            {"ok": False, "error": "当前没有申购中的真实新股，无需运行 GPT 判研"},
+            status_code=400,
+        )
     body = {
         "research_text": str((payload or {}).get("research_text") or "")[:16000],
+        "stocks": active_stocks,
     }
     r = _http_post_json(
         f"{IPO_ROUTER_BASE}/dashboard/ipo/openclaw/judgment",
