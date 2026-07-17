@@ -54,7 +54,10 @@ VARIA_MARKET_CANDIDATES = tuple(
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
-IPO_PACK_URL = os.getenv("IPO_PACK_URL", "http://100.82.86.62:8085/ipo_judgment_pack.json")
+IPO_PACK_URL = os.getenv(
+    "IPO_PACK_URL",
+    "http://100.82.86.62:8080/dashboard/ipo/judgment-pack",
+)
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 
@@ -1888,6 +1891,22 @@ def _account_ops() -> Dict[str, Any]:
                  if isinstance(d.get("reminders"), dict) else {}) or {}
     risks = d.get("risks") if isinstance(d.get("risks"), list) else []
     meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    broker_ready = sum(1 for a in accounts if isinstance(a, dict) and str(a.get("broker") or "").strip())
+    cash_ready = sum(
+        1
+        for a in accounts
+        if isinstance(a, dict)
+        and any(a.get(key) not in (None, "") for key in ("availableCash", "available_cash", "available"))
+    )
+    margin_ready = sum(
+        1
+        for a in accounts
+        if isinstance(a, dict)
+        and any(
+            (_num(a.get(key)) or 0) > 0
+            for key in ("financingLimit", "financing_limit", "marginLimit", "margin_limit")
+        )
+    )
     # ④ 人员明细:accounts 按 owner 聚合,share 从 people 表补
     share_by_name = {str(p.get("name") or ""): _num(p.get("share"))
                      for p in (d.get("people") or []) if isinstance(p, dict)}
@@ -1903,9 +1922,21 @@ def _account_ops() -> Dict[str, Any]:
         o["wear"] += _num(a.get("wear")) or 0.0
         if len(o["accounts"]) < 6:
             o["accounts"].append({"id": a.get("id"), "platform": a.get("platform"),
+                                  "broker": a.get("broker"),
                                   "status": a.get("status"),
                                   "capital": round(_num(a.get("capital")) or 0.0, 2),
-                                  "income": round(_num(a.get("income")) or 0.0, 2)})
+                                  "income": round(_num(a.get("income")) or 0.0, 2),
+                                  "available_cash": _num(
+                                      a.get("availableCash")
+                                      or a.get("available_cash")
+                                      or a.get("available")
+                                  ),
+                                  "financing_limit": _num(
+                                      a.get("financingLimit")
+                                      or a.get("financing_limit")
+                                      or a.get("marginLimit")
+                                      or a.get("margin_limit")
+                                  )})
     owner_rows = []
     for o in sorted(owners.values(), key=lambda x: -x["capital"])[:8]:
         owner_rows.append({
@@ -1919,6 +1950,9 @@ def _account_ops() -> Dict[str, Any]:
         "present": True,
         "accounts": len(accounts),
         "people": len(d.get("people") or []),
+        "broker_ready": broker_ready,
+        "cash_ready": cash_ready,
+        "margin_ready": margin_ready,
         "capital": round(capital, 2),
         "income": round(income, 2),
         "roi_pct": round(income / capital * 100, 2) if capital else None,
@@ -1987,7 +2021,7 @@ def _ipo() -> Dict[str, Any]:
         if row.get("status") in active_statuses
         and not str(row.get("code") or "").upper().startswith(("IPO-", "STR-"))
     ][:20]
-    # AI 判研(judgment_pack.json,第二层 Claude 写回)按代码贴到每只股,和确定性事实并排
+    # AI 判研由 Windows OpenClaw/GPT 写入 router judgment-pack,按代码贴到确定性事实旁。
     pack = _fetch_json(IPO_PACK_URL, ttl=120.0)
     judged_at = None
     if isinstance(pack, dict):
@@ -2788,6 +2822,40 @@ async def ipo_import(payload: dict, request: Request) -> JSONResponse:
     data = r.get("data") if isinstance(r.get("data"), dict) else {}
     n = len((data.get("ipo") or data).get("stocks") or []) if isinstance(data, dict) else 0
     return JSONResponse({"ok": True, "msg": f"HKEX 新股已导入(新股池 {n} 只)", "stocks": n})
+
+
+@app.post("/api/ipo/judgment")
+async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
+    """让 Windows OpenClaw 使用固定的 OpenAI 模型生成当前轮次判研包。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    body = {
+        "research_text": str((payload or {}).get("research_text") or "")[:16000],
+    }
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/ipo/openclaw/judgment",
+        body,
+        timeout=160.0,
+    )
+    _audit(
+        "ipo_judgment",
+        ok=r.get("ok"),
+        research_chars=len(body["research_text"]),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
+    judgment = data.get("judgment") if isinstance(data.get("judgment"), dict) else {}
+    _HTTP_CACHE.pop(IPO_PACK_URL, None)
+    _HTTP_CACHE.pop(IPO_STATE_URL, None)
+    return JSONResponse(
+        {
+            "ok": True,
+            "msg": f"GPT 判研已更新({len(judgment.get('stocks') or [])} 只)",
+            "judged_at": judgment.get("judged_at"),
+        }
+    )
 
 
 @app.post("/api/ipo/action")

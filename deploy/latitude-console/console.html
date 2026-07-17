@@ -117,24 +117,24 @@
   .ipo .nm{font-weight:600}.ipo .dt{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px}
   .stock-name-en{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:3px;line-height:1.35}
   .hk-page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:22px 0 2px}
-  .hk-page-title{font-size:22px;font-weight:650;letter-spacing:.01em}
-  .hk-page-note{color:var(--muted);font-size:12px;margin-top:4px}
+  .hk-page-title{font-size:26px;font-weight:650;letter-spacing:.01em}
+  .hk-page-note{color:var(--muted);font-size:14px;margin-top:6px}
   .ipo-console{padding:0;overflow:hidden}
   .ipo-console-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px;border-bottom:1px solid var(--line)}
-  .ipo-console-title{font-size:16px;font-weight:650}
+  .ipo-console-title{font-size:19px;font-weight:650}
   .ipo-console-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
   .ipo-console-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}
   .ipo-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-bottom:1px solid var(--line)}
   .ipo-summary-item{padding:12px 16px;background:var(--panel2);min-width:0}
   .ipo-summary-item+.ipo-summary-item{border-left:1px solid var(--line)}
-  .ipo-summary-label{font-family:var(--mono);font-size:10px;color:var(--faint)}
-  .ipo-summary-value{font-family:var(--mono);font-size:18px;font-weight:600;margin-top:4px}
-  .ipo-step{padding:16px}
+  .ipo-summary-label{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .ipo-summary-value{font-family:var(--mono);font-size:21px;font-weight:600;margin-top:5px}
+  .ipo-step{padding:18px 16px}
   .ipo-step+.ipo-step{border-top:1px solid var(--line)}
   .ipo-step-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}
-  .ipo-step-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .ipo-step-title{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}
   .ipo-step-num{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:6px;background:rgba(94,200,216,.12);color:var(--var);font-family:var(--mono);font-size:11px}
-  .ipo-step-note{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .ipo-step-note{font-family:var(--mono);font-size:12px;color:var(--faint)}
   .ipo-table-wrap{overflow-x:auto}
   .ipo-next-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
   .ipo-next-actions .btn{font-size:10px;padding:3px 7px}
@@ -147,6 +147,17 @@
   #ipo-op-msg{min-height:18px;margin:0;padding:0 16px 12px;text-align:right}
   .ipo-toast{position:fixed;right:22px;bottom:22px;z-index:60;max-width:min(420px,calc(100vw - 44px));padding:11px 14px;border:1px solid var(--line);border-radius:8px;background:rgba(18,24,32,.97);box-shadow:0 10px 30px rgba(0,0,0,.38);font-family:var(--mono);font-size:11px;line-height:1.45;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
   .ipo-toast.show{opacity:1;transform:translateY(0)}.ipo-toast.ok{border-color:rgba(63,185,80,.55);color:var(--ok)}.ipo-toast.error{border-color:rgba(248,81,73,.55);color:var(--danger)}
+  .ipo-console table{font-size:14px}.ipo-console th{font-size:12px}.ipo-console td{padding-top:13px;padding-bottom:13px}
+  .ipo-research{border-top:1px solid var(--line);padding:14px 16px;background:rgba(94,200,216,.025)}
+  .ipo-research summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--var)}
+  .ipo-research-copy{font-size:12px;color:var(--muted);margin:8px 0}
+  .ipo-research textarea{width:100%;min-height:110px;resize:vertical;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:12px;font:13px/1.55 var(--mono)}
+  .ipo-research-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:9px}
+  .ipo-real-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr);gap:14px;margin-top:14px}
+  .ipo-account-readiness{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
+  .ipo-account-readiness>div{background:var(--panel2);padding:11px 12px}.ipo-account-readiness b{display:block;font:600 17px var(--mono);margin-top:3px}.ipo-account-readiness span{font-size:11px;color:var(--faint)}
+  .ipo-real-grid h2{font-size:16px}.ipo-real-grid table{font-size:13px}
+  @media (max-width:1100px){.ipo-real-grid{grid-template-columns:1fr}}
   @media (max-width:900px){.hk-page-head,.ipo-console-head{align-items:flex-start;flex-direction:column}.ipo-console-actions{justify-content:flex-start}.ipo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ipo-summary-item:nth-child(3){border-left:0;border-top:1px solid var(--line)}.ipo-summary-item:nth-child(4){border-top:1px solid var(--line)}}
   /* Single Account 驾驶舱专用 */
   .phases{display:flex;gap:0;margin-top:16px}
@@ -849,6 +860,7 @@
             <button class="btn ghost ipo-mode" data-mode="balanced">均衡</button>
             <button class="btn ghost ipo-mode" data-mode="aggressive">进攻</button>
             <button class="btn primary" id="ipo-import-btn">刷新申购中新股</button>
+            <button class="btn ghost" id="ipo-judge-btn">GPT 判研</button>
           </div>
         </div>
         <div class="ipo-summary">
@@ -869,6 +881,15 @@
             </table>
           </div>
         </div>
+        <details class="ipo-research">
+          <summary>投喂打新文章 / 研究材料（可选）</summary>
+          <div class="ipo-research-copy">粘贴文章正文、群聊观点或研究摘要。GPT 只会依据已导入的新股事实和这里的材料生成建议；资料不足会明确标记“待补资料”。</div>
+          <textarea id="ipo-research-input" placeholder="在这里粘贴港股打新文章；也可以不填，直接让 GPT 根据当前已知事实判研。"></textarea>
+          <div class="ipo-research-actions">
+            <span class="ipo-step-note" id="ipo-judgment-note">当前判研由 OpenClaw / GPT 生成，不再读取 Claude。</span>
+            <button class="btn primary" id="ipo-research-run">分析并更新判研</button>
+          </div>
+        </details>
         <div class="ipo-step">
           <div class="ipo-step-head">
             <div class="ipo-step-title"><span class="ipo-step-num">2</span>账号执行</div>
@@ -1384,11 +1405,32 @@
     return button('设为待申购','待申购','ghost');
   }
 
-  (function prioritizeIpoWorkbench(){
+  (function buildCleanIpoPage(){
     const page=document.getElementById('page-hk');
     const workbench=page&&page.querySelector('.ipo-console');
     const kpis=page&&page.querySelector(':scope > .kpis');
-    if(page&&workbench&&kpis) page.insertBefore(workbench,kpis);
+    const head=page&&page.querySelector('.hk-page-head');
+    if(!page||!workbench||!kpis||!head) return;
+    const realGrid=document.createElement('div');
+    realGrid.className='ipo-real-grid';
+    realGrid.innerHTML=
+      '<div class="panel"><h2>账户准备度</h2>'+
+      '<div class="src">只展示真实账户源；券商、可用现金和融资额度未录入时明确显示待补，不生成虚假申购方案。</div>'+
+      '<div class="ipo-account-readiness">'+
+      '<div><span>真实账户</span><b data-k="ipo.account_count">—</b></div>'+
+      '<div><span>已录券商</span><b data-k="ipo.broker_ready">—</b></div>'+
+      '<div><span>融资额度完整</span><b data-k="ipo.margin_ready">—</b></div></div>'+
+      '<table><thead><tr><th>人员</th><th>管理本金</th><th>净收益</th><th>ROI</th><th>磨损</th><th>账户数</th></tr></thead>'+
+      '<tbody id="hk-people"><tr><td colspan="6" style="color:var(--faint)">读取真实账户…</td></tr></tbody></table>'+
+      '<div class="subnav" style="margin:12px 0 4px" id="hk-person-tabs"></div>'+
+      '<div class="person-d on" id="pd-zs"><div class="src">选择人员查看真实账户明细</div></div></div>'+
+      '<aside><div class="panel" style="margin-top:0"><h2>风险与待处理</h2>'+
+      '<div class="src">来自账户运营真实风险队列</div>'+
+      '<ul class="events" id="hk-risks"><li><span class="dot d-info"></span><div><div>读取风险队列…</div></div></li></ul>'+
+      '</div><div class="panel"><h2>下一步数据补齐</h2>'+
+      '<ul class="events"><li><span class="dot d-warn"></span><div><div>补录每个账户的券商、可用现金、总融资额度和单只新股孖展额度</div></div></li>'+
+      '<li><span class="dot d-info"></span><div><div>券商名单确认后，接入开户奖励、银行中转、到账时间和资金占用计算</div></div></li></ul></div></aside>';
+    page.replaceChildren(head,workbench,kpis,realGrid);
   })();
 
   function bindIPO(ipo){
@@ -1477,9 +1519,12 @@
       '<span>ROI <b>'+(o.roi_pct!=null?o.roi_pct+'%':'—')+'</b></span>'+
       '<span>磨损 <b>'+(o.wear_pct!=null?o.wear_pct+'%':'—')+'</b></span>'+
       '<span>分成比例 <b>'+(o.share!=null?Math.round(o.share*100)+'%':'—')+'</b></span></div>'+
-      '<table><thead><tr><th>名下账号</th><th>平台</th><th>本金</th><th>状态</th><th>净收益</th></tr></thead><tbody>'+
-      (o.accounts||[]).map(a=>'<tr><td class="num">'+esc(a.id||'—')+'</td><td>'+esc(a.platform||'—')+'</td>'+
+      '<table><thead><tr><th>名下账号</th><th>平台 / 券商</th><th>本金</th><th>可用现金</th><th>融资额度</th><th>状态</th><th>净收益</th></tr></thead><tbody>'+
+      (o.accounts||[]).map(a=>'<tr><td class="num">'+esc(a.id||'—')+'</td><td>'+esc(a.platform||'—')+
+        '<div class="dt">'+esc(a.broker||'券商待补')+'</div></td>'+
         '<td class="num">'+money(a.capital)+'</td>'+
+        '<td class="num">'+(a.available_cash!=null?Number(a.available_cash).toLocaleString():'待补')+'</td>'+
+        '<td class="num">'+(a.financing_limit!=null?Number(a.financing_limit).toLocaleString():'待补')+'</td>'+
         '<td><span class="chip '+(String(a.status||'').includes('运行')?'ok':'warn')+'">'+esc(a.status||'—')+'</span></td>'+
         '<td class="num">'+pnlSpan(a.income||0)+'</td></tr>').join('')+
       '</tbody></table>';
@@ -1579,6 +1624,9 @@
     setK('hkk.pending', String(hk.pending??'—'));
     setK('hkk.pending_sub','逾期 '+(hk.overdue??0));
     setK('hkk.abnormal', String(hk.risk_count??'—'));
+    setK('ipo.account_count',String(hk.accounts??'—'));
+    setK('ipo.broker_ready',(hk.broker_ready??0)+' / '+(hk.accounts??0));
+    setK('ipo.margin_ready',(hk.margin_ready??0)+' / '+(hk.accounts??0));
     const rl=document.getElementById('hk-risks');
     if(rl && (hk.risks||[]).length){
       rl.innerHTML=hk.risks.map(r=>{
@@ -1597,7 +1645,7 @@
         '<td class="num">'+pnlSpan(o.income||0)+'</td>'+
         '<td class="num">'+(o.roi_pct!=null?o.roi_pct+'%':'—')+'</td>'+
         '<td class="num">'+(o.wear_pct!=null?o.wear_pct+'%':'—')+'</td>'+
-        '<td class="num">'+(o.share!=null?Math.round(o.share*100)+'%':'—')+'</td></tr>').join('');
+        '<td class="num">'+(o.accounts||[]).length+'</td></tr>').join('');
     }
     window.__owners=hk.owners||[];
     const tabs=document.getElementById('hk-person-tabs');
@@ -1685,6 +1733,26 @@
       button.textContent=original;
       button.disabled=false;
     });
+    async function runIpoJudgment(button){
+      if(!button||button.disabled) return;
+      const note=document.getElementById('ipo-judgment-note');
+      const input=document.getElementById('ipo-research-input');
+      const original=button.textContent;
+      button.disabled=true;
+      button.textContent='GPT 分析中…';
+      if(note) note.textContent='OpenClaw 正在调用 GPT，通常需要 20–90 秒。';
+      showIpoToast('正在生成当前轮次判研；不会自动申购','');
+      const result=await postOp('/api/ipo/judgment',{research_text:(input&&input.value||'')},msg,'GPT 判研');
+      const text=result&&result.ok?(result.msg||'GPT 判研已更新'):(result&&result.error||'GPT 判研失败');
+      if(note) note.textContent=text;
+      showIpoToast(text,result&&result.ok?'ok':'error');
+      button.textContent=original;
+      button.disabled=false;
+    }
+    const quickJudge=document.getElementById('ipo-judge-btn');
+    if(quickJudge) quickJudge.addEventListener('click',()=>runIpoJudgment(quickJudge));
+    const researchJudge=document.getElementById('ipo-research-run');
+    if(researchJudge) researchJudge.addEventListener('click',()=>runIpoJudgment(researchJudge));
     document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
       b.disabled=true;
       const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
