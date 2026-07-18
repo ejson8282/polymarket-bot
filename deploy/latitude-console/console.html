@@ -50,6 +50,10 @@
   /* ── 通用面板 ── */
   .page{display:none;padding:0 24px 24px}
   .page.on{display:block}
+  #page-grid.grid-embed-mode{padding:0;background:#08131c}
+  #page-grid.grid-embed-mode>:not(.grid-embed-shell){display:none}
+  .grid-embed-shell{height:calc(100vh - 65px);height:calc(100dvh - 65px);min-height:680px;overflow:hidden;border-top:1px solid var(--line);background:#08131c}
+  .grid-cockpit-frame{display:block;width:100%;height:100%;border:0;background:#08131c}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}
   .panel h2{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
   .src{font-family:var(--mono);font-size:10px;color:var(--faint);margin:2px 0 12px}
@@ -741,7 +745,10 @@
 
 <!-- ════════════ 页面 6 · 打新 & Alpha 账户运营核算台(现有系统,原样接入) ════════════ -->
 <!-- ════════════ 页面 · 网格 Grid(varxyz-grid 独立系统,原生只读视图) ════════════ -->
-<section class="page" id="page-grid">
+<section class="page grid-embed-mode" id="page-grid">
+  <div class="grid-embed-shell">
+    <iframe class="grid-cockpit-frame" data-src="/grid-cockpit/" title="VARXYZ Shadow 网格驾驶舱" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-downloads"></iframe>
+  </div>
   <div class="banner readonly">网格系统 varxyz-grid — 独立仓库 / 独立账户(与 varia 完全隔离) · trade.xyz(HL HIP-3)+ Variational · 当前 SHADOW 阶段:真实行情 × 模拟撮合,不发真实订单
     <span style="flex:1"></span><span class="feat f-new">G3b soak</span>
   </div>
@@ -969,14 +976,15 @@
 </footer>
 
 <script>
+  function ensureGridCockpit(){
+    const frame=document.getElementById('grid-cockpit-frame');
+    if(frame&&!frame.hasAttribute('src')) frame.setAttribute('src',frame.dataset.src);
+  }
   function go(p){
-    if(p==='grid'){
-      window.location.assign('/grid-cockpit/');
-      return;
-    }
     document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
     document.getElementById('page-'+p).classList.add('on');
     document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===p));
+    if(p==='grid') ensureGridCockpit();
     window.scrollTo(0,0);
   }
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));

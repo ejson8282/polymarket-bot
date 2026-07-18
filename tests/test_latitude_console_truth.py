@@ -26,12 +26,16 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_all_grid_entries_use_same_origin_8502_cockpit_route() -> None:
+def test_grid_cockpit_is_embedded_inside_the_8502_dashboard() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
+    assert 'class="page grid-embed-mode" id="page-grid"' in html
+    assert 'class="grid-cockpit-frame" data-src="/grid-cockpit/"' in html
+    assert 'sandbox="allow-scripts allow-same-origin allow-downloads"' in html
+    assert "if(p==='grid') ensureGridCockpit();" in html
     assert 'href="/grid-cockpit/"' in html
     assert 'href="http://100.122.255.98:8610/"' not in html
-    assert "window.location.assign('/grid-cockpit/')" in html
+    assert "window.location.assign('/grid-cockpit/')" not in html
     assert 'rel="noopener"' in html
 
 
