@@ -193,6 +193,11 @@
   .onb-field input:focus,.onb-field select:focus,.onb-field textarea:focus{border-color:var(--var)}
   .onb-form-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
   .onb-deadline{font:11px var(--mono);margin-top:3px}.onb-deadline.warn{color:var(--warn)}.onb-deadline.danger{color:var(--danger)}
+  .onb-tabs{display:flex;gap:6px;margin:16px 0 0}.onb-tabs button{font-size:13px;padding:9px 14px}.onb-view{display:none}.onb-view.on{display:block}
+  .onb-requirements{grid-column:1/-1;border:1px solid var(--line);border-radius:8px;padding:12px}.onb-req-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .onb-req-row{display:grid;grid-template-columns:1.3fr .7fr .55fr .7fr auto;gap:7px;margin-top:7px}.onb-req-row input,.onb-req-row select{min-width:0}
+  .onb-progress{height:5px;background:var(--bg);border-radius:9px;overflow:hidden;margin-top:6px}.onb-progress i{display:block;height:100%;background:var(--ok)}
+  .onb-pipeline{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:9px}.onb-arrow{color:var(--var);font-size:18px}
   @media (max-width:1100px){.ipo-real-grid{grid-template-columns:1fr}}
   @media (max-width:1100px){.alpha-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.alpha-summary>div:nth-child(4){border-left:0;border-top:1px solid var(--line)}.alpha-summary>div:nth-child(n+4){border-top:1px solid var(--line)}.alpha-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpi{border-top:1px solid var(--line)}.onb-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   @media (max-width:900px){.hk-page-head,.ipo-console-head,.alpha-head{align-items:flex-start;flex-direction:column}.ipo-console-actions{justify-content:flex-start}.ipo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ipo-summary-item:nth-child(3){border-left:0;border-top:1px solid var(--line)}.ipo-summary-item:nth-child(4){border-top:1px solid var(--line)}}
@@ -1078,6 +1083,12 @@
     </div>
     <span class="chip info" id="onb-data-age">读取真实记录</span>
   </div>
+  <div class="onb-tabs">
+    <button class="btn on" data-onb-view="profiles">账号档案</button>
+    <button class="btn" data-onb-view="activities">开户与活动</button>
+    <button class="btn" data-onb-view="pipeline">资金排期</button>
+  </div>
+  <div class="onb-view" id="onb-view-activities">
   <div class="onb-kpis">
     <div class="onb-kpi"><span>进行中</span><b id="onb-active">—</b></div>
     <div class="onb-kpi"><span>7 日内到期</span><b id="onb-expiring">—</b></div>
@@ -1116,9 +1127,56 @@
         <div class="onb-field wide"><label>资金路径</label><input id="onb-funding-path" placeholder="例如：内地银行 → 香港银行 → 券商"></div>
         <div class="onb-field wide"><label>官方活动链接</label><input id="onb-source-url" type="url" placeholder="https://…"></div>
         <div class="onb-field wide"><label>备注 / 交易要求</label><textarea id="onb-notes" rows="2" placeholder="净入金口径、交易笔数、开户限制等"></textarea></div>
+        <div class="onb-requirements">
+          <div class="onb-req-head"><div><b>奖励完成条件</b><div class="src">同一奖励默认需要全部满足；可分别更新入金、锁资、交易笔数等进度</div></div><button class="btn ghost" id="onb-add-requirement" type="button">＋ 添加条件</button></div>
+          <div id="onb-requirement-rows"></div>
+        </div>
       </div>
       <div class="onb-form-actions"><span class="ipo-step-note" id="onb-op-msg">不保存密码、身份证、银行卡完整号码等敏感信息。</span><div><button class="btn ghost" id="onb-cancel-btn" type="button">清空</button> <button class="btn primary" id="onb-save-btn" type="button">保存记录</button></div></div>
     </details>
+  </div>
+  </div>
+
+  <div class="onb-view on" id="onb-view-profiles">
+    <div class="panel onb-panel">
+      <div class="onb-panel-head"><div><h2>人员与账号档案</h2><div class="src">邮箱、手机号与登录账号自动脱敏；这里只记录归属关系，不保存密码或验证码</div></div><span class="chip" id="onb-profile-count">0 个</span></div>
+      <div class="onb-table"><table><thead><tr><th>人员</th><th>机构</th><th>账号 / 登录名</th><th>邮箱</th><th>手机</th><th>绑定银行</th><th>凭据位置</th><th style="text-align:right">操作</th></tr></thead><tbody id="onb-profiles"><tr><td colspan="8" style="color:var(--faint)">读取账号档案…</td></tr></tbody></table></div>
+      <details class="onb-form" id="onb-profile-form"><summary>新增账号档案</summary>
+        <div class="onb-form-grid">
+          <div class="onb-field"><label>人员 *</label><input id="onb-profile-person" list="onb-people-list"></div>
+          <div class="onb-field"><label>券商 / 银行 *</label><input id="onb-profile-institution"></div>
+          <div class="onb-field"><label>账号编号</label><input id="onb-profile-account" placeholder="保存后自动脱敏"></div>
+          <div class="onb-field"><label>登录名</label><input id="onb-profile-login" placeholder="保存后自动脱敏"></div>
+          <div class="onb-field"><label>绑定邮箱</label><input id="onb-profile-email" placeholder="保存后自动脱敏"></div>
+          <div class="onb-field"><label>绑定手机号</label><input id="onb-profile-phone" placeholder="保存后自动脱敏"></div>
+          <div class="onb-field"><label>绑定银行</label><input id="onb-profile-bank"></div>
+          <div class="onb-field"><label>凭据位置</label><input id="onb-profile-credential" placeholder="例如 1Password / 券商"></div>
+        </div>
+        <div class="onb-form-actions"><span class="ipo-step-note" id="onb-profile-msg">不会保存密码、验证码和完整证件号码。</span><button class="btn primary" id="onb-profile-save" type="button">保存账号档案</button></div>
+      </details>
+    </div>
+  </div>
+
+  <div class="onb-view" id="onb-view-pipeline">
+    <div class="panel onb-panel">
+      <div class="onb-panel-head"><div><h2>资金奖励流水线</h2><div class="src">安排每笔资金何时转入、何时释放以及下一站；用于检查同一资金重复占用</div></div><span class="chip" id="onb-plan-count">0 段</span></div>
+      <div class="onb-table"><table><thead><tr><th>人员</th><th>资金路径</th><th>转入日</th><th>释放日</th><th>金额</th><th>下一站</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody id="onb-plans"><tr><td colspan="8" style="color:var(--faint)">读取资金排期…</td></tr></tbody></table></div>
+      <details class="onb-form" id="onb-plan-form"><summary>新增资金排期</summary>
+        <div class="onb-form-grid">
+          <div class="onb-field"><label>人员 *</label><input id="onb-plan-person" list="onb-people-list"></div>
+          <div class="onb-field"><label>关联活动</label><select id="onb-plan-record"><option value="">不关联</option></select></div>
+          <div class="onb-field"><label>资金来源</label><input id="onb-plan-from" placeholder="汇丰香港"></div>
+          <div class="onb-field"><label>本次目的地 *</label><input id="onb-plan-to" placeholder="致富证券"></div>
+          <div class="onb-field"><label>计划转入日</label><input id="onb-plan-start" type="date"></div>
+          <div class="onb-field"><label>计划释放日</label><input id="onb-plan-release" type="date"></div>
+          <div class="onb-field"><label>金额</label><input id="onb-plan-amount" type="number" min="0" step="0.01"></div>
+          <div class="onb-field"><label>币种</label><select id="onb-plan-currency"><option>HKD</option><option>USD</option><option>CNY</option><option>USDT</option></select></div>
+          <div class="onb-field"><label>下一站</label><input id="onb-plan-next" placeholder="有鱼证券"></div>
+          <div class="onb-field"><label>状态</label><select id="onb-plan-status"><option>计划中</option><option>待转入</option><option>锁资中</option><option>可释放</option><option>已转出</option><option>已完成</option><option>取消</option></select></div>
+        </div>
+        <div class="onb-form-actions"><span class="ipo-step-note" id="onb-plan-msg">保存后会在排期中显示资金的当前位置和下一站。</span><button class="btn primary" id="onb-plan-save" type="button">保存资金排期</button></div>
+      </details>
+    </div>
   </div>
 </section>
 
@@ -1789,9 +1847,36 @@
     return {'待准备':'开户中','开户中':'待审核','待审核':'待入金','待入金':'锁资中','锁资中':'待交易','待交易':'待领奖','待领奖':'已完成'}[status]||'';
   }
 
+  function addOnboardingRequirement(requirement){
+    const host=document.getElementById('onb-requirement-rows'); if(!host) return;
+    const req=requirement||{};
+    const row=document.createElement('div');
+    row.className='onb-req-row';
+    row.dataset.id=req.id||('req-'+Date.now()+'-'+Math.random().toString(16).slice(2,6));
+    row.innerHTML='<input class="onb-req-label" placeholder="条件，例如：完成港股交易" value="'+esc(req.label||'')+'">'+
+      '<input class="onb-req-target" type="number" min="0" step="0.01" placeholder="目标" value="'+esc(req.target??'')+'">'+
+      '<input class="onb-req-unit" placeholder="单位" value="'+esc(req.unit||'')+'">'+
+      '<input class="onb-req-current" type="number" min="0" step="0.01" placeholder="当前" value="'+esc(req.current??0)+'">'+
+      '<button class="btn ghost onb-req-remove" type="button">删除</button>';
+    host.appendChild(row);
+  }
+
+  function collectOnboardingRequirements(){
+    return [...document.querySelectorAll('#onb-requirement-rows .onb-req-row')].map(row=>({
+      id:row.dataset.id,
+      type:(row.querySelector('.onb-req-label').value||'自定义').trim(),
+      label:(row.querySelector('.onb-req-label').value||'').trim(),
+      target:row.querySelector('.onb-req-target').value===''?null:Number(row.querySelector('.onb-req-target').value),
+      current:row.querySelector('.onb-req-current').value===''?0:Number(row.querySelector('.onb-req-current').value),
+      unit:(row.querySelector('.onb-req-unit').value||'').trim()
+    })).filter(item=>item.label);
+  }
+
   function bindOnboarding(onboarding){
     onboarding=onboarding&&typeof onboarding==='object'?onboarding:{};
     const records=Array.isArray(onboarding.records)?onboarding.records:[];
+    const profiles=Array.isArray(onboarding.profiles)?onboarding.profiles:[];
+    const plans=Array.isArray(onboarding.funding_plans)?onboarding.funding_plans:[];
     window.__onboarding=onboarding;
     setK('onb.chip',records.length?'已记录':'待录入');
     setK('onb.active',(onboarding.active||0)+' / '+(onboarding.expiring_7d||0));
@@ -1806,7 +1891,9 @@
     document.getElementById('onb-pending-rewards').textContent=(onboarding.pending_rewards||0)+' 笔';
     document.getElementById('onb-expected-rewards').textContent=onbBuckets(onboarding.expected_rewards_by_currency,onboarding.expected_rewards);
     document.getElementById('onb-record-count').textContent=records.length+' 条';
-    document.getElementById('onb-data-age').textContent=records.length?'真实记录 · '+records.length+' 条':'尚未录入开户信息';
+    document.getElementById('onb-data-age').textContent=(records.length+profiles.length+plans.length)?'真实记录 · '+(records.length+profiles.length+plans.length)+' 条':'尚未录入开户信息';
+    document.getElementById('onb-profile-count').textContent=profiles.length+' 个';
+    document.getElementById('onb-plan-count').textContent=plans.length+' 段';
     const people=document.getElementById('onb-people-list');
     if(people) people.innerHTML=(onboarding.people||[]).map(name=>'<option value="'+esc(name)+'"></option>').join('');
     const accounts=document.getElementById('onb-account');
@@ -1817,6 +1904,26 @@
       ).join('');
       if([...accounts.options].some(option=>option.value===current)) accounts.value=current;
     }
+    const planRecord=document.getElementById('onb-plan-record');
+    if(planRecord) planRecord.innerHTML='<option value="">不关联</option>'+records.map(record=>
+      '<option value="'+esc(record.id)+'">'+esc(record.person)+' · '+esc(record.institution)+' · '+esc(record.activity_name||'活动')+'</option>'
+    ).join('');
+    const profileBody=document.getElementById('onb-profiles');
+    if(profileBody) profileBody.innerHTML=profiles.length?profiles.map(profile=>
+      '<tr><td><b>'+esc(profile.person||'—')+'</b></td><td>'+esc(profile.institution||'—')+'</td>'+
+      '<td class="num">'+esc(profile.accountId||'—')+'<div class="dt">'+esc(profile.loginId||'登录名待补')+'</div></td>'+
+      '<td>'+esc(profile.maskedEmail||'—')+'</td><td class="num">'+esc(profile.maskedPhone||'—')+'</td>'+
+      '<td>'+esc(profile.linkedBank||'—')+'</td><td>'+esc(profile.credentialRef||'—')+'</td>'+
+      '<td><div class="onb-actions"><button class="btn ghost onb-profile-delete" data-id="'+esc(profile.id)+'">删除</button></div></td></tr>'
+    ).join(''):'<tr><td colspan="8" style="color:var(--faint)">还没有账号档案；先把人员、券商、邮箱和手机号的归属关系录入</td></tr>';
+    const planBody=document.getElementById('onb-plans');
+    if(planBody) planBody.innerHTML=plans.length?plans.map(plan=>
+      '<tr><td><b>'+esc(plan.person||'—')+'</b></td><td><div class="onb-pipeline"><span>'+esc(plan.fromInstitution||'资金池')+'</span><span class="onb-arrow">→</span><b>'+esc(plan.toInstitution||'—')+'</b><span class="onb-arrow">→</span><span>'+esc(plan.nextInstitution||'待安排')+'</span></div></td>'+
+      '<td class="num">'+esc(plan.plannedStart||'待定')+'</td><td class="num">'+esc(plan.plannedRelease||'待定')+'</td>'+
+      '<td class="num">'+onbAmount(plan.amount,plan.currency)+'</td><td>'+esc(plan.nextInstitution||'待安排')+'</td>'+
+      '<td><span class="chip info">'+esc(plan.status||'计划中')+'</span></td>'+
+      '<td><div class="onb-actions"><button class="btn ghost onb-plan-delete" data-id="'+esc(plan.id)+'">删除</button></div></td></tr>'
+    ).join(''):'<tr><td colspan="8" style="color:var(--faint)">当前没有资金排期；可先录入“7月致富 → 8月有鱼”</td></tr>';
     const body=document.getElementById('onb-records');
     if(!body) return;
     body.innerHTML=records.length?records.map(record=>{
@@ -1828,12 +1935,15 @@
       const next=onboardingNextStatus(status);
       const nextButton=next?'<button class="btn primary onb-next" data-id="'+esc(record.id)+'" data-status="'+esc(next)+'">'+esc(next)+'</button>':'';
       const source=record.source_url?'<a href="'+esc(record.source_url)+'" target="_blank" style="color:var(--var)">官方规则 ↗</a>':'<span style="color:var(--faint)">规则链接待补</span>';
+      const requirements=(record.reward_tiers||[]).flatMap(tier=>tier.requirements||[]);
+      const completed=requirements.filter(req=>['已完成','不适用'].includes(req.status)).length;
+      const requirementNote=requirements.length?'<div class="dt">条件 '+completed+' / '+requirements.length+' 已完成</div><div class="onb-progress"><i style="width:'+Math.round(completed/requirements.length*100)+'%"></i></div>':'';
       return '<tr><td><b>'+esc(record.person||'—')+'</b><div class="dt">'+esc(record.account_id||'账号待生成')+'</div></td>'+
         '<td><b>'+esc(record.institution||'—')+'</b> <span class="chip">'+esc(record.institution_type||'')+'</span><div class="dt">'+esc(record.activity_name||'无活动名称')+'</div></td>'+
         '<td><span class="chip '+statusClass+'">'+esc(status)+'</span></td>'+
         '<td class="num">'+esc(record.deadline||'待补')+(deadlineText?'<div class="onb-deadline '+deadlineClass+'">'+deadlineText+'</div>':'')+'</td>'+
         '<td class="num">'+onbAmount(record.deposit_amount,record.currency)+(record.hold_days!=null?'<div class="dt">锁资 '+record.hold_days+' 天</div>':'<div class="dt">锁资天数待补</div>')+'</td>'+
-        '<td class="num">'+onbAmount(record.reward_value,record.reward_currency)+(record.reward_due?'<div class="dt">预计 '+esc(record.reward_due)+' 发放</div>':'')+'</td>'+
+        '<td class="num">'+onbAmount(record.reward_value,record.reward_currency)+(record.reward_due?'<div class="dt">预计 '+esc(record.reward_due)+' 发放</div>':'')+requirementNote+'</td>'+
         '<td>'+esc(record.funding_path||'资金路径待补')+'<div class="dt">'+source+'</div></td>'+
         '<td><div class="onb-actions">'+nextButton+'<button class="btn ghost onb-edit" data-id="'+esc(record.id)+'">编辑</button><button class="btn ghost onb-delete" data-id="'+esc(record.id)+'">删除</button></div></td></tr>';
     }).join(''):'<tr><td colspan="8" style="color:var(--faint)">当前没有开户记录；点击下方“新增开户记录”开始录入</td></tr>';
@@ -1849,6 +1959,7 @@
     document.getElementById('onb-currency').value='HKD';
     document.getElementById('onb-reward-currency').value='HKD';
     document.getElementById('onb-form-title').textContent='新增开户记录';
+    document.getElementById('onb-requirement-rows').innerHTML='';
   }
 
   function editOnboardingRecord(id){
@@ -1863,6 +1974,8 @@
       'onb-funding-path':record.funding_path,'onb-source-url':record.source_url,'onb-notes':record.notes
     };
     Object.entries(values).forEach(([id,value])=>{const el=document.getElementById(id);if(el)el.value=value==null?'':value;});
+    document.getElementById('onb-requirement-rows').innerHTML='';
+    (record.reward_tiers||[]).flatMap(tier=>tier.requirements||[]).forEach(addOnboardingRequirement);
     document.getElementById('onb-form-title').textContent='编辑开户记录 · '+(record.person||'')+' / '+(record.institution||'');
     const details=document.getElementById('onb-form-details'); details.open=true; details.scrollIntoView({behavior:'smooth',block:'start'});
   }
@@ -2204,6 +2317,16 @@
     const msg=document.getElementById('onb-op-msg');
     const save=document.getElementById('onb-save-btn');
     const cancel=document.getElementById('onb-cancel-btn');
+    document.querySelectorAll('.onb-tabs button').forEach(button=>button.addEventListener('click',()=>{
+      document.querySelectorAll('.onb-tabs button').forEach(item=>item.classList.toggle('on',item===button));
+      document.querySelectorAll('.onb-view').forEach(view=>view.classList.toggle('on',view.id==='onb-view-'+button.dataset.onbView));
+    }));
+    const addRequirement=document.getElementById('onb-add-requirement');
+    if(addRequirement) addRequirement.addEventListener('click',()=>addOnboardingRequirement({}));
+    const requirementRows=document.getElementById('onb-requirement-rows');
+    if(requirementRows) requirementRows.addEventListener('click',ev=>{
+      const remove=ev.target.closest('.onb-req-remove'); if(remove) remove.closest('.onb-req-row').remove();
+    });
     if(cancel) cancel.addEventListener('click',resetOnboardingForm);
     if(save) save.addEventListener('click',async()=>{
       const person=(document.getElementById('onb-person').value||'').trim();
@@ -2228,7 +2351,15 @@
         reward_due:document.getElementById('onb-reward-due').value,
         funding_path:(document.getElementById('onb-funding-path').value||'').trim(),
         source_url:(document.getElementById('onb-source-url').value||'').trim(),
-        notes:(document.getElementById('onb-notes').value||'').trim()
+        notes:(document.getElementById('onb-notes').value||'').trim(),
+        reward_tiers:[{
+          id:'reward-main',
+          title:(document.getElementById('onb-activity').value||'开户奖励').trim(),
+          value:valueOrNull('onb-reward'),
+          currency:document.getElementById('onb-reward-currency').value,
+          requirementsMode:'ALL',
+          requirements:collectOnboardingRequirements()
+        }]
       };
       save.disabled=true;
       const result=await postOp('/api/onboarding/action',payload,msg,'保存开户记录');
@@ -2254,6 +2385,61 @@
         await postOp('/api/onboarding/action',{action:'delete_record',record_id:del.dataset.id},msg,'删除开户记录');
         del.disabled=false;
       }
+    });
+    const profileSave=document.getElementById('onb-profile-save');
+    const profileMsg=document.getElementById('onb-profile-msg');
+    if(profileSave) profileSave.addEventListener('click',async()=>{
+      const payload={
+        action:'upsert_profile',
+        person:(document.getElementById('onb-profile-person').value||'').trim(),
+        institution:(document.getElementById('onb-profile-institution').value||'').trim(),
+        account_id:(document.getElementById('onb-profile-account').value||'').trim(),
+        login_id:(document.getElementById('onb-profile-login').value||'').trim(),
+        masked_email:(document.getElementById('onb-profile-email').value||'').trim(),
+        masked_phone:(document.getElementById('onb-profile-phone').value||'').trim(),
+        linked_bank:(document.getElementById('onb-profile-bank').value||'').trim(),
+        credential_ref:(document.getElementById('onb-profile-credential').value||'').trim()
+      };
+      if(!payload.person||!payload.institution){profileMsg.innerHTML='<span class="down">人员和机构必须填写</span>';return;}
+      profileSave.disabled=true;
+      const result=await postOp('/api/onboarding/action',payload,profileMsg,'保存账号档案');
+      if(result&&result.ok) document.getElementById('onb-profile-form').open=false;
+      profileSave.disabled=false;
+    });
+    const profileBody=document.getElementById('onb-profiles');
+    if(profileBody) profileBody.addEventListener('click',async ev=>{
+      const button=ev.target.closest('.onb-profile-delete'); if(!button) return;
+      if(!window.confirm('确认删除这份账号档案？')) return;
+      await postOp('/api/onboarding/action',{action:'delete_profile',profile_id:button.dataset.id},profileMsg,'删除账号档案');
+    });
+    const planSave=document.getElementById('onb-plan-save');
+    const planMsg=document.getElementById('onb-plan-msg');
+    if(planSave) planSave.addEventListener('click',async()=>{
+      const amount=document.getElementById('onb-plan-amount').value;
+      const payload={
+        action:'upsert_funding_plan',
+        person:(document.getElementById('onb-plan-person').value||'').trim(),
+        related_record_id:document.getElementById('onb-plan-record').value,
+        from_institution:(document.getElementById('onb-plan-from').value||'').trim(),
+        to_institution:(document.getElementById('onb-plan-to').value||'').trim(),
+        planned_start:document.getElementById('onb-plan-start').value,
+        planned_release:document.getElementById('onb-plan-release').value,
+        amount:amount===''?null:Number(amount),
+        currency:document.getElementById('onb-plan-currency').value,
+        next_institution:(document.getElementById('onb-plan-next').value||'').trim(),
+        status:document.getElementById('onb-plan-status').value
+      };
+      if(!payload.person||!payload.to_institution){planMsg.innerHTML='<span class="down">人员和本次目的地必须填写</span>';return;}
+      planSave.disabled=true;
+      const result=await postOp('/api/onboarding/action',payload,planMsg,'保存资金排期');
+      if(result&&result.ok) document.getElementById('onb-plan-form').open=false;
+      planSave.disabled=false;
+    });
+    const planBody=document.getElementById('onb-plans');
+    if(planBody) planBody.addEventListener('click',async ev=>{
+      const button=ev.target.closest('.onb-plan-delete'); if(!button) return;
+      if(!window.confirm('确认删除这段资金排期？')) return;
+      await postOp('/api/onboarding/action',{action:'delete_funding_plan',plan_id:button.dataset.id},planMsg,'删除资金排期');
     });
   })();
   (function(){

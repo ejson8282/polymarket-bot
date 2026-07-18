@@ -2085,6 +2085,11 @@ def _account_ops() -> Dict[str, Any]:
                 "funding_path": str(item.get("fundingPath") or ""),
                 "source_url": str(item.get("sourceUrl") or ""),
                 "notes": str(item.get("notes") or ""),
+                "reward_tiers": [
+                    tier
+                    for tier in item.get("rewardTiers", [])
+                    if isinstance(tier, dict)
+                ],
                 "updated_at": str(item.get("updatedAt") or ""),
             }
         )
@@ -2110,6 +2115,16 @@ def _account_ops() -> Dict[str, Any]:
             )
     onboarding = {
         "records": normalized_onboarding,
+        "profiles": [
+            item
+            for item in onboarding_state.get("profiles", [])
+            if isinstance(item, dict)
+        ],
+        "funding_plans": [
+            item
+            for item in onboarding_state.get("fundingPlans", [])
+            if isinstance(item, dict)
+        ],
         "updated_at": str(onboarding_state.get("updated_at") or ""),
         "total": len(normalized_onboarding),
         "active": len(active_onboarding),
@@ -3250,7 +3265,16 @@ async def onboarding_action(payload: dict, request: Request) -> JSONResponse:
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
-    if action not in {"upsert_record", "set_status", "delete_record"}:
+    if action not in {
+        "upsert_record",
+        "set_status",
+        "delete_record",
+        "set_requirement_progress",
+        "upsert_profile",
+        "delete_profile",
+        "upsert_funding_plan",
+        "delete_funding_plan",
+    }:
         return JSONResponse({"ok": False, "error": "不支持的开户操作"}, status_code=400)
     body = dict(payload or {})
     body["action"] = action
@@ -3274,6 +3298,11 @@ async def onboarding_action(payload: dict, request: Request) -> JSONResponse:
         "upsert_record": "开户记录已保存",
         "set_status": "开户进度已更新",
         "delete_record": "开户记录已删除",
+        "set_requirement_progress": "奖励条件进度已更新",
+        "upsert_profile": "账号档案已保存",
+        "delete_profile": "账号档案已删除",
+        "upsert_funding_plan": "资金排期已保存",
+        "delete_funding_plan": "资金排期已删除",
     }[action]
     return JSONResponse({"ok": True, "msg": detail})
 

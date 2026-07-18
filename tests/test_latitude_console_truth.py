@@ -132,6 +132,22 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
             "reminders": {"summary": {}},
             "risks": [],
             "onboarding": {
+                "profiles": [
+                    {
+                        "id": "profile-1",
+                        "person": "蒋星晨",
+                        "institution": "富途证券",
+                        "maskedEmail": "j***@example.com",
+                    }
+                ],
+                "fundingPlans": [
+                    {
+                        "id": "fund-1",
+                        "person": "蒋星晨",
+                        "toInstitution": "富途证券",
+                        "nextInstitution": "有鱼证券",
+                    }
+                ],
                 "records": [
                     {
                         "id": "onb-test",
@@ -146,6 +162,19 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
                         "holdDays": 60,
                         "rewardValue": 1200,
                         "rewardCurrency": "HKD",
+                        "rewardTiers": [
+                            {
+                                "id": "reward-1",
+                                "requirements": [
+                                    {
+                                        "id": "trades",
+                                        "label": "交易 3 笔",
+                                        "target": 3,
+                                        "current": 1,
+                                    }
+                                ],
+                            }
+                        ],
                     }
                 ]
             },
@@ -161,6 +190,9 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
     assert onboarding["expected_rewards"] == 1200
     assert onboarding["expected_rewards_by_currency"] == {"HKD": 1200}
     assert onboarding["accounts"][0]["id"] == "HK-001"
+    assert onboarding["profiles"][0]["maskedEmail"] == "j***@example.com"
+    assert onboarding["funding_plans"][0]["nextInstitution"] == "有鱼证券"
+    assert onboarding["records"][0]["reward_tiers"][0]["requirements"][0]["target"] == 3
 
 
 def test_console_contains_onboarding_and_reward_workflow() -> None:
@@ -175,6 +207,11 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert 'id="page-onboarding"' in html
     assert "开户与奖励" in html
     assert "资金路径" in html
+    assert 'data-onb-view="profiles"' in html
+    assert 'data-onb-view="activities"' in html
+    assert 'data-onb-view="pipeline"' in html
+    assert "upsert_profile" in html
+    assert "upsert_funding_plan" in html
     assert "/api/onboarding/action" in html
     assert "不保存密码、身份证、银行卡完整号码等敏感信息" in html
 
