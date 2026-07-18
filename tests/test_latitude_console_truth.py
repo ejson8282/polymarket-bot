@@ -729,6 +729,37 @@ def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) 
     assert result["stocks"][0]["name_en"] == "EKH LIMITED"
 
 
+def test_ipo_exposes_lockup_cost_from_judgment_pack(monkeypatch) -> None:
+    def fake_fetch(url: str, **_kwargs):
+        if url == console.IPO_PACK_URL:
+            return {
+                "stocks": [{
+                    "code": "2523",
+                    "lockup_cost_hkd": 0.45,
+                    "boss_views": [{"text": "关注"}],
+                    "verdict": "观望",
+                }]
+            }
+        return {
+            "ipo": {
+                "stocks": [{
+                    "code": "2523",
+                    "nameZh": "永康控股有限公司",
+                    "status": "申购中",
+                    "minCapital": 1000,
+                }]
+            }
+        }
+
+    monkeypatch.setattr(console, "_fetch_json", fake_fetch)
+
+    result = console._ipo()
+
+    assert result["stocks"][0]["lockup_cost_hkd"] == 0.45
+    assert result["stocks"][0]["boss_views_count"] == 1
+    assert result["stocks"][0]["ai_verdict"] == "观望"
+
+
 def test_console_renders_chinese_stock_name_before_english() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 

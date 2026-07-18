@@ -4,11 +4,12 @@
   - 本脚本只算"能算死的":每只申购中的股 → 真实入场费(minCapital)+ 锁资天数 →
     成本门槛;并入老板观点(data/ipo_boss_views.json)。不做主观打/跳判断(那是第二层
     的 Claude 智能体的活)。
-  - 产出两样:①Discord 简报(给人看)②judgment_pack.json(给第二层 Claude 判研当输入)。
+  - 产出 judgment_pack.json(给第二层 Claude 判研和 Latitude 09:00 统一早报使用)。
+    默认不单独推 Discord;兼容旧行为可显式设置 IPO_STANDALONE_DISCORD=1。
   - 零 API、零套餐消耗;第二层才唤起 Claude(消耗订阅额度)。
 
 用法:
-  python ipo_advisor.py brief          # 生成简报 + judgment_pack,推 Discord
+  python ipo_advisor.py brief          # 生成简报 + judgment_pack,默认不单独推 Discord
   python ipo_advisor.py add-view CODE "观点文本"   # 落一条老板观点
   python ipo_advisor.py show-pack      # 只打印 judgment_pack(第二层读它)
 
@@ -56,6 +57,10 @@ def _discord(text: str) -> bool:
     except Exception as e:
         print(f"discord push failed: {e}", file=sys.stderr)
         return False
+
+
+def _standalone_discord_enabled() -> bool:
+    return os.getenv("IPO_STANDALONE_DISCORD", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_views() -> dict:
@@ -165,8 +170,10 @@ def brief() -> None:
     pack = build_pack()
     stamp = datetime.now(BJT).strftime("%m-%d %H:%M")
     if not pack["stocks"]:
-        _discord(f"📋 打新判研简报({stamp}):当前无「申购中」新股。")
-        print("无申购中新股")
+        text = f"📋 打新判研简报({stamp}):当前无「申购中」新股。"
+        if _standalone_discord_enabled():
+            _discord(text)
+        print(text)
         return
     lines = [f"📋 打新判研简报({stamp}) · {pack['active_count']} 只申购中"]
     for s in pack["stocks"]:
@@ -175,8 +182,10 @@ def brief() -> None:
         vtag = f" · 老板观点{len(s['boss_views'])}条" if s["boss_views"] else ""
         lines.append(f"· {s['code']} {(s['name'] or '')[:12]} | {fee} · {lock}{vtag}")
     lines.append("（评分为导入占位值,不可信;等第二层 Claude 判研出打/跳建议）")
-    _discord("\n".join(lines))
-    print("\n".join(lines))
+    text = "\n".join(lines)
+    if _standalone_discord_enabled():
+        _discord(text)
+    print(text)
 
 
 def main() -> int:

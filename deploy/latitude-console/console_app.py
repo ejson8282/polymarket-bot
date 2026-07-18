@@ -2022,10 +2022,13 @@ def _ipo() -> Dict[str, Any]:
         jmap = {str(s.get("code")): s for s in (pack.get("stocks") or []) if isinstance(s, dict)}
         for row in stock_rows:
             j = jmap.get(row["code"])
-            if j and j.get("verdict"):
-                row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
-                row["ai_expected"] = j.get("expected_net")    # 期望净收益
-                row["ai_reason"] = str(j.get("reason") or "")[:80]
+            if j:
+                row["lockup_cost_hkd"] = _num(j.get("lockup_cost_hkd"))
+                row["boss_views_count"] = len(j.get("boss_views") or [])
+                if j.get("verdict"):
+                    row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                    row["ai_expected"] = j.get("expected_net")    # 期望净收益
+                    row["ai_reason"] = str(j.get("reason") or "")[:80]
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
