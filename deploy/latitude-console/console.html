@@ -850,16 +850,15 @@
 </section>
 
 <section class="page" id="page-hk">
-  <div class="ops-subnav">
-    <button class="on" data-ops-page="hk" onclick="goOps('hk')">港股打新 & Alpha</button>
-    <button data-ops-page="onboarding" onclick="goOps('onboarding')">开户与奖励</button>
-  </div>
   <div class="hk-page-head">
     <div>
       <div class="hk-page-title">港股打新</div>
       <div class="hk-page-note">只看当前可申购新股，并按账号完成本轮执行。</div>
     </div>
-    <span class="chip ok">实时连接账户与新股池</span>
+    <div class="btnrow">
+      <span class="chip ok">实时连接账户与新股池</span>
+      <button class="btn primary" onclick="goOps('onboarding')">开户与奖励 →</button>
+    </div>
   </div>
 
   <!-- 老板第一屏六指标(boss_dashboard_metrics 原样) -->
@@ -1580,6 +1579,11 @@
     const kpis=page&&page.querySelector(':scope > .kpis');
     const head=page&&page.querySelector('.hk-page-head');
     if(!page||!workbench||!kpis||!head) return;
+    const opsNav=document.createElement('div');
+    opsNav.className='ops-subnav';
+    opsNav.innerHTML=
+      '<button class="on" data-ops-page="hk" onclick="goOps(\'hk\')">港股打新 &amp; Alpha</button>'+
+      '<button data-ops-page="onboarding" onclick="goOps(\'onboarding\')">开户与奖励</button>';
     const alphaPanel=document.createElement('section');
     alphaPanel.className='panel alpha-console';
     alphaPanel.id='alpha-console';
@@ -1634,7 +1638,7 @@
       '</div><div class="panel"><h2>下一步数据补齐</h2>'+
       '<ul class="events"><li><span class="dot d-warn"></span><div><div>补录每个账户的券商、可用现金、总融资额度和单只新股孖展额度</div></div></li>'+
       '<li><span class="dot d-info"></span><div><div>券商名单确认后，接入开户奖励、银行中转、到账时间和资金占用计算</div></div></li></ul></div></aside>';
-    page.replaceChildren(head,workbench,alphaPanel,kpis,realGrid);
+    page.replaceChildren(opsNav,head,workbench,alphaPanel,kpis,realGrid);
   })();
 
   function bindIPO(ipo){

@@ -169,6 +169,9 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert 'data-page="onboarding"' not in html
     assert 'data-ops-page="onboarding"' in html
     assert "function goOps(p)" in html
+    assert "opsNav.className='ops-subnav'" in html
+    assert "page.replaceChildren(opsNav,head,workbench,alphaPanel,kpis,realGrid)" in html
+    assert "onclick=\"goOps('onboarding')\">开户与奖励 →" in html
     assert 'id="page-onboarding"' in html
     assert "开户与奖励" in html
     assert "资金路径" in html
