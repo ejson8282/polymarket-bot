@@ -121,6 +121,59 @@ def test_console_contains_alpha_booster_workflow() -> None:
     assert "领取后仍需通过飞书流水确认实际奖励" in html
 
 
+def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda _: {
+            "meta": {"as_of": datetime.now().astimezone().isoformat()},
+            "accounts": [{"id": "HK-001", "owner": "蒋星晨", "platform": "港股"}],
+            "people": [{"name": "蒋星晨"}],
+            "reminders": {"summary": {}},
+            "risks": [],
+            "onboarding": {
+                "records": [
+                    {
+                        "id": "onb-test",
+                        "person": "蒋星晨",
+                        "accountId": "HK-001",
+                        "institution": "富途证券",
+                        "institutionType": "券商",
+                        "status": "锁资中",
+                        "deadline": (datetime.now().astimezone() + timedelta(days=5)).date().isoformat(),
+                        "depositAmount": 80000,
+                        "currency": "HKD",
+                        "holdDays": 60,
+                        "rewardValue": 1200,
+                        "rewardCurrency": "HKD",
+                    }
+                ]
+            },
+        },
+    )
+
+    onboarding = console._account_ops()["onboarding"]
+
+    assert onboarding["active"] == 1
+    assert onboarding["expiring_7d"] == 1
+    assert onboarding["locked_capital"] == 80000
+    assert onboarding["locked_capital_by_currency"] == {"HKD": 80000}
+    assert onboarding["expected_rewards"] == 1200
+    assert onboarding["expected_rewards_by_currency"] == {"HKD": 1200}
+    assert onboarding["accounts"][0]["id"] == "HK-001"
+
+
+def test_console_contains_onboarding_and_reward_workflow() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'data-page="onboarding"' in html
+    assert 'id="page-onboarding"' in html
+    assert "开户与奖励" in html
+    assert "资金路径" in html
+    assert "/api/onboarding/action" in html
+    assert "不保存密码、身份证、银行卡完整号码等敏感信息" in html
+
+
 def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_path: Path) -> None:
     _patch_varia_dependencies(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)

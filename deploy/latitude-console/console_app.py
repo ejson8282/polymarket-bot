@@ -2033,9 +2033,148 @@ def _account_ops() -> Dict[str, Any]:
         ),
         "updated_at": str(booster_state.get("updated_at") or ""),
     }
+    onboarding_state = (
+        d.get("onboarding")
+        if isinstance(d.get("onboarding"), dict)
+        else {"records": [], "updated_at": ""}
+    )
+    onboarding_records = [
+        item
+        for item in onboarding_state.get("records", [])
+        if isinstance(item, dict)
+    ]
+    today = datetime.now().astimezone().date()
+
+    def _days_until(value: Any) -> Optional[int]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return (datetime.fromisoformat(raw.replace("Z", "+00:00")).date() - today).days
+        except ValueError:
+            try:
+                return (datetime.strptime(raw[:10], "%Y-%m-%d").date() - today).days
+            except ValueError:
+                return None
+
+    normalized_onboarding = []
+    for item in onboarding_records:
+        status = str(item.get("status") or "待准备")
+        deadline_days = _days_until(item.get("deadline"))
+        reward_days = _days_until(item.get("rewardDue"))
+        normalized_onboarding.append(
+            {
+                "id": str(item.get("id") or ""),
+                "person": str(item.get("person") or ""),
+                "account_id": str(item.get("accountId") or ""),
+                "institution": str(item.get("institution") or ""),
+                "institution_type": str(item.get("institutionType") or "券商"),
+                "activity_name": str(item.get("activityName") or ""),
+                "status": status,
+                "opened_at": str(item.get("openedAt") or ""),
+                "deadline": str(item.get("deadline") or ""),
+                "deadline_days": deadline_days,
+                "deposit_amount": _num(item.get("depositAmount")),
+                "currency": str(item.get("currency") or "HKD"),
+                "hold_days": item.get("holdDays"),
+                "reward_value": _num(item.get("rewardValue")),
+                "reward_currency": str(item.get("rewardCurrency") or "HKD"),
+                "reward_due": str(item.get("rewardDue") or ""),
+                "reward_days": reward_days,
+                "actual_reward": _num(item.get("actualReward")),
+                "funding_path": str(item.get("fundingPath") or ""),
+                "source_url": str(item.get("sourceUrl") or ""),
+                "notes": str(item.get("notes") or ""),
+                "updated_at": str(item.get("updatedAt") or ""),
+            }
+        )
+    active_onboarding = [
+        item
+        for item in normalized_onboarding
+        if item["status"] not in {"已完成", "失败"}
+    ]
+    locked_capital_by_currency: Dict[str, float] = {}
+    expected_rewards_by_currency: Dict[str, float] = {}
+    for item in normalized_onboarding:
+        if item["status"] in {"待入金", "锁资中", "待交易", "待领奖"}:
+            currency = item["currency"] or "HKD"
+            locked_capital_by_currency[currency] = (
+                locked_capital_by_currency.get(currency, 0.0)
+                + (item["deposit_amount"] or 0.0)
+            )
+        if item["status"] not in {"已完成", "失败"}:
+            reward_currency = item["reward_currency"] or "HKD"
+            expected_rewards_by_currency[reward_currency] = (
+                expected_rewards_by_currency.get(reward_currency, 0.0)
+                + (item["reward_value"] or 0.0)
+            )
+    onboarding = {
+        "records": normalized_onboarding,
+        "updated_at": str(onboarding_state.get("updated_at") or ""),
+        "total": len(normalized_onboarding),
+        "active": len(active_onboarding),
+        "expiring_7d": sum(
+            1
+            for item in active_onboarding
+            if item["deadline_days"] is not None and 0 <= item["deadline_days"] <= 7
+        ),
+        "overdue": sum(
+            1
+            for item in active_onboarding
+            if item["deadline_days"] is not None and item["deadline_days"] < 0
+        ),
+        "locked_capital": round(
+            sum(
+                item["deposit_amount"] or 0.0
+                for item in normalized_onboarding
+                if item["status"] in {"待入金", "锁资中", "待交易", "待领奖"}
+            ),
+            2,
+        ),
+        "locked_capital_by_currency": {
+            key: round(value, 2) for key, value in sorted(locked_capital_by_currency.items())
+        },
+        "pending_rewards": sum(
+            1 for item in normalized_onboarding if item["status"] == "待领奖"
+        ),
+        "expected_rewards": round(
+            sum(
+                item["reward_value"] or 0.0
+                for item in normalized_onboarding
+                if item["status"] not in {"已完成", "失败"}
+            ),
+            2,
+        ),
+        "expected_rewards_by_currency": {
+            key: round(value, 2) for key, value in sorted(expected_rewards_by_currency.items())
+        },
+        "people": sorted(
+            {
+                str(person.get("name") or "").strip()
+                for person in (d.get("people") or [])
+                if isinstance(person, dict) and str(person.get("name") or "").strip()
+            }
+            | {
+                str(account.get("owner") or "").strip()
+                for account in accounts
+                if isinstance(account, dict) and str(account.get("owner") or "").strip()
+            }
+        ),
+        "accounts": [
+            {
+                "id": str(account.get("id") or ""),
+                "owner": str(account.get("owner") or ""),
+                "platform": str(account.get("platform") or ""),
+                "broker": str(account.get("broker") or ""),
+            }
+            for account in accounts
+            if isinstance(account, dict) and str(account.get("id") or "")
+        ],
+    }
     return {
         "owners": owner_rows,
         "alpha": alpha,
+        "onboarding": onboarding,
         "present": True,
         "accounts": len(accounts),
         "people": len(d.get("people") or []),
@@ -3101,6 +3240,40 @@ async def alpha_action(payload: dict, request: Request) -> JSONResponse:
         "add_task": "Booster 任务已保存",
         "set_status": "Booster 状态已更新",
         "archive_task": "Booster 任务已归档",
+    }[action]
+    return JSONResponse({"ok": True, "msg": detail})
+
+
+@app.post("/api/onboarding/action")
+async def onboarding_action(payload: dict, request: Request) -> JSONResponse:
+    """Persist broker/bank onboarding, funding and reward progress through the router."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    if action not in {"upsert_record", "set_status", "delete_record"}:
+        return JSONResponse({"ok": False, "error": "不支持的开户操作"}, status_code=400)
+    body = dict(payload or {})
+    body["action"] = action
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/onboarding/action",
+        body,
+        timeout=40.0,
+    )
+    _audit(
+        "onboarding_action",
+        request_action=action,
+        record_id=str(body.get("record_id") or ""),
+        institution=str(body.get("institution") or ""),
+        ok=r.get("ok"),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    _HTTP_CACHE.pop(ACCOUNT_OPS_URL, None)
+    detail = {
+        "upsert_record": "开户记录已保存",
+        "set_status": "开户进度已更新",
+        "delete_record": "开户记录已删除",
     }[action]
     return JSONResponse({"ok": True, "msg": detail})
 
