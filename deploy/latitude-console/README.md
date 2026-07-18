@@ -84,6 +84,13 @@ sudo systemctl enable --now latitude-reconciled-equity.timer
 
 该任务只读取四源状态并写入本地报告 JSON；不启动 worker、不下单、不接触私钥。
 
+## 每日早报与打新判研
+
+- `ipo_advisor.py brief` 每天先更新 `ipo_judgment_pack.json`，默认不再单独推送 Discord。
+- `alert_pusher.py --digest` 在 09:00 的 Latitude 早报中统一附上“港股打新”小节。
+- 如需临时恢复旧的独立打新消息，可显式设置 `IPO_STANDALONE_DISCORD=1`；生产默认不设置，
+  避免同一套系统在半小时内发送两份重复简报。
+
 ## 数据接入进度(有真数据先接,其余占位)
 
 已接真数据(`/api/state`):

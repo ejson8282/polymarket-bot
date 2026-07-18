@@ -208,10 +208,67 @@ def run_digest() -> None:
     alerts = s.get("alerts") or []
     a_line = ("活跃告警 " + str(len(alerts)) + " 条:" + "、".join(a.get("tag", "") for a in alerts)) \
         if alerts else "无活跃告警 🎉"
-    body = ("📋 Latitude 早报 " + time.strftime("%m-%d %H:%M") + "\n"
-            + "\n".join(rows) + "\n" + eq_line + "\n" + bud_line + "\n" + a_line
-            + "\n" + CONSOLE_URL)
+    sections = [
+        "📋 Latitude 早报 " + time.strftime("%m-%d %H:%M"),
+        *rows,
+        eq_line,
+        bud_line,
+        "",
+        *_ipo_digest_lines(s.get("ipo")),
+        "",
+        a_line,
+        CONSOLE_URL,
+    ]
+    body = "\n".join(sections)
     send_discord(body)  # 每日汇总只走 Discord;Discord 不通则不推(不淹没飞书,汇总非紧急)
+
+
+def _ipo_digest_lines(raw: object, *, limit: int = 5) -> list[str]:
+    """Compact the IPO workbench into the shared daily digest."""
+    if not isinstance(raw, dict) or raw.get("present") is not True:
+        return ["港股打新：数据暂不可用"]
+
+    active_statuses = {"申购中", "招股中", "待申购"}
+    stocks = [
+        stock for stock in (raw.get("stocks") or [])
+        if isinstance(stock, dict) and str(stock.get("status") or "") in active_statuses
+    ]
+    declared = raw.get("active_stocks")
+    try:
+        active_count = max(len(stocks), int(declared))
+    except (TypeError, ValueError):
+        active_count = len(stocks)
+    if active_count == 0:
+        return ["港股打新：当前无申购中新股"]
+
+    lines = [f"港股打新 · {active_count} 只申购中"]
+    for stock in stocks[:max(0, limit)]:
+        code = str(stock.get("code") or "—")
+        name = str(stock.get("name_zh") or stock.get("name") or stock.get("name_en") or "")[:14]
+        parts = [f"· {code} {name}".rstrip()]
+        try:
+            fee = float(stock.get("fee"))
+        except (TypeError, ValueError):
+            fee = None
+        if fee is not None:
+            parts.append(f"HK${fee:,.0f}")
+        try:
+            lockup = float(stock.get("lockup_cost_hkd"))
+        except (TypeError, ValueError):
+            lockup = None
+        if lockup is not None:
+            parts.append(f"锁资磨损~HK${lockup:,.0f}")
+        verdict = str(stock.get("ai_verdict") or "").strip()
+        if verdict:
+            parts.append(f"判研：{verdict}")
+        lines.append(" · ".join(parts))
+
+    hidden = max(0, active_count - len(stocks[:max(0, limit)]))
+    if hidden:
+        lines.append(f"· 另 {hidden} 只见控制台")
+    if stocks and not any(str(stock.get("ai_verdict") or "").strip() for stock in stocks):
+        lines.append("判研建议尚未生成，当前仅展示确定性申购数据")
+    return lines
 
 
 def _equity_digest_line(vd: dict) -> str:

@@ -35,3 +35,30 @@ def test_digest_does_not_report_a_curve_when_capital_is_incomplete() -> None:
     })
 
     assert line == "权益对账暂不可用(本金账本未完成)"
+
+
+def test_ipo_digest_is_part_of_the_shared_report() -> None:
+    lines = pusher._ipo_digest_lines({
+        "present": True,
+        "active_stocks": 1,
+        "stocks": [{
+            "status": "申购中",
+            "code": "2523",
+            "name_zh": "永康控股有限公司",
+            "fee": 1000,
+            "lockup_cost_hkd": 0.45,
+            "ai_verdict": "观望",
+        }],
+    })
+
+    assert lines == [
+        "港股打新 · 1 只申购中",
+        "· 2523 永康控股有限公司 · HK$1,000 · 锁资磨损~HK$0 · 判研：观望",
+    ]
+
+
+def test_ipo_digest_handles_empty_and_unreachable_sources() -> None:
+    assert pusher._ipo_digest_lines({"present": True, "stocks": [], "active_stocks": 0}) == [
+        "港股打新：当前无申购中新股"
+    ]
+    assert pusher._ipo_digest_lines({"present": False}) == ["港股打新：数据暂不可用"]
