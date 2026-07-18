@@ -166,7 +166,9 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
 def test_console_contains_onboarding_and_reward_workflow() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
-    assert 'data-page="onboarding"' in html
+    assert 'data-page="onboarding"' not in html
+    assert 'data-ops-page="onboarding"' in html
+    assert "function goOps(p)" in html
     assert 'id="page-onboarding"' in html
     assert "开户与奖励" in html
     assert "资金路径" in html

@@ -175,6 +175,9 @@
   .alpha-form-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
   .alpha-next-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
   .onb-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:22px 0 4px}
+  .ops-subnav{display:flex;gap:4px;margin:16px 0 2px;padding:4px;width:max-content;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+  .ops-subnav button{border:0;border-radius:6px;background:transparent;color:var(--muted);padding:8px 14px;font:600 12px var(--sans);cursor:pointer}
+  .ops-subnav button:hover{color:var(--text)}.ops-subnav button.on{color:var(--var);background:rgba(94,200,216,.11)}
   .onb-title{font-size:26px;font-weight:650}.onb-copy{font-size:14px;color:var(--muted);margin-top:6px;max-width:820px}
   .onb-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-top:14px}
   .onb-kpi{padding:15px 17px;background:var(--panel)}.onb-kpi+.onb-kpi{border-left:1px solid var(--line)}
@@ -327,7 +330,6 @@
     <a data-page="sa">Single Account<span class="b b-paper">PAPER</span></a>
     <a data-page="grid">网格 Grid<span class="b b-shadow">SHADOW</span></a>
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
-    <a data-page="onboarding">开户与奖励<span class="b b-ro">记录</span></a>
   </nav>
   <div class="status-cluster">
     <span class="pill" data-k="pill.alerts"><span class="dot"></span>告警读取中</span>
@@ -384,13 +386,7 @@
       <div class="row"><span class="k" data-k="hk.income_label">净收益</span><span class="v" data-k="hk.income">—</span></div>
       <div class="row"><span class="k">待确认 / 异常账号</span><span class="v" data-k="hk.pending">—</span></div>
       <div class="row"><span class="k">账号 / 人员</span><span class="v" data-k="hk.counts">—</span></div>
-    </div>
-    <div class="card" onclick="go('onboarding')">
-      <div class="head"><span class="name">开户与奖励</span><span class="chip" data-k="onb.chip">读取中</span></div>
-      <div class="row"><span class="k">进行中 / 7日内到期</span><span class="v" data-k="onb.active">—</span></div>
-      <div class="row"><span class="k">活动资金占用</span><span class="v" data-k="onb.locked">—</span></div>
-      <div class="row"><span class="k">待领奖励</span><span class="v" data-k="onb.rewards">—</span></div>
-      <div class="row"><span class="k">开户记录</span><span class="v" data-k="onb.total">—</span></div>
+      <div class="row"><span class="k">开户活动 / 7日内到期</span><span class="v"><span data-k="onb.active">—</span> · <span data-k="onb.total">—</span></span></div>
     </div>
     <div class="card">
       <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip" data-k="infra.chip">读取中</span></div>
@@ -854,6 +850,10 @@
 </section>
 
 <section class="page" id="page-hk">
+  <div class="ops-subnav">
+    <button class="on" data-ops-page="hk" onclick="goOps('hk')">港股打新 & Alpha</button>
+    <button data-ops-page="onboarding" onclick="goOps('onboarding')">开户与奖励</button>
+  </div>
   <div class="hk-page-head">
     <div>
       <div class="hk-page-title">港股打新</div>
@@ -1068,6 +1068,10 @@
 </section>
 
 <section class="page" id="page-onboarding">
+  <div class="ops-subnav">
+    <button data-ops-page="hk" onclick="goOps('hk')">港股打新 & Alpha</button>
+    <button class="on" data-ops-page="onboarding" onclick="goOps('onboarding')">开户与奖励</button>
+  </div>
   <div class="onb-head">
     <div>
       <div class="onb-title">开户与奖励</div>
@@ -1133,6 +1137,11 @@
     document.getElementById('page-'+p).classList.add('on');
     document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===p));
     window.scrollTo(0,0);
+  }
+  function goOps(p){
+    go(p);
+    document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page==='hk'));
+    document.querySelectorAll('.ops-subnav button').forEach(button=>button.classList.toggle('on',button.dataset.opsPage===p));
   }
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));
   function showPerson(id){
