@@ -789,6 +789,22 @@ def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> N
     assert any("权益曲线断更" in item["msg"] for item in active)
 
 
+def test_single_leg_alert_describes_bounded_rescue_without_claiming_a_janitor() -> None:
+    alerts = console._alerts(
+        {"single_leg": ["VPS1·HYPE"], "hosts": {}},
+        {},
+        {},
+        {"present": True},
+        {"present": True},
+        {},
+    )
+
+    message = alerts[0]["msg"]
+    assert "系统仅做有限自救" in message
+    assert "暂停新开仓" in message
+    assert "janitor" not in message
+
+
 def _shadow_database(path: Path, *, safety_matched: int = 1, actions_matched: int = 1) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(
