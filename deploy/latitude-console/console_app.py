@@ -2253,7 +2253,14 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
             if isinstance(a.get("days_left"), (int, float)) and a["days_left"] < 30:
                 alerts.append({"tag": "GRID", "msg": f"<b>HL agent「{a.get('name')}」{a['days_left']:.0f} 天后到期</b>:需在 app.hyperliquid.xyz/API 续签", "page": "grid", "sev": "warn"})
     for item in vd.get("single_leg") or []:
-        alerts.append({"tag": "VAR/DEC", "msg": f"<b>{item} 单腿</b>:双腿不对称,janitor 应在处置", "page": "vardec", "sev": "crit"})
+        alerts.append(
+            {
+                "tag": "VAR/DEC",
+                "msg": f"<b>{item} 单腿</b>:双腿不对称；系统仅做有限自救，未恢复前暂停新开仓",
+                "page": "vardec",
+                "sev": "crit",
+            }
+        )
     for host, h in (vd.get("hosts") or {}).items():
         if h.get("age_sec") is not None and h["age_sec"] > STALE_SEC:
             alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host.upper()} ops 心跳过期</b>:{_age_text(h['age_sec'])}", "page": "vardec", "sev": "warn"})
