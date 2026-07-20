@@ -2412,7 +2412,11 @@
       if(!payload.person||!payload.institution){profileMsg.innerHTML='<span class="down">人员和机构必须填写</span>';return;}
       profileSave.disabled=true;
       const result=await postOp('/api/onboarding/action',payload,profileMsg,'保存账号档案');
-      if(result&&result.ok) document.getElementById('onb-profile-form').open=false;
+      if(result&&result.ok){
+        const profileForm=document.getElementById('onb-profile-form');
+        profileForm.querySelectorAll('input').forEach(input=>{input.value='';});
+        profileForm.open=false;
+      }
       profileSave.disabled=false;
     });
     const profileBody=document.getElementById('onb-profiles');
