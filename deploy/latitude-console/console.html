@@ -1877,7 +1877,12 @@
   function bindOnboarding(onboarding){
     onboarding=onboarding&&typeof onboarding==='object'?onboarding:{};
     const records=Array.isArray(onboarding.records)?onboarding.records:[];
-    const profiles=Array.isArray(onboarding.profiles)?onboarding.profiles:[];
+    const profiles=(Array.isArray(onboarding.profiles)?onboarding.profiles:[])
+      .slice()
+      .sort((left,right)=>
+        String(left.person||'').localeCompare(String(right.person||''),'zh-CN',{numeric:true,sensitivity:'base'})||
+        String(left.institution||'').localeCompare(String(right.institution||''),'zh-CN',{numeric:true,sensitivity:'base'})
+      );
     const plans=Array.isArray(onboarding.funding_plans)?onboarding.funding_plans:[];
     window.__onboarding=onboarding;
     setK('onb.chip',records.length?'已记录':'待录入');
