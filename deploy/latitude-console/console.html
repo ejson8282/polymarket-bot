@@ -1913,7 +1913,9 @@
     const profileBody=document.getElementById('onb-profiles');
     if(profileBody) profileBody.innerHTML=profiles.length?profiles.map(profile=>
       '<tr><td><b>'+esc(profile.person||'—')+'</b></td><td>'+esc(profile.institution||'—')+'</td>'+
-      '<td class="num">'+esc(profile.accountId||'—')+'<div class="dt">'+esc(profile.loginId||'登录名待补')+'</div></td>'+
+      '<td class="num">'+(profile.accountId
+        ? esc(profile.accountId)+(profile.loginId?'<div class="dt">'+esc(profile.loginId)+'</div>':'')
+        : (profile.loginId?esc(profile.loginId):'<span class="dt">登录名待补</span>'))+'</td>'+
       '<td>'+esc(profile.maskedEmail||'—')+'</td><td class="num">'+esc(profile.maskedPhone||'—')+'</td>'+
       '<td>'+esc(profile.linkedBank||'—')+'</td><td>'+esc(profile.credentialRef||'—')+'</td>'+
       '<td><div class="onb-actions"><button class="btn ghost onb-profile-delete" data-id="'+esc(profile.id)+'">删除</button></div><span class="onb-row-msg"></span></td></tr>'

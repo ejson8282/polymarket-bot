@@ -214,6 +214,8 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert "账号编号与登录名完整展示" in html
     assert "填写完整账号编号" in html
     assert "填写完整登录名" in html
+    assert "profile.accountId||'—'" not in html
+    assert "profile.loginId?esc(profile.loginId)" in html
     assert "再次点击才会永久删除" in html
     assert "正在删除并同步 Windows 数据源" in html
     assert "window.confirm('确认删除这份账号档案？')" not in html
