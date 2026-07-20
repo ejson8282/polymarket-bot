@@ -246,6 +246,8 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert 'id="page-onboarding"' in html
     assert "开户与奖励" in html
     assert "资金路径" in html
+    onboarding_section = html.split('<section class="page" id="page-onboarding">', 1)[1]
+    assert onboarding_section.index('class="kpis onb-overview-kpis"') < onboarding_section.index('class="onb-tabs"')
     assert 'data-onb-view="profiles"' in html
     assert 'data-onb-view="activities"' in html
     assert 'data-onb-view="pipeline"' in html
