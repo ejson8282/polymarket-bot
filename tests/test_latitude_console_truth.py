@@ -91,6 +91,26 @@ def test_account_ops_successful_write_merges_cache_without_refetch(
     assert json.loads(snapshot.read_text(encoding="utf-8"))["onboarding"] == updated
 
 
+def test_account_ops_rejects_late_older_snapshot(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    newer = {
+        "meta": {"as_of": "2026-07-20T19:57:00+08:00"},
+        "onboarding": {"profiles": [{"id": "profile-1"}]},
+    }
+    older = {
+        "meta": {"as_of": "2026-07-20T19:49:00+08:00"},
+        "onboarding": {"profiles": []},
+    }
+    _write_json(snapshot, newer)
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE[console.ACCOUNT_OPS_URL] = (newer, time.time())
+
+    console._store_http_cache(console.ACCOUNT_OPS_URL, older)
+
+    assert console._HTTP_CACHE[console.ACCOUNT_OPS_URL][0] == newer
+    assert json.loads(snapshot.read_text(encoding="utf-8")) == newer
+
+
 def test_account_ops_exposes_real_alpha_accounts_and_booster_tasks(monkeypatch) -> None:
     monkeypatch.setattr(
         console,

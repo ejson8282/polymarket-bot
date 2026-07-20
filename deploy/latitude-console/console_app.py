@@ -1759,7 +1759,33 @@ def _persist_account_ops_snapshot(data: dict) -> None:
         pass
 
 
+def _account_ops_version(data: Any) -> Optional[float]:
+    if not isinstance(data, dict):
+        return None
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    raw = str(meta.get("as_of") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def _store_http_cache(url: str, data: Optional[dict]) -> None:
+    if url == ACCOUNT_OPS_URL and isinstance(data, dict):
+        cached = _HTTP_CACHE.get(url)
+        current = cached[0] if cached is not None else None
+        if not isinstance(current, dict):
+            current = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+        current_version = _account_ops_version(current)
+        incoming_version = _account_ops_version(data)
+        if (
+            current_version is not None
+            and incoming_version is not None
+            and incoming_version < current_version
+        ):
+            return
     _HTTP_CACHE[url] = (data, time.time())
     if url == ACCOUNT_OPS_URL and isinstance(data, dict):
         _persist_account_ops_snapshot(data)
