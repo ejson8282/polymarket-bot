@@ -53,6 +53,9 @@ VARIA_MARKET_CANDIDATES = tuple(
 )
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
+ACCOUNT_OPS_SNAPSHOT_PATH = Path(
+    os.getenv("ACCOUNT_OPS_SNAPSHOT_PATH", DATA_DIR / "account_ops_last_good.json")
+)
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
 IPO_PACK_URL = os.getenv(
     "IPO_PACK_URL",
@@ -1740,6 +1743,41 @@ def _maker_shadow() -> Dict[str, Any]:
 _HTTP_CACHE: Dict[str, tuple] = {}
 
 
+def _persist_account_ops_snapshot(data: dict) -> None:
+    """Keep a local last-known-good copy so a slow Windows/Tailnet hop cannot blank the UI."""
+    try:
+        ACCOUNT_OPS_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp = ACCOUNT_OPS_SNAPSHOT_PATH.with_suffix(
+            ACCOUNT_OPS_SNAPSHOT_PATH.suffix + ".tmp"
+        )
+        temp.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temp, ACCOUNT_OPS_SNAPSHOT_PATH)
+    except OSError:
+        pass
+
+
+def _store_http_cache(url: str, data: Optional[dict]) -> None:
+    _HTTP_CACHE[url] = (data, time.time())
+    if url == ACCOUNT_OPS_URL and isinstance(data, dict):
+        _persist_account_ops_snapshot(data)
+
+
+def _merge_account_ops_cache(section: str, value: Any) -> None:
+    """Apply successful writes immediately without forcing a fragile Windows refetch."""
+    if not isinstance(value, dict):
+        return
+    cached = _HTTP_CACHE.get(ACCOUNT_OPS_URL)
+    base = cached[0] if cached is not None else _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+    if not isinstance(base, dict):
+        return
+    merged = dict(base)
+    merged[section] = value
+    _store_http_cache(ACCOUNT_OPS_URL, merged)
+
+
 def _do_fetch(url: str, timeout: float = 4.0) -> Optional[dict]:
     import urllib.request
 
@@ -1758,8 +1796,13 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
     cached = _HTTP_CACHE.get(url)
     if cached is not None:
         return cached[0]  # 有缓存(含 None=上次拉失败)就立即返回,不阻塞
+    if url == ACCOUNT_OPS_URL:
+        snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+        if isinstance(snapshot, dict):
+            _HTTP_CACHE[url] = (snapshot, time.time())
+            return snapshot
     data = _do_fetch(url, timeout=2.0)  # 冷启动:短超时同步一次
-    _HTTP_CACHE[url] = (data, time.time())
+    _store_http_cache(url, data)
     return data
 
 
@@ -1857,12 +1900,21 @@ def _prefetch_loop() -> None:
         for url in _PREFETCH_URLS:
             data = _do_fetch(url, timeout=10.0)  # 放宽超时:Windows 源偶尔慢到 5-6s
             if data is None:
+                if url == ACCOUNT_OPS_URL:
+                    # 账号数据宁可展示本地最后成功快照并标记迟滞，也不因链路抖动遮住内容。
+                    prev = _HTTP_CACHE.get(url)
+                    if prev is not None and isinstance(prev[0], dict):
+                        continue
+                    snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+                    if isinstance(snapshot, dict):
+                        _HTTP_CACHE[url] = (snapshot, time.time())
+                        continue
                 # 单次拉取失败别急着翻成"不可达":保留 5 分钟内的上一次好值,
                 # 慢源/瞬时抖动不再造成 present=false 闪断(配合告警防抖彻底消除假警)
                 prev = _HTTP_CACHE.get(url)
                 if prev is not None and prev[0] is not None and (time.time() - prev[1]) < 300:
                     continue
-            _HTTP_CACHE[url] = (data, time.time())
+            _store_http_cache(url, data)
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
         _HTTP_CACHE["var_signer_up"] = (_probe_var_signer(), time.time())
         try:
@@ -3250,7 +3302,7 @@ async def alpha_action(payload: dict, request: Request) -> JSONResponse:
     )
     if not r.get("ok"):
         return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
-    _HTTP_CACHE.pop(ACCOUNT_OPS_URL, None)
+    _merge_account_ops_cache("alpha_booster", r.get("alpha"))
     detail = {
         "add_task": "Booster 任务已保存",
         "set_status": "Booster 状态已更新",
@@ -3293,7 +3345,7 @@ async def onboarding_action(payload: dict, request: Request) -> JSONResponse:
     )
     if not r.get("ok"):
         return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
-    _HTTP_CACHE.pop(ACCOUNT_OPS_URL, None)
+    _merge_account_ops_cache("onboarding", r.get("onboarding"))
     detail = {
         "upsert_record": "开户记录已保存",
         "set_status": "开户进度已更新",

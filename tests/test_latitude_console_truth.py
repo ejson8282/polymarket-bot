@@ -52,6 +52,45 @@ def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
 
 
+def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    payload = {
+        "meta": {"as_of": "2026-07-20T15:00:00+08:00"},
+        "accounts": [{"id": "HK-001"}],
+    }
+    _write_json(snapshot, payload)
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE.pop(console.ACCOUNT_OPS_URL, None)
+    monkeypatch.setattr(
+        console,
+        "_do_fetch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disk snapshot should avoid a cold Windows fetch")
+        ),
+    )
+
+    assert console._fetch_json(console.ACCOUNT_OPS_URL) == payload
+
+
+def test_account_ops_successful_write_merges_cache_without_refetch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE[console.ACCOUNT_OPS_URL] = (
+        {"accounts": [{"id": "HK-001"}], "onboarding": {"profiles": []}},
+        time.time(),
+    )
+
+    updated = {"profiles": [{"id": "profile-1"}]}
+    console._merge_account_ops_cache("onboarding", updated)
+
+    cached = console._HTTP_CACHE[console.ACCOUNT_OPS_URL][0]
+    assert cached["accounts"] == [{"id": "HK-001"}]
+    assert cached["onboarding"] == updated
+    assert json.loads(snapshot.read_text(encoding="utf-8"))["onboarding"] == updated
+
+
 def test_account_ops_exposes_real_alpha_accounts_and_booster_tasks(monkeypatch) -> None:
     monkeypatch.setattr(
         console,
