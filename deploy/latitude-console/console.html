@@ -185,6 +185,8 @@
   .onb-panel{padding:0;overflow:hidden;margin-top:14px}.onb-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:17px 18px;border-bottom:1px solid var(--line)}
   .onb-panel-head h2{margin:0;font-size:17px}.onb-table{overflow-x:auto}.onb-table table{font-size:13px;min-width:1160px}.onb-table td{padding-top:13px;padding-bottom:13px;vertical-align:top}
   .onb-actions{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap}.onb-actions .btn{font-size:10px;padding:4px 7px}
+  .onb-actions .btn.confirm-delete{color:#ff7b86;border-color:rgba(255,79,90,.7);background:rgba(255,79,90,.1)}
+  .onb-row-msg{display:block;margin-top:5px;font:11px var(--mono);text-align:right;color:var(--faint)}.onb-row-msg.ok{color:var(--ok)}.onb-row-msg.error{color:var(--danger)}
   .onb-form{padding:18px;border-top:1px solid var(--line);background:rgba(94,200,216,.018)}
   .onb-form summary{cursor:pointer;font-size:15px;font-weight:600;color:var(--var)}
   .onb-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
@@ -1914,7 +1916,7 @@
       '<td class="num">'+esc(profile.accountId||'—')+'<div class="dt">'+esc(profile.loginId||'登录名待补')+'</div></td>'+
       '<td>'+esc(profile.maskedEmail||'—')+'</td><td class="num">'+esc(profile.maskedPhone||'—')+'</td>'+
       '<td>'+esc(profile.linkedBank||'—')+'</td><td>'+esc(profile.credentialRef||'—')+'</td>'+
-      '<td><div class="onb-actions"><button class="btn ghost onb-profile-delete" data-id="'+esc(profile.id)+'">删除</button></div></td></tr>'
+      '<td><div class="onb-actions"><button class="btn ghost onb-profile-delete" data-id="'+esc(profile.id)+'">删除</button></div><span class="onb-row-msg"></span></td></tr>'
     ).join(''):'<tr><td colspan="8" style="color:var(--faint)">还没有账号档案；先把人员、券商、邮箱和手机号的归属关系录入</td></tr>';
     const planBody=document.getElementById('onb-plans');
     if(planBody) planBody.innerHTML=plans.length?plans.map(plan=>
@@ -2409,8 +2411,43 @@
     const profileBody=document.getElementById('onb-profiles');
     if(profileBody) profileBody.addEventListener('click',async ev=>{
       const button=ev.target.closest('.onb-profile-delete'); if(!button) return;
-      if(!window.confirm('确认删除这份账号档案？')) return;
-      await postOp('/api/onboarding/action',{action:'delete_profile',profile_id:button.dataset.id},profileMsg,'删除账号档案');
+      const row=button.closest('tr');
+      const rowMsg=row&&row.querySelector('.onb-row-msg');
+      if(button.dataset.confirm!=='1'){
+        button.dataset.confirm='1';
+        button.textContent='确认删除';
+        button.classList.add('confirm-delete');
+        if(rowMsg) rowMsg.textContent='再次点击才会永久删除';
+        setTimeout(()=>{
+          if(!button.isConnected||button.disabled) return;
+          button.dataset.confirm='';
+          button.textContent='删除';
+          button.classList.remove('confirm-delete');
+          if(rowMsg) rowMsg.textContent='';
+        },5000);
+        return;
+      }
+      const profileId=(button.dataset.id||'').trim();
+      if(!profileId){if(rowMsg){rowMsg.className='onb-row-msg error';rowMsg.textContent='缺少档案编号，无法删除';}return;}
+      button.disabled=true;
+      button.textContent='删除中…';
+      if(rowMsg){rowMsg.className='onb-row-msg';rowMsg.textContent='正在删除并同步 Windows 数据源…';}
+      const result=await postOp('/api/onboarding/action',{action:'delete_profile',profile_id:profileId},null,'删除账号档案');
+      if(result&&result.ok){
+        if(rowMsg){rowMsg.className='onb-row-msg ok';rowMsg.textContent='已删除';}
+        const profiles=((window.__onboarding||{}).profiles||[]).filter(item=>String(item.id)!==profileId);
+        if(window.__onboarding) window.__onboarding.profiles=profiles;
+        document.getElementById('onb-profile-count').textContent=profiles.length+' 个';
+        setTimeout(()=>{if(row&&row.isConnected) row.remove();},250);
+        showIpoToast('账号档案已删除','ok');
+      }else{
+        button.disabled=false;
+        button.dataset.confirm='';
+        button.textContent='删除';
+        button.classList.remove('confirm-delete');
+        if(rowMsg){rowMsg.className='onb-row-msg error';rowMsg.textContent=(result&&result.error)||'删除失败，请重试';}
+        showIpoToast((result&&result.error)||'删除失败','error');
+      }
     });
     const planSave=document.getElementById('onb-plan-save');
     const planMsg=document.getElementById('onb-plan-msg');

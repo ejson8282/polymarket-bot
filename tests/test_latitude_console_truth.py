@@ -211,6 +211,9 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert 'data-onb-view="activities"' in html
     assert 'data-onb-view="pipeline"' in html
     assert "upsert_profile" in html
+    assert "再次点击才会永久删除" in html
+    assert "正在删除并同步 Windows 数据源" in html
+    assert "window.confirm('确认删除这份账号档案？')" not in html
     assert "upsert_funding_plan" in html
     assert "/api/onboarding/action" in html
     assert "不保存密码、身份证、银行卡完整号码等敏感信息" in html
