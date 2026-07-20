@@ -223,7 +223,7 @@
 .vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
 .vdauto-symbol.blocked{border-color:rgba(229,72,77,.5);color:var(--danger);padding-left:15px}.vdauto-symbol.blocked:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--danger)}
 .vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
-.vdauto-settings{display:grid;grid-template-columns:1.1fr .8fr .8fr 1fr 1.5fr;gap:12px;margin-top:12px}
+.vdauto-settings{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
 .vdauto-field{min-width:0}
 .vdauto-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px}
 .vdauto-field select,.vdauto-field input[type=number]{width:100%;height:38px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--text);padding:0 10px;font-family:var(--mono);font-size:12px;outline:none}
@@ -368,6 +368,8 @@
       <div class="vdauto-field"><label>每台 VPS 每周预算 USDC</label><input id="vdauto-cap" type="number" min="0" max="500" step="1"></div>
       <div class="vdauto-field"><label>单边点差上限 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
       <div class="vdauto-field"><label>A 策略主流币比例</label><div class="vdauto-ratio"><input id="vdauto-ratio" type="range" min="0" max="100" step="5"><output id="vdauto-ratio-out">80%</output></div></div>
+      <div class="vdauto-field"><label>A 策略目标杠杆</label><input id="vdauto-leverage-a" type="number" min="1" max="40" step="1"></div>
+      <div class="vdauto-field"><label>B 策略目标杠杆</label><input id="vdauto-leverage-b" type="number" min="1" max="40" step="1"></div>
       <div class="vdauto-field"><label>新开仓间隔</label><div class="vdauto-interval"><label class="vdauto-check"><input id="vdauto-pressure" type="checkbox"> 启用</label><input id="vdauto-min" type="number" min="1" max="1440" step="5"><span>至</span><input id="vdauto-max" type="number" min="1" max="1440" step="5"></div></div>
     </div>
     <div class="vdauto-actions">
@@ -1802,11 +1804,12 @@
   function bindVDAuto(state){
     state=state||{}; window.__vdAutoState=state;
     const root=document.getElementById('vdauto-root'); if(!root) return;
-    const hosts=state.hosts||{};
+    const hosts=state.hosts||{}, targetLeverage=state.target_leverage||{A:6,B:4};
     ['vps1','vps2'].forEach(host=>{
       const h=hosts[host]||{}, status=document.getElementById('vdauto-'+host+'-state');
       const age=((h.runtime||{}).age_sec==null?'':(' · '+_fmtAge((h.runtime||{}).age_sec)));
-      status.textContent=(h.running?'运行中 · 策略 '+(h.strategy||'—'):_vdAutoServiceLabel(h.service))+age;
+      const strategy=h.strategy||'—', leverage=targetLeverage[strategy];
+      status.textContent=(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service))+age;
       status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':'var(--muted)');
     });
     const status=document.getElementById('vdauto-status'), label=_vdAutoStatusLabel(state.status);
@@ -1822,6 +1825,8 @@
       document.getElementById('vdauto-spread').value=state.max_auto_spread_bps??2;
       document.getElementById('vdauto-ratio').value=Math.round(Number(state.major_ratio??.8)*100);
       document.getElementById('vdauto-ratio-out').value=document.getElementById('vdauto-ratio').value+'%';
+      document.getElementById('vdauto-leverage-a').value=targetLeverage.A??6;
+      document.getElementById('vdauto-leverage-b').value=targetLeverage.B??4;
       const p=state.pressure_test||{};
       document.getElementById('vdauto-pressure').checked=!!p.enabled;
       document.getElementById('vdauto-min').value=p.min_open_interval_minutes??30;
@@ -1845,6 +1850,8 @@
       weekly_loss_cap_usdc:Number(document.getElementById('vdauto-cap').value),
       max_auto_spread_bps:Number(document.getElementById('vdauto-spread').value),
       major_ratio:Number(document.getElementById('vdauto-ratio').value)/100,
+      target_leverage:{A:Number(document.getElementById('vdauto-leverage-a').value),
+        B:Number(document.getElementById('vdauto-leverage-b').value)},
       pressure_test:{enabled:document.getElementById('vdauto-pressure').checked,
         min_open_interval_minutes:Number(document.getElementById('vdauto-min').value),max_open_interval_minutes:Number(document.getElementById('vdauto-max').value)},
       hosts:{vps1:{enabled:document.getElementById('vdauto-vps1-enabled').checked,strategy:document.getElementById('vdauto-vps1-strategy').value},
@@ -1878,7 +1885,7 @@
     try{const r=await fetch('/api/varia/automation',{cache:'no-store'});if(r.ok){const j=await r.json();if(window.__state)window.__state.varia_automation=j;bindVDAuto(j);}}catch(e){}
   }
   (function(){
-    const ids=['vdauto-vps1-enabled','vdauto-vps2-enabled','vdauto-vps1-strategy','vdauto-vps2-strategy','vdauto-mode','vdauto-cap','vdauto-spread','vdauto-ratio','vdauto-pressure','vdauto-min','vdauto-max'];
+    const ids=['vdauto-vps1-enabled','vdauto-vps2-enabled','vdauto-vps1-strategy','vdauto-vps2-strategy','vdauto-mode','vdauto-cap','vdauto-spread','vdauto-ratio','vdauto-leverage-a','vdauto-leverage-b','vdauto-pressure','vdauto-min','vdauto-max'];
     ids.forEach(id=>document.getElementById(id).addEventListener('input',()=>{window.__vdAutoDirty=true;if(id==='vdauto-ratio')document.getElementById('vdauto-ratio-out').value=document.getElementById(id).value+'%';bindVDAuto(window.__vdAutoState||{});}));
     document.getElementById('vdauto-save').addEventListener('click',()=>vdAutoSave(false));
     document.getElementById('vdauto-start').addEventListener('click',()=>vdAutoAction('start'));

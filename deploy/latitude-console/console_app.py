@@ -1150,6 +1150,11 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
 def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     raw_hosts = raw.get("hosts") if isinstance(raw.get("hosts"), dict) else {}
+    raw_target_leverage = (
+        raw.get("target_leverage")
+        if isinstance(raw.get("target_leverage"), dict)
+        else {}
+    )
     pressure = raw.get("pressure_test") if isinstance(raw.get("pressure_test"), dict) else {}
     mode = str(raw.get("mode") or "semi_auto")
     if mode not in {"semi_auto", "full_auto"}:
@@ -1161,6 +1166,10 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     cap = _num(raw.get("weekly_loss_cap_usdc"))
     max_spread = _num(raw.get("max_auto_spread_bps"))
     ratio = _num(raw.get("major_ratio"))
+    target_leverage: Dict[str, str] = {}
+    for strategy, default in (("A", 6.0), ("B", 4.0)):
+        value = _num(raw_target_leverage.get(strategy))
+        target_leverage[strategy] = str(min(40.0, max(1.0, value if value is not None else default)))
     hosts: Dict[str, dict] = {}
     for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
         configured = raw_hosts.get(host) if isinstance(raw_hosts.get(host), dict) else {}
@@ -1175,6 +1184,7 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
         "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 2)),
         "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
+        "target_leverage": target_leverage,
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": max(1, min_minutes),
@@ -3219,6 +3229,15 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
     cap = _num(payload.get("weekly_loss_cap_usdc"))
     max_spread = _num(payload.get("max_auto_spread_bps"))
     ratio = _num(payload.get("major_ratio"))
+    raw_target_leverage = (
+        payload.get("target_leverage")
+        if isinstance(payload.get("target_leverage"), dict)
+        else {}
+    )
+    strategy_a_leverage = _num(raw_target_leverage.get("A"))
+    strategy_b_leverage = _num(raw_target_leverage.get("B"))
+    strategy_a_leverage = 6.0 if strategy_a_leverage is None else strategy_a_leverage
+    strategy_b_leverage = 4.0 if strategy_b_leverage is None else strategy_b_leverage
     pressure = payload.get("pressure_test") if isinstance(payload.get("pressure_test"), dict) else {}
     min_minutes = _num(pressure.get("min_open_interval_minutes"))
     max_minutes = _num(pressure.get("max_open_interval_minutes"))
@@ -3229,6 +3248,10 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
         raise ValueError("最高综合点差须为 0.1–100 bps")
     if ratio is None or not 0 <= ratio <= 1:
         raise ValueError("A 策略主流币比例须为 0–100%")
+    if not 1 <= strategy_a_leverage <= 40:
+        raise ValueError("A 策略目标杠杆须为 1–40x")
+    if not 1 <= strategy_b_leverage <= 40:
+        raise ValueError("B 策略目标杠杆须为 1–40x")
     if min_minutes is None or max_minutes is None or not 1 <= min_minutes <= max_minutes <= 1440:
         raise ValueError("开仓间隔须为 1–1440 分钟，且最长不小于最短")
     normalized_hosts: Dict[str, dict] = {}
@@ -3244,6 +3267,10 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
         "weekly_loss_cap_usdc": str(cap),
         "max_auto_spread_bps": str(max_spread),
         "major_ratio": str(ratio),
+        "target_leverage": {
+            "A": str(strategy_a_leverage),
+            "B": str(strategy_b_leverage),
+        },
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": int(min_minutes),

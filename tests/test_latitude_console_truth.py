@@ -358,6 +358,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-opportunity-symbols"' in html
     assert "自动策略只会从绿色币种中下单" in html
     assert 'id="vdauto-spread"' in html
+    assert 'id="vdauto-leverage-a"' in html
+    assert 'id="vdauto-leverage-b"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
     assert "'/api/varia/automation/'+action" in html
@@ -388,6 +390,7 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
     assert result["weekly_loss_cap_usdc"] == "0.0"
     assert result["max_auto_spread_bps"] == "5.0"
     assert result["major_ratio"] == "0.0"
+    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
     assert result["hosts"] == {
         "vps1": {"enabled": True, "strategy": "B"},
         "vps2": {"enabled": False, "strategy": "A"},
@@ -400,6 +403,7 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
         "weekly_loss_cap_usdc": 15,
         "max_auto_spread_bps": 5,
         "major_ratio": 0.8,
+        "target_leverage": {"A": 6, "B": 4},
         "pressure_test": {
             "enabled": True,
             "min_open_interval_minutes": 30,
@@ -414,7 +418,25 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
     assert result["hosts"]["vps1"] == {"enabled": True, "strategy": "A"}
     assert result["hosts"]["vps2"] == {"enabled": True, "strategy": "B"}
     assert result["max_auto_spread_bps"] == "5.0"
+    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
     assert result["pressure_test"]["max_open_interval_minutes"] == 180
+
+
+def test_varia_auto_payload_backfills_strategy_leverage_for_older_clients() -> None:
+    result = console._varia_auto_payload({
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "max_auto_spread_bps": 2,
+        "major_ratio": 0.8,
+        "pressure_test": {
+            "enabled": True,
+            "min_open_interval_minutes": 30,
+            "max_open_interval_minutes": 180,
+        },
+        "hosts": {},
+    })
+
+    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
 
 
 def test_varia_automation_status_requires_config_and_live_worker(
