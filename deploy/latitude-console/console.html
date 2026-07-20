@@ -1078,13 +1078,6 @@
     <button data-ops-page="hk" onclick="goOps('hk')">港股打新 & Alpha</button>
     <button class="on" data-ops-page="onboarding" onclick="goOps('onboarding')">开户与奖励</button>
   </div>
-  <div class="onb-head">
-    <div>
-      <div class="onb-title">开户与奖励</div>
-      <div class="onb-copy">把每个人的券商、银行开户进度和新客活动放在一处；同时记录入金门槛、锁资天数、银行中转、奖励发放时间与官方规则。</div>
-    </div>
-    <span class="chip info" id="onb-data-age">读取真实记录</span>
-  </div>
   <div class="kpis onb-overview-kpis">
     <div class="kpi"><div class="label">总占用本金</div><div class="value" data-k="hkk.capital">—</div><div class="sub num" data-k="hkk.capital_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label" data-k="hkk.income_label">净收益</div><div class="value" data-k="hkk.income">—</div><div class="sub num">奖励+收益−成本−磨损</div></div>
@@ -1092,6 +1085,13 @@
     <div class="kpi"><div class="label">磨损率</div><div class="value" data-k="hkk.wear">—</div><div class="sub num">等待实时数据</div></div>
     <div class="kpi"><div class="label">待确认流水</div><div class="value" data-k="hkk.pending">—</div><div class="sub num" data-k="hkk.pending_sub">等待实时数据</div></div>
     <div class="kpi"><div class="label">异常账号</div><div class="value" data-k="hkk.abnormal">—</div><div class="sub num">风险队列条目</div></div>
+  </div>
+  <div class="onb-head">
+    <div>
+      <div class="onb-title">开户与奖励</div>
+      <div class="onb-copy">把每个人的券商、银行开户进度和新客活动放在一处；同时记录入金门槛、锁资天数、银行中转、奖励发放时间与官方规则。</div>
+    </div>
+    <span class="chip info" id="onb-data-age">读取真实记录</span>
   </div>
   <div class="onb-tabs">
     <button class="btn on" data-onb-view="profiles">账号档案</button>
@@ -1706,7 +1706,7 @@
       '</div><div class="panel"><h2>下一步数据补齐</h2>'+
       '<ul class="events"><li><span class="dot d-warn"></span><div><div>补录每个账户的券商、可用现金、总融资额度和单只新股孖展额度</div></div></li>'+
       '<li><span class="dot d-info"></span><div><div>券商名单确认后，接入开户奖励、银行中转、到账时间和资金占用计算</div></div></li></ul></div></aside>';
-    page.replaceChildren(opsNav,head,workbench,alphaPanel,kpis,realGrid);
+    page.replaceChildren(opsNav,kpis,head,workbench,alphaPanel,realGrid);
   })();
 
   function bindIPO(ipo){

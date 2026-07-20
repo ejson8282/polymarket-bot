@@ -241,13 +241,13 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     assert 'data-ops-page="onboarding"' in html
     assert "function goOps(p)" in html
     assert "opsNav.className='ops-subnav'" in html
-    assert "page.replaceChildren(opsNav,head,workbench,alphaPanel,kpis,realGrid)" in html
+    assert "page.replaceChildren(opsNav,kpis,head,workbench,alphaPanel,realGrid)" in html
     assert "onclick=\"goOps('onboarding')\">开户与奖励 →" in html
     assert 'id="page-onboarding"' in html
     assert "开户与奖励" in html
     assert "资金路径" in html
     onboarding_section = html.split('<section class="page" id="page-onboarding">', 1)[1]
-    assert onboarding_section.index('class="kpis onb-overview-kpis"') < onboarding_section.index('class="onb-tabs"')
+    assert onboarding_section.index('class="kpis onb-overview-kpis"') < onboarding_section.index('class="onb-head"')
     assert 'data-onb-view="profiles"' in html
     assert 'data-onb-view="activities"' in html
     assert 'data-onb-view="pipeline"' in html
