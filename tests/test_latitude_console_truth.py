@@ -203,8 +203,27 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
                     {
                         "id": "fund-1",
                         "person": "蒋星晨",
+                        "batchId": "batch-working-capital",
+                        "batchName": "HK$10,000 周转金",
+                        "sequence": 1,
                         "toInstitution": "富途证券",
                         "nextInstitution": "有鱼证券",
+                        "amount": 10000,
+                        "currency": "HKD",
+                        "status": "锁资中",
+                    },
+                    {
+                        "id": "fund-2",
+                        "person": "蒋星晨",
+                        "batchId": "batch-working-capital",
+                        "batchName": "HK$10,000 周转金",
+                        "sequence": 2,
+                        "fromInstitution": "富途证券",
+                        "toInstitution": "众安银行",
+                        "nextInstitution": "有鱼证券",
+                        "amount": 10000,
+                        "currency": "HKD",
+                        "status": "计划中",
                     }
                 ],
                 "records": [
@@ -244,8 +263,9 @@ def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> No
 
     assert onboarding["active"] == 1
     assert onboarding["expiring_7d"] == 1
-    assert onboarding["locked_capital"] == 80000
-    assert onboarding["locked_capital_by_currency"] == {"HKD": 80000}
+    assert onboarding["locked_capital"] == 10000
+    assert onboarding["locked_capital_by_currency"] == {"HKD": 10000}
+    assert onboarding["capital_batches"][0]["id"] == "batch-working-capital"
     assert onboarding["expected_rewards"] == 1200
     assert onboarding["expected_rewards_by_currency"] == {"HKD": 1200}
     assert onboarding["accounts"][0]["id"] == "HK-001"
@@ -269,8 +289,14 @@ def test_console_contains_onboarding_and_reward_workflow() -> None:
     onboarding_section = html.split('<section class="page" id="page-onboarding">', 1)[1]
     assert onboarding_section.index('class="kpis onb-overview-kpis"') < onboarding_section.index('class="onb-head"')
     assert 'data-onb-view="profiles"' in html
-    assert 'data-onb-view="activities"' in html
-    assert 'data-onb-view="pipeline"' in html
+    assert 'data-onb-view="journey"' in html
+    assert 'data-onb-view="activities"' not in html
+    assert 'data-onb-view="pipeline"' not in html
+    assert 'id="onb-journeys"' in html
+    assert 'data-onb-group="journey"' in html
+    assert "同一资金批次可经过银行与券商多个站点；本金只计算一次" in html
+    assert 'id="onb-plan-batch-id"' in html
+    assert 'id="onb-plan-sequence"' in html
     assert "upsert_profile" in html
     assert "账号编号与登录名完整展示" in html
     assert "填写完整账号编号" in html

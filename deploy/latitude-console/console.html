@@ -200,8 +200,9 @@
   .onb-req-row{display:grid;grid-template-columns:1.3fr .7fr .55fr .7fr auto;gap:7px;margin-top:7px}.onb-req-row input,.onb-req-row select{min-width:0}
   .onb-progress{height:5px;background:var(--bg);border-radius:9px;overflow:hidden;margin-top:6px}.onb-progress i{display:block;height:100%;background:var(--ok)}
   .onb-pipeline{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:9px}.onb-arrow{color:var(--var);font-size:18px}
+  .onb-journeys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.onb-journey{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:17px}.onb-journey-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.onb-journey-title{font-size:17px;font-weight:650}.onb-journey-meta{font:12px var(--mono);color:var(--muted);margin-top:4px}.onb-route{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:14px}.onb-route .station{border:1px solid var(--line);border-radius:7px;padding:8px 10px}.onb-route .station.current{border-color:var(--var);background:rgba(94,200,216,.08)}.onb-journey-foot{display:flex;justify-content:space-between;gap:12px;margin-top:13px;color:var(--muted);font-size:12px}
   @media (max-width:1100px){.ipo-real-grid{grid-template-columns:1fr}}
-  @media (max-width:1100px){.alpha-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.alpha-summary>div:nth-child(4){border-left:0;border-top:1px solid var(--line)}.alpha-summary>div:nth-child(n+4){border-top:1px solid var(--line)}.alpha-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpi{border-top:1px solid var(--line)}.onb-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:1100px){.alpha-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.alpha-summary>div:nth-child(4){border-left:0;border-top:1px solid var(--line)}.alpha-summary>div:nth-child(n+4){border-top:1px solid var(--line)}.alpha-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpi{border-top:1px solid var(--line)}.onb-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-journeys{grid-template-columns:1fr}}
   @media (max-width:900px){.hk-page-head,.ipo-console-head,.alpha-head{align-items:flex-start;flex-direction:column}.ipo-console-actions{justify-content:flex-start}.ipo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ipo-summary-item:nth-child(3){border-left:0;border-top:1px solid var(--line)}.ipo-summary-item:nth-child(4){border-top:1px solid var(--line)}}
   /* Single Account 驾驶舱专用 */
   .phases{display:flex;gap:0;margin-top:16px}
@@ -1095,10 +1096,10 @@
   </div>
   <div class="onb-tabs">
     <button class="btn on" data-onb-view="profiles">账号档案</button>
-    <button class="btn" data-onb-view="activities">开户与活动</button>
-    <button class="btn" data-onb-view="pipeline">资金排期</button>
+    <button class="btn" data-onb-view="journey">资金任务链</button>
   </div>
-  <div class="onb-view" id="onb-view-activities">
+  <div class="onb-view" id="onb-view-activities" data-onb-group="journey">
+  <div id="onb-journeys" class="onb-journeys"></div>
   <div class="onb-kpis">
     <div class="onb-kpi"><span>进行中</span><b id="onb-active">—</b></div>
     <div class="onb-kpi"><span>7 日内到期</span><b id="onb-expiring">—</b></div>
@@ -1108,7 +1109,7 @@
   </div>
   <div class="panel onb-panel">
     <div class="onb-panel-head">
-      <div><h2>开户与活动进度</h2><div class="src">一行代表一个人 × 一家券商或银行；账号尚未生成时可以先留空</div></div>
+      <div><h2>任务节点与奖励条件</h2><div class="src">一行代表资金路线上的一站；可记录入金、锁资、交易笔数和领奖条件</div></div>
       <span class="chip" id="onb-record-count">0 条</span>
     </div>
     <div class="onb-table">
@@ -1118,7 +1119,7 @@
       </table>
     </div>
     <details class="onb-form" id="onb-form-details">
-      <summary id="onb-form-title">新增开户记录</summary>
+      <summary id="onb-form-title">新增任务节点</summary>
       <input id="onb-record-id" type="hidden">
       <div class="onb-form-grid">
         <div class="onb-field"><label>人员 *</label><input id="onb-person" list="onb-people-list" placeholder="选择或输入人员"><datalist id="onb-people-list"></datalist></div>
@@ -1147,7 +1148,7 @@
   </div>
   </div>
 
-  <div class="onb-view on" id="onb-view-profiles">
+  <div class="onb-view on" id="onb-view-profiles" data-onb-group="profiles">
     <div class="panel onb-panel">
       <div class="onb-panel-head"><div><h2>人员与账号档案</h2><div class="src">账号编号与登录名完整展示；邮箱和手机号自动脱敏；不保存密码或验证码</div></div><span class="chip" id="onb-profile-count">0 个</span></div>
       <div class="onb-table"><table><thead><tr><th>人员</th><th>机构</th><th>账号 / 登录名</th><th>邮箱</th><th>手机</th><th>绑定银行</th><th>凭据位置</th><th style="text-align:right">操作</th></tr></thead><tbody id="onb-profiles"><tr><td colspan="8" style="color:var(--faint)">读取账号档案…</td></tr></tbody></table></div>
@@ -1167,13 +1168,16 @@
     </div>
   </div>
 
-  <div class="onb-view" id="onb-view-pipeline">
+  <div class="onb-view" id="onb-view-pipeline" data-onb-group="journey">
     <div class="panel onb-panel">
-      <div class="onb-panel-head"><div><h2>资金奖励流水线</h2><div class="src">安排每笔资金何时转入、何时释放以及下一站；用于检查同一资金重复占用</div></div><span class="chip" id="onb-plan-count">0 段</span></div>
+      <div class="onb-panel-head"><div><h2>资金流转节点</h2><div class="src">同一资金批次可经过银行与券商多个站点；本金只计算一次</div></div><span class="chip" id="onb-plan-count">0 段</span></div>
       <div class="onb-table"><table><thead><tr><th>人员</th><th>资金路径</th><th>转入日</th><th>释放日</th><th>金额</th><th>下一站</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody id="onb-plans"><tr><td colspan="8" style="color:var(--faint)">读取资金排期…</td></tr></tbody></table></div>
-      <details class="onb-form" id="onb-plan-form"><summary>新增资金排期</summary>
+      <details class="onb-form" id="onb-plan-form"><summary>新增资金流转节点</summary>
         <div class="onb-form-grid">
           <div class="onb-field"><label>人员 *</label><input id="onb-plan-person" list="onb-people-list"></div>
+          <div class="onb-field"><label>资金批次名称</label><input id="onb-plan-batch-name" placeholder="例如：蒋星晨 · HK$10,000 周转金"></div>
+          <div class="onb-field"><label>资金批次编号</label><input id="onb-plan-batch-id" placeholder="同一笔资金各节点填写相同编号"></div>
+          <div class="onb-field"><label>路线顺序</label><input id="onb-plan-sequence" type="number" min="1" step="1" value="1"></div>
           <div class="onb-field"><label>关联活动</label><select id="onb-plan-record"><option value="">不关联</option></select></div>
           <div class="onb-field"><label>资金来源</label><input id="onb-plan-from" placeholder="汇丰香港"></div>
           <div class="onb-field"><label>本次目的地 *</label><input id="onb-plan-to" placeholder="致富证券"></div>
@@ -1934,8 +1938,26 @@
       '<td><div class="onb-actions"><button class="btn ghost onb-profile-delete" data-id="'+esc(profile.id)+'">删除</button></div><span class="onb-row-msg"></span></td></tr>'
     ).join(''):'<tr><td colspan="8" style="color:var(--faint)">还没有账号档案；先把人员、券商、邮箱和手机号的归属关系录入</td></tr>';
     const planBody=document.getElementById('onb-plans');
-    if(planBody) planBody.innerHTML=plans.length?plans.map(plan=>
-      '<tr><td><b>'+esc(plan.person||'—')+'</b></td><td><div class="onb-pipeline"><span>'+esc(plan.fromInstitution||'资金池')+'</span><span class="onb-arrow">→</span><b>'+esc(plan.toInstitution||'—')+'</b><span class="onb-arrow">→</span><span>'+esc(plan.nextInstitution||'待安排')+'</span></div></td>'+
+    const batchKey=plan=>plan.batchId||[plan.person||'',plan.currency||'HKD',Number(plan.amount||0).toFixed(2)].join('|');
+    const groupedPlans={};
+    plans.forEach(plan=>{const key=batchKey(plan);(groupedPlans[key]||(groupedPlans[key]=[])).push(plan);});
+    Object.values(groupedPlans).forEach(items=>items.sort((a,b)=>Number(a.sequence||1)-Number(b.sequence||1)||String(a.plannedStart||'').localeCompare(String(b.plannedStart||''))));
+    const journeyBody=document.getElementById('onb-journeys');
+    if(journeyBody) journeyBody.innerHTML=Object.values(groupedPlans).length?Object.values(groupedPlans).map(items=>{
+      const first=items[0], active=items.find(item=>!['已转出','已完成','取消'].includes(item.status))||items[items.length-1];
+      const stations=[];
+      if(first.fromInstitution) stations.push(first.fromInstitution);
+      items.forEach(item=>{if(item.toInstitution&&stations[stations.length-1]!==item.toInstitution) stations.push(item.toInstitution);});
+      if(items[items.length-1].nextInstitution&&stations[stations.length-1]!==items[items.length-1].nextInstitution) stations.push(items[items.length-1].nextInstitution);
+      const related=records.filter(record=>items.some(item=>item.relatedRecordId===record.id));
+      const requirements=related.flatMap(record=>(record.reward_tiers||[]).flatMap(tier=>tier.requirements||[]));
+      const done=requirements.filter(req=>['已完成','不适用'].includes(req.status)).length;
+      return '<div class="onb-journey"><div class="onb-journey-head"><div><div class="onb-journey-title">'+esc(first.batchName||first.person+' 的周转资金')+'</div><div class="onb-journey-meta">'+esc(first.person||'—')+' · '+items.length+' 个流转节点</div></div><b class="num">'+onbAmount(first.amount,first.currency)+'</b></div>'+
+        '<div class="onb-route">'+stations.map(station=>'<span class="station '+(station===active.toInstitution?'current':'')+'">'+esc(station)+'</span>').join('<span class="onb-arrow">→</span>')+'</div>'+
+        '<div class="onb-journey-foot"><span>当前：'+esc(active.toInstitution||'待安排')+' · '+esc(active.status||'计划中')+'</span><span>'+(requirements.length?'条件 '+done+'/'+requirements.length:'尚未关联奖励条件')+'</span></div></div>';
+    }).join(''):'<div class="panel onb-panel" style="grid-column:1/-1;padding:18px;color:var(--faint)">还没有资金任务链。先新增一笔资金的第一个流转节点，例如“众安银行 → 致富证券”。</div>';
+    if(planBody) planBody.innerHTML=plans.length?plans.slice().sort((a,b)=>String(a.person||'').localeCompare(String(b.person||''),'zh-CN')||String(batchKey(a)).localeCompare(String(batchKey(b)))||Number(a.sequence||1)-Number(b.sequence||1)).map(plan=>
+      '<tr><td><b>'+esc(plan.person||'—')+'</b><div class="dt">'+esc(plan.batchName||plan.batchId||'自动归组')+' · 第 '+esc(plan.sequence||1)+' 站</div></td><td><div class="onb-pipeline"><span>'+esc(plan.fromInstitution||'资金池')+'</span><span class="onb-arrow">→</span><b>'+esc(plan.toInstitution||'—')+'</b><span class="onb-arrow">→</span><span>'+esc(plan.nextInstitution||'待安排')+'</span></div></td>'+
       '<td class="num">'+esc(plan.plannedStart||'待定')+'</td><td class="num">'+esc(plan.plannedRelease||'待定')+'</td>'+
       '<td class="num">'+onbAmount(plan.amount,plan.currency)+'</td><td>'+esc(plan.nextInstitution||'待安排')+'</td>'+
       '<td><span class="chip info">'+esc(plan.status||'计划中')+'</span></td>'+
@@ -2336,7 +2358,7 @@
     const cancel=document.getElementById('onb-cancel-btn');
     document.querySelectorAll('.onb-tabs button').forEach(button=>button.addEventListener('click',()=>{
       document.querySelectorAll('.onb-tabs button').forEach(item=>item.classList.toggle('on',item===button));
-      document.querySelectorAll('.onb-view').forEach(view=>view.classList.toggle('on',view.id==='onb-view-'+button.dataset.onbView));
+      document.querySelectorAll('.onb-view').forEach(view=>view.classList.toggle('on',view.dataset.onbGroup===button.dataset.onbView));
     }));
     const addRequirement=document.getElementById('onb-add-requirement');
     if(addRequirement) addRequirement.addEventListener('click',()=>addOnboardingRequirement({}));
@@ -2483,12 +2505,21 @@
         amount:amount===''?null:Number(amount),
         currency:document.getElementById('onb-plan-currency').value,
         next_institution:(document.getElementById('onb-plan-next').value||'').trim(),
+        batch_id:(document.getElementById('onb-plan-batch-id').value||'').trim(),
+        batch_name:(document.getElementById('onb-plan-batch-name').value||'').trim(),
+        sequence:Number(document.getElementById('onb-plan-sequence').value||1),
         status:document.getElementById('onb-plan-status').value
       };
       if(!payload.person||!payload.to_institution){planMsg.innerHTML='<span class="down">人员和本次目的地必须填写</span>';return;}
       planSave.disabled=true;
       const result=await postOp('/api/onboarding/action',payload,planMsg,'保存资金排期');
-      if(result&&result.ok) document.getElementById('onb-plan-form').open=false;
+      if(result&&result.ok){
+        document.getElementById('onb-plan-form').open=false;
+        ['onb-plan-person','onb-plan-batch-name','onb-plan-batch-id','onb-plan-from','onb-plan-to','onb-plan-start','onb-plan-release','onb-plan-amount','onb-plan-next'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+        document.getElementById('onb-plan-sequence').value='1';
+        document.getElementById('onb-plan-record').value='';
+        document.getElementById('onb-plan-status').value='计划中';
+      }
       planSave.disabled=false;
     });
     const planBody=document.getElementById('onb-plans');

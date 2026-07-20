@@ -2176,15 +2176,52 @@ def _account_ops() -> Dict[str, Any]:
         for item in normalized_onboarding
         if item["status"] not in {"已完成", "失败"}
     ]
+    funding_plans = [
+        item
+        for item in onboarding_state.get("fundingPlans", [])
+        if isinstance(item, dict)
+    ]
+    active_plan_statuses = {"计划中", "待转入", "锁资中", "可释放"}
+    capital_batches: Dict[str, Dict[str, Any]] = {}
+    for plan in funding_plans:
+        if str(plan.get("status") or "计划中") not in active_plan_statuses:
+            continue
+        amount = _num(plan.get("amount"))
+        if not amount:
+            continue
+        currency = str(plan.get("currency") or "HKD").upper()
+        batch_id = str(plan.get("batchId") or "").strip()
+        if not batch_id:
+            batch_id = "|".join(
+                [str(plan.get("person") or ""), currency, f"{amount:.2f}"]
+            )
+        if batch_id not in capital_batches:
+            capital_batches[batch_id] = {
+                "id": batch_id,
+                "name": str(plan.get("batchName") or ""),
+                "person": str(plan.get("person") or ""),
+                "amount": amount,
+                "currency": currency,
+            }
     locked_capital_by_currency: Dict[str, float] = {}
     expected_rewards_by_currency: Dict[str, float] = {}
-    for item in normalized_onboarding:
-        if item["status"] in {"待入金", "锁资中", "待交易", "待领奖"}:
+    if capital_batches:
+        for batch in capital_batches.values():
+            currency = batch["currency"]
+            locked_capital_by_currency[currency] = (
+                locked_capital_by_currency.get(currency, 0.0)
+                + batch["amount"]
+            )
+    else:
+        for item in normalized_onboarding:
+            if item["status"] not in {"待入金", "锁资中", "待交易", "待领奖"}:
+                continue
             currency = item["currency"] or "HKD"
             locked_capital_by_currency[currency] = (
                 locked_capital_by_currency.get(currency, 0.0)
                 + (item["deposit_amount"] or 0.0)
             )
+    for item in normalized_onboarding:
         if item["status"] not in {"已完成", "失败"}:
             reward_currency = item["reward_currency"] or "HKD"
             expected_rewards_by_currency[reward_currency] = (
@@ -2198,11 +2235,8 @@ def _account_ops() -> Dict[str, Any]:
             for item in onboarding_state.get("profiles", [])
             if isinstance(item, dict)
         ],
-        "funding_plans": [
-            item
-            for item in onboarding_state.get("fundingPlans", [])
-            if isinstance(item, dict)
-        ],
+        "funding_plans": funding_plans,
+        "capital_batches": list(capital_batches.values()),
         "updated_at": str(onboarding_state.get("updated_at") or ""),
         "total": len(normalized_onboarding),
         "active": len(active_onboarding),
@@ -2216,14 +2250,7 @@ def _account_ops() -> Dict[str, Any]:
             for item in active_onboarding
             if item["deadline_days"] is not None and item["deadline_days"] < 0
         ),
-        "locked_capital": round(
-            sum(
-                item["deposit_amount"] or 0.0
-                for item in normalized_onboarding
-                if item["status"] in {"待入金", "锁资中", "待交易", "待领奖"}
-            ),
-            2,
-        ),
+        "locked_capital": round(sum(locked_capital_by_currency.values()), 2),
         "locked_capital_by_currency": {
             key: round(value, 2) for key, value in sorted(locked_capital_by_currency.items())
         },
