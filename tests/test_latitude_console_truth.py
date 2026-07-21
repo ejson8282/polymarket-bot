@@ -988,8 +988,10 @@ def test_ipo_entries_read_router_stock_name_and_code(monkeypatch) -> None:
                 "entries": [
                     {"accountId": "Hk-001", "owner": "测试员", "status": "待申购",
                      "stockCode": "9001", "stockName": "模拟新股"},
-                    {"accountId": "Hk-002", "owner": "测试员", "status": "已申购",
-                     "stockCode": "9002"},
+                    {"accountId": "Hk-002", "owner": "测试员", "status": "中签",
+                     "stockCode": "9002", "broker": "富途", "method": "融资",
+                     "financingCost": 88, "tradePnl": 1200, "netPnl": 1112,
+                     "settledAt": "2026-07-21T12:00:00+08:00"},
                 ],
             }
         } if url == console.IPO_STATE_URL else {},
@@ -999,16 +1001,22 @@ def test_ipo_entries_read_router_stock_name_and_code(monkeypatch) -> None:
 
     assert result["entries"][0]["stock"] == "模拟新股"
     assert result["entries"][1]["stock"] == "9002"
+    assert result["entries"][1]["broker"] == "富途"
+    assert result["entries"][1]["method"] == "融资"
+    assert result["entries"][1]["financing_cost"] == 88
+    assert result["entries"][1]["net_pnl"] == 1112
 
 
 def test_ipo_console_uses_contextual_account_actions() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
-    assert "function ipoActionButtons(entry)" in html
+    assert "function ipoActionButtons(entry,hasActiveStocks)" in html
     assert "if(entry.status==='待申购')" in html
     assert "if(entry.status==='已申购')" in html
     assert "当前可申购新股" in html
-    assert "每个账号只显示当前可执行的下一步" in html
+    assert "先锁定券商与申购方式" in html
+    assert 'id="ipo-entry-dialog"' in html
+    assert "action:mode==='settlement'?'settle_result':'set_strategy'" in html
     assert "一键申购(活跃)" not in html
     assert "结束本轮" not in html
 
@@ -1019,8 +1027,8 @@ def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:
     for key in ("ipo-active-count", "ipo-pending-count", "ipo-subscribed-count", "ipo-updated-age"):
         assert f'data-k="{key}"' in html
     assert "const hasActiveStocks=activeCount>0" in html
-    assert "当前无申购中新股，账户状态操作已暂停" in html
-    assert "等待申购中新股" in html
+    assert "已申购及历史结算仍可继续处理" in html
+    assert "等待新股" in html
     assert "function showIpoToast(text,kind)" in html
     assert "function showIpoRowStatus(button,text,kind)" in html
     assert "window.confirm('确认将 '" in html

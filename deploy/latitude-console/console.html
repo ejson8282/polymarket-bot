@@ -147,6 +147,18 @@
   #ipo-op-msg{min-height:18px;margin:0;padding:0 16px 12px;text-align:right}
   .ipo-toast{position:fixed;right:22px;bottom:22px;z-index:60;max-width:min(420px,calc(100vw - 44px));padding:11px 14px;border:1px solid var(--line);border-radius:8px;background:rgba(18,24,32,.97);box-shadow:0 10px 30px rgba(0,0,0,.38);font-family:var(--mono);font-size:11px;line-height:1.45;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
   .ipo-toast.show{opacity:1;transform:translateY(0)}.ipo-toast.ok{border-color:rgba(63,185,80,.55);color:var(--ok)}.ipo-toast.error{border-color:rgba(248,81,73,.55);color:var(--danger)}
+  .ipo-entry-dialog{width:min(620px,calc(100vw - 32px));padding:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);box-shadow:0 22px 70px rgba(0,0,0,.62)}
+  .ipo-entry-dialog::backdrop{background:rgba(3,8,14,.72);backdrop-filter:blur(2px)}
+  .ipo-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid var(--line)}
+  .ipo-dialog-title{font-size:19px;font-weight:650}.ipo-dialog-sub{margin-top:5px;color:var(--muted);font:12px var(--mono)}
+  .ipo-dialog-close{border:0;background:transparent;color:var(--muted);font-size:22px;cursor:pointer}
+  .ipo-dialog-body{padding:18px 20px}.ipo-dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .ipo-dialog-field{display:grid;gap:6px}.ipo-dialog-field.wide,.ipo-dialog-grid.wide{grid-column:1/-1}.ipo-dialog-field label{font:12px var(--mono);color:var(--muted)}
+  .ipo-dialog-field input,.ipo-dialog-field select{width:100%;height:40px;padding:0 11px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--text);font:14px var(--mono)}
+  .ipo-net-preview{display:flex;justify-content:space-between;align-items:center;margin-top:15px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+  .ipo-net-preview span{color:var(--muted);font-size:12px}.ipo-net-preview b{font:650 19px var(--mono)}
+  .ipo-dialog-actions{display:flex;justify-content:flex-end;gap:9px;padding:0 20px 18px}
+  .ipo-strategy-text,.ipo-result-text{font-size:12px;line-height:1.45}.ipo-strategy-text small,.ipo-result-text small{display:block;color:var(--faint);font-family:var(--mono)}
   .ipo-console table{font-size:14px}.ipo-console th{font-size:12px}.ipo-console td{padding-top:13px;padding-bottom:13px}
   .ipo-research{border-top:1px solid var(--line);padding:14px 16px;background:rgba(94,200,216,.025)}
   .ipo-research summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--var)}
@@ -945,13 +957,27 @@
           </div>
           <div class="ipo-table-wrap">
             <table>
-              <thead><tr><th>账号</th><th>人员</th><th>建议新股</th><th>费用</th><th>锁资到期</th><th>状态</th><th style="text-align:right">下一步</th></tr></thead>
+              <thead><tr><th>账号</th><th>人员</th><th>建议新股</th><th>策略 / 成本</th><th>状态</th><th>结果</th><th style="text-align:right">下一步</th></tr></thead>
               <tbody id="hk-entries"><tr><td colspan="7" style="color:var(--faint)">读取账号排班…</td></tr></tbody>
             </table>
           </div>
         </div>
         <div id="ipo-op-msg" class="src" aria-live="polite">操作后会自动保存</div>
         <div id="ipo-toast" class="ipo-toast" role="status" aria-live="polite"></div>
+        <dialog id="ipo-entry-dialog" class="ipo-entry-dialog">
+          <div class="ipo-dialog-head"><div><div class="ipo-dialog-title" id="ipo-dialog-title">设置申购策略</div><div class="ipo-dialog-sub" id="ipo-dialog-sub">—</div></div><button class="ipo-dialog-close" id="ipo-dialog-close" type="button" aria-label="关闭">×</button></div>
+          <div class="ipo-dialog-body"><div class="ipo-dialog-grid">
+            <div class="ipo-dialog-field"><label for="ipo-dialog-broker">券商</label><input id="ipo-dialog-broker" placeholder="例如：富途"></div>
+            <div class="ipo-dialog-field"><label for="ipo-dialog-method">申购方式</label><select id="ipo-dialog-method"><option value="现金">现金</option><option value="融资">融资</option></select></div>
+            <div class="ipo-dialog-field wide"><label for="ipo-dialog-cost">本次锁定融资成本（HKD）</label><input id="ipo-dialog-cost" type="number" min="0" step="0.01" value="0"><div class="src">现金申购自动按 0；未来录入券商收费规则后，这里会自动带出并锁定。</div></div>
+            <div id="ipo-result-fields" class="ipo-dialog-grid wide" style="display:none">
+              <div class="ipo-dialog-field"><label for="ipo-dialog-outcome">申购结果</label><select id="ipo-dialog-outcome"><option value="未中签">未中签</option><option value="中签">中签</option></select></div>
+              <div class="ipo-dialog-field"><label for="ipo-dialog-pnl">交易盈亏（扣融资成本前，HKD）</label><input id="ipo-dialog-pnl" type="number" step="0.01" value="0"></div>
+              <div class="ipo-dialog-field wide"><label for="ipo-dialog-note">备注（可选）</label><input id="ipo-dialog-note" placeholder="例如：上市首日卖出"></div>
+            </div>
+          </div><div id="ipo-net-preview" class="ipo-net-preview" style="display:none"><span>最终净收益 = 交易盈亏 − 融资成本</span><b id="ipo-net-value">HK$0</b></div></div>
+          <div class="ipo-dialog-actions"><button class="btn ghost" id="ipo-dialog-cancel" type="button">取消</button><button class="btn primary" id="ipo-dialog-save" type="button">保存策略</button></div>
+        </dialog>
       </div>
 
       <!-- 排行 -->
@@ -1572,12 +1598,18 @@
     }
   }
 
-  function ipoActionButtons(entry){
+  function ipoActionButtons(entry,hasActiveStocks){
     const acc=esc(entry.account||'');
     const button=(label,status,cls)=>'<button class="btn '+(cls||'ghost')+' ipo-mark" data-acc="'+acc+'" data-status="'+status+'">'+label+'</button>';
-    if(entry.status==='待申购') return button('确认已申购','已申购','primary')+button('跳过','跳过','ghost');
-    if(entry.status==='已申购') return button('中签','中签','primary')+button('未中签','未中签','ghost');
-    if(['中签','未中签','跳过','未申购'].includes(entry.status)) return '<span class="ipo-done">已处理</span>'+button('重置','待申购','ghost');
+    const editStrategy='<button class="btn ghost ipo-strategy" data-acc="'+acc+'">'+(entry.method?'调整策略':'设置策略')+'</button>';
+    const settle='<button class="btn primary ipo-settle" data-acc="'+acc+'">录入结果</button>';
+    if(entry.status==='待申购'){
+      if(!hasActiveStocks) return editStrategy+'<span class="ipo-done">等待新股</span>';
+      return editStrategy+(entry.method?button('确认已申购','已申购','primary'):'')+button('跳过','跳过','ghost');
+    }
+    if(entry.status==='已申购') return editStrategy+settle;
+    if(['中签','未中签'].includes(entry.status)) return '<button class="btn ghost ipo-settle" data-acc="'+acc+'">编辑结果</button>';
+    if(['跳过','未申购'].includes(entry.status)) return '<span class="ipo-done">已处理</span>'+button('重置','待申购','ghost');
     return button('设为待申购','待申购','ghost');
   }
 
@@ -1623,6 +1655,12 @@
         fee:'HK$4,280',
         due:'演示 +5 日',
         status:index<2?'待申购':(index===2?'已申购':'待申购'),
+        broker:index===2?'富途':'',
+        method:index===2?'融资':'',
+        financing_cost:index===2?88:0,
+        trade_pnl:0,
+        net_pnl:0,
+        settled_at:'',
         reason:'演示任务；操作仅保存在当前浏览器页面，不会写入生产。'
       }))
     };
@@ -1717,8 +1755,9 @@
     const entries=ipo.entries||[];
     const activeCount=ipo.active_stocks??(ipo.stocks||[]).length;
     const hasActiveStocks=activeCount>0;
-    const pending=hasActiveStocks?entries.filter(e=>e.status==='待申购').length:0;
-    const subscribed=hasActiveStocks?entries.filter(e=>e.status==='已申购').length:0;
+    window.__ipoRenderedEntries=entries;
+    const pending=entries.filter(e=>e.status==='待申购').length;
+    const subscribed=entries.filter(e=>e.status==='已申购').length;
     setK('ipo-active-count',activeCount+' 只');
     setK('ipo-pending-count',pending+' 个');
     setK('ipo-subscribed-count',subscribed+' 个');
@@ -1762,19 +1801,23 @@
     if(stHead) stHead.innerHTML='AI 判研'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
     const accountNote=document.getElementById('ipo-account-note');
     if(accountNote){
-      accountNote.textContent=hasActiveStocks?'每个账号只显示当前可执行的下一步':'当前无申购中新股，账户状态操作已暂停';
+      accountNote.textContent=hasActiveStocks?'先锁定券商与申购方式，再确认申购；上市后只填结果和交易盈亏':'当前无申购中新股；已申购及历史结算仍可继续处理';
       accountNote.classList.toggle('paused',!hasActiveStocks);
     }
     const en=document.getElementById('hk-entries');
-    if(en) en.innerHTML=!hasActiveStocks?
-      '<tr><td colspan="7" style="color:var(--faint)">当前没有可执行的账号任务；等待申购中新股</td></tr>':
-      ((ipo.entries||[]).length? ipo.entries.map(e=>{
+    if(en) en.innerHTML=(entries.length? entries.map(e=>{
       const acc=esc(e.account||'');
       const actions=window.__writesEnabled===false?'<span class="ipo-done">只读</span>':
-        (!hasActiveStocks?'<span class="ipo-done">等待申购中新股</span>':ipoActionButtons(e));
+        ipoActionButtons(e,hasActiveStocks);
+      const strategy=e.method?
+        ('<div class="ipo-strategy-text"><b>'+esc(e.broker||'未填券商')+' · '+esc(e.method)+'</b><small>'+(e.method==='融资'?'锁定成本 HK$'+Number(e.financing_cost||0).toLocaleString():'无融资成本')+'</small></div>'):
+        '<span class="ipo-done">尚未设置</span>';
+      const result=e.settled_at?
+        ('<div class="ipo-result-text"><b class="'+(Number(e.net_pnl||0)>=0?'up':'down')+'">净 '+(Number(e.net_pnl||0)>=0?'+':'')+'HK$'+Number(e.net_pnl||0).toLocaleString()+'</b><small>交易 '+(Number(e.trade_pnl||0)>=0?'+':'')+'HK$'+Number(e.trade_pnl||0).toLocaleString()+'</small></div>'):
+        '<span class="ipo-done">待结算</span>';
       return '<tr title="'+esc(e.reason||'')+'"><td class="num">'+(acc||'—')+'</td><td>'+esc(e.person||'—')+'</td>'+
-      '<td class="num">'+esc(e.stock||'—')+'</td><td class="num">'+(e.fee??'—')+'</td>'+
-      '<td class="num">'+esc(e.due||'—')+'</td><td><span class="chip">'+esc(e.status||'—')+'</span></td>'+
+      '<td class="num">'+esc(e.stock||'—')+'</td><td>'+strategy+'</td>'+
+      '<td><span class="chip">'+esc(e.status||'—')+'</span></td><td>'+result+'</td>'+
       '<td><div class="ipo-next-actions">'+actions+'</div></td></tr>';
     }).join('')
       : '<tr><td colspan="7" style="color:var(--faint)">本轮暂无排班</td></tr>');
@@ -2239,6 +2282,39 @@
     status.className='ipo-row-msg '+(kind||'');
     status.textContent=text;
   }
+  function ipoDialogEntry(account){
+    return (window.__ipoRenderedEntries||[]).find(entry=>String(entry.account)===String(account));
+  }
+  function updateIpoNetPreview(){
+    const method=document.getElementById('ipo-dialog-method').value;
+    const cost=method==='融资'?Number(document.getElementById('ipo-dialog-cost').value||0):0;
+    const pnl=Number(document.getElementById('ipo-dialog-pnl').value||0);
+    const net=pnl-cost;
+    const value=document.getElementById('ipo-net-value');
+    value.textContent=(net>=0?'+':'−')+'HK$'+Math.abs(net).toLocaleString(undefined,{maximumFractionDigits:2});
+    value.className=net>=0?'up':'down';
+    document.getElementById('ipo-dialog-cost').disabled=method!=='融资';
+  }
+  function openIpoEntryDialog(account,mode){
+    const entry=ipoDialogEntry(account); if(!entry) return;
+    const dialog=document.getElementById('ipo-entry-dialog');
+    dialog.dataset.account=account;
+    dialog.dataset.mode=mode;
+    document.getElementById('ipo-dialog-title').textContent=mode==='settlement'?'录入申购结果':'设置申购策略';
+    document.getElementById('ipo-dialog-sub').textContent=account+' · '+(entry.person||'—')+' · '+(entry.stock||'—');
+    document.getElementById('ipo-dialog-broker').value=entry.broker||'';
+    document.getElementById('ipo-dialog-method').value=entry.method||'现金';
+    document.getElementById('ipo-dialog-cost').value=entry.financing_cost||0;
+    document.getElementById('ipo-dialog-outcome').value=['中签','未中签'].includes(entry.status)?entry.status:'未中签';
+    document.getElementById('ipo-dialog-pnl').value=entry.trade_pnl||0;
+    document.getElementById('ipo-dialog-note').value=entry.settlement_note||'';
+    const isResult=mode==='settlement';
+    document.getElementById('ipo-result-fields').style.display=isResult?'grid':'none';
+    document.getElementById('ipo-net-preview').style.display=isResult?'flex':'none';
+    document.getElementById('ipo-dialog-save').textContent=isResult?'保存结算结果':'保存策略';
+    updateIpoNetPreview();
+    dialog.showModal();
+  }
   // 打新 & Alpha 操作(已迁移自飞书 Bot/核算台):代理 router,原生内嵌
   (function(){
     const msg=document.getElementById('ipo-op-msg'); if(!document.getElementById('ipo-import-btn')) return;
@@ -2279,9 +2355,49 @@
       showIpoToast(result&&result.ok?(result.msg||'策略已切换'):(result&&result.error||'策略切换失败'),result&&result.ok?'ok':'error');
       b.disabled=false;
     }));
+    const dialog=document.getElementById('ipo-entry-dialog');
+    const closeDialog=()=>dialog&&dialog.close();
+    document.getElementById('ipo-dialog-close').addEventListener('click',closeDialog);
+    document.getElementById('ipo-dialog-cancel').addEventListener('click',closeDialog);
+    ['ipo-dialog-method','ipo-dialog-cost','ipo-dialog-pnl'].forEach(id=>document.getElementById(id).addEventListener('input',updateIpoNetPreview));
+    document.getElementById('ipo-dialog-save').addEventListener('click',async ev=>{
+      const button=ev.currentTarget;
+      const account=dialog.dataset.account;
+      const mode=dialog.dataset.mode;
+      const broker=(document.getElementById('ipo-dialog-broker').value||'').trim();
+      const method=document.getElementById('ipo-dialog-method').value;
+      const financingCost=method==='融资'?Number(document.getElementById('ipo-dialog-cost').value||0):0;
+      if(!broker){ showIpoToast('请先填写券商','error'); return; }
+      if(financingCost<0){ showIpoToast('融资成本不能小于 0','error'); return; }
+      const payload={
+        action:mode==='settlement'?'settle_result':'set_strategy',
+        account_id:account,broker,method,financing_cost:financingCost,fee_rule_version:''
+      };
+      if(mode==='settlement'){
+        payload.status=document.getElementById('ipo-dialog-outcome').value;
+        payload.trade_pnl=Number(document.getElementById('ipo-dialog-pnl').value||0);
+        payload.settlement_note=(document.getElementById('ipo-dialog-note').value||'').trim();
+      }
+      if(IPO_DEMO_MODE){
+        const entry=ipoDialogEntry(account);
+        Object.assign(entry,{broker,method,financing_cost:financingCost});
+        if(mode==='settlement') Object.assign(entry,{status:payload.status,trade_pnl:payload.trade_pnl,net_pnl:payload.trade_pnl-financingCost,settlement_note:payload.settlement_note,settled_at:new Date().toISOString()});
+        bindIPO(window.__ipoDemoState||{}); closeDialog(); showIpoToast('演示结果已更新（未保存）','ok'); return;
+      }
+      button.disabled=true;
+      const result=await postOp('/api/ipo/action',payload,msg,mode==='settlement'?'保存结算结果':'保存申购策略');
+      button.disabled=false;
+      const text=result&&result.ok?(result.msg||'已保存'):(result&&result.error||'保存失败');
+      showIpoToast(text,result&&result.ok?'ok':'error');
+      if(result&&result.ok) closeDialog();
+    });
     // 每条排班的标记状态(事件委托,bindIPO 每次重渲染也生效)
     const en=document.getElementById('hk-entries');
     if(en) en.addEventListener('click',async(ev)=>{
+      const strategyButton=ev.target.closest('.ipo-strategy');
+      if(strategyButton){ openIpoEntryDialog(strategyButton.dataset.acc,'strategy'); return; }
+      const settleButton=ev.target.closest('.ipo-settle');
+      if(settleButton){ openIpoEntryDialog(settleButton.dataset.acc,'settlement'); return; }
       const b=ev.target.closest('.ipo-mark'); if(!b) return;
       if(IPO_DEMO_MODE){
         const entry=(window.__ipoDemoState&&window.__ipoDemoState.entries||[]).find(x=>String(x.account)===String(b.dataset.acc));

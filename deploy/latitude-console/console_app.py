@@ -2411,6 +2411,14 @@ def _ipo() -> Dict[str, Any]:
                 "fee": e.get("fee") or e.get("entryFee"),
                 "due": str(e.get("due") or e.get("lockUntil") or e.get("deadline") or "")[:12],
                 "status": str(e.get("status") or "")[:14],
+                "broker": str(e.get("broker") or "")[:20],
+                "method": str(e.get("method") or "")[:8],
+                "financing_cost": _num(e.get("financingCost") if e.get("financingCost") is not None else e.get("financing_cost")) or 0,
+                "fee_rule_version": str(e.get("feeRuleVersion") or e.get("fee_rule_version") or "")[:40],
+                "trade_pnl": _num(e.get("tradePnl") if e.get("tradePnl") is not None else e.get("trade_pnl")) or 0,
+                "net_pnl": _num(e.get("netPnl") if e.get("netPnl") is not None else e.get("net_pnl")) or 0,
+                "settlement_note": str(e.get("settlementNote") or e.get("settlement_note") or "")[:80],
+                "settled_at": str(e.get("settledAt") or e.get("settled_at") or "")[:24],
                 "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
 
     stock_rows = [
@@ -3280,7 +3288,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
-    allowed = {"set_mode", "set_status", "subscribe_active", "subscribe_all", "finish_round"}
+    allowed = {"set_mode", "set_status", "set_strategy", "settle_result", "subscribe_active", "subscribe_all", "finish_round"}
     if action not in allowed:
         return JSONResponse({"ok": False, "error": f"action 须为 {sorted(allowed)}"}, status_code=400)
     st = _ipo_current_state()
@@ -3290,6 +3298,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     round_ = st.get("round") or {}
     stocks = st.get("stocks") or []
     entries = [dict(e) for e in (st.get("entries") or []) if isinstance(e, dict)]
+    settlements = [dict(e) for e in (st.get("settlements") or []) if isinstance(e, dict)]
 
     detail = ""
     if action == "set_mode":
@@ -3311,6 +3320,27 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
         if not hit:
             return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
         detail = f"{acc} 状态 → {status}"
+    elif action == "set_strategy":
+        acc = str((payload or {}).get("account_id") or "")
+        method = str((payload or {}).get("method") or "")
+        if not acc or method not in ("现金", "融资"):
+            return JSONResponse({"ok": False, "error": "设置策略需要账号及现金/融资方式"}, status_code=400)
+        if not any(str(e.get("accountId")) == acc for e in entries):
+            return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
+        detail = f"{acc} 策略已锁定：{payload.get('broker') or '未填券商'} · {method}"
+    elif action == "settle_result":
+        acc = str((payload or {}).get("account_id") or "")
+        status = str((payload or {}).get("status") or "")
+        if not acc or status not in ("中签", "未中签"):
+            return JSONResponse({"ok": False, "error": "结算需要账号及中签/未中签结果"}, status_code=400)
+        if not any(str(e.get("accountId")) == acc for e in entries):
+            return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
+        try:
+            float((payload or {}).get("trade_pnl") or 0)
+            float((payload or {}).get("financing_cost") or 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "盈亏和融资成本必须是数字"}, status_code=400)
+        detail = f"{acc} 已结算：{status}"
     elif action in ("subscribe_active", "subscribe_all"):
         target_all = action == "subscribe_all"
         n = 0
@@ -3325,7 +3355,18 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     elif action == "finish_round":
         detail = "结束本轮(router 生成手续费流水)"
 
-    body = {"action": action, "mode": mode, "round": round_, "stocks": stocks, "entries": entries}
+    body = {
+        "action": action, "mode": mode, "round": round_, "stocks": stocks,
+        "entries": entries, "settlements": settlements,
+        "account_id": (payload or {}).get("account_id"),
+        "status": (payload or {}).get("status"),
+        "broker": (payload or {}).get("broker") or "",
+        "method": (payload or {}).get("method") or "",
+        "financing_cost": (payload or {}).get("financing_cost"),
+        "fee_rule_version": (payload or {}).get("fee_rule_version") or "",
+        "trade_pnl": (payload or {}).get("trade_pnl"),
+        "settlement_note": (payload or {}).get("settlement_note") or "",
+    }
     r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/action", body, timeout=40.0)
     _audit("ipo_action", request_action=action, detail=detail, ok=r.get("ok"),
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
