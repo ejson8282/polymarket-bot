@@ -2415,6 +2415,8 @@ def _ipo() -> Dict[str, Any]:
                 "method": str(e.get("method") or "")[:8],
                 "financing_cost": _num(e.get("financingCost") if e.get("financingCost") is not None else e.get("financing_cost")) or 0,
                 "fee_rule_version": str(e.get("feeRuleVersion") or e.get("fee_rule_version") or "")[:40],
+                "strategy_source": str(e.get("strategySource") or e.get("strategy_source") or "")[:16],
+                "strategy_override": bool(e.get("strategyOverride") or e.get("strategy_override")),
                 "trade_pnl": _num(e.get("tradePnl") if e.get("tradePnl") is not None else e.get("trade_pnl")) or 0,
                 "net_pnl": _num(e.get("netPnl") if e.get("netPnl") is not None else e.get("net_pnl")) or 0,
                 "settlement_note": str(e.get("settlementNote") or e.get("settlement_note") or "")[:80],
@@ -2449,6 +2451,7 @@ def _ipo() -> Dict[str, Any]:
         "updated_age": _age_text(_iso_age(inner.get("updated_at"))),
         "stocks": stock_rows,
         "entries": [_entry(e) for e in entries[:12] if isinstance(e, dict)],
+        "round_strategy": inner.get("round_strategy") if isinstance(inner.get("round_strategy"), dict) else {},
         "stocks_total": active_n, "entries_total": len(entries),
         "active_stocks": active_n,
         "ai_judged_at": judged_at,
@@ -3288,7 +3291,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
-    allowed = {"set_mode", "set_status", "set_strategy", "settle_result", "subscribe_active", "subscribe_all", "finish_round"}
+    allowed = {"set_mode", "set_status", "set_strategy", "apply_round_strategy", "settle_result", "subscribe_active", "subscribe_all", "finish_round"}
     if action not in allowed:
         return JSONResponse({"ok": False, "error": f"action 须为 {sorted(allowed)}"}, status_code=400)
     st = _ipo_current_state()
@@ -3328,6 +3331,17 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
         if not any(str(e.get("accountId")) == acc for e in entries):
             return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
         detail = f"{acc} 策略已锁定：{payload.get('broker') or '未填券商'} · {method}"
+    elif action == "apply_round_strategy":
+        strategy = (payload or {}).get("strategy") if isinstance((payload or {}).get("strategy"), dict) else {}
+        method = str(strategy.get("method") or "自动")
+        if method not in ("自动", "现金", "融资"):
+            return JSONResponse({"ok": False, "error": "统一策略须为自动、现金或融资"}, status_code=400)
+        eligible = [e for e in entries if e.get("status") not in ("中签", "未中签", "跳过", "未申购", "已卖出")]
+        overrides = [e for e in eligible if e.get("strategyOverride")]
+        applied = len(eligible) if (payload or {}).get("force") else len(eligible) - len(overrides)
+        detail = f"统一方案已应用到 {applied} 个账号"
+        if overrides and not (payload or {}).get("force"):
+            detail += f"；保留 {len(overrides)} 个人工调整"
     elif action == "settle_result":
         acc = str((payload or {}).get("account_id") or "")
         status = str((payload or {}).get("status") or "")
@@ -3366,6 +3380,8 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
         "fee_rule_version": (payload or {}).get("fee_rule_version") or "",
         "trade_pnl": (payload or {}).get("trade_pnl"),
         "settlement_note": (payload or {}).get("settlement_note") or "",
+        "strategy": (payload or {}).get("strategy") or {},
+        "force": bool((payload or {}).get("force")),
     }
     r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/action", body, timeout=40.0)
     _audit("ipo_action", request_action=action, detail=detail, ok=r.get("ok"),

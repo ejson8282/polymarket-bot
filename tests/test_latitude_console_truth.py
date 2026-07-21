@@ -1016,7 +1016,11 @@ def test_ipo_console_uses_contextual_account_actions() -> None:
     assert "当前可申购新股" in html
     assert "先锁定券商与申购方式" in html
     assert 'id="ipo-entry-dialog"' in html
-    assert "action:mode==='settlement'?'settle_result':'set_strategy'" in html
+    assert "action:mode==='settlement'?'settle_result':(mode==='batch'?'apply_round_strategy':'set_strategy')" in html
+    assert 'id="ipo-apply-suggestion"' in html
+    assert "function openIpoBatchDialog()" in html
+    assert "apply_round_strategy" in html
+    assert "人工调整过的账号会保留" in html
     assert "一键申购(活跃)" not in html
     assert "结束本轮" not in html
 
