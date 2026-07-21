@@ -1,0 +1,11 @@
+[Unit]
+Description=Import current HKEX IPO listings once per day with retry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+ExecStart=/home/ubuntu/polymarket-bot/deploy/latitude-console/ipo_import_daily.sh
+TimeoutStartSec=240

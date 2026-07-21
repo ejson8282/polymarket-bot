@@ -1051,6 +1051,45 @@ def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> N
     assert any("权益曲线断更" in item["msg"] for item in active)
 
 
+def test_ipo_import_alert_uses_verified_success_stamp(monkeypatch, tmp_path: Path) -> None:
+    stamp = tmp_path / "ipo_import.success"
+    stamp.write_text("2026-07-19T01:00:00+08:00\n", encoding="utf-8")
+    monkeypatch.setattr(console, "IPO_IMPORT_SUCCESS_STAMP", stamp)
+    monkeypatch.setattr(
+        console,
+        "_mtime_age",
+        lambda path: 27 * 3600 if path == stamp else None,
+    )
+
+    alerts = console._alerts({}, {}, {}, {"present": True}, {"present": True}, {})
+    assert any("每日新股导入超期" in item["msg"] for item in alerts)
+
+    monkeypatch.setattr(
+        console,
+        "_mtime_age",
+        lambda path: 60 if path == stamp else None,
+    )
+    alerts = console._alerts({}, {}, {}, {"present": True}, {"present": True}, {})
+    assert not any("每日新股导入超期" in item["msg"] for item in alerts)
+
+
+def test_ipo_import_timer_retries_until_success() -> None:
+    script = (ROOT / "deploy" / "latitude-console" / "ipo_import_daily.sh").read_text(
+        encoding="utf-8"
+    )
+    timer = (ROOT / "deploy" / "systemd" / "latitude-ipo-import.timer").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ipo_import.success" in script
+    assert "--connect-timeout 8" in script
+    assert "--max-time 180" in script
+    assert "timer will retry" in script
+    assert "OnCalendar=*-*-* 01:00:00" in timer
+    assert "OnUnitInactiveSec=15min" in timer
+    assert "Persistent=true" in timer
+
+
 def _shadow_database(path: Path, *, safety_matched: int = 1, actions_matched: int = 1) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(

@@ -2595,7 +2595,9 @@ def _events(pm_fills: List[dict]) -> List[dict]:
     return merged[:12]
 
 
-IPO_IMPORT_LOG = Path(os.getenv("IPO_IMPORT_LOG", "/home/ubuntu/ipo_import.log"))
+IPO_IMPORT_SUCCESS_STAMP = Path(
+    os.getenv("IPO_IMPORT_SUCCESS_STAMP", "/home/ubuntu/ipo_import.success")
+)
 
 
 def _tier(age: Optional[int]) -> str:
@@ -2669,7 +2671,9 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
         alerts.append({"tag": "HK/US", "msg": "<b>account-ops 数据源不可达</b>(Windows :8081)", "page": "hk", "sev": "warn"})
     elif ao.get("age_sec") is not None and ao["age_sec"] > 1800:
         alerts.append({"tag": "HK/US", "msg": f"<b>account-ops 数据迟滞</b>:{_age_text(ao['age_sec'])} 未更新(>30m)", "page": "hk", "sev": "warn"})
-    imp_age = _mtime_age(IPO_IMPORT_LOG)
+    # Only a verified successful import updates this stamp.  A silent curl timeout must
+    # remain visible as a failure instead of looking like a cron job that never existed.
+    imp_age = _mtime_age(IPO_IMPORT_SUCCESS_STAMP)
     if imp_age is not None and imp_age > 26 * 3600:
         alerts.append({"tag": "IPO", "msg": f"<b>每日新股导入超期</b>:{_age_text(imp_age)} 未跑(cron 每日 01:00,错过一轮即报)", "page": "hk", "sev": "warn"})
     if not mm.get("present"):

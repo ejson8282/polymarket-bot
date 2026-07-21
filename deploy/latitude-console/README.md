@@ -84,6 +84,19 @@ sudo systemctl enable --now latitude-reconciled-equity.timer
 
 该任务只读取四源状态并写入本地报告 JSON；不启动 worker、不下单、不接触私钥。
 
+## 每日港股新股导入
+
+使用 systemd timer 取代单次 cron。任务在每天 01:00 运行；若 Windows/Tailnet
+暂时不可达，会每 15 分钟重试，直到当天首次成功。成功后写入
+`/home/ubuntu/ipo_import.success`，同一天后续检查不会重复抓取。
+
+```bash
+sudo install -m 0644 deploy/systemd/latitude-ipo-import.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/latitude-ipo-import.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now latitude-ipo-import.timer
+```
+
 ## 数据接入进度(有真数据先接,其余占位)
 
 已接真数据(`/api/state`):
