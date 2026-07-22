@@ -72,6 +72,12 @@ def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: P
     assert console._fetch_json(console.ACCOUNT_OPS_URL) == payload
 
 
+def test_prefetch_refreshes_ipo_judgment_pack() -> None:
+    """A completed GPT run must replace the judgment pack cached at startup."""
+
+    assert console.IPO_PACK_URL in console._PREFETCH_URLS
+
+
 def test_account_ops_successful_write_merges_cache_without_refetch(
     monkeypatch, tmp_path: Path
 ) -> None:

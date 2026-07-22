@@ -1832,7 +1832,17 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
     return data
 
 
-_PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL, GRID_CONSOLE_URL]
+# Every remote document that can be cached by ``_fetch_json`` must also be
+# refreshed here.  IPO_PACK_URL used to be omitted, so the first judgment pack
+# read after service startup remained frozen in memory even after a new GPT
+# judgment completed.
+_PREFETCH_URLS = [
+    ACCOUNT_OPS_URL,
+    IPO_STATE_URL,
+    IPO_PACK_URL,
+    MACMINI_STATUS_URL,
+    GRID_CONSOLE_URL,
+]
 
 
 def _grid() -> Dict[str, Any]:
