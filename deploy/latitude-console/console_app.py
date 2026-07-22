@@ -1074,8 +1074,44 @@ def _varia_detail() -> Dict[str, Any]:
             "by_host": _agg(by_host), "by_symbol": _agg(by_symbol)}
 
 
+def _varia_decibel_scan_state() -> dict:
+    state = _varia_raw_states().get("vps1", {})
+    scan = state.get("var_decibel_market_scan") if isinstance(state, dict) else None
+    return scan if isinstance(scan, dict) else {}
+
+
+def _varia_quotes_from_readonly_scan(scan: dict) -> List[dict]:
+    rows = scan.get("rows") if isinstance(scan.get("rows"), list) else []
+    generated_at = str(scan.get("generated_at") or "")
+    quotes: List[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        quote = {
+            "symbol": str(row.get("symbol") or "").upper(),
+            "timestamp": str(row.get("timestamp") or generated_at),
+            "var_bid": _num(row.get("var_bid_1k")),
+            "var_ask": _num(row.get("var_ask_1k")),
+            "decibel_bid": _num(row.get("decibel_bid")),
+            "decibel_ask": _num(row.get("decibel_ask")),
+            "source": "read_only_market_scan",
+        }
+        if not quote["symbol"] or None in (
+            quote["var_bid"], quote["var_ask"], quote["decibel_bid"], quote["decibel_ask"]
+        ):
+            continue
+        ts = _parse_ts(quote["timestamp"])
+        quote["age_sec"] = max(0, int(time.time() - ts)) if ts is not None else None
+        quote.update(_varia_quote_direction(quote))
+        quotes.append(quote)
+    return quotes
+
+
 def _varia_latest_quotes() -> List[dict]:
-    """每个 symbol 最近一条完整双边报价；缺腿报价不参与自动方向。"""
+    """每个 symbol 最近一条完整双边报价；优先使用独立只读扫描。"""
+    scan_quotes = _varia_quotes_from_readonly_scan(_varia_decibel_scan_state())
+    if scan_quotes:
+        return scan_quotes
     path = VARIA_DIR / "hedge_bot.sqlite3"
     rows: List[dict] = []
     try:
@@ -1408,9 +1444,20 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "recommended": recommended,
         }
         (allowed if can_trade else blocked).append(symbol)
+    scan = _varia_decibel_scan_state()
+    scan_generated = str(scan.get("generated_at") or "")
+    scan_ts = _parse_ts(scan_generated)
+    scan_age = max(0, int(time.time() - scan_ts)) if scan_ts is not None else None
+    scan_summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
     decibel_pool = {
         "host": "vps1",
         "pair": "Var/Decibel",
+        "present": bool(scan.get("present")),
+        "read_only": scan.get("read_only") is True,
+        "mutations_sent": scan.get("mutations_sent"),
+        "age_sec": scan_age,
+        "stale": scan_age is None or scan_age > STALE_SEC,
+        "scan_summary": scan_summary,
         "total": len(all_symbols),
         "symbols": all_symbols,
         "quote_ready": [symbol for symbol in all_symbols if symbol in set(ready)],

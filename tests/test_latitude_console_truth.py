@@ -782,6 +782,49 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
     assert result["metrics"]["BTC"]["display_bps"] == 2.0
 
 
+def test_varia_latest_quotes_prefers_independent_readonly_scan(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(console, "_varia_raw_states", lambda: {
+        "vps1": {
+            "var_decibel_market_scan": {
+                "present": True,
+                "generated_at": now,
+                "rows": [{
+                    "timestamp": now,
+                    "symbol": "btc",
+                    "var_bid_1k": "99.90",
+                    "var_ask_1k": "100.00",
+                    "decibel_bid": "100.10",
+                    "decibel_ask": "100.20",
+                }],
+            }
+        }
+    })
+
+    result = console._varia_latest_quotes()
+
+    assert len(result) == 1
+    assert result[0]["symbol"] == "BTC"
+    assert result[0]["source"] == "read_only_market_scan"
+    assert result[0]["recommended"] == "var_buy"
+    assert result[0]["age_sec"] <= 2
+
+
+def test_varia_readonly_scan_ignores_incomplete_double_sided_quote() -> None:
+    result = console._varia_quotes_from_readonly_scan({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rows": [{
+            "symbol": "XAG",
+            "var_bid_1k": "29.9",
+            "var_ask_1k": "30.1",
+            "decibel_bid": None,
+            "decibel_ask": None,
+        }],
+    })
+
+    assert result == []
+
+
 def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
     monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("SOL",))
     monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
