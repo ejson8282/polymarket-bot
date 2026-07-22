@@ -983,11 +983,11 @@
         <div class="ipo-step">
           <div class="ipo-step-head">
             <div class="ipo-step-title"><span class="ipo-step-num">2</span>账号执行</div>
-            <div class="ipo-step-side"><div class="ipo-step-note" id="ipo-account-note">每个账号只显示当前可执行的下一步</div><span class="chip info" id="ipo-round-strategy-chip" style="display:none"></span><button class="btn primary" id="ipo-apply-suggestion">沿用建议生成账号方案</button></div>
+            <div class="ipo-step-side"><div class="ipo-step-note" id="ipo-account-note">GPT 判研后自动生成逐账号建议；确认前不会执行</div><span class="chip info" id="ipo-round-strategy-chip" style="display:none"></span><button class="btn primary" id="ipo-apply-suggestion">批量确认 / 调整方案</button></div>
           </div>
           <div class="ipo-table-wrap">
             <table>
-              <thead><tr><th>账号</th><th>人员</th><th>建议新股</th><th>策略 / 成本</th><th>状态</th><th>结果</th><th style="text-align:right">下一步</th></tr></thead>
+              <thead><tr><th>账号</th><th>人员</th><th>建议新股</th><th>系统建议 / 已锁定方案</th><th>状态</th><th>结果</th><th style="text-align:right">下一步</th></tr></thead>
               <tbody id="hk-entries"><tr><td colspan="7" style="color:var(--faint)">读取账号排班…</td></tr></tbody>
             </table>
           </div>
@@ -1831,7 +1831,7 @@
       : '<div class="ipo-stock-empty">当前没有申购中的新股；请点击“刷新申购中新股”重新检查。</div>';
     const accountNote=document.getElementById('ipo-account-note');
     if(accountNote){
-      accountNote.textContent=hasActiveStocks?'先锁定券商与申购方式，再确认申购；上市后只填结果和交易盈亏':'当前无申购中新股；已申购及历史结算仍可继续处理';
+      accountNote.textContent=hasActiveStocks?'系统已按判研、资金和账号状态生成建议；补齐券商与额度后再确认':'当前无申购中新股；已申购及历史结算仍可继续处理';
       accountNote.classList.toggle('paused',!hasActiveStocks);
     }
     const roundStrategy=ipo.round_strategy||{};
@@ -1845,9 +1845,12 @@
       const acc=esc(e.account||'');
       const actions=window.__writesEnabled===false?'<span class="ipo-done">只读</span>':
         ipoActionButtons(e,hasActiveStocks);
+      const suggestion=e.suggested_action?
+        ('<div class="ipo-strategy-text"><b>'+esc(e.suggested_action)+'</b><small>'+esc(e.suggested_reason||'系统已按判研与资金条件生成建议')+'</small></div>'):
+        '<span class="ipo-done">等待系统生成建议</span>';
       const strategy=e.method?
-        ('<div class="ipo-strategy-text"><b>'+esc(e.broker||'券商待补')+' · '+esc(e.method)+'</b><small>'+(e.method==='融资'?'锁定成本 HK$'+Number(e.financing_cost||0).toLocaleString():'无融资成本')+(e.strategy_override?' · 人工覆盖':(e.strategy_source==='inherited'?' · 继承统一建议':''))+'</small></div>'):
-        '<span class="ipo-done">尚未设置</span>';
+        ('<div class="ipo-strategy-text"><b>'+esc(e.broker||'券商待补')+' · '+esc(e.method)+'</b><small>'+(e.method==='融资'?'已锁定成本 HK$'+Number(e.financing_cost||0).toLocaleString():'已锁定现金方案')+(e.strategy_override?' · 人工覆盖':(e.strategy_source==='inherited'?' · 继承统一建议':''))+'</small></div>'):
+        suggestion;
       const result=e.settled_at?
         ('<div class="ipo-result-text"><b class="'+(Number(e.net_pnl||0)>=0?'up':'down')+'">净 '+(Number(e.net_pnl||0)>=0?'+':'')+'HK$'+Number(e.net_pnl||0).toLocaleString()+'</b><small>交易 '+(Number(e.trade_pnl||0)>=0?'+':'')+'HK$'+Number(e.trade_pnl||0).toLocaleString()+'</small></div>'):
         '<span class="ipo-done">待结算</span>';
@@ -2360,7 +2363,7 @@
     const dialog=document.getElementById('ipo-entry-dialog');
     dialog.dataset.account='__batch__';
     dialog.dataset.mode='batch';
-    document.getElementById('ipo-dialog-title').textContent='沿用建议生成账号方案';
+    document.getElementById('ipo-dialog-title').textContent='批量确认 / 调整账号方案';
     document.getElementById('ipo-dialog-sub').textContent=modeLabel+'策略'+advice+'；人工调整过的账号会保留';
     document.getElementById('ipo-dialog-broker').value=strategy.broker||'';
     document.getElementById('ipo-dialog-method').value=strategy.method||'自动';
