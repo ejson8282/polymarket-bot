@@ -5,9 +5,7 @@ import importlib.util
 import json
 import os
 import sqlite3
-import sys
 import time
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -1255,37 +1253,10 @@ def test_console_has_gpt_judgment_and_real_account_readiness() -> None:
     assert 'id="ipo-judge-btn"' in html
     assert 'id="ipo-research-input"' in html
     assert 'id="ipo-pdf-input"' in html
+    assert 'id="ipo-pdf-pages"' in html
+    assert 'id="ipo-pdf-read"' in html
     assert "/api/ipo/research-pdf" in html
+    assert "PDF 视觉分析" in html
+    assert "X-Page-Range" in html
     assert "账户准备度" in html
     assert "不生成虚假申购方案" in html
-
-
-def test_extract_pdf_text_is_bounded_and_reports_page_count(monkeypatch) -> None:
-    class FakePage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-        def extract_text(self) -> str:
-            return self.text
-
-    class FakeReader:
-        def __init__(self, _stream) -> None:
-            self.pages = [FakePage("第一页研究观点"), FakePage("第二页估值数据")]
-
-    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=FakeReader))
-
-    result = console._extract_pdf_text(b"%PDF-fake", max_chars=100)
-
-    assert result["text"] == "第一页研究观点\n\n第二页估值数据"
-    assert result["pages_read"] == 2
-    assert result["total_pages"] == 2
-    assert result["truncated"] is False
-
-
-def test_extract_pdf_text_rejects_non_pdf() -> None:
-    try:
-        console._extract_pdf_text(b"not-a-pdf")
-    except ValueError as exc:
-        assert "有效的 PDF" in str(exc)
-    else:
-        raise AssertionError("non-PDF content should be rejected")

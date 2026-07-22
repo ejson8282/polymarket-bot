@@ -3224,51 +3224,31 @@ def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, An
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
-def _extract_pdf_text(pdf_bytes: bytes, *, max_pages: int = 80, max_chars: int = 14000) -> dict:
-    """Extract a bounded, non-persistent text view of an uploaded research PDF."""
-    if not pdf_bytes.startswith(b"%PDF-"):
-        raise ValueError("文件不是有效的 PDF")
-    try:
-        from io import BytesIO
-        from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover - deployment dependency guard
-        raise RuntimeError("服务器尚未安装 PDF 解析组件") from exc
+def _http_post_bytes(
+    url: str,
+    body: bytes,
+    *,
+    headers: Optional[dict] = None,
+    timeout: float = 240.0,
+) -> Dict[str, Any]:
+    import urllib.error
+    import urllib.request
 
+    request_headers = {"Content-Type": "application/pdf", **(headers or {})}
     try:
-        reader = PdfReader(BytesIO(pdf_bytes))
-    except Exception as exc:
-        raise ValueError("PDF 无法读取或文件已损坏") from exc
-
-    total_pages = len(reader.pages)
-    chunks: list[str] = []
-    char_count = 0
-    pages_read = 0
-    for page_number, page in enumerate(reader.pages[:max_pages], start=1):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
+        with opener.open(req, timeout=timeout) as resp:
+            return {"ok": True, "status": resp.status, "data": json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as exc:
         try:
-            text = str(page.extract_text() or "").strip()
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = payload.get("detail") or payload.get("error")
         except Exception:
-            text = ""
-        pages_read = page_number
-        if not text:
-            continue
-        remaining = max_chars - char_count
-        if remaining <= 0:
-            break
-        page_text = text[:remaining]
-        chunks.append(page_text)
-        char_count += len(page_text)
-        if char_count >= max_chars:
-            break
-
-    extracted = "\n\n".join(chunks).strip()
-    if not extracted:
-        raise ValueError("没有提取到文字；该 PDF 可能是扫描图片，请先进行 OCR")
-    return {
-        "text": extracted,
-        "pages_read": pages_read,
-        "total_pages": total_pages,
-        "truncated": total_pages > pages_read or len(extracted) >= max_chars,
-    }
+            detail = None
+        return {"ok": False, "status": exc.code, "error": str(detail or exc.reason)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
 
 
 def _ipo_current_state() -> Optional[dict]:
@@ -3350,7 +3330,7 @@ async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
 
 @app.post("/api/ipo/research-pdf")
 async def ipo_research_pdf(request: Request) -> JSONResponse:
-    """Read research material from a PDF without retaining the uploaded file."""
+    """Proxy a PDF to Windows where selected pages are rendered for GPT vision."""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     content_length = request.headers.get("content-length")
@@ -3368,26 +3348,43 @@ async def ipo_research_pdf(request: Request) -> JSONResponse:
     if not pdf_bytes:
         return JSONResponse({"ok": False, "error": "没有收到 PDF 文件"}, status_code=400)
 
-    from urllib.parse import unquote
-
-    filename = unquote(str(request.headers.get("x-file-name") or "研究材料.pdf"))[:160]
+    filename = str(request.headers.get("x-file-name") or "研究材料.pdf")[:240]
     if not filename.lower().endswith(".pdf"):
         return JSONResponse({"ok": False, "error": "只支持 PDF 文件"}, status_code=415)
-    try:
-        result = _extract_pdf_text(pdf_bytes)
-    except (ValueError, RuntimeError) as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    page_range = str(request.headers.get("x-page-range") or "").strip()[:120]
+    forwarded = _http_post_bytes(
+        f"{IPO_ROUTER_BASE}/dashboard/ipo/research/pdf-vision",
+        pdf_bytes,
+        headers={"X-File-Name": filename, "X-Page-Range": page_range},
+        timeout=240.0,
+    )
+    if not forwarded.get("ok"):
+        return JSONResponse(
+            {"ok": False, "error": forwarded.get("error") or "PDF 视觉分析失败"},
+            status_code=int(forwarded.get("status") or 502),
+        )
+    result = forwarded.get("data") if isinstance(forwarded.get("data"), dict) else {}
 
     _audit(
         "ipo_research_pdf",
         ok=True,
         filename=filename,
         bytes=len(pdf_bytes),
-        pages_read=result["pages_read"],
-        extracted_chars=len(result["text"]),
+        pages=result.get("pages"),
+        mode="page_images",
         source="cloudflare" if _is_cloudflare(request) else "tailnet",
     )
-    return JSONResponse({"ok": True, "filename": filename, **result})
+    return JSONResponse(
+        {
+            "ok": True,
+            "filename": result.get("filename") or filename,
+            "text": str(result.get("visual_summary") or ""),
+            "pages": result.get("pages") or [],
+            "total_pages": result.get("total_pages"),
+            "model": result.get("model"),
+            "mode": "page_images",
+        }
+    )
 
 
 @app.post("/api/ipo/action")
