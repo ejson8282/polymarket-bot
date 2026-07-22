@@ -3209,6 +3209,7 @@ IPO_ROUTER_BASE = os.getenv("IPO_ROUTER_BASE", "http://100.82.86.62:8080")
 
 
 def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, Any]:
+    import urllib.error
     import urllib.request
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -3220,8 +3221,15 @@ def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, An
                 return {"ok": True, "status": resp.status, "data": json.loads(raw)}
             except Exception:
                 return {"ok": True, "status": resp.status, "data": raw[:300]}
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = payload.get("detail") or payload.get("error")
+        except Exception:
+            detail = None
+        return {"ok": False, "status": exc.code, "error": str(detail or exc.reason)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
 
 
 def _http_post_bytes(

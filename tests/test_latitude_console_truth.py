@@ -1042,7 +1042,8 @@ def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:
     assert "function showIpoToast(text,kind)" in html
     assert "function showIpoRowStatus(button,text,kind)" in html
     assert "window.confirm('确认将 '" in html
-    assert "GPT 研判与分项" in html
+    assert 'class="ipo-stock-card"' in html
+    assert "建议：" in html
     assert "资料完整度" in html
     assert "基本面" in html and "估值" in html and "热度" in html and "首日" in html
     assert "include_pdf_details:true" in html

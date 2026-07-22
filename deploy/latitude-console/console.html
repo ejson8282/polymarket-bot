@@ -137,6 +137,27 @@
   .ipo-step-num{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:6px;background:rgba(94,200,216,.12);color:var(--var);font-family:var(--mono);font-size:11px}
   .ipo-step-note{font-family:var(--mono);font-size:12px;color:var(--faint)}
   .ipo-table-wrap{overflow-x:auto}
+  .ipo-stock-list{display:grid;gap:12px}
+  .ipo-stock-card{border:1px solid var(--line);border-radius:10px;background:var(--panel2);overflow:hidden}
+  .ipo-stock-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:15px 16px;border-bottom:1px solid var(--line)}
+  .ipo-stock-title{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:17px;font-weight:650}
+  .ipo-stock-dates{text-align:right;color:var(--muted);font:12px/1.55 var(--mono)}
+  .ipo-stock-body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(310px,1fr);gap:0}
+  .ipo-stock-analysis{padding:15px 16px;border-right:1px solid var(--line)}
+  .ipo-stock-verdict{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
+  .ipo-stock-reason{font-size:14px;line-height:1.65;color:var(--text)}
+  .ipo-stock-evidence{margin-top:9px;color:var(--faint);font:12px/1.55 var(--mono)}
+  .ipo-stock-score-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
+  .ipo-stock-score{padding:5px 8px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font:12px var(--mono)}
+  .ipo-stock-score b{color:var(--text);font-weight:600}
+  .ipo-stock-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start}
+  .ipo-stock-fact{min-height:76px;padding:13px 14px;border-bottom:1px solid var(--line)}
+  .ipo-stock-fact:nth-child(odd){border-right:1px solid var(--line)}
+  .ipo-stock-fact:nth-child(n+3){border-bottom:0}
+  .ipo-stock-fact-label{color:var(--faint);font:11px var(--mono)}
+  .ipo-stock-fact-value{margin-top:6px;font:600 18px var(--mono)}
+  .ipo-stock-fact-sub{margin-top:4px;color:var(--muted);font:11px var(--mono)}
+  .ipo-stock-empty{padding:22px 16px;border:1px dashed var(--line);border-radius:9px;color:var(--faint)}
   .ipo-next-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
   .ipo-next-actions .btn{font-size:10px;padding:3px 7px}
   .ipo-console .btn:disabled{cursor:not-allowed;opacity:.45}
@@ -222,6 +243,7 @@
   @media (max-width:1100px){.ipo-real-grid{grid-template-columns:1fr}}
   @media (max-width:1100px){.alpha-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.alpha-summary>div:nth-child(4){border-left:0;border-top:1px solid var(--line)}.alpha-summary>div:nth-child(n+4){border-top:1px solid var(--line)}.alpha-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-kpi{border-top:1px solid var(--line)}.onb-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.onb-journeys{grid-template-columns:1fr}}
   @media (max-width:900px){.hk-page-head,.ipo-console-head,.alpha-head{align-items:flex-start;flex-direction:column}.ipo-console-actions{justify-content:flex-start}.ipo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ipo-summary-item:nth-child(3){border-left:0;border-top:1px solid var(--line)}.ipo-summary-item:nth-child(4){border-top:1px solid var(--line)}}
+  @media (max-width:900px){.ipo-stock-body{grid-template-columns:1fr}.ipo-stock-analysis{border-right:0;border-bottom:1px solid var(--line)}.ipo-stock-card-head{flex-direction:column}.ipo-stock-dates{text-align:left}}
   /* Single Account 驾驶舱专用 */
   .phases{display:flex;gap:0;margin-top:16px}
   .phase{flex:1;position:relative;padding:10px 14px 12px;border:1px solid var(--line);background:var(--panel);font-size:12px}
@@ -940,12 +962,7 @@
             <div class="ipo-step-title"><span class="ipo-step-num">1</span>当前可申购新股</div>
             <div class="ipo-step-note">已自动排除待结果、已上市和已截止股票</div>
           </div>
-          <div class="ipo-table-wrap">
-            <table>
-              <thead><tr><th>新股</th><th>综合评分</th><th>资料完整度</th><th>入场费 / 资金效率</th><th>风险</th><th>GPT 研判与分项</th></tr></thead>
-              <tbody id="hk-stocks"><tr><td colspan="6" style="color:var(--faint)">读取申购中新股…</td></tr></tbody>
-            </table>
-          </div>
+          <div class="ipo-stock-list" id="hk-stocks"><div class="ipo-stock-empty">读取申购中新股…</div></div>
         </div>
         <details class="ipo-research">
           <summary>投喂打新文章 / 研究材料（可选）</summary>
@@ -1795,31 +1812,23 @@
       const statusChip=x.status?' <span class="chip '+stCls+'" style="font-size:10px">'+esc(x.status)+'</span>':'';
       const feeTxt=x.fee!=null?'HK$'+Math.round(x.fee).toLocaleString():'—';
       const linkTxt=x.prospectus?' <a href="'+esc(x.prospectus)+'" target="_blank" style="color:var(--var);font-size:10px">招股书</a>':'';
-      // 最后一列:有 AI 判研就显示 打/跳徽章+期望值+理由,否则回落到导入摘要
-      let aiCell;
+      let analysis;
       if(x.ai_verdict){
         const v=x.ai_verdict, cls=v.includes('打')?'ok':(v.includes('跳')?'danger':'warn');
         const exp=x.ai_expected!=null?' <b class="'+(x.ai_expected>=0?'up':'down')+'">'+(x.ai_expected>=0?'+':'')+'$'+Math.round(x.ai_expected)+'</b>':'';
         const sb=x.ai_scores||{};
-        const scorePart=(label,value)=>'<span class="chip" style="font-size:10px">'+label+' '+(value==null?'—':value)+'</span>';
-        const breakdown='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">'+scorePart('基本面',sb.fundamentals)+scorePart('估值',sb.valuation)+scorePart('热度',sb.demand)+scorePart('首日',sb.first_day)+scorePart('资金',sb.capital_efficiency)+'</div>';
+        const scorePart=(label,value)=>'<span class="ipo-stock-score">'+label+' <b>'+(value==null?'—':value)+'</b></span>';
+        const breakdown='<div class="ipo-stock-score-list">'+scorePart('基本面',sb.fundamentals)+scorePart('估值',sb.valuation)+scorePart('认购热度',sb.demand)+scorePart('首日表现',sb.first_day)+scorePart('资金效率',sb.capital_efficiency)+'</div>';
         const source=(x.ai_sources||[])[0];
-        const sourceLink=source&&String(source.url||'').startsWith('http')?' <a href="'+esc(source.url)+'" target="_blank" rel="noopener" style="color:var(--var);font-size:10px">依据 '+(x.ai_sources||[]).length+' 条</a>':'';
-        const gaps=(x.ai_gaps||[]).length?'<div style="color:var(--faint);font-size:10px;margin-top:3px">缺口：'+esc(x.ai_gaps.slice(0,2).join('、'))+'</div>':'';
-        aiCell='<span class="chip '+cls+'">'+esc(v)+'</span>'+exp+sourceLink+(x.ai_reason?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(x.ai_reason)+'</div>':'')+breakdown+gaps+linkTxt;
+        const sourceLink=source&&String(source.url||'').startsWith('http')?' <a href="'+esc(source.url)+'" target="_blank" rel="noopener" style="color:var(--var)">查看依据（'+(x.ai_sources||[]).length+'）</a>':'';
+        const gaps=(x.ai_gaps||[]).length?'<div class="ipo-stock-evidence">仍缺：'+esc(x.ai_gaps.slice(0,3).join('；'))+'</div>':'';
+        analysis='<div class="ipo-stock-verdict"><span class="chip '+cls+'">建议：'+esc(v)+'</span><span class="chip">综合 '+esc(x.ai_score??'—')+'</span><span class="chip">置信 '+esc(x.ai_confidence??'—')+'</span>'+exp+sourceLink+'</div><div class="ipo-stock-reason">'+esc(x.ai_reason||'GPT 未给出简要理由')+'</div>'+breakdown+gaps;
       } else {
-        aiCell='<span style="color:var(--faint);font-size:11px">待 AI 判研</span>'+(x.note?'<div style="color:var(--muted);font-size:11px">'+esc(x.note)+'</div>':'')+linkTxt;
+        analysis='<div class="ipo-stock-verdict"><span class="chip warn">等待 GPT 判研</span></div><div class="ipo-stock-reason">'+esc(x.note||'已读取新股资料，尚未形成申购建议。')+'</div>';
       }
-      return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+statusChip+secondary+
-      (x.close_at&&x.close_at!=='待确认'?'<div class="dt">截止 '+esc(x.close_at)+(x.listing_at&&x.listing_at!=='待确认'?' · 上市 '+esc(x.listing_at):'')+'</div>':'')+'</td>'+
-      '<td class="num">'+(x.ai_score!=null?x.ai_score:'—')+(x.ai_score!=null?'<div class="dt">置信 '+(x.ai_confidence??'—')+'</div>':'<div class="dt">证据不足</div>')+'</td>'+
-      '<td class="num">'+(x.data_completeness!=null?x.data_completeness+'%':'—')+'</td><td class="num">'+feeTxt+'<div class="dt">效率 '+(x.capital_efficiency??'—')+' · 周转 '+(x.turnover??'—')+'</div></td>'+
-      '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
-      '<td>'+aiCell+'</td></tr>'}).join('')
-      : '<tr><td colspan="6" style="color:var(--faint)">当前没有申购中的新股；请点击“刷新申购中新股”重新检查</td></tr>';
-    // 表头「OpenClaw 摘要」→「AI 判研」+ 判研时间
-    const stHead=st&&st.closest('table')?st.closest('table').querySelector('thead th:last-child'):null;
-    if(stHead) stHead.innerHTML='GPT 研判与分项'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
+      const dates=(x.close_at&&x.close_at!=='待确认'?'截止 '+esc(x.close_at):'截止时间待确认')+(x.listing_at&&x.listing_at!=='待确认'?'<br>上市 '+esc(x.listing_at):'');
+      return '<article class="ipo-stock-card"><header class="ipo-stock-card-head"><div><div class="ipo-stock-title">'+esc(primary)+(x.code?'<span class="chip">'+esc(x.code)+'</span>':'')+statusChip+'</div>'+secondary+'</div><div class="ipo-stock-dates">'+dates+'</div></header><div class="ipo-stock-body"><section class="ipo-stock-analysis">'+analysis+(linkTxt?'<div class="ipo-stock-evidence">官方材料：'+linkTxt+'</div>':'')+'</section><aside class="ipo-stock-facts"><div class="ipo-stock-fact"><div class="ipo-stock-fact-label">一手入场费</div><div class="ipo-stock-fact-value">'+feeTxt+'</div><div class="ipo-stock-fact-sub">实际券商费用在账号方案中计算</div></div><div class="ipo-stock-fact"><div class="ipo-stock-fact-label">资料完整度</div><div class="ipo-stock-fact-value">'+esc(x.data_completeness!=null?x.data_completeness+'%':'—')+'</div><div class="ipo-stock-fact-sub">缺失项会列在左侧</div></div><div class="ipo-stock-fact"><div class="ipo-stock-fact-label">资金效率</div><div class="ipo-stock-fact-value">'+esc(x.capital_efficiency??'—')+'</div><div class="ipo-stock-fact-sub">周转 '+esc(x.turnover??'—')+'</div></div><div class="ipo-stock-fact"><div class="ipo-stock-fact-label">风险</div><div class="ipo-stock-fact-value">'+esc(x.risk||'待判')+'</div><div class="ipo-stock-fact-sub">结合估值、热度与资料缺口</div></div></aside></div></article>'}).join('')
+      : '<div class="ipo-stock-empty">当前没有申购中的新股；请点击“刷新申购中新股”重新检查。</div>';
     const accountNote=document.getElementById('ipo-account-note');
     if(accountNote){
       accountNote.textContent=hasActiveStocks?'先锁定券商与申购方式，再确认申购；上市后只填结果和交易盈亏':'当前无申购中新股；已申购及历史结算仍可继续处理';
