@@ -955,8 +955,7 @@
               <input id="ipo-pdf-input" type="file" accept="application/pdf,.pdf" multiple>
             </label>
             <input class="ipo-pdf-pages" id="ipo-pdf-pages" placeholder="重点页码，如 1-5,12,20-22">
-            <button class="btn ghost" id="ipo-pdf-read" type="button">视觉读取 PDF</button>
-            <span class="ipo-pdf-status" id="ipo-pdf-status">最多 3 个、每个 20MB；16 页内自动全读，长文请填重点页码。</span>
+            <span class="ipo-pdf-status" id="ipo-pdf-status">最多 3 个、每个 20MB；选择后点击右下角分析，长文可填重点页码。</span>
           </div>
           <textarea id="ipo-research-input" placeholder="在这里粘贴港股打新文章；也可以不填，直接让 GPT 根据当前已知事实判研。"></textarea>
           <div class="ipo-research-actions">
@@ -2384,12 +2383,29 @@
       const original=button.textContent;
       button.disabled=true;
       button.textContent='GPT 分析中…';
-      if(note) note.textContent='OpenClaw 正在调用 GPT，通常需要 20–90 秒。';
+      let researchText=(input&&input.value||'').trim();
+      try{
+        const pdfResearch=await collectPdfVisualResearch(note);
+        if(pdfResearch) researchText=(researchText?researchText+'\n\n':'')+pdfResearch;
+      }catch(error){
+        const errorText=error&&error.message?error.message:'PDF 分析失败';
+        if(note) note.textContent=errorText;
+        showIpoToast(errorText,'error');
+        button.textContent=original;
+        button.disabled=false;
+        return;
+      }
+      if(note) note.textContent=researchText?'研究材料已读取，正在生成最终 GPT 判研。':'OpenClaw 正在生成最终 GPT 判研。';
       showIpoToast('正在生成当前轮次判研；不会自动申购','');
-      const result=await postOp('/api/ipo/judgment',{research_text:(input&&input.value||'')},msg,'GPT 判研');
+      const result=await postOp('/api/ipo/judgment',{research_text:researchText},msg,'GPT 判研');
       const text=result&&result.ok?(result.msg||'GPT 判研已更新'):(result&&result.error||'GPT 判研失败');
       if(note) note.textContent=text;
       showIpoToast(text,result&&result.ok?'ok':'error');
+      if(result&&result.ok&&pdfInput&&pdfInput.files&&pdfInput.files.length){
+        pdfInput.value='';
+        pdfStatus.className='ipo-pdf-status ok';
+        pdfStatus.textContent='PDF 已用于本次判研；可重新选择文件进行下一次分析。';
+      }
       button.textContent=original;
       button.disabled=false;
     }
@@ -2399,38 +2415,29 @@
     if(researchJudge) researchJudge.addEventListener('click',()=>runIpoJudgment(researchJudge));
     const pdfInput=document.getElementById('ipo-pdf-input');
     const pdfStatus=document.getElementById('ipo-pdf-status');
-    const pdfRead=document.getElementById('ipo-pdf-read');
     if(pdfInput) pdfInput.addEventListener('change',()=>{
       const files=Array.from(pdfInput.files||[]);
       if(!files.length){
         pdfStatus.className='ipo-pdf-status';
-        pdfStatus.textContent='最多 3 个、每个 20MB；16 页内自动全读，长文请填重点页码。';
+        pdfStatus.textContent='最多 3 个、每个 20MB；选择后点击右下角分析，长文可填重点页码。';
         return;
       }
-      pdfStatus.className='ipo-pdf-status';
-      pdfStatus.textContent='已选择：'+files.map(file=>file.name).join('、')+'；点击“视觉读取 PDF”。';
+      pdfStatus.className='ipo-pdf-status ok';
+      pdfStatus.textContent='已添加：'+files.map(file=>file.name).join('、')+'；点击右下角“分析并更新判研”。';
     });
-    if(pdfRead) pdfRead.addEventListener('click',async()=>{
+    async function collectPdfVisualResearch(note){
       const files=Array.from(pdfInput&&pdfInput.files||[]);
-      if(!files.length){
-        pdfStatus.className='ipo-pdf-status error';
-        pdfStatus.textContent='请先选择 PDF。';
-        return;
-      }
+      if(!files.length) return '';
       if(files.length>3){
         pdfStatus.className='ipo-pdf-status error';
-        pdfStatus.textContent='一次最多选择 3 个 PDF。';
-        return;
+        throw new Error('一次最多选择 3 个 PDF。');
       }
       const tooLarge=files.find(file=>file.size>20*1024*1024);
       if(tooLarge){
         pdfStatus.className='ipo-pdf-status error';
-        pdfStatus.textContent=tooLarge.name+' 超过 20MB。';
-        return;
+        throw new Error(tooLarge.name+' 超过 20MB。');
       }
       pdfInput.disabled=true;
-      pdfRead.disabled=true;
-      const input=document.getElementById('ipo-research-input');
       const pages=document.getElementById('ipo-pdf-pages');
       const pageRange=(pages&&pages.value||'').trim();
       const extracted=[];
@@ -2438,7 +2445,8 @@
         for(let i=0;i<files.length;i++){
           const file=files[i];
           pdfStatus.className='ipo-pdf-status';
-          pdfStatus.textContent='正在读取 '+file.name+'（'+(i+1)+'/'+files.length+'）…';
+          pdfStatus.textContent='GPT 正在查看 '+file.name+' 的页面与图片（'+(i+1)+'/'+files.length+'）…';
+          if(note) note.textContent='正在读取 PDF 页面、表格和图片数据，通常需要 1–3 分钟。';
           const response=await fetch('/api/ipo/research-pdf',{
             method:'POST',
             headers:{'Content-Type':'application/pdf','X-File-Name':encodeURIComponent(file.name),'X-Page-Range':pageRange},
@@ -2449,19 +2457,17 @@
           if(!response.ok||!result.ok) throw new Error(result.error||('读取失败（HTTP '+response.status+'）'));
           extracted.push('【PDF 视觉分析：'+result.filename+'｜页面 '+(result.pages||[]).join(',')+'/'+result.total_pages+'】\n'+result.text);
         }
-        const prefix=(input.value||'').trim();
-        input.value=(prefix?prefix+'\n\n':'')+extracted.join('\n\n');
         pdfStatus.className='ipo-pdf-status ok';
-        pdfStatus.textContent='GPT 已视觉读取 '+files.length+' 个 PDF，分析已加入下方材料框；确认后点击判研。';
+        pdfStatus.textContent='PDF 页面已读取，正在生成最终判研…';
+        return extracted.join('\n\n');
       }catch(error){
         pdfStatus.className='ipo-pdf-status error';
         pdfStatus.textContent=error&&error.message?error.message:'PDF 读取失败';
+        throw error;
       }finally{
         pdfInput.disabled=false;
-        pdfRead.disabled=false;
-        pdfInput.value='';
       }
-    });
+    }
     document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
       b.disabled=true;
       const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');

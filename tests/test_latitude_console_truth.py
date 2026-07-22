@@ -1254,7 +1254,8 @@ def test_console_has_gpt_judgment_and_real_account_readiness() -> None:
     assert 'id="ipo-research-input"' in html
     assert 'id="ipo-pdf-input"' in html
     assert 'id="ipo-pdf-pages"' in html
-    assert 'id="ipo-pdf-read"' in html
+    assert 'id="ipo-pdf-read"' not in html
+    assert "视觉读取 PDF</button>" not in html
     assert "/api/ipo/research-pdf" in html
     assert "PDF 视觉分析" in html
     assert "X-Page-Range" in html
