@@ -1360,6 +1360,7 @@ def _varia_auto_runtime(host: str) -> Dict[str, Any]:
         "last_checked_at": runtime.get("last_checked_at"),
         "last_action_at": runtime.get("last_action_at"),
         "pressure_test": runtime.get("pressure_test") if isinstance(runtime.get("pressure_test"), dict) else {},
+        "next_open_plan": runtime.get("next_open_plan") if isinstance(runtime.get("next_open_plan"), dict) else {},
     }
 
 
