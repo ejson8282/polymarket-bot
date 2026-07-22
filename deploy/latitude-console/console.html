@@ -937,7 +937,7 @@
           </div>
           <div class="ipo-table-wrap">
             <table>
-              <thead><tr><th>新股</th><th>评分</th><th>中签评分</th><th>入场费</th><th>风险</th><th>AI 判研</th></tr></thead>
+              <thead><tr><th>新股</th><th>综合评分</th><th>资料完整度</th><th>入场费 / 资金效率</th><th>风险</th><th>GPT 研判与分项</th></tr></thead>
               <tbody id="hk-stocks"><tr><td colspan="6" style="color:var(--faint)">读取申购中新股…</td></tr></tbody>
             </table>
           </div>
@@ -1788,19 +1788,26 @@
       if(x.ai_verdict){
         const v=x.ai_verdict, cls=v.includes('打')?'ok':(v.includes('跳')?'danger':'warn');
         const exp=x.ai_expected!=null?' <b class="'+(x.ai_expected>=0?'up':'down')+'">'+(x.ai_expected>=0?'+':'')+'$'+Math.round(x.ai_expected)+'</b>':'';
-        aiCell='<span class="chip '+cls+'">'+esc(v)+'</span>'+exp+(x.ai_reason?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(x.ai_reason)+'</div>':'')+linkTxt;
+        const sb=x.ai_scores||{};
+        const scorePart=(label,value)=>'<span class="chip" style="font-size:10px">'+label+' '+(value==null?'—':value)+'</span>';
+        const breakdown='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">'+scorePart('基本面',sb.fundamentals)+scorePart('估值',sb.valuation)+scorePart('热度',sb.demand)+scorePart('首日',sb.first_day)+scorePart('资金',sb.capital_efficiency)+'</div>';
+        const source=(x.ai_sources||[])[0];
+        const sourceLink=source&&String(source.url||'').startsWith('http')?' <a href="'+esc(source.url)+'" target="_blank" rel="noopener" style="color:var(--var);font-size:10px">依据 '+(x.ai_sources||[]).length+' 条</a>':'';
+        const gaps=(x.ai_gaps||[]).length?'<div style="color:var(--faint);font-size:10px;margin-top:3px">缺口：'+esc(x.ai_gaps.slice(0,2).join('、'))+'</div>':'';
+        aiCell='<span class="chip '+cls+'">'+esc(v)+'</span>'+exp+sourceLink+(x.ai_reason?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(x.ai_reason)+'</div>':'')+breakdown+gaps+linkTxt;
       } else {
         aiCell='<span style="color:var(--faint);font-size:11px">待 AI 判研</span>'+(x.note?'<div style="color:var(--muted);font-size:11px">'+esc(x.note)+'</div>':'')+linkTxt;
       }
       return '<tr><td><b>'+esc(primary)+'</b>'+(x.code?' <span class="chip">'+esc(x.code)+'</span>':'')+statusChip+secondary+
       (x.close_at&&x.close_at!=='待确认'?'<div class="dt">截止 '+esc(x.close_at)+(x.listing_at&&x.listing_at!=='待确认'?' · 上市 '+esc(x.listing_at):'')+'</div>':'')+'</td>'+
-      '<td class="num">'+(x.score??'—')+'</td><td class="num">'+(x.hit_rate!=null?x.hit_rate:'—')+'</td><td class="num">'+feeTxt+'</td>'+
+      '<td class="num">'+(x.ai_score!=null?x.ai_score:'—')+(x.ai_score!=null?'<div class="dt">置信 '+(x.ai_confidence??'—')+'</div>':'<div class="dt">证据不足</div>')+'</td>'+
+      '<td class="num">'+(x.data_completeness!=null?x.data_completeness+'%':'—')+'</td><td class="num">'+feeTxt+'<div class="dt">效率 '+(x.capital_efficiency??'—')+' · 周转 '+(x.turnover??'—')+'</div></td>'+
       '<td>'+(x.risk?'<span class="chip warn">'+esc(x.risk)+'</span>':'—')+'</td>'+
       '<td>'+aiCell+'</td></tr>'}).join('')
       : '<tr><td colspan="6" style="color:var(--faint)">当前没有申购中的新股；请点击“刷新申购中新股”重新检查</td></tr>';
     // 表头「OpenClaw 摘要」→「AI 判研」+ 判研时间
     const stHead=st&&st.closest('table')?st.closest('table').querySelector('thead th:last-child'):null;
-    if(stHead) stHead.innerHTML='AI 判研'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
+    if(stHead) stHead.innerHTML='GPT 研判与分项'+(ipo.ai_judged_age?' <span style="color:var(--faint);font-weight:400;font-size:10px">('+esc(ipo.ai_judged_age)+')</span>':'');
     const accountNote=document.getElementById('ipo-account-note');
     if(accountNote){
       accountNote.textContent=hasActiveStocks?'先锁定券商与申购方式，再确认申购；上市后只填结果和交易盈亏':'当前无申购中新股；已申购及历史结算仍可继续处理';
@@ -2351,8 +2358,8 @@
       const original=button.textContent;
       button.disabled=true;
       button.textContent='刷新中…';
-      showIpoToast('正在刷新申购中新股，通常需要 30–60 秒','');
-      const result=await postOp('/api/ipo/import',{include_pdf_details:false},msg,'刷新申购中新股(约30-60s)');
+      showIpoToast('正在读取港交所新股并解析官方招股书，通常需要 1–3 分钟','');
+      const result=await postOp('/api/ipo/import',{include_pdf_details:true},msg,'刷新并解析官方招股书(约1-3分钟)');
       showIpoToast(result&&result.ok?(result.msg||'新股池已刷新'):(result&&result.error||'刷新失败'),result&&result.ok?'ok':'error');
       button.textContent=original;
       button.disabled=false;

@@ -2394,6 +2394,8 @@ def _ipo() -> Dict[str, Any]:
                 "score": s.get("expectedScore") if s.get("expectedScore") is not None else s.get("score"),
                 "hit_rate": s.get("hitRateScore"),
                 "turnover": s.get("turnoverScore"),
+                "data_completeness": s.get("dataCompletenessScore"),
+                "capital_efficiency": s.get("capitalEfficiencyScore"),
                 "fee": _num(s.get("minCapital")) or _num(s.get("fee")) or _num(s.get("entryFee")),
                 "risk": str(s.get("risk") or s.get("riskLabel") or "")[:12],
                 "status": status,
@@ -2440,6 +2442,11 @@ def _ipo() -> Dict[str, Any]:
                 row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
                 row["ai_expected"] = j.get("expected_net")    # 期望净收益
                 row["ai_reason"] = str(j.get("reason") or "")[:80]
+                row["ai_score"] = j.get("overall_score")
+                row["ai_confidence"] = j.get("confidence")
+                row["ai_scores"] = j.get("score_breakdown") if isinstance(j.get("score_breakdown"), dict) else {}
+                row["ai_sources"] = j.get("sources") if isinstance(j.get("sources"), list) else []
+                row["ai_gaps"] = j.get("evidence_gaps") if isinstance(j.get("evidence_gaps"), list) else []
     # 上游 status 偶尔没有随招股截止更新。AI 明确判为“已过期”时，不能继续在
     # “当前可申购”里展示，避免同一行同时出现“申购中 / 已过期”的自相矛盾。
     stock_rows = [row for row in stock_rows if "已过期" not in str(row.get("ai_verdict") or "")]
@@ -3225,8 +3232,8 @@ async def ipo_import(payload: dict, request: Request) -> JSONResponse:
     """立即导入新股(HKEX)——独立端点、无状态、最安全。等价日 cron 的 on-demand 版。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
-    body = {"include_pdf_details": bool((payload or {}).get("include_pdf_details"))}
-    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/import/hkex", body, timeout=90.0)
+    body = {"include_pdf_details": bool((payload or {}).get("include_pdf_details", True))}
+    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/import/hkex", body, timeout=240.0)
     _audit("ipo_import", ok=r.get("ok"), body=body,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     if not r.get("ok"):
