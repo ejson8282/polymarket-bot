@@ -210,6 +210,10 @@
 .vdauto-host-name{font-family:var(--mono);font-size:13px;font-weight:600}
 .vdauto-host-state{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .vdauto-strategy-note{grid-column:1/-1;font-size:11px;color:var(--faint)}
+.vdauto-acceptance{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,2.2fr);gap:14px;margin-top:12px;padding:13px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+.vdauto-acceptance-title{font-family:var(--mono);font-size:12px;font-weight:650}.vdauto-acceptance-sub{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.55}
+.vdauto-checks{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.vdauto-check-pill{border:1px solid var(--line);border-radius:5px;padding:4px 7px;font-family:var(--mono);font-size:10px;color:var(--faint)}
+.vdauto-check-pill.ok{border-color:rgba(70,178,107,.45);color:var(--ok)}.vdauto-check-pill.wait{border-color:rgba(231,197,71,.45);color:var(--warn)}
 .vdauto-pools{margin-top:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:13px 0}
 .vdauto-pools-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
 .vdauto-pools-title{font-size:13px;font-weight:650}.vdauto-pools-meta{font-family:var(--mono);font-size:10px;color:var(--faint)}
@@ -239,7 +243,16 @@
 .vdauto-foot{font-size:11px;color:var(--faint);margin-top:10px}
 @media (max-width:1050px){.vdctl-form{grid-template-columns:repeat(3,minmax(120px,1fr))}}
 @media (max-width:1050px){.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-hosts{grid-template-columns:1fr}.vdauto-host+.vdauto-host{border-left:0;border-top:1px solid var(--line)}}
-@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-pool-rules{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
+@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-acceptance{grid-template-columns:1fr}.vdauto-pool-rules{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
+@media (max-width:700px){
+  .topbar{flex-wrap:wrap;gap:8px 12px;padding:10px 12px}
+  .topbar nav{order:3;flex:0 0 100%;width:100%;min-width:0;padding-bottom:2px}
+  .topbar nav a{padding:5px 9px;font-size:12px}
+  .status-cluster{margin-left:auto;min-width:0}.status-cluster .clock{display:none}
+  .status-cluster .pill{padding:3px 7px;font-size:10px}
+  .page{padding:0 12px 18px}.alert{margin:10px 12px 0}.panel{padding:13px}
+  footer{padding:16px 12px 22px}
+}
 </style>
 </head>
 <body>
@@ -248,7 +261,7 @@
   <div class="brand">Latitude Alpha<small>UNIFIED CONSOLE</small></div>
   <nav id="nav">
     <a data-page="overview" class="active">总览</a>
-    <a data-page="vardec">Var / Decibel<span class="b b-live">LIVE</span></a>
+    <a data-page="vardec">Var 对冲<span class="b b-live">LIVE</span></a>
     <a data-page="pm">Polymarket<span class="b b-live">LIVE</span></a>
     <a data-page="pf">Predict.fun<span class="b b-test">TESTNET</span></a>
     <a data-page="sa">Single Account<span class="b b-paper">PAPER</span></a>
@@ -269,7 +282,7 @@
 <section class="page on" id="page-overview">
   <div class="proj">
     <div class="card" id="vd-card" onclick="go('vardec')">
-      <div class="head"><span class="name">Var / Decibel</span><span class="chip ok" data-k="vd.chip">—</span></div>
+      <div class="head"><span class="name">Var 对冲 Farming</span><span class="chip ok" data-k="vd.chip">—</span></div>
       <div class="row"><span class="k">总权益(两VPS)</span><span class="v" data-k="vd.equity">—</span></div>
       <div class="row"><span class="k" data-k="vd.vol_label">交易量 / 损耗</span><span class="v" data-k="vd.vol">—</span></div>
       <div class="row"><span class="k">VPS1 / VPS2</span><span class="v" data-k="vd.hosts">—</span></div>
@@ -329,39 +342,43 @@
   </div>
 </section>
 
-<!-- ════════════ 页面 2 · Var/Decibel(统一总览 + 原生操作区) ════════════ -->
+<!-- ════════════ 页面 2 · Var 对冲(每台 VPS 使用自己的 hedge venue) ════════════ -->
 <section class="page" id="page-vardec">
   <div class="subnav">
     <span class="on">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>
   </div>
   <div class="vdauto" id="vdauto-root">
     <div class="vdauto-head">
-      <div><div class="vdauto-title">自动运行</div><div class="vdauto-note">Var / Decibel 双平台对冲由 VPS 后台持续执行；这里配置策略并控制后台启停。</div></div>
+      <div><div class="vdauto-title">自动运行</div><div class="vdauto-note">VPS1 使用 Var/Decibel；VPS2 使用 Var/Ondo。每台主机独立核对资金、仓位与验收状态。</div></div>
       <div class="vdauto-status" id="vdauto-status"><i></i><span>正在核对两台 VPS</span></div>
     </div>
     <div class="vdauto-hosts">
       <div class="vdauto-host">
-        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS1</span><span class="vdauto-host-state" id="vdauto-vps1-state">读取中</span></div>
+        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS1 · Var/Decibel</span><span class="vdauto-host-state" id="vdauto-vps1-state">读取中</span></div>
         <label class="vdauto-check"><input type="checkbox" id="vdauto-vps1-enabled"> 参与自动运行</label>
-        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B">策略 B · 高权重长持仓</option></select></div>
+        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B" disabled>策略 B · 仅 VPS2/Ondo</option></select></div>
         <div class="vdauto-strategy-note" id="vdauto-vps1-note"></div>
       </div>
       <div class="vdauto-host">
-        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS2</span><span class="vdauto-host-state" id="vdauto-vps2-state">读取中</span></div>
+        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS2 · Var/Ondo</span><span class="vdauto-host-state" id="vdauto-vps2-state">读取中</span></div>
         <label class="vdauto-check"><input type="checkbox" id="vdauto-vps2-enabled"> 参与自动运行</label>
-        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A">策略 A · 高交易量</option><option value="B">策略 B · 高权重长持仓</option></select></div>
+        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A" disabled>策略 A · 仅 VPS1/Decibel</option><option value="B">策略 B · 高权重长持仓</option></select></div>
         <div class="vdauto-strategy-note" id="vdauto-vps2-note"></div>
       </div>
     </div>
+    <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
+      <div><div class="vdauto-acceptance-title">VPS2 · Ondo 正式环境验收</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
+      <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
+    </div>
     <div class="vdauto-pools">
-      <div class="vdauto-pools-head"><div class="vdauto-pools-title">策略可选币种</div><div class="vdauto-pools-meta" id="vdauto-pools-meta">正在读取实际候选池</div></div>
+      <div class="vdauto-pools-head"><div class="vdauto-pools-title">候选配置与实时门槛</div><div class="vdauto-pools-meta" id="vdauto-pools-meta">正在读取实际候选池</div></div>
       <div class="vdauto-pool-rules">
         <div class="vdauto-pool-rule"><b>策略 A · 高交易量</b><span id="vdauto-pool-a-rule">按设定比例交错选择主流币与机会币</span></div>
         <div class="vdauto-pool-rule"><b>策略 B · 高权重长持仓</b><span id="vdauto-pool-b-rule">机会币优先，主流币仅作兜底</span></div>
       </div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
       <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他共同币</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
-      <div class="vdauto-pool-foot">绿色：报价新鲜且点差合格；红色：任一平台单边点差或跨平台开仓成本超过上限；灰色：等待新鲜报价。自动策略只会从绿色币种中下单。</div>
+      <div class="vdauto-pool-foot">下方颜色仅反映 VPS1 Var/Decibel：绿色可做、红色点差过高、灰色等待报价。VPS2 Var/Ondo 不复用这些报价，会由后台每轮重新筛选。</div>
     </div>
     <div class="vdauto-settings">
       <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
@@ -378,7 +395,7 @@
       <button class="btn danger" id="vdauto-stop">停止自动化</button>
       <span class="vdauto-message" id="vdauto-msg"></span>
     </div>
-    <div class="vdauto-foot">保存配置不会启动后台。启动后只接管已勾选的 VPS，并自动选择交易对、低成本方向、仓位参数与持仓周期；停止只停止自动调度，不会自动平仓。</div>
+    <div class="vdauto-foot">保存配置不会启动后台。只有对应对冲平台完成验收后才能启动；停止只停止自动调度，不会自动平仓。</div>
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
@@ -393,9 +410,9 @@
         <h2>对冲仓位(配对腿) <span class="feat f-new">新增呈现</span></h2>
         <div class="src">source · ops_state.json + runtime(交易所快照);原 Home 的 Hedge Pair Preview / 最近执行记录 移入本区下方折叠</div>
         <table>
-          <thead><tr><th>SYMBOL/HOST</th><th>← VAR · DEC →</th><th>净敞口</th><th>清算 V/D</th><th>时长</th><th>状态</th></tr></thead>
+          <thead><tr><th>SYMBOL/HOST</th><th>← VAR · HEDGE →</th><th>净敞口</th><th>清算 Var/Hedge</th><th>时长</th><th>状态</th></tr></thead>
           <tbody id="vd-pair-body">
-            <tr><td colspan="6" style="color:var(--faint)">正在核对四源真实仓位…</td></tr>
+            <tr><td colspan="6" style="color:var(--faint)">正在核对两台 VPS 的双边真实仓位…</td></tr>
           </tbody>
         </table>
       </div>
@@ -408,7 +425,7 @@
         <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
       </div>
       <div class="panel" id="vd-equity-panel" style="display:none">
-        <h2>真实净交易结果 <span class="feat f-new">四源已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
+        <h2>真实净交易结果 <span class="feat f-new">四账户已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
         <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
         <div class="equity-chart" id="vd-equity-chart">
           <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
@@ -974,7 +991,7 @@
 
 <footer>
   标签图例:<span class="feat f-old">现有</span> 你 dashboard 里已存在的功能,位置迁移但保留 · <span class="feat f-new">新增</span> 纯呈现层新增(数据已有) · <span class="feat f-plan">规划</span> 待建模块占位。<br>
-  合并架构:统一站点原生展示与控制 + 各交易执行进程隔离。Var/Decibel 人工任务通过现有安全队列交给一次性 worker，执行后退出；账户密钥仍留在原签名环境。任何交易引擎故障不影响其他页面。
+  合并架构:统一站点原生展示与控制 + 各交易执行进程隔离。Var 对冲人工任务通过现有安全队列交给一次性 worker，执行后退出；账户密钥仍留在原签名环境。任何交易引擎故障不影响其他页面。
 </footer>
 
 <script>
@@ -1139,6 +1156,7 @@
       +'</td><td class="num">'+money(f.px)+'</td><td class="num">'+f.qty+'</td></tr>').join('')
       :'<tr><td colspan="5">暂无成交</td></tr>';
   }
+  function _vdVenueLabel(value){return ({variational:'Var',decibel:'Decibel',ondo:'Ondo'})[value]||String(value||'Hedge');}
   function bindVD(vd){
     const pb=document.getElementById('vd-pair-body');
     const hc=document.getElementById('vd-host-cards');
@@ -1149,12 +1167,12 @@
       setK('vd.hosts','—');
       setK('vd.points','—');
       setK('vdk.equity','—');
-      setK('vdk.equity_sub','四源权益不可达');
+      setK('vdk.equity_sub','两台 VPS 的双边权益不可达');
       setK('vdk.vol','—');
-      setK('vdk.vol_sub','四源交易量不可达');
+      setK('vdk.vol_sub','两台 VPS 的双边交易量不可达');
       setK('vdk.points','—');
-      setK('vdk.points_sub','四源积分不可达');
-      if(pb) pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">四源状态不可达，仓位未知</td></tr>';
+      setK('vdk.points_sub','积分来源不可达');
+      if(pb) pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">交易所状态不可达，仓位未知</td></tr>';
       if(hc) hc.innerHTML='<div class="card alerted"><div class="head"><span class="name">状态不可达</span><span class="chip danger">UNKNOWN</span></div></div>';
       return;
     }
@@ -1162,12 +1180,11 @@
     const legs=(vd.single_leg||[]);
     const sourceState=vd.position_sources||{}, unverified=(sourceState.unverified||[]);
     setK('vd.chip', legs.length? '<span class="chip danger">单腿 ×'+legs.length+'</span>':
-      (unverified.length?'<span class="chip warn">仓位待核验 ×'+unverified.length+'</span>':'四源仓位已核验'));
+      (unverified.length?'<span class="chip warn">仓位待核验 ×'+unverified.length+'</span>':'双边仓位已核验'));
     const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0||unverified.length>0);
     const capital=vd.capital||{};
     if(vd.equity_total!=null){
       setK('vd.equity', money(vd.equity_total));
-      const dec=names.reduce((s,h)=>s+(hosts[h].equity_dec||0),0), vr=names.reduce((s,h)=>s+(hosts[h].equity_var||0),0);
       setK('vdk.equity', money(capital.complete?capital.current_equity:vd.equity_total));
       if(capital.complete){
         const pnl=Number(capital.pnl||0), up=pnl>=0, arrow=up?'▲':'▼';
@@ -1175,22 +1192,23 @@
         setK('vdk.equity_sub','<span class="'+cls+'">'+arrow+' '+(up?'+':'−')+money(Math.abs(pnl))+pct+'</span> · 投入 '+money(capital.principal_total));
         setK('vd.equity',money(capital.current_equity));
       } else {
-        setK('vdk.equity_sub','V '+money(vr)+' / D '+money(dec)+' · 本金待对账');
+        const parts=names.map(h=>{const x=hosts[h]||{};return h.toUpperCase()+' Var '+money(x.equity_var)+' + '+esc(x.hedge_label||_vdVenueLabel(x.hedge_venue))+' '+money(x.equity_hedge);});
+        setK('vdk.equity_sub',parts.join(' · ')+' · 本金待对账');
       }
     } else {
       setK('vd.equity','—');
       setK('vdk.equity','—');
-      setK('vdk.equity_sub','四源权益不完整');
+      setK('vdk.equity_sub','双边权益不完整');
     }
     setK('vd.vol_label','本周量 / 累计');
     if(vd.volume_weekly!=null||vd.volume_total!=null) setK('vd.vol', money(vd.volume_weekly)+' · '+money(vd.volume_total));
     else setK('vd.vol','—');
     setK('vdk.vol_label','本周交易量');
     setK('vdk.vol', money(vd.volume_weekly));
-    setK('vdk.vol_sub', vd.volume_weekly!=null||vd.volume_total!=null?'累计 '+money(vd.volume_total):'四源交易量不完整');
+    setK('vdk.vol_sub', vd.volume_weekly!=null||vd.volume_total!=null?'累计 '+money(vd.volume_total):'双边交易量不完整');
     setK('vd.hosts', names.map(h=>{
       const x=hosts[h]; const cls=x.stale?'down':(x.single_leg?'down':'up');
-      return '<span class="'+cls+'">● '+esc(x.age||'?')+'</span>';
+      return '<span class="'+cls+'">● '+h.toUpperCase()+' '+esc(x.age||'?')+'</span>';
     }).join(' / ')||null);
     const score=vd.points_by_venue||{};
     const decScore=score.decibel||{}, varScore=score.variational||{};
@@ -1217,11 +1235,11 @@
         const chip=x.single_leg?'<span class="chip danger">SINGLE-LEG</span>':(unknown?'<span class="chip warn">仓位未知</span>':'<span class="chip ok">已核验</span>');
         const reads=x.venue_reads||{};
         const readText=unknown?Object.entries(reads).map(([venue,row])=>{
-          const label=venue==='variational'?'Var':'Decibel';
+          const label=_vdVenueLabel(venue);
           return label+' '+(row&&row.ok?'正常':'失败');
         }).join(' · '):'';
         return '<div class="card'+(bad?' alerted':'')+'"><div class="head"><span class="name num">'+h.toUpperCase()+'</span>'+chip+'</div>'+
-          '<div class="row"><span class="k">权益 V/D</span><span class="v">'+(x.stale?'— · —':money(x.equity_var)+' · '+money(x.equity_dec))+'</span></div>'+
+          '<div class="row"><span class="k">Var / '+esc(x.hedge_label||_vdVenueLabel(x.hedge_venue))+'</span><span class="v">'+(x.stale?'— · —':money(x.equity_var)+' · '+money(x.equity_hedge))+'</span></div>'+
           '<div class="row"><span class="k">心跳</span><span class="v">'+esc(x.age||'—')+'</span></div>'+
           (readText?'<div class="row"><span class="k">读取</span><span class="v">'+esc(readText)+'</span></div>':'')+'</div>';
       }).join('');
@@ -1237,17 +1255,18 @@
       return '<tr style="background:rgba(231,180,67,.06)"><td><b>'+esc((x.host||'').toUpperCase())+'</b><br><span style="color:var(--faint);font-size:10px">快照 '+esc(x.age||'—')+'</span></td><td colspan="4" style="color:var(--warn)">'+esc(x.summary||x.reason||'数据不完整')+'，当前仓位未知'+seen+detail+'</td><td><span class="chip warn">待恢复</span></td></tr>';
     });
     if(pb && (vd.pairs||[]).length){
-      const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs(p.dec.notional||0))));
+      const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs((p.hedge||p.dec||{}).notional||0))));
       const pairRows=vd.pairs.map(p=>{
-        const wl=Math.round(Math.abs(p.var.notional||0)/maxN*100), wr=Math.round(Math.abs(p.dec.notional||0)/maxN*100);
+        const hedge=p.hedge||p.dec||{};
+        const wl=Math.round(Math.abs(p.var.notional||0)/maxN*100), wr=Math.round(Math.abs(hedge.notional||0)/maxN*100);
         const bad=p.status!=='HEDGED';
         const lane_l=p.var.open?'<i class="bar" style="width:'+wl+'%"></i>':'';
-        const lane_r=p.dec.open?'<i class="'+(bad?'stub':'bar')+'" style="width:'+wr+'%"></i>':'';
+        const lane_r=hedge.open?'<i class="'+(bad?'stub':'bar')+'" style="width:'+wr+'%"></i>':'';
         const netCls=Math.abs(p.net)<1?'up':'down';
-        return '<tr'+(bad?' style="background:rgba(229,72,77,.05)"':'')+'><td><b>'+esc(p.symbol)+'</b> <span class="chip">'+esc(p.host.toUpperCase())+'</span></td>'+
+        return '<tr'+(bad?' style="background:rgba(229,72,77,.05)"':'')+'><td><b>'+esc(p.symbol)+'</b> <span class="chip">'+esc(p.host.toUpperCase())+' · '+esc(p.hedge_label||_vdVenueLabel(p.hedge_venue))+'</span></td>'+
           '<td><div class="pair"><div class="lane l">'+lane_l+'</div><div class="tick"></div><div class="lane r">'+lane_r+'</div></div></td>'+
           '<td class="num '+netCls+'">'+money(p.net)+'</td>'+
-          '<td class="num">'+(p.var.liq_pct!=null?p.var.liq_pct+'%':'—')+'/'+(p.dec.liq_pct!=null?p.dec.liq_pct+'%':'—')+'</td>'+
+          '<td class="num">'+(p.var.liq_pct!=null?p.var.liq_pct+'%':'—')+'/'+(hedge.liq_pct!=null?hedge.liq_pct+'%':'—')+'</td>'+
           '<td class="num">—</td><td><span class="chip '+(bad?'danger':'ok')+'">'+esc(p.status)+'</span></td></tr>';
       });
       pb.innerHTML=pairRows.concat(unknownRows).join('');
@@ -1255,7 +1274,7 @@
       pb.innerHTML=unknownRows.join('');
     } else if(pb && vd.present){
       const verified=(sourceState.verified_hosts||[]).length;
-      pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">'+(verified?'当前无持仓（已由 '+verified+' 台主机的四源快照确认）':'没有足够数据确认仓位')+'</td></tr>';
+      pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">'+(verified?'当前无持仓（已由 '+verified+' 台主机的双边快照确认）':'没有足够数据确认仓位')+'</td></tr>';
     }
     // 今日损耗(近24h,(host,id) 去重后真实计算)
     const t=vd.today||{};
@@ -1280,7 +1299,7 @@
       if(bar) bar.innerHTML='<span style="width:100%;display:flex;align-items:center;color:var(--faint)">近24小时没有可核验的已执行交易</span>';
       setK('vd.loss_src','没有已执行交易数据，不计算损耗、费率或滑点');
     }
-    // 四源本金账本扣除后，才是可解释的净交易结果曲线。
+    // 每台 VPS 的两侧本金账本扣除后，才是可解释的净交易结果曲线。
     const eq=vd.equity_history||{};
     const eqp=document.getElementById('vd-equity-panel');
     if(eq.present && eq.valid===true && eqp){
@@ -1325,9 +1344,9 @@
       setK('vd.eq_head', hasTrend?(pts[0].t+' → '+pts[n-1].t+' · '+n+'点'):('已开始记录 · 下一点约5分钟后'));
       setK('vd.eq_foot', '当前净结果 '+pnlSpan(eq.last)+' · 区间变化 '+(up?'+':'')+money(Math.abs(eq.change)).replace('$',up?'$':'−$')+
         (hasTrend && eq.change_pct!=null?'('+(up?'+':'')+eq.change_pct+'%)':'')+
-        (hasTrend?(' · 区间 '+money(eq.min)+'–'+money(eq.max)):' · 已开始每5分钟四源对账记录'));
+        (hasTrend?(' · 区间 '+money(eq.min)+'–'+money(eq.max)):' · 已开始每5分钟双边对账记录'));
       const pieces=(capital.sources||[]).map(s=>{
-        const name=(s.host||'').toUpperCase()+' '+(s.venue==='variational'?'Var':'Decibel');
+        const name=(s.host||'').toUpperCase()+' '+_vdVenueLabel(s.venue);
         return name+' '+pnlSpan(s.pnl||0);
       });
       setK('vd.eq_sources', pieces.length?'四账户：'+pieces.join(' · '):'四账户拆分待最新快照');
@@ -1790,15 +1809,36 @@
 
   function _vdAutoRenderPools(state){
     const pools=state.strategy_pools||{}, major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(pools.allowed||[]), blocked=new Set(pools.blocked||[]), metrics=pools.metrics||{};
-    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待新鲜报价':('Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 开仓 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 开仓 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
     document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
-    document.getElementById('vdauto-pools-meta').textContent=(pools.total??major.length+opportunity.length)+' 个候选 · '+allowed.size+' 个可做 · '+blocked.size+' 个点差过高';
+    document.getElementById('vdauto-pools-meta').textContent='VPS1 Var/Decibel · '+(pools.total??major.length+opportunity.length)+' 个候选 · '+allowed.size+' 个可做 · '+blocked.size+' 个点差过高';
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
-    document.getElementById('vdauto-pool-b-rule').textContent='优先 '+(pools.strategy_b?.priority?.length??opportunity.length)+' 个机会币；BTC / ETH 等主流币兜底';
+    document.getElementById('vdauto-pool-b-rule').textContent='VPS2 每轮取 Var/Ondo 共同币；普通币 2bp、RWA 3bp，未通过不下单';
+  }
+
+  function _vdAutoRenderOndoAcceptance(hosts){
+    const h=hosts.vps2||{}, acceptance=h.acceptance||{}, ro=acceptance.read_only||{}, mutation=acceptance.mutation||{};
+    const summary=document.getElementById('vdauto-ondo-summary'), checks=document.getElementById('vdauto-ondo-checks');
+    if(!summary||!checks) return;
+    if(!acceptance.present){
+      summary.textContent='尚未收到 Ondo 脱敏验收记录；VPS2 不允许启动';
+      checks.innerHTML='<span class="vdauto-check-pill wait">等待只读验收</span>';
+      return;
+    }
+    const readOnlyOk=ro.passed===true&&ro.mutations_sent===false;
+    const equity=ro.total_equity==null?'—':money(Number(ro.total_equity));
+    const flat=(Number(ro.positions_count||0)===0&&Number(ro.open_orders_count||0)===0);
+    summary.textContent=(acceptance.environment==='production'?'正式环境':'环境 '+String(acceptance.environment||'未知'))+' · 权益 '+equity+' · '+Number(ro.market_count||0)+' 个市场 · '+(flat?'空仓且无挂单':'存在仓位或挂单');
+    const labels={leverage_sync:'杠杆同步',post_only_cancel:'挂单撤单',partial_fill_reconcile:'部分成交对账',reduce_only_close:'只减仓平仓',paired_micro_hedge:'微量双腿'};
+    const pills=['<span class="vdauto-check-pill '+(readOnlyOk?'ok':'wait')+'">'+(readOnlyOk?'只读已通过':'只读待通过')+'</span>'];
+    Object.entries(labels).forEach(([key,label])=>pills.push('<span class="vdauto-check-pill '+(mutation[key]===true?'ok':'wait')+'">'+esc(label)+' '+(mutation[key]===true?'✓':'待验收')+'</span>'));
+    const quotes=ro.quotes||{};
+    Object.entries(quotes).forEach(([symbol,row])=>{if(row&&row.spread_bps!=null)pills.push('<span class="vdauto-check-pill">'+esc(symbol)+' '+Number(row.spread_bps).toFixed(2)+'bp</span>');});
+    checks.innerHTML=pills.join('');
   }
 
   function bindVDAuto(state){
@@ -1809,8 +1849,11 @@
       const h=hosts[host]||{}, status=document.getElementById('vdauto-'+host+'-state');
       const age=((h.runtime||{}).age_sec==null?'':(' · '+_fmtAge((h.runtime||{}).age_sec)));
       const strategy=h.strategy||'—', leverage=targetLeverage[strategy];
-      status.textContent=(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service))+age;
-      status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':'var(--muted)');
+      const mutation=((h.acceptance||{}).mutation)||{}, mutationKeys=['leverage_sync','post_only_cancel','partial_fill_reconcile','reduce_only_close','paired_micro_hedge'];
+      const pendingMutations=mutationKeys.filter(key=>mutation[key]!==true).length;
+      const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
+      status.textContent=(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service))+blocked+age;
+      status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':(h.start_blocked?'var(--warn)':'var(--muted)'));
     });
     const status=document.getElementById('vdauto-status'), label=_vdAutoStatusLabel(state.status);
     status.className='vdauto-status '+(state.status==='running'?'running':(['partial','attention'].includes(state.status)?'bad':''));
@@ -1834,6 +1877,7 @@
     }
     const major=document.getElementById('vdauto-ratio').value||80;
     _vdAutoRenderPools(state);
+    _vdAutoRenderOndoAcceptance(hosts);
     ['vps1','vps2'].forEach(host=>{
       const strategy=document.getElementById('vdauto-'+host+'-strategy').value;
       document.getElementById('vdauto-'+host+'-note').textContent=strategy==='A'
@@ -1841,7 +1885,10 @@
         :'优先高权重、低 OI 与新币 · 持仓 24–72 小时';
     });
     const services=Object.values(hosts).map(h=>h.service), selected=['vps1','vps2'].filter(h=>document.getElementById('vdauto-'+h+'-enabled').checked);
-    document.getElementById('vdauto-start').disabled=state.status==='running'||state.status==='starting'||!selected.length;
+    const selectedBlocked=selected.filter(host=>(hosts[host]||{}).start_blocked);
+    document.getElementById('vdauto-start').disabled=state.status==='running'||state.status==='starting'||!selected.length||!!selectedBlocked.length;
+    const msg=document.getElementById('vdauto-msg');
+    if(selectedBlocked.length&&!msg.textContent) {msg.className='vdauto-message';msg.textContent=selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；');}
     document.getElementById('vdauto-stop').disabled=state.status==='stopped'&&!services.some(x=>['active','activating','deactivating'].includes(x));
   }
 
@@ -1933,18 +1980,18 @@
       rows.map(rowfn).join('')+'</tbody></table>';
   }
 
-  function _vdDirectionLabel(v){return v==='var_buy'?'Var 买 / Decibel 卖':v==='var_sell'?'Var 卖 / Decibel 买':'自动选择低成本方向';}
+  function _vdDirectionLabel(v,hedgeLabel){hedgeLabel=hedgeLabel||'Decibel';return v==='var_buy'?'Var 买 / '+hedgeLabel+' 卖':v==='var_sell'?'Var 卖 / '+hedgeLabel+' 买':'自动选择低成本方向';}
   function _vdStatusLabel(v){return ({queued:'排队中',running:'执行中',succeeded:'成功',failed:'失败',blocked:'预检拦截'})[v]||v||'未知';}
   function _vdPrice(v){return v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});}
 
   function renderVarDecControl(box){
     if(!document.getElementById('vdctl-root')){
       box.innerHTML='<div id="vdctl-root">'+
-        '<div class="operation-head"><div><div class="operation-title">Var / Decibel 手动交易</div><div class="operation-note">自动运行的补充入口 · 独立读取 VPS1 / VPS2 · 提交前实时验证双边支持</div></div><div class="operation-state" id="vdctl-state"><i></i><span>正在核对状态</span></div></div>'+
+        '<div class="operation-head"><div><div class="operation-title">Var 对冲手动交易</div><div class="operation-note">自动运行的补充入口 · VPS1 对接 Decibel，VPS2 对接 Ondo · 未验收的写通道不会开放</div></div><div class="operation-state" id="vdctl-state"><i></i><span>正在核对状态</span></div></div>'+
         '<div class="vdctl-band"><div class="vdctl-form">'+
           '<div class="vdctl-field"><label>执行账户</label><select id="vdctl-host"><option value="vps1">VPS1</option><option value="vps2">VPS2</option></select></div>'+
           '<div class="vdctl-field"><label>交易对</label><select id="vdctl-symbol"></select></div>'+
-          '<div class="vdctl-field"><label>对冲方向</label><select id="vdctl-direction"><option value="auto">自动选择低成本方向</option><option value="var_buy">Var 买 / Decibel 卖</option><option value="var_sell">Var 卖 / Decibel 买</option></select></div>'+
+          '<div class="vdctl-field"><label>对冲方向</label><select id="vdctl-direction"><option value="auto">自动选择低成本方向</option><option value="var_buy">Var 买 / 对冲腿卖</option><option value="var_sell">Var 卖 / 对冲腿买</option></select></div>'+
           '<div class="vdctl-field"><label>杠杆</label><div class="vdctl-slider"><input id="vdctl-lev-range" type="range" min="1" max="40" step="1" value="5"><input id="vdctl-lev" type="number" min="1" max="40" step="1" value="5"></div></div>'+
           '<div class="vdctl-field"><label>名义金额 USDC</label><input id="vdctl-notional" type="number" min="5" step="1" value="50"></div>'+
         '</div></div>'+
@@ -1987,31 +2034,42 @@
       symbolEl.dataset.sig=signature;
       if(symbols.includes(selected)) symbolEl.value=selected; else if(symbols.includes('BTC')) symbolEl.value='BTC';
     }
-    const hosts=state.hosts||{}, hostEl=document.getElementById('vdctl-host');
-    ['vps1','vps2'].forEach((h,i)=>{const o=hostEl.options[i], x=hosts[h]||{};if(o)o.textContent=h.toUpperCase()+' · Var '+money(x.equity_var)+' / Dec '+money(x.equity_dec);});
+    const hosts=state.hosts||{}, controls=state.host_controls||{}, hostEl=document.getElementById('vdctl-host');
+    ['vps1','vps2'].forEach((h,i)=>{const o=hostEl.options[i], x=hosts[h]||{}, c=controls[h]||{}, hedge=c.hedge_label||x.hedge_label||_vdVenueLabel(x.hedge_venue);if(o)o.textContent=h.toUpperCase()+' · Var '+money(x.equity_var)+' / '+hedge+' '+money(x.equity_hedge);});
+    const selectedHost=hostEl.value||'vps1', control=controls[selectedHost]||{}, selectedData=hosts[selectedHost]||{};
+    const hedgeLabel=control.hedge_label||selectedData.hedge_label||_vdVenueLabel(selectedData.hedge_venue), manualSupported=control.manual_open_supported!==false;
+    const directionEl=document.getElementById('vdctl-direction');
+    [...directionEl.options].forEach(option=>{if(option.value!=='auto')option.textContent=_vdDirectionLabel(option.value,hedgeLabel);});
     const quote=(state.quotes||[]).find(q=>q.symbol===symbolEl.value)||{};
     const age=quote.age_sec==null?'未知':_fmtAge(quote.age_sec);
     const q=document.getElementById('vdctl-quote');
-    q.innerHTML='<div class="vdctl-q"><span>VAR BID · '+age+'</span><b>'+_vdPrice(quote.var_bid)+'</b></div><div class="vdctl-q"><span>VAR ASK</span><b>'+_vdPrice(quote.var_ask)+'</b></div><div class="vdctl-q"><span>DECIBEL BID</span><b>'+_vdPrice(quote.decibel_bid)+'</b></div><div class="vdctl-q"><span>DECIBEL ASK</span><b>'+_vdPrice(quote.decibel_ask)+'</b></div>';
+    if(manualSupported){
+      q.innerHTML='<div class="vdctl-q"><span>VAR BID · '+age+'</span><b>'+_vdPrice(quote.var_bid)+'</b></div><div class="vdctl-q"><span>VAR ASK</span><b>'+_vdPrice(quote.var_ask)+'</b></div><div class="vdctl-q"><span>'+esc(hedgeLabel.toUpperCase())+' BID</span><b>'+_vdPrice(quote.decibel_bid)+'</b></div><div class="vdctl-q"><span>'+esc(hedgeLabel.toUpperCase())+' ASK</span><b>'+_vdPrice(quote.decibel_ask)+'</b></div>';
+    }else{
+      q.innerHTML='<div class="vdctl-q" style="grid-column:1/-1"><span>'+esc(selectedHost.toUpperCase())+' · Var/'+esc(hedgeLabel)+'</span><b style="font-size:13px;color:var(--warn)">'+esc(control.reason||'手动写通道尚未验收')+'</b></div>';
+    }
     const costs=quote.costs||{}, recommended=quote.recommended;
-    document.getElementById('vdctl-costs').innerHTML=['var_buy','var_sell'].map(k=>'<div class="vdctl-cost '+(recommended===k?'recommended':'')+'"><span>'+(recommended===k?'推荐 · ':'')+_vdDirectionLabel(k)+'</span><b>'+(costs[k]==null?'等待双边报价':Number(costs[k]).toFixed(4)+' bps')+'</b></div>').join('');
+    document.getElementById('vdctl-costs').innerHTML=manualSupported?['var_buy','var_sell'].map(k=>'<div class="vdctl-cost '+(recommended===k?'recommended':'')+'"><span>'+(recommended===k?'推荐 · ':'')+_vdDirectionLabel(k,hedgeLabel)+'</span><b>'+(costs[k]==null?'等待双边报价':Number(costs[k]).toFixed(4)+' bps')+'</b></div>').join(''):'<div class="vdctl-cost"><span>手动报价</span><b>待独立验收</b></div>';
     const direction=document.getElementById('vdctl-direction').value==='auto'?recommended:document.getElementById('vdctl-direction').value;
     const lev=Math.max(1,Number(document.getElementById('vdctl-lev').value)||1), notional=Math.max(0,Number(document.getElementById('vdctl-notional').value)||0);
     const ref=Number(quote[direction==='var_buy'?'var_ask':'var_bid'])||0, qty=ref?notional/ref:0;
     const varLong=direction==='var_buy', varLiq=ref*(varLong?1-1/lev:1+1/lev), decLiq=ref*(varLong?1+1/lev:1-1/lev);
-    document.getElementById('vdctl-preview').innerHTML='<div class="vdctl-q"><span>预计数量</span><b>'+(qty?qty.toFixed(6)+' '+esc(symbolEl.value):'—')+'</b></div><div class="vdctl-q"><span>预计保证金</span><b>'+(notional?money(notional/lev):'—')+'</b></div><div class="vdctl-q"><span>VAR 估算强平价</span><b>'+(ref?_vdPrice(varLiq):'—')+'</b></div><div class="vdctl-q"><span>DECIBEL 估算强平价</span><b>'+(ref?_vdPrice(decLiq):'—')+'</b></div>';
+    document.getElementById('vdctl-preview').innerHTML=manualSupported?'<div class="vdctl-q"><span>预计数量</span><b>'+(qty?qty.toFixed(6)+' '+esc(symbolEl.value):'—')+'</b></div><div class="vdctl-q"><span>预计保证金</span><b>'+(notional?money(notional/lev):'—')+'</b></div><div class="vdctl-q"><span>VAR 估算强平价</span><b>'+(ref?_vdPrice(varLiq):'—')+'</b></div><div class="vdctl-q"><span>'+esc(hedgeLabel.toUpperCase())+' 估算强平价</span><b>'+(ref?_vdPrice(decLiq):'—')+'</b></div>':'<div class="vdctl-q" style="grid-column:1/-1"><span>开仓预览</span><b>完成 '+esc(hedgeLabel)+' 写通道验收后开放</b></div>';
     const pairs=state.pairs||[], singles=state.single_leg||[];
-    let positions=_table(['VPS','交易对','状态','Var','Decibel','净敞口'],pairs,r=>'<tr><td class="num">'+esc(String(r.host||'').toUpperCase())+'</td><td class="num">'+esc(r.symbol)+'</td><td><span class="chip '+(r.status==='HEDGED'?'ok':'danger')+'">'+esc(r.status)+'</span></td><td class="num">'+esc((r.var||{}).side||'—')+' · '+money((r.var||{}).notional)+'</td><td class="num">'+esc((r.dec||{}).side||'—')+' · '+money((r.dec||{}).notional)+'</td><td class="num">'+money(r.net)+'</td></tr>');
+    let positions=_table(['VPS','交易对','状态','Var','对冲腿','净敞口'],pairs,r=>{const hedge=r.hedge||r.dec||{}, label=r.hedge_label||_vdVenueLabel(r.hedge_venue);return '<tr><td class="num">'+esc(String(r.host||'').toUpperCase())+'</td><td class="num">'+esc(r.symbol)+'</td><td><span class="chip '+(r.status==='HEDGED'?'ok':'danger')+'">'+esc(r.status)+'</span></td><td class="num">'+esc((r.var||{}).side||'—')+' · '+money((r.var||{}).notional)+'</td><td class="num">'+esc(label)+' · '+esc(hedge.side||'—')+' · '+money(hedge.notional)+'</td><td class="num">'+money(r.net)+'</td></tr>';});
     if(singles.length) positions='<div class="banner livewarn" style="margin-bottom:10px">单腿风险：'+singles.map(esc).join('、')+'；一键平仓已自动禁用。</div>'+positions;
     document.getElementById('vdctl-positions').innerHTML=positions;
     const jobs=state.jobs||[];
     document.getElementById('vdctl-jobs').innerHTML=jobs.length?jobs.map(j=>'<div class="vdctl-job"><b>#'+j.id+'</b><span class="chip '+(j.status==='succeeded'?'ok':j.status==='failed'||j.status==='blocked'?'danger':'warn')+'">'+esc(_vdStatusLabel(j.status))+'</span><span>'+esc((j.host||'').toUpperCase()+' '+(j.symbol||'全部')+' · '+(j.error||j.summary||''))+'</span><span class="vdctl-job-time">'+esc((j.created_at||'').slice(5,16))+'</span></div>').join(''):'<div class="vdctl-empty">暂无人工交易任务</div>';
     const active=state.active_job;
     const autoHost=((((window.__state||{}).varia_automation||{}).hosts||{})[hostEl.value]||{}), autoRunning=!!autoHost.running;
-    document.getElementById('vdctl-open').disabled=!!active||!symbolEl.value||autoRunning;
-    document.getElementById('vdctl-close').disabled=!!active||!!singles.length||!pairs.length;
+    document.getElementById('vdctl-refresh').disabled=!manualSupported||!!active;
+    document.getElementById('vdctl-open').disabled=!!active||!symbolEl.value||autoRunning||!manualSupported;
+    const closeUnsupported=pairs.some(r=>r.hedge_venue==='ondo'&&((((hosts.vps2||{}).ondo_acceptance||{}).mutation||{}).reduce_only_close!==true));
+    document.getElementById('vdctl-close').disabled=!!active||!!singles.length||!pairs.length||closeUnsupported;
     const lamp=document.getElementById('vdctl-state');
-    lamp.innerHTML='<i style="background:'+(active||autoRunning?'var(--warn)':'var(--ok)')+';box-shadow:0 0 0 3px '+(active||autoRunning?'rgba(231,197,71,.10)':'rgba(70,178,107,.12)')+'"></i><span>'+(active?'后台任务 #'+active.id+' '+_vdStatusLabel(active.status):(autoRunning?hostEl.value.toUpperCase()+' 自动运行中 · 手动开仓已停用':'仓位与任务状态已连接'))+'</span>';
+    const stateText=!manualSupported?(selectedHost.toUpperCase()+' '+esc(control.reason||'手动通道未验收')):(active?'后台任务 #'+active.id+' '+_vdStatusLabel(active.status):(autoRunning?hostEl.value.toUpperCase()+' 自动运行中 · 手动开仓已停用':'仓位与任务状态已连接'));
+    lamp.innerHTML='<i style="background:'+(!manualSupported||active||autoRunning?'var(--warn)':'var(--ok)')+';box-shadow:0 0 0 3px '+(!manualSupported||active||autoRunning?'rgba(231,197,71,.10)':'rgba(70,178,107,.12)')+'"></i><span>'+stateText+'</span>';
   }
 
   async function vdFetchControl(){
@@ -2060,7 +2118,7 @@
           '</div></div>';
       } else if(name.indexOf('成交记录')>=0){
         html+='<div class="src">近 40 笔对冲成交 · 数据来自 trades 表</div>'+
-          _table(['时间','VPS','SYMBOL','策略','名义','方向 V/D','basis','净PnL','状态'],vdt.trades,r=>
+          _table(['时间','VPS','SYMBOL','策略','名义','双腿方向','basis','净PnL','状态'],vdt.trades,r=>
             '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
       }
     } else if(pid==='pm'){

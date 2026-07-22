@@ -48,12 +48,18 @@ def _venue(*, ok: bool, side: Optional[str] = None, size: str = "0") -> dict:
     return {"ok": ok, "balance": {"total_equity": "100"}, "symbols": symbols}
 
 
-def _state(host: str, generated_at: str, decibel: dict, variational: dict) -> dict:
-    return {
+def _state(
+    host: str, generated_at: str, decibel: dict, variational: dict,
+    *, ondo: Optional[dict] = None,
+) -> dict:
+    state = {
         "host_id": host,
         "generated_at": generated_at,
         "exchanges": {"decibel": decibel, "variational": variational},
     }
+    if ondo is not None:
+        state["exchanges"]["ondo"] = ondo
+    return state
 
 
 def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
@@ -77,8 +83,9 @@ def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_pat
         _state(
             "vps2",
             (now - timedelta(hours=1)).isoformat(),
-            _venue(ok=True, side="sell", size="-0.473"),
+            _venue(ok=True),
             _venue(ok=True, side="buy", size="0.473"),
+            ondo=_venue(ok=True, side="sell", size="-0.473"),
         ),
     )
 
@@ -154,6 +161,29 @@ def test_var_decibel_exposes_redacted_venue_error_details(monkeypatch, tmp_path:
     assert result["position_sources"]["unverified"][0]["failed_venues"][0]["error"] == "Mac signer timeout"
 
 
+def test_vps2_ignores_legacy_decibel_and_uses_ondo_as_hedge(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    _write_json(
+        tmp_path / "ops_peer_state" / "vps2.json",
+        _state(
+            "vps2", datetime.now(timezone.utc).isoformat(),
+            _venue(ok=True, side="sell", size="-9"),
+            _venue(ok=True), ondo=_venue(ok=True),
+        ),
+    )
+
+    result = console._var_decibel()
+
+    assert result["pairs"] == []
+    assert result["single_leg"] == []
+    assert result["hosts"]["vps2"]["positions_verified"] is True
+    assert result["hosts"]["vps2"]["hedge_venue"] == "ondo"
+    assert result["hosts"]["vps2"]["equity_hedge"] == 100.0
+    assert set(result["hosts"]["vps2"]["venue_reads"]) == {"variational", "ondo"}
+
+
 def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -164,13 +194,17 @@ def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
         ("vps1", 1.0, 0.1, 10.0),
         ("vps2", 2.0, 0.2, 20.0),
     ):
-        state = _state(host, now, _venue(ok=True), _venue(ok=True))
+        state = _state(
+            host, now, _venue(ok=True), _venue(ok=True),
+            ondo=_venue(ok=True) if host == "vps2" else None,
+        )
         state["exchanges"]["decibel"]["points"] = {"total_points": dec_points}
         state["exchanges"]["variational"]["points"] = {"total_points": var_points}
+        hedge_venue = "decibel" if host == "vps1" else "ondo"
         state["trade_volume"] = {
             "ok": True,
             "venues": {
-                "decibel": {
+                hedge_venue: {
                     "weekly_notional_usdc": volume,
                     "total_notional_usdc": volume * 10,
                 },
@@ -195,10 +229,10 @@ def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
     assert result["equity_complete"] is True
     assert result["equity_total"] == 400.0
     assert result["points_complete"] == {"decibel": True, "variational": True}
-    assert result["points_decibel"] == 3.0
+    assert result["points_decibel"] == 1.0
     assert result["points_variational"] == 0.3
     assert result["points_by_venue"] == {
-        "decibel": {"total": 3.0, "hosts": {"vps1": 1.0, "vps2": 2.0}, "complete": True},
+        "decibel": {"total": 1.0, "hosts": {"vps1": 1.0}, "complete": True},
         "variational": {"total": 0.3, "hosts": {"vps1": 0.1, "vps2": 0.2}, "complete": True},
     }
     assert result["volume_complete"] == {"weekly": True, "total": True}
@@ -212,7 +246,10 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
     _patch_varia_dependencies(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)
     for host in ("vps1", "vps2"):
-        state = _state(host, now.isoformat(), _venue(ok=True), _venue(ok=True))
+        state = _state(
+            host, now.isoformat(), _venue(ok=True), _venue(ok=True),
+            ondo=_venue(ok=True) if host == "vps2" else None,
+        )
         for venue in ("decibel", "variational"):
             state["exchanges"][venue]["points"] = {"total_points": "1"}
         target = tmp_path / ("ops_state.json" if host == "vps1" else "ops_peer_state/vps2.json")
@@ -225,7 +262,7 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
                 "variational": {"initial": 100, "cashflows": [], "reconciled": True},
             },
             "vps2": {
-                "decibel": {"initial": 90, "cashflows": [], "reconciled": True},
+                "ondo": {"initial": 90, "cashflows": [], "reconciled": True},
                 "variational": {"initial": 100, "cashflows": [], "reconciled": True},
             },
         },
@@ -332,8 +369,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "查看全部 '+alerts.length+' 条" in html
     assert 'class="alert-more"' in html
     assert "hosts[h].age_sec??999999" in html
-    assert "四源权益不完整" in html
-    assert "四源交易量不完整" in html
+    assert "双边权益不完整" in html
+    assert "双边交易量不完整" in html
     assert "const score=vd.points_by_venue||{}" in html
     assert 'id="vd-equity-tooltip"' in html
     assert "svg.onmousemove=event=>" in html
@@ -356,7 +393,12 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-strategy"' in html
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
-    assert "自动策略只会从绿色币种中下单" in html
+    assert 'id="vdauto-ondo-acceptance"' in html
+    assert "VPS2 · Var/Ondo" in html
+    assert "Ondo 正式环境验收" in html
+    assert "下方颜色仅反映 VPS1 Var/Decibel" in html
+    assert "VPS2 Var/Ondo 不复用这些报价" in html
+    assert "普通币 2bp、RWA 3bp" in html
     assert 'id="vdauto-spread"' in html
     assert 'id="vdauto-leverage-a"' in html
     assert 'id="vdauto-leverage-b"' in html
@@ -590,6 +632,76 @@ def test_start_automation_reconciles_selected_hosts_without_trading(
     assert not any("open" in action or "close" in action for _, action in actions)
 
 
+def test_start_automation_blocks_vps2_until_ondo_mutations_are_verified(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": False,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "hosts": {
+            "vps1": {"enabled": False, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    _write_json(tmp_path / "ops_peer_state" / "vps2.json", {
+        "host_id": "vps2",
+        "ondo_acceptance": {
+            "present": True,
+            "environment": "production",
+            "live_ready": False,
+            "read_only": {"passed": True, "mutations_sent": False},
+            "mutation": {
+                "leverage_sync": False,
+                "post_only_cancel": False,
+                "partial_fill_reconcile": False,
+                "reduce_only_close": False,
+                "paired_micro_hedge": False,
+            },
+        },
+    })
+    monkeypatch.setattr(console, "_varia_automation_state", lambda vd=None: {"status": "attention"})
+    actions = []
+    monkeypatch.setattr(console, "_varia_worker_action", lambda host, action: actions.append((host, action)))
+    request = type("RequestStub", (), {"headers": {}})()
+
+    response = asyncio.run(console.varia_automation_start(request))
+    body = json.loads(response.body)
+
+    assert response.status_code == 409
+    assert "Ondo 真实交易验收待完成" in body["error"]
+    assert "未启动任何 worker" in body["error"]
+    assert actions == []
+    assert json.loads((tmp_path / "auto_strategy_state.json").read_text())["enabled"] is False
+
+
+def test_ondo_live_readiness_requires_correct_strategy_and_all_mutations() -> None:
+    state = {
+        "ondo_acceptance": {
+            "present": True,
+            "environment": "production",
+            "live_ready": True,
+            "read_only": {"passed": True, "mutations_sent": False},
+            "mutation": {
+                "leverage_sync": True,
+                "post_only_cancel": True,
+                "partial_fill_reconcile": True,
+                "reduce_only_close": True,
+                "paired_micro_hedge": True,
+            },
+        }
+    }
+
+    assert console._varia_host_live_readiness("vps2", state, "B")["ready"] is True
+    wrong = console._varia_host_live_readiness("vps2", state, "A")
+    assert wrong["ready"] is False
+    assert "策略 B" in wrong["reason"]
+
+
 def test_stop_automation_only_stops_workers_and_leaves_positions_alone(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -651,7 +763,7 @@ def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path
     monkeypatch.setattr(console, "VARIA_DIR", tmp_path / "data")
     command = console._varia_live_command(
         host="vps2", symbol="SOL", var_side="buy", quantity=1.25,
-        leverage=6, notional=100,
+        leverage=6, notional=100, hedge_venue="ondo",
     )
 
     assert command[0] == "ssh"
@@ -660,6 +772,7 @@ def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path
     assert "--symbol SOL" in command[-1]
     assert "--leverage 6" in command[-1]
     assert "--leverage-cap 40" in command[-1]
+    assert "--hedge-venue ondo" in command[-1]
     assert "private" not in " ".join(command).lower()
 
 

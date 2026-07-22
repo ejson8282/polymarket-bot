@@ -4,9 +4,9 @@
 - GET /api/state   → 只读现有状态文件/库;缺失或过期字段返回 null/未知,前端不展示样例值。
 - POST /api/varia/control/* → Tailscale 内网受控人工任务；复用原队列和一次性 worker。
 
-四源不混算铁律:vps1/decibel、vps1/var、vps2/decibel、vps2/var 逐源独立读取,
-总计=真实来源相加;某源缺失就标缺失,绝不复制他源顶替。
-签名密钥不进入本服务；真实操作仍由原 Var/Decibel 执行环境完成。
+四源不混算铁律:每台 VPS 独立读取 Variational 与其指定对冲平台,
+当前 VPS1=Var/Decibel、VPS2=Var/Ondo；总计只加真实来源,某源缺失绝不复制顶替。
+签名密钥不进入本服务；真实操作仍由原对冲执行环境完成。
 
 环境变量:
   LATITUDE_DATA_DIR  pmbot 数据目录(默认仓库 data/;VPS=/home/ubuntu/polymarket-bot/data)
@@ -43,6 +43,17 @@ VARIA_AUTO_WORKER_TEMPLATE = os.getenv(
 VARIA_VPS2_REPO = os.getenv(
     "VARIA_VPS2_REPO", "/home/ubuntu/varia-decibel-farming-live"
 )
+VARIA_HEDGE_VENUE_BY_HOST = {"vps1": "decibel", "vps2": "ondo"}
+VARIA_STRATEGY_BY_HOST = {"vps1": "A", "vps2": "B"}
+VARIA_VENUE_LABELS = {"variational": "Var", "decibel": "Decibel", "ondo": "Ondo"}
+VARIA_ONDO_MUTATION_LABELS = (
+    ("leverage_sync", "杠杆同步"),
+    ("post_only_cancel", "挂单撤单"),
+    ("partial_fill_reconcile", "部分成交对账"),
+    ("reduce_only_close", "只减仓平仓"),
+    ("paired_micro_hedge", "微量双腿"),
+)
+VARIA_ONDO_MUTATION_CHECKS = tuple(key for key, _ in VARIA_ONDO_MUTATION_LABELS)
 VARIA_MARKET_CANDIDATES = tuple(
     item.strip().upper() for item in os.getenv(
         "VARIA_MARKET_CANDIDATES",
@@ -452,7 +463,7 @@ def _predictfun() -> Dict[str, Any]:
     return out
 
 
-# ---------- Var/Decibel(四源:逐 host 逐 venue) ----------
+# ---------- Var hedge (each host owns an independent venue pair) ----------
 
 def _pos_open(payload: Any) -> bool:
     if not isinstance(payload, dict):
@@ -478,11 +489,19 @@ def _venue_read_error(payload: dict) -> str:
     return text[:180]
 
 
+def _host_hedge_venue(host: str) -> str:
+    return VARIA_HEDGE_VENUE_BY_HOST.get(str(host).lower(), "decibel")
+
+
+def _venue_label(venue: str) -> str:
+    return VARIA_VENUE_LABELS.get(venue, venue.title())
+
+
 def _var_decibel() -> Dict[str, Any]:
     peer_dir = VARIA_DIR / "ops_peer_state"
     hosts: Dict[str, dict] = {}
-    # 口径同 varia 自家 _state_map:peer 目录打底,本机 ops_state.json 覆盖自己
-    # 那台(peer 副本可能陈旧,本机最了解自己)。四源仍逐 host 逐 venue 独立。
+    # peer 目录打底,本机 ops_state.json 覆盖自己。每台主机只计算
+    # Variational + 该主机指定的 hedge venue,不把 VPS2 的旧 Decibel 数据混入。
     by_host: Dict[str, dict] = {}
     for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
         state = _read_json(path)
@@ -511,14 +530,18 @@ def _var_decibel() -> Dict[str, Any]:
         host = str(state.get("host_id") or "").lower() or "unknown"
         if host.startswith("vm-"):
             host = "vps1"
+        hedge_venue = _host_hedge_venue(host)
+        hedge_label = _venue_label(hedge_venue)
         age = _iso_age(state.get("generated_at"))
         exchanges = state.get("exchanges") if isinstance(state.get("exchanges"), dict) else {}
         h: Dict[str, Any] = {"age_sec": age, "age": _age_text(age),
-                             "stale": (age is None or age > STALE_SEC)}
-        dec_syms = {}
-        var_syms = {}
+                             "stale": (age is None or age > STALE_SEC),
+                             "hedge_venue": hedge_venue, "hedge_label": hedge_label,
+                             "points_dec_available": False, "points_decibel": None,
+                             "points_var_available": False, "points_variational": None}
+        venue_symbols: Dict[str, dict] = {}
         venue_reads: Dict[str, dict] = {}
-        for venue in ("decibel", "variational"):
+        for venue in ("variational", hedge_venue):
             payload = exchanges.get(venue) if isinstance(exchanges.get(venue), dict) else {}
             bal = payload.get("balance") if isinstance(payload.get("balance"), dict) else {}
             eq = _num(bal.get("total_equity"))
@@ -528,14 +551,15 @@ def _var_decibel() -> Dict[str, Any]:
                 "error": None if venue_ok else _venue_read_error(payload),
             }
             trusted_eq = eq if (venue_ok and not h["stale"]) else None
-            h[f"equity_{venue[:3]}"] = trusted_eq
-            h[f"equity_{venue[:3]}_last_seen"] = eq
-            h[f"ok_{venue[:3]}"] = payload.get("ok")
+            alias = {"variational": "var", "decibel": "dec", "ondo": "ondo"}.get(venue, venue)
+            h[f"equity_{alias}"] = trusted_eq
+            h[f"equity_{alias}_last_seen"] = eq
+            h[f"ok_{alias}"] = payload.get("ok")
             if trusted_eq is not None:
                 equity_total += eq
                 equity_found = True
+            venue_symbols[venue] = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
             if venue == "decibel":
-                dec_syms = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
                 pts = payload.get("points") if isinstance(payload.get("points"), dict) else {}
                 rows = pts.get("breakdown") if isinstance(pts.get("breakdown"), list) else []
                 vals = [_num(r.get("points")) for r in rows if isinstance(r, dict)]
@@ -549,8 +573,7 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_decibel"] = total if h["points_dec_available"] else None
                 if h["points_dec_available"]:
                     points_dec = (points_dec or 0.0) + total
-            else:
-                var_syms = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
+            elif venue == "variational":
                 pts = payload.get("points") if isinstance(payload.get("points"), dict) else {}
                 tp = _num(pts.get("total_points"))
                 h["points_var_available"] = bool(
@@ -559,23 +582,32 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_variational"] = tp if h["points_var_available"] else None
                 if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
+        hedge_alias = {"decibel": "dec", "ondo": "ondo"}.get(hedge_venue, hedge_venue)
+        h["equity_hedge"] = h.get(f"equity_{hedge_alias}")
+        h["equity_hedge_last_seen"] = h.get(f"equity_{hedge_alias}_last_seen")
+        h["ok_hedge"] = h.get(f"ok_{hedge_alias}")
+        if hedge_venue == "ondo":
+            acceptance = state.get("ondo_acceptance")
+            h["ondo_acceptance"] = acceptance if isinstance(acceptance, dict) else {"present": False}
         h["venue_reads"] = venue_reads
-        # 只有快照新鲜且两家交易所读取都明确成功，才能判断空仓/对冲/单腿。
+        var_syms = venue_symbols.get("variational", {})
+        hedge_syms = venue_symbols.get(hedge_venue, {})
+        # 只有快照新鲜且两家指定交易所读取都明确成功，才能判断空仓/对冲/单腿。
         # 任何一源过期或失败都标“仓位未知”，不拿上次快照冒充当前状态。
-        symbols = sorted(set(dec_syms) | set(var_syms))
-        positions_verified = (not h["stale"] and h.get("ok_dec") is True
+        symbols = sorted(set(hedge_syms) | set(var_syms))
+        positions_verified = (not h["stale"] and h.get("ok_hedge") is True
                               and h.get("ok_var") is True)
         h["positions_verified"] = positions_verified
         if positions_verified:
             verified_hosts.append(host)
         else:
             last_seen = [symbol for symbol in symbols
-                         if _pos_open(dec_syms.get(symbol)) or _pos_open(var_syms.get(symbol))]
+                         if _pos_open(hedge_syms.get(symbol)) or _pos_open(var_syms.get(symbol))]
             reason = "快照过期" if h["stale"] else "交易所读取不完整"
             failed_venues = [
                 {
                     "venue": venue,
-                    "label": "Decibel" if venue == "decibel" else "Var",
+                    "label": _venue_label(venue),
                     "error": read.get("error") or "状态未返回",
                 }
                 for venue, read in venue_reads.items()
@@ -592,11 +624,11 @@ def _var_decibel() -> Dict[str, Any]:
             })
         # 单腿检测 + 配对腿行(口径同 varia _host_exposure_status 的核心判断)
         for symbol in (symbols if positions_verified else []):
-            d_pos = (dec_syms.get(symbol) or {}).get("position") if isinstance(dec_syms.get(symbol), dict) else {}
+            d_pos = (hedge_syms.get(symbol) or {}).get("position") if isinstance(hedge_syms.get(symbol), dict) else {}
             v_pos = (var_syms.get(symbol) or {}).get("position") if isinstance(var_syms.get(symbol), dict) else {}
             d_pos = d_pos if isinstance(d_pos, dict) else {}
             v_pos = v_pos if isinstance(v_pos, dict) else {}
-            d_open = _pos_open(dec_syms.get(symbol))
+            d_open = _pos_open(hedge_syms.get(symbol))
             v_open = _pos_open(var_syms.get(symbol))
             if not d_open and not v_open:
                 continue
@@ -618,16 +650,20 @@ def _var_decibel() -> Dict[str, Any]:
 
             var_leg, dec_leg = _leg(v_pos, v_open), _leg(d_pos, d_open)
             pairs.append({
-                "host": host, "symbol": symbol, "var": var_leg, "dec": dec_leg,
+                "host": host, "symbol": symbol, "var": var_leg,
+                "hedge": dec_leg, "dec": dec_leg,
+                "hedge_venue": hedge_venue, "hedge_label": hedge_label,
                 "net": round(var_leg["signed"] + dec_leg["signed"], 2),
                 "status": ("HEDGED" if (d_open and v_open) else
-                           ("DEC 裸腿" if d_open else "VAR 裸腿")),
+                           (f"{hedge_label.upper()} 裸腿" if d_open else "VAR 裸腿")),
             })
         if positions_verified:
             tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
             host_weekly_complete = tv.get("ok") is True
             host_total_complete = tv.get("ok") is True
-            for venue_data in (tv.get("venues") or {}).values():
+            venue_rows = tv.get("venues") if isinstance(tv.get("venues"), dict) else {}
+            for venue in ("variational", hedge_venue):
+                venue_data = venue_rows.get(venue)
                 if isinstance(venue_data, dict):
                     w = _num(venue_data.get("weekly_notional_usdc"))
                     t = _num(venue_data.get("total_notional_usdc"))
@@ -642,8 +678,6 @@ def _var_decibel() -> Dict[str, Any]:
                         host_total_complete = False
                 else:
                     host_weekly_complete = host_total_complete = False
-            if len(tv.get("venues") or {}) < 2:
-                host_weekly_complete = host_total_complete = False
             if host_weekly_complete:
                 volume_weekly_hosts.add(host)
             if host_total_complete:
@@ -656,12 +690,16 @@ def _var_decibel() -> Dict[str, Any]:
                     "hosts": auto.get("hosts") if isinstance(auto.get("hosts"), dict) else {}}
     equity_complete = bool(hosts) and all(
         h.get("positions_verified") is True
-        and h.get("equity_dec") is not None
         and h.get("equity_var") is not None
+        and h.get("equity_hedge") is not None
         for h in hosts.values()
     )
-    points_dec_complete = bool(hosts) and all(
-        h.get("points_dec_available") is True for h in hosts.values()
+    decibel_hosts = {
+        host: data for host, data in hosts.items()
+        if data.get("hedge_venue") == "decibel"
+    }
+    points_dec_complete = bool(decibel_hosts) and all(
+        h.get("points_dec_available") is True for h in decibel_hosts.values()
     )
     points_var_complete = bool(hosts) and all(
         h.get("points_var_available") is True for h in hosts.values()
@@ -676,7 +714,7 @@ def _var_decibel() -> Dict[str, Any]:
             "hosts": {
                 host: round(_num(data.get("points_decibel")), 4)
                 if data.get("points_decibel") is not None else None
-                for host, data in sorted(hosts.items())
+                for host, data in sorted(decibel_hosts.items())
             },
             "complete": points_dec_complete,
         },
@@ -692,6 +730,11 @@ def _var_decibel() -> Dict[str, Any]:
     }
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
+        "host_venues": {
+            host: {"var": "variational", "hedge": data.get("hedge_venue"),
+                   "hedge_label": data.get("hedge_label")}
+            for host, data in sorted(hosts.items())
+        },
         "equity_total": round(equity_total, 2) if equity_found and equity_complete else None,
         "equity_complete": equity_complete,
         # Legacy totals remain for older readers. New clients should use the
@@ -791,7 +834,7 @@ def record_reconciled_pnl_snapshot() -> Dict[str, Any]:
     # can never record a different accounting view from the one the user sees.
     capital = (_var_decibel().get("capital") or {})
     if not capital.get("complete"):
-        return {"ok": False, "reason": capital.get("reason", "四源未完成对账")}
+        return {"ok": False, "reason": capital.get("reason", "两台 VPS 的指定交易账户尚未完成对账")}
     point = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "pnl": round(_num(capital.get("pnl")) or 0.0, 6),
@@ -845,7 +888,11 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
     missing: List[str] = []
     for host in sorted(hosts):
         host_ledger = ledger.get(host) if isinstance(ledger.get(host), dict) else {}
-        values = (("decibel", "equity_dec", "Decibel"), ("variational", "equity_var", "Var"))
+        hedge_venue = str(hosts.get(host, {}).get("hedge_venue") or _host_hedge_venue(host))
+        values = (
+            ("variational", "equity_var", "Var"),
+            (hedge_venue, "equity_hedge", _venue_label(hedge_venue)),
+        )
         for venue, equity_key, label in values:
             entry = host_ledger.get(venue) if isinstance(host_ledger, dict) else None
             current = _num(hosts.get(host, {}).get(equity_key))
@@ -1139,9 +1186,22 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         if symbol and symbol not in symbols:
             symbols.append(symbol)
     jobs = _varia_recent_jobs()
+    host_controls = {}
+    for host in ("vps1", "vps2"):
+        hedge_venue = _host_hedge_venue(host)
+        host_controls[host] = {
+            "hedge_venue": hedge_venue,
+            "hedge_label": _venue_label(hedge_venue),
+            # The current manual quote/submit endpoint still consumes the Decibel
+            # market snapshot. Keep VPS2 disabled until its Ondo-native manual
+            # quote and one-click confirmation path is separately verified.
+            "manual_open_supported": hedge_venue == "decibel",
+            "reason": None if hedge_venue == "decibel" else "VPS2 Var/Ondo 手动开仓入口尚未验收",
+        }
     return {
         "symbols": symbols, "quotes": quotes, "pairs": vd.get("pairs", []),
         "single_leg": vd.get("single_leg", []), "hosts": vd.get("hosts", {}),
+        "host_controls": host_controls,
         "jobs": jobs, "active_job": _varia_active_job(),
         "max_leverage": 40,
     }
@@ -1363,22 +1423,91 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
     }
 
 
+def _varia_host_live_readiness(
+    host: str, raw_state: Optional[dict] = None, strategy: Optional[str] = None,
+) -> Dict[str, Any]:
+    hedge_venue = _host_hedge_venue(host)
+    expected_strategy = VARIA_STRATEGY_BY_HOST.get(host)
+    strategy_ok = strategy is None or strategy == expected_strategy
+    if hedge_venue != "ondo":
+        return {
+            "ready": strategy_ok, "hedge_venue": hedge_venue,
+            "hedge_label": _venue_label(hedge_venue),
+            "expected_strategy": expected_strategy,
+            "reason": (None if strategy_ok else
+                       f"当前只验收策略 {expected_strategy}（Var/{_venue_label(hedge_venue)}）"),
+            "acceptance": None,
+        }
+    state = raw_state if isinstance(raw_state, dict) else _varia_raw_states().get(host, {})
+    acceptance = state.get("ondo_acceptance") if isinstance(state, dict) else None
+    acceptance = acceptance if isinstance(acceptance, dict) else {"present": False}
+    read_only = acceptance.get("read_only") if isinstance(acceptance.get("read_only"), dict) else {}
+    mutation = acceptance.get("mutation") if isinstance(acceptance.get("mutation"), dict) else {}
+    pending = [
+        label for name, label in VARIA_ONDO_MUTATION_LABELS
+        if mutation.get(name) is not True
+    ]
+    read_only_ok = read_only.get("passed") is True and read_only.get("mutations_sent") is False
+    ready = bool(strategy_ok and read_only_ok and acceptance.get("live_ready") is True and not pending)
+    if not strategy_ok:
+        reason = f"当前只验收策略 {expected_strategy}（Var/{_venue_label(hedge_venue)}）"
+    elif not read_only_ok:
+        reason = "Ondo 正式环境只读验收未通过"
+    elif pending:
+        reason = "Ondo 真实交易验收待完成：" + "、".join(pending)
+    elif not ready:
+        reason = "Ondo 尚未标记为可实盘"
+    else:
+        reason = None
+    return {
+        "ready": ready, "hedge_venue": hedge_venue,
+        "hedge_label": _venue_label(hedge_venue),
+        "expected_strategy": expected_strategy, "reason": reason,
+        "acceptance": acceptance,
+    }
+
+
+def _varia_selected_start_blocks(state: dict) -> List[str]:
+    raw_states = _varia_raw_states()
+    blocks: List[str] = []
+    for host, configured in (state.get("hosts") or {}).items():
+        if not isinstance(configured, dict) or not configured.get("enabled"):
+            continue
+        readiness = _varia_host_live_readiness(
+            host, raw_states.get(host), str(configured.get("strategy") or ""),
+        )
+        if not readiness.get("ready"):
+            blocks.append(f"{host.upper()}：{readiness.get('reason') or '实盘验收未完成'}")
+    return blocks
+
+
 def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
     vd = vd if isinstance(vd, dict) else _var_decibel()
     budget = vd.get("budget") if isinstance(vd.get("budget"), dict) else {}
     host_budget = budget.get("hosts") if isinstance(budget.get("hosts"), dict) else {}
+    raw_states = _varia_raw_states()
     hosts: Dict[str, dict] = {}
     for host in ("vps1", "vps2"):
         configured = state["hosts"][host]
         service = _varia_worker_status(host)
         runtime = _varia_auto_runtime(host)
+        readiness = _varia_host_live_readiness(
+            host, raw_states.get(host), str(configured.get("strategy") or ""),
+        )
         hosts[host] = {
             **configured,
             "service": service,
             "running": bool(state["enabled"] and configured["enabled"] and service == "active"),
             "runtime": runtime,
             "budget": host_budget.get(host) if isinstance(host_budget.get(host), dict) else None,
+            "hedge_venue": readiness["hedge_venue"],
+            "hedge_label": readiness["hedge_label"],
+            "expected_strategy": readiness["expected_strategy"],
+            "live_ready": readiness["ready"],
+            "start_blocked": not readiness["ready"],
+            "start_block_reason": readiness["reason"],
+            "acceptance": readiness["acceptance"],
         }
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     running = [host for host, item in hosts.items() if item.get("running")]
@@ -1393,12 +1522,19 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         status = "partial"
     else:
         status = "attention"
+    start_blocks = [
+        f"{host.upper()}：{item.get('start_block_reason')}"
+        for host, item in hosts.items()
+        if item.get("enabled") and item.get("start_blocked")
+    ]
     return {
         **state,
         "status": status,
         "selected_hosts": selected,
         "running_hosts": running,
         "hosts": hosts,
+        "start_blocked": bool(start_blocks),
+        "start_block_reasons": start_blocks,
         "budget": budget,
         "strategy_pools": _varia_strategy_pools(float(state["max_auto_spread_bps"])),
     }
@@ -1457,6 +1593,7 @@ def _varia_live_command(
     *, host: str, symbol: str, var_side: str, quantity: float, leverage: float,
     notional: Optional[float] = None, reduce_only: bool = False,
     take_profit: Optional[float] = None, stop_loss: Optional[float] = None,
+    hedge_venue: str = "decibel",
 ) -> List[str]:
     command = [
         _varia_python(), "-m", "src.main", "--mode", "live", "--config", "config.yaml",
@@ -1464,6 +1601,8 @@ def _varia_live_command(
         "--quantity", f"{quantity:.10f}".rstrip("0").rstrip("."),
         "--leverage", f"{leverage:g}", "--leverage-cap", "40",
     ]
+    if hedge_venue != "decibel":
+        command.extend(["--hedge-venue", hedge_venue])
     if notional is not None and not reduce_only:
         command.extend(["--notional", f"{notional:.8f}".rstrip("0").rstrip(".")])
     if reduce_only:
@@ -1494,7 +1633,8 @@ def _varia_close_commands() -> tuple[List[dict], List[str]]:
     for host, state in _varia_raw_states().items():
         age = _iso_age(state.get("generated_at"))
         exchanges = state.get("exchanges") if isinstance(state.get("exchanges"), dict) else {}
-        dec = exchanges.get("decibel") if isinstance(exchanges.get("decibel"), dict) else {}
+        hedge_venue = _host_hedge_venue(host)
+        dec = exchanges.get(hedge_venue) if isinstance(exchanges.get(hedge_venue), dict) else {}
         var = exchanges.get("variational") if isinstance(exchanges.get("variational"), dict) else {}
         verified = age is not None and age <= STALE_SEC and dec.get("ok") is True and var.get("ok") is True
         if not verified:
@@ -1510,6 +1650,12 @@ def _varia_close_commands() -> tuple[List[dict], List[str]]:
             if d_open != v_open:
                 blocked.append(f"{host.upper()}·{symbol} 是单腿仓位")
                 continue
+            if hedge_venue == "ondo":
+                readiness = _varia_host_live_readiness(host, state)
+                mutation = (readiness.get("acceptance") or {}).get("mutation") or {}
+                if mutation.get("reduce_only_close") is not True:
+                    blocked.append(f"{host.upper()}·{symbol} Ondo 平仓链路尚未验收")
+                    continue
             d_size, v_size = _signed_position_size(dp), _signed_position_size(vp)
             quantity = min(abs(d_size), abs(v_size))
             if quantity <= 0:
@@ -1518,11 +1664,12 @@ def _varia_close_commands() -> tuple[List[dict], List[str]]:
             var_side = "sell" if v_size > 0 else "buy"
             command = _varia_live_command(
                 host=host, symbol=symbol, var_side=var_side, quantity=quantity,
-                leverage=1, reduce_only=True,
+                leverage=1, reduce_only=True, hedge_venue=hedge_venue,
             )
             commands.append({
                 "command": command, "host": host, "symbol": symbol.upper(),
                 "planned_var_side": var_side, "planned_quantity": f"{quantity:.10f}",
+                "hedge_venue": hedge_venue,
             })
     return commands, blocked
 
@@ -2457,6 +2604,11 @@ async def varia_control_open(payload: dict, request: Request) -> JSONResponse:
     stop_loss = _num(data.get("stop_loss")) if data.get("stop_loss") not in (None, "") else None
     if host not in {"vps1", "vps2"}:
         return JSONResponse({"ok": False, "error": "请选择 VPS1 或 VPS2"}, status_code=400)
+    if _host_hedge_venue(host) != "decibel":
+        return JSONResponse({
+            "ok": False,
+            "error": "VPS2 Var/Ondo 手动开仓尚未完成独立报价与确认验收，未提交订单",
+        }, status_code=409)
     auto_state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
     auto_host = auto_state.get("hosts", {}).get(host, {})
     if (auto_state.get("enabled") and auto_host.get("enabled")
@@ -3320,6 +3472,13 @@ async def varia_automation_start(request: Request) -> JSONResponse:
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     if not selected:
         return JSONResponse({"ok": False, "error": "请先至少启用一台 VPS 并保存配置"}, status_code=409)
+    start_blocks = _varia_selected_start_blocks(state)
+    if start_blocks:
+        return JSONResponse({
+            "ok": False,
+            "error": "；".join(start_blocks) + "。未启动任何 worker。",
+            "state": _varia_automation_state(),
+        }, status_code=409)
     written = _write_auto_strategy({"enabled": True})
     if not written.get("ok"):
         return JSONResponse(written, status_code=int(written.pop("code", 500)))
