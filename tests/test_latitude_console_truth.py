@@ -647,6 +647,10 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-stop"' in html
     assert 'id="vdauto-vps1-strategy"' in html
     assert 'id="vdauto-vps2-strategy"' in html
+    assert 'id="vdauto-vps1-plan"' in html
+    assert 'id="vdauto-vps2-plan"' in html
+    assert "_vdAutoRenderNextPlan(host,h)" in html
+    assert "只读，未下单" in html
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
     assert 'id="vdauto-ondo-acceptance"' in html
@@ -753,6 +757,35 @@ def test_varia_automation_status_requires_config_and_live_worker(
     assert result["running_hosts"] == ["vps1"]
     assert result["hosts"]["vps1"]["running"] is True
     assert result["hosts"]["vps2"]["running"] is False
+
+
+def test_varia_auto_runtime_exposes_worker_next_open_plan(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    _write_json(tmp_path / "auto_strategy_runtime.json", {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "plan_ready_read_only",
+        "message": "只读计划已生成",
+        "next_open_plan": {
+            "status": "ready",
+            "host": "vps1",
+            "strategy": "A",
+            "hedge_venue": "decibel",
+            "symbol": "BTC",
+            "direction": "Var buy / Decibel sell",
+            "leverage": "6",
+            "notional_usdc": "100",
+            "ready_for_live": False,
+            "mutations_sent": False,
+        },
+    })
+
+    result = console._varia_auto_runtime("vps1")
+
+    assert result["status"] == "plan_ready_read_only"
+    assert result["next_open_plan"]["symbol"] == "BTC"
+    assert result["next_open_plan"]["ready_for_live"] is False
 
 
 def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(

@@ -335,6 +335,8 @@
 .vdauto-host-name{font-family:var(--mono);font-size:13px;font-weight:600}
 .vdauto-host-state{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .vdauto-strategy-note{grid-column:1/-1;font-size:11px;color:var(--faint)}
+.vdauto-next-plan{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr;gap:5px 10px;padding:9px 10px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);font-family:var(--mono);font-size:10px;color:var(--muted)}
+.vdauto-next-plan b{color:var(--text);font-weight:600}.vdauto-next-plan .wait{color:var(--warn)}.vdauto-next-plan .ok{color:var(--ok)}
 .vdauto-acceptance{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,2.2fr);gap:14px;margin-top:12px;padding:13px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
 .vdauto-acceptance-title{font-family:var(--mono);font-size:12px;font-weight:650}.vdauto-acceptance-sub{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.55}
 .vdauto-checks{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.vdauto-check-pill{border:1px solid var(--line);border-radius:5px;padding:4px 7px;font-family:var(--mono);font-size:10px;color:var(--faint)}
@@ -505,12 +507,14 @@
         <label class="vdauto-check"><input type="checkbox" id="vdauto-vps1-enabled"> 参与自动运行</label>
         <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B" disabled>策略 B · 仅 VPS2/Ondo</option></select></div>
         <div class="vdauto-strategy-note" id="vdauto-vps1-note"></div>
+        <div class="vdauto-next-plan" id="vdauto-vps1-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
       </div>
       <div class="vdauto-host">
         <div class="vdauto-host-head"><span class="vdauto-host-name">VPS2 · Var/Ondo</span><span class="vdauto-host-state" id="vdauto-vps2-state">读取中</span></div>
         <label class="vdauto-check"><input type="checkbox" id="vdauto-vps2-enabled"> 参与自动运行</label>
         <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A" disabled>策略 A · 仅 VPS1/Decibel</option><option value="B">策略 B · 高权重长持仓</option></select></div>
         <div class="vdauto-strategy-note" id="vdauto-vps2-note"></div>
+        <div class="vdauto-next-plan" id="vdauto-vps2-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
       </div>
     </div>
     <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
@@ -3021,6 +3025,24 @@
   function _vdAutoServiceLabel(value){return ({active:'后台在线',activating:'启动中',deactivating:'停止中',inactive:'已停止',failed:'后台异常',unknown:'状态未知'})[value]||value||'状态未知';}
   function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
 
+  function _vdAutoRenderNextPlan(host,data){
+    const el=document.getElementById('vdauto-'+host+'-plan'); if(!el)return;
+    const plan=((data||{}).runtime||{}).next_open_plan||{};
+    if(!plan.status){el.innerHTML='<span>下一单计划</span><b class="wait">等待后台生成</b>';return;}
+    if(plan.status!=='ready'){
+      const reasons={no_open_candidate:'当前没有同时满足点差、资金费和预算的币种',waiting_rwa_candidate:'正在等待符合 RWA 规则的币种',open_orders_present:'当前存在挂单，暂不生成新计划',single_leg_risk:'检测到单腿仓位，已暂停新计划',max_positions:'已达到最大持仓数量'};
+      const reason=reasons[plan.reason]||plan.reason||'当前没有满足条件的候选';
+      el.innerHTML='<span>下一单计划</span><b class="wait">'+esc(reason)+'</b>';
+      return;
+    }
+    const venue=plan.hedge_venue==='ondo'?'Ondo':'Decibel', num=v=>(v==null||v===''?null:Number(v));
+    const notional=num(plan.notional_usdc), leverage=num(plan.leverage), cost=num(plan.expected_entry_cost_bps), funding=num(plan.net_funding_24h_bps);
+    const direction=plan.var_side==='buy'?_vdDirectionLabel('var_buy',venue):plan.var_side==='sell'?_vdDirectionLabel('var_sell',venue):(plan.direction||('Var / '+venue));
+    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':''].filter(Boolean);
+    const ready=plan.ready_for_live===true;
+    el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
+  }
+
   function _vdAutoRenderPools(state){
     const pools=state.strategy_pools||{}, venues=pools.venues||{}, dec=venues.decibel||pools, ondo=venues.ondo||{};
     const major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(dec.allowed||[]), blocked=new Set(dec.blocked||[]), metrics=dec.metrics||{};
@@ -3104,6 +3126,7 @@
       const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
       status.textContent=(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service))+blocked+age;
       status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':(h.start_blocked?'var(--warn)':'var(--muted)'));
+      _vdAutoRenderNextPlan(host,h);
     });
     const status=document.getElementById('vdauto-status'), label=_vdAutoStatusLabel(state.status);
     status.className='vdauto-status '+(state.status==='running'?'running':(['partial','attention'].includes(state.status)?'bad':''));
