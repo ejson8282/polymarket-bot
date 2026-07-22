@@ -3021,7 +3021,7 @@
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
     const decReady=(dec.quote_ready||[]).length, ondoReady=(ondo.quote_ready||[]).length, ondoAllowed=(ondo.allowed||[]).length;
     document.getElementById('vdauto-pools-meta').textContent='VPS1 可做 '+allowed.size+' · VPS2 可做 '+ondoAllowed;
-    document.getElementById('vdauto-decibel-meta').textContent=decReady+' 个有报价 · '+allowed.size+' 个通过';
+    document.getElementById('vdauto-decibel-meta').textContent=dec.present?(decReady+' 个有报价 · '+allowed.size+' 个通过 · '+(dec.age_sec==null?'时间未知':_fmtAge(dec.age_sec))):(decReady+' 个兼容快照 · '+allowed.size+' 个通过');
     document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个有报价 · '+ondoAllowed+' 个通过 · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
     const hosts=state.hosts||{}, thresholds=ondo.thresholds_bps||{};
     const standard=Number(thresholds.standard??thresholds.default??state.max_auto_spread_bps??2);
