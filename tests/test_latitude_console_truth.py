@@ -649,7 +649,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 Var/Ondo 不复用这些报价" not in html
     assert "普通币 2bp、RWA 3bp" in html
     assert "VPS2 · Var/Ondo 共同币" in html
-    assert "24h 净资金费" in html
+    assert "当前费率折算 24h" in html
+    assert "资金费是当前费率的 24h 等效值，不是收益预测" in html
+    assert "净资金费方向不合格" in html
     assert 'id="vdauto-spread"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
@@ -835,6 +837,9 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
                 "recommended_entry_cost_bps": "0.4",
                 "recommended_net_funding_24h_bps": "1.5",
                 "recommended_expected_24h_cost_bps": "-1.1",
+                "funding_projection_note": "current_rate_24h_equivalent_not_forecast",
+                "direction_selection_policy": "entry_cost_first_funding_within_tolerance",
+                "minimum_net_funding_24h_bps": "0",
                 "recommended": "Var buy / Ondo sell",
                 "quote_age_seconds": "2", "volume_24h": "100000",
                 "max_spread_bps": "3", "block_reasons": [],
@@ -849,6 +854,10 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
     assert decibel["allowed"] == ["BTC"]
     assert ondo["allowed"] == ["XAU"]
     assert ondo["metrics"]["XAU"]["recommended"] == "Var 买 / Ondo 卖"
+    assert ondo["metrics"]["XAU"]["funding_projection_note"] == (
+        "current_rate_24h_equivalent_not_forecast"
+    )
+    assert ondo["metrics"]["XAU"]["minimum_net_funding_24h_bps"] == 0
     assert "BTC" not in ondo["metrics"]
 
 
