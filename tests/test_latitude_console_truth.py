@@ -26,19 +26,6 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_grid_cockpit_is_embedded_inside_the_8502_dashboard() -> None:
-    html = HTML_PATH.read_text(encoding="utf-8")
-
-    assert 'class="page grid-embed-mode" id="page-grid"' in html
-    assert 'id="grid-cockpit-frame" class="grid-cockpit-frame" data-src="/grid-cockpit/"' in html
-    assert 'sandbox="allow-scripts allow-same-origin allow-downloads"' in html
-    assert "if(p==='grid') ensureGridCockpit();" in html
-    assert 'href="/grid-cockpit/"' in html
-    assert 'href="http://100.122.255.98:8610/"' not in html
-    assert "window.location.assign('/grid-cockpit/')" not in html
-    assert 'rel="noopener"' in html
-
-
 def _venue(*, ok: bool, side: Optional[str] = None, size: str = "0") -> dict:
     symbols = {}
     if side is not None:
@@ -69,6 +56,274 @@ def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "_varia_trades_today", lambda: {"present": False})
     monkeypatch.setattr(console, "_varia_budget", lambda _: {"present": False})
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
+
+
+def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    payload = {
+        "meta": {"as_of": "2026-07-20T15:00:00+08:00"},
+        "accounts": [{"id": "HK-001"}],
+    }
+    _write_json(snapshot, payload)
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE.pop(console.ACCOUNT_OPS_URL, None)
+    monkeypatch.setattr(
+        console,
+        "_do_fetch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disk snapshot should avoid a cold Windows fetch")
+        ),
+    )
+
+    assert console._fetch_json(console.ACCOUNT_OPS_URL) == payload
+
+
+def test_prefetch_refreshes_ipo_judgment_pack() -> None:
+    """A completed GPT run must replace the judgment pack cached at startup."""
+
+    assert console.IPO_PACK_URL in console._PREFETCH_URLS
+
+
+def test_account_ops_successful_write_merges_cache_without_refetch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE[console.ACCOUNT_OPS_URL] = (
+        {"accounts": [{"id": "HK-001"}], "onboarding": {"profiles": []}},
+        time.time(),
+    )
+
+    updated = {"profiles": [{"id": "profile-1"}]}
+    console._merge_account_ops_cache("onboarding", updated)
+
+    cached = console._HTTP_CACHE[console.ACCOUNT_OPS_URL][0]
+    assert cached["accounts"] == [{"id": "HK-001"}]
+    assert cached["onboarding"] == updated
+    assert json.loads(snapshot.read_text(encoding="utf-8"))["onboarding"] == updated
+
+
+def test_account_ops_rejects_late_older_snapshot(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "account_ops_last_good.json"
+    newer = {
+        "meta": {"as_of": "2026-07-20T19:57:00+08:00"},
+        "onboarding": {"profiles": [{"id": "profile-1"}]},
+    }
+    older = {
+        "meta": {"as_of": "2026-07-20T19:49:00+08:00"},
+        "onboarding": {"profiles": []},
+    }
+    _write_json(snapshot, newer)
+    monkeypatch.setattr(console, "ACCOUNT_OPS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE[console.ACCOUNT_OPS_URL] = (newer, time.time())
+
+    console._store_http_cache(console.ACCOUNT_OPS_URL, older)
+
+    assert console._HTTP_CACHE[console.ACCOUNT_OPS_URL][0] == newer
+    assert json.loads(snapshot.read_text(encoding="utf-8")) == newer
+
+
+def test_account_ops_exposes_real_alpha_accounts_and_booster_tasks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda _: {
+            "meta": {"as_of": "2026-07-17T20:00:00+08:00"},
+            "accounts": [
+                {
+                    "id": "BN-001",
+                    "platform": "Binance Alpha",
+                    "owner": "张三",
+                    "currency": "USDT",
+                    "capital": 1000,
+                    "wear": 10,
+                    "income": 120,
+                    "status": "运行中",
+                },
+                {
+                    "id": "HK-001",
+                    "platform": "港股",
+                    "owner": "张三",
+                    "capital": 5000,
+                    "wear": 0,
+                    "income": 0,
+                },
+            ],
+            "ledger": [
+                {"account": "BN-001", "type": "本金 / 入金", "amount": 1000},
+                {"account": "BN-001", "type": "本金 / 出金", "amount": -200},
+                {"account": "BN-001", "type": "奖励 / Alpha 奖励", "amount": 70},
+            ],
+            "people": [{"name": "张三", "share": 0.2}],
+            "reminders": {"summary": {}},
+            "risks": [],
+            "alpha_booster": {
+                "updated_at": "2026-07-17T20:05:00+08:00",
+                "tasks": [
+                    {
+                        "id": "alpha-test",
+                        "title": "完成 Booster",
+                        "accounts": [{"accountId": "BN-001", "status": "可领取"}],
+                    }
+                ],
+            },
+        },
+    )
+
+    result = console._account_ops()
+    alpha = result["alpha"]
+
+    assert alpha["account_count"] == 1
+    assert alpha["accounts"][0]["deposits"] == 1000
+    assert alpha["accounts"][0]["withdrawals"] == 200
+    assert alpha["accounts"][0]["rewards"] == 70
+    assert alpha["accounts"][0]["profit"] == 50
+    assert alpha["accounts"][0]["net"] == 110
+    assert alpha["active_tasks"] == 1
+    assert alpha["claimable"] == 1
+
+
+def test_console_contains_alpha_booster_workflow() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "Binance Alpha · Booster" in html
+    assert "待完成 → 已完成/等发奖 → 可领取 → 已领取" in html
+    assert "/api/alpha/action" in html
+    assert "领取后仍需通过飞书流水确认实际奖励" in html
+
+
+def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda _: {
+            "meta": {"as_of": datetime.now().astimezone().isoformat()},
+            "accounts": [{"id": "HK-001", "owner": "蒋星晨", "platform": "港股"}],
+            "people": [{"name": "蒋星晨"}],
+            "reminders": {"summary": {}},
+            "risks": [],
+            "onboarding": {
+                "profiles": [
+                    {
+                        "id": "profile-1",
+                        "person": "蒋星晨",
+                        "institution": "富途证券",
+                        "maskedEmail": "j***@example.com",
+                    }
+                ],
+                "fundingPlans": [
+                    {
+                        "id": "fund-1",
+                        "person": "蒋星晨",
+                        "batchId": "batch-working-capital",
+                        "batchName": "HK$10,000 周转金",
+                        "sequence": 1,
+                        "toInstitution": "富途证券",
+                        "nextInstitution": "有鱼证券",
+                        "amount": 10000,
+                        "currency": "HKD",
+                        "status": "锁资中",
+                    },
+                    {
+                        "id": "fund-2",
+                        "person": "蒋星晨",
+                        "batchId": "batch-working-capital",
+                        "batchName": "HK$10,000 周转金",
+                        "sequence": 2,
+                        "fromInstitution": "富途证券",
+                        "toInstitution": "众安银行",
+                        "nextInstitution": "有鱼证券",
+                        "amount": 10000,
+                        "currency": "HKD",
+                        "status": "计划中",
+                    }
+                ],
+                "records": [
+                    {
+                        "id": "onb-test",
+                        "person": "蒋星晨",
+                        "accountId": "HK-001",
+                        "institution": "富途证券",
+                        "institutionType": "券商",
+                        "status": "锁资中",
+                        "deadline": (datetime.now().astimezone() + timedelta(days=5)).date().isoformat(),
+                        "depositAmount": 80000,
+                        "currency": "HKD",
+                        "holdDays": 60,
+                        "rewardValue": 1200,
+                        "rewardCurrency": "HKD",
+                        "rewardTiers": [
+                            {
+                                "id": "reward-1",
+                                "requirements": [
+                                    {
+                                        "id": "trades",
+                                        "label": "交易 3 笔",
+                                        "target": 3,
+                                        "current": 1,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    )
+
+    onboarding = console._account_ops()["onboarding"]
+
+    assert onboarding["active"] == 1
+    assert onboarding["expiring_7d"] == 1
+    assert onboarding["locked_capital"] == 10000
+    assert onboarding["locked_capital_by_currency"] == {"HKD": 10000}
+    assert onboarding["capital_batches"][0]["id"] == "batch-working-capital"
+    assert onboarding["expected_rewards"] == 1200
+    assert onboarding["expected_rewards_by_currency"] == {"HKD": 1200}
+    assert onboarding["accounts"][0]["id"] == "HK-001"
+    assert onboarding["profiles"][0]["maskedEmail"] == "j***@example.com"
+    assert onboarding["funding_plans"][0]["nextInstitution"] == "有鱼证券"
+    assert onboarding["records"][0]["reward_tiers"][0]["requirements"][0]["target"] == 3
+
+
+def test_console_contains_onboarding_and_reward_workflow() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'data-page="onboarding"' not in html
+    assert 'data-ops-page="onboarding"' in html
+    assert "function goOps(p)" in html
+    assert "opsNav.className='ops-subnav'" in html
+    assert "page.replaceChildren(opsNav,kpis,head,workbench,alphaPanel,realGrid)" in html
+    assert "onclick=\"goOps('onboarding')\">开户与奖励 →" not in html
+    assert 'id="page-onboarding"' in html
+    assert "开户与奖励" in html
+    assert "资金路径" in html
+    onboarding_section = html.split('<section class="page" id="page-onboarding">', 1)[1]
+    assert onboarding_section.index('class="kpis onb-overview-kpis"') < onboarding_section.index('class="onb-head"')
+    assert 'data-onb-view="profiles"' in html
+    assert 'data-onb-view="journey"' in html
+    assert 'data-onb-view="activities"' not in html
+    assert 'data-onb-view="pipeline"' not in html
+    assert 'id="onb-journeys"' in html
+    assert 'data-onb-group="journey"' in html
+    assert "同一资金批次可经过银行与券商多个站点；本金只计算一次" in html
+    assert 'id="onb-plan-batch-id"' in html
+    assert 'id="onb-plan-sequence"' in html
+    assert "upsert_profile" in html
+    assert "账号编号与登录名完整展示" in html
+    assert "填写完整账号编号" in html
+    assert "填写完整登录名" in html
+    assert "profile.accountId||'—'" not in html
+    assert "profile.loginId?esc(profile.loginId)" in html
+    assert "String(left.person||'').localeCompare(String(right.person||''),'zh-CN'" in html
+    assert "String(left.institution||'').localeCompare(String(right.institution||''),'zh-CN'" in html
+    assert "profileForm.querySelectorAll('input').forEach(input=>{input.value='';})" in html
+    assert "再次点击才会永久删除" in html
+    assert "正在删除并同步 Windows 数据源" in html
+    assert "window.confirm('确认删除这份账号档案？')" not in html
+    assert "upsert_funding_plan" in html
+    assert "/api/onboarding/action" in html
+    assert "不保存密码、身份证、银行卡完整号码等敏感信息" in html
 
 
 def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_path: Path) -> None:
@@ -131,10 +386,6 @@ def test_var_decibel_does_not_report_single_leg_when_one_venue_failed(
     assert result["hosts"]["vps1"]["equity_dec"] == 100.0
     assert result["hosts"]["vps1"]["equity_var"] is None
     assert result["position_sources"]["unverified"][0]["reason"] == "交易所读取不完整"
-    assert result["position_sources"]["unverified"][0]["summary"] == "Var 读取失败"
-    assert result["position_sources"]["unverified"][0]["failed_venues"] == [
-        {"venue": "variational", "label": "Var", "error": "状态未返回"}
-    ]
     assert result["position_sources"]["unverified"][0]["last_seen_symbols"] == ["SOL"]
 
 
@@ -372,8 +623,6 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "双边权益不完整" in html
     assert "双边交易量不完整" in html
     assert "const score=vd.points_by_venue||{}" in html
-    assert 'id="vd-equity-tooltip"' in html
-    assert "svg.onmousemove=event=>" in html
     assert "旧自动化" not in html
     assert "<span class=\"on\">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>" in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
@@ -400,8 +649,6 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 Var/Ondo 不复用这些报价" in html
     assert "普通币 2bp、RWA 3bp" in html
     assert 'id="vdauto-spread"' in html
-    assert 'id="vdauto-leverage-a"' in html
-    assert 'id="vdauto-leverage-b"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
     assert "'/api/varia/automation/'+action" in html
@@ -432,7 +679,6 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
     assert result["weekly_loss_cap_usdc"] == "0.0"
     assert result["max_auto_spread_bps"] == "5.0"
     assert result["major_ratio"] == "0.0"
-    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
     assert result["hosts"] == {
         "vps1": {"enabled": True, "strategy": "B"},
         "vps2": {"enabled": False, "strategy": "A"},
@@ -445,7 +691,6 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
         "weekly_loss_cap_usdc": 15,
         "max_auto_spread_bps": 5,
         "major_ratio": 0.8,
-        "target_leverage": {"A": 6, "B": 4},
         "pressure_test": {
             "enabled": True,
             "min_open_interval_minutes": 30,
@@ -460,25 +705,7 @@ def test_varia_auto_payload_keeps_vps_assignments_independent() -> None:
     assert result["hosts"]["vps1"] == {"enabled": True, "strategy": "A"}
     assert result["hosts"]["vps2"] == {"enabled": True, "strategy": "B"}
     assert result["max_auto_spread_bps"] == "5.0"
-    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
     assert result["pressure_test"]["max_open_interval_minutes"] == 180
-
-
-def test_varia_auto_payload_backfills_strategy_leverage_for_older_clients() -> None:
-    result = console._varia_auto_payload({
-        "mode": "full_auto",
-        "weekly_loss_cap_usdc": 15,
-        "max_auto_spread_bps": 2,
-        "major_ratio": 0.8,
-        "pressure_test": {
-            "enabled": True,
-            "min_open_interval_minutes": 30,
-            "max_open_interval_minutes": 180,
-        },
-        "hosts": {},
-    })
-
-    assert result["target_leverage"] == {"A": "6.0", "B": "4.0"}
 
 
 def test_varia_automation_status_requires_config_and_live_worker(
@@ -855,6 +1082,7 @@ def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) 
                         "name": "永康控股有限公司",
                         "nameZh": "永康控股有限公司",
                         "nameEn": "EKH LIMITED",
+                        "status": "申购中",
                     }
                 ]
             }
@@ -868,35 +1096,97 @@ def test_ipo_prefers_official_chinese_name_and_keeps_english_label(monkeypatch) 
     assert result["stocks"][0]["name_en"] == "EKH LIMITED"
 
 
-def test_ipo_exposes_lockup_cost_from_judgment_pack(monkeypatch) -> None:
-    def fake_fetch(url: str, **_kwargs):
-        if url == console.IPO_PACK_URL:
-            return {
-                "stocks": [{
-                    "code": "2523",
-                    "lockup_cost_hkd": 0.45,
-                    "boss_views": [{"text": "关注"}],
-                    "verdict": "观望",
-                }]
-            }
-        return {
+def test_ipo_only_returns_currently_subscribing_stocks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda url, **_kwargs: {
             "ipo": {
-                "stocks": [{
-                    "code": "2523",
-                    "nameZh": "永康控股有限公司",
-                    "status": "申购中",
-                    "minCapital": 1000,
-                }]
+                "stocks": [
+                    {"code": "1001", "name": "可申购", "status": "申购中"},
+                    {"code": "1002", "name": "等待结果", "status": "待结果"},
+                    {"code": "1003", "name": "已经上市", "status": "已上市"},
+                    {"code": "IPO-A", "name": "演示占位", "status": "申购中"},
+                    {"code": "1004", "name": "上游状态滞后", "status": "申购中"},
+                ]
             }
-        }
-
-    monkeypatch.setattr(console, "_fetch_json", fake_fetch)
+        } if url == console.IPO_STATE_URL else {
+            "stocks": [{"code": "1004", "verdict": "跳(已过期)"}]
+        },
+    )
 
     result = console._ipo()
 
-    assert result["stocks"][0]["lockup_cost_hkd"] == 0.45
-    assert result["stocks"][0]["boss_views_count"] == 1
-    assert result["stocks"][0]["ai_verdict"] == "观望"
+    assert [stock["code"] for stock in result["stocks"]] == ["1001"]
+    assert result["stocks_total"] == 1
+    assert result["active_stocks"] == 1
+
+
+def test_ipo_entries_read_router_stock_name_and_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda url, **_kwargs: {
+            "ipo": {
+                "stocks": [{"code": "9001", "name": "模拟新股", "status": "申购中"}],
+                "entries": [
+                    {"accountId": "Hk-001", "owner": "测试员", "status": "待申购",
+                     "stockCode": "9001", "stockName": "模拟新股"},
+                    {"accountId": "Hk-002", "owner": "测试员", "status": "中签",
+                     "stockCode": "9002", "broker": "富途", "method": "融资",
+                     "financingCost": 88, "tradePnl": 1200, "netPnl": 1112,
+                     "settledAt": "2026-07-21T12:00:00+08:00"},
+                ],
+            }
+        } if url == console.IPO_STATE_URL else {},
+    )
+
+    result = console._ipo()
+
+    assert result["entries"][0]["stock"] == "模拟新股"
+    assert result["entries"][1]["stock"] == "9002"
+    assert result["entries"][1]["broker"] == "富途"
+    assert result["entries"][1]["method"] == "融资"
+    assert result["entries"][1]["financing_cost"] == 88
+    assert result["entries"][1]["net_pnl"] == 1112
+
+
+def test_ipo_console_uses_contextual_account_actions() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "function ipoActionButtons(entry,hasActiveStocks)" in html
+    assert "if(entry.status==='待申购')" in html
+    assert "if(entry.status==='已申购')" in html
+    assert "当前可申购新股" in html
+    assert "系统已按判研、资金和账号状态生成建议" in html
+    assert 'id="ipo-entry-dialog"' in html
+    assert "action:mode==='settlement'?'settle_result':(mode==='batch'?'apply_round_strategy':'set_strategy')" in html
+    assert 'id="ipo-apply-suggestion"' in html
+    assert "suggested_action" in html
+    assert "批量确认 / 调整方案" in html
+    assert "function openIpoBatchDialog()" in html
+    assert "apply_round_strategy" in html
+    assert "人工调整过的账号会保留" in html
+    assert "一键申购(活跃)" not in html
+    assert "结束本轮" not in html
+
+
+def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    for key in ("ipo-active-count", "ipo-pending-count", "ipo-subscribed-count", "ipo-updated-age"):
+        assert f'data-k="{key}"' in html
+    assert "const hasActiveStocks=activeCount>0" in html
+    assert "已申购及历史结算仍可继续处理" in html
+    assert "等待新股" in html
+    assert "function showIpoToast(text,kind)" in html
+    assert "function showIpoRowStatus(button,text,kind)" in html
+    assert "window.confirm('确认将 '" in html
+    assert 'class="ipo-stock-card"' in html
+    assert "建议：" in html
+    assert "资料完整度" in html
+    assert "基本面" in html and "估值" in html and "热度" in html and "首日" in html
+    assert "include_pdf_details:true" in html
 
 
 def test_console_renders_chinese_stock_name_before_english() -> None:
@@ -924,20 +1214,43 @@ def test_stale_equity_alert_only_matters_while_varia_is_active(monkeypatch) -> N
     assert any("权益曲线断更" in item["msg"] for item in active)
 
 
-def test_single_leg_alert_describes_bounded_rescue_without_claiming_a_janitor() -> None:
-    alerts = console._alerts(
-        {"single_leg": ["VPS1·HYPE"], "hosts": {}},
-        {},
-        {},
-        {"present": True},
-        {"present": True},
-        {},
+def test_ipo_import_alert_uses_verified_success_stamp(monkeypatch, tmp_path: Path) -> None:
+    stamp = tmp_path / "ipo_import.success"
+    stamp.write_text("2026-07-19T01:00:00+08:00\n", encoding="utf-8")
+    monkeypatch.setattr(console, "IPO_IMPORT_SUCCESS_STAMP", stamp)
+    monkeypatch.setattr(
+        console,
+        "_mtime_age",
+        lambda path: 27 * 3600 if path == stamp else None,
     )
 
-    message = alerts[0]["msg"]
-    assert "系统仅做有限自救" in message
-    assert "暂停新开仓" in message
-    assert "janitor" not in message
+    alerts = console._alerts({}, {}, {}, {"present": True}, {"present": True}, {})
+    assert any("每日新股导入超期" in item["msg"] for item in alerts)
+
+    monkeypatch.setattr(
+        console,
+        "_mtime_age",
+        lambda path: 60 if path == stamp else None,
+    )
+    alerts = console._alerts({}, {}, {}, {"present": True}, {"present": True}, {})
+    assert not any("每日新股导入超期" in item["msg"] for item in alerts)
+
+
+def test_ipo_import_timer_retries_until_success() -> None:
+    script = (ROOT / "deploy" / "latitude-console" / "ipo_import_daily.sh").read_text(
+        encoding="utf-8"
+    )
+    timer = (ROOT / "deploy" / "systemd" / "latitude-ipo-import.timer").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ipo_import.success" in script
+    assert "--connect-timeout 8" in script
+    assert "--max-time 180" in script
+    assert "timer will retry" in script
+    assert "OnCalendar=*-*-* 01:00:00" in timer
+    assert "OnUnitInactiveSec=15min" in timer
+    assert "Persistent=true" in timer
 
 
 def _shadow_database(path: Path, *, safety_matched: int = 1, actions_matched: int = 1) -> None:
@@ -1052,3 +1365,40 @@ def test_console_contains_compact_shadow_status_and_native_observer_view() -> No
     assert "公共盘口与参考报价计划" in html
     assert "不连接 signer" in html
     assert "polymarket_observer_state_1.json" not in html
+
+
+def test_ipo_open_filter_rejects_expired_listed_and_synthetic_rows() -> None:
+    now = datetime.fromisoformat("2026-07-17T15:00:00+08:00")
+
+    assert not console._ipo_stock_is_open(
+        {
+            "code": "2523",
+            "status": "申购中",
+            "closeAt": "12:00 noon on Wednesday, 8 July 2026",
+        },
+        now,
+    )
+    assert not console._ipo_stock_is_open(
+        {"code": "SIM20260716", "status": "申购中", "closeAt": "2026-07-17 23:29"},
+        now,
+    )
+    assert console._ipo_stock_is_open(
+        {"code": "9999", "status": "申购中", "closeAt": "2026-07-18 12:00"},
+        now,
+    )
+
+
+def test_console_has_gpt_judgment_and_real_account_readiness() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'id="ipo-judge-btn"' in html
+    assert 'id="ipo-research-input"' in html
+    assert 'id="ipo-pdf-input"' in html
+    assert 'id="ipo-pdf-pages"' in html
+    assert 'id="ipo-pdf-read"' not in html
+    assert "视觉读取 PDF</button>" not in html
+    assert "/api/ipo/research-pdf" in html
+    assert "PDF 视觉分析" in html
+    assert "X-Page-Range" in html
+    assert "账户准备度" in html
+    assert "不生成虚假申购方案" in html

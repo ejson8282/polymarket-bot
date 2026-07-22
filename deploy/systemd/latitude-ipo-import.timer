@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry daily HKEX IPO import until today's run succeeds
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+OnBootSec=2min
+OnUnitInactiveSec=15min
+Persistent=true
+Unit=latitude-ipo-import.service
+
+[Install]
+WantedBy=timers.target

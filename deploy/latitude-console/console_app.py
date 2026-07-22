@@ -64,8 +64,14 @@ VARIA_MARKET_CANDIDATES = tuple(
 )
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
+ACCOUNT_OPS_SNAPSHOT_PATH = Path(
+    os.getenv("ACCOUNT_OPS_SNAPSHOT_PATH", DATA_DIR / "account_ops_last_good.json")
+)
 IPO_STATE_URL = os.getenv("IPO_STATE_URL", "http://100.82.86.62:8080/dashboard/ipo/state")
-IPO_PACK_URL = os.getenv("IPO_PACK_URL", "http://100.82.86.62:8085/ipo_judgment_pack.json")  # Windows 判研包服务
+IPO_PACK_URL = os.getenv(
+    "IPO_PACK_URL",
+    "http://100.82.86.62:8080/dashboard/ipo/judgment-pack",
+)
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 
@@ -1210,11 +1216,6 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
 def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     raw_hosts = raw.get("hosts") if isinstance(raw.get("hosts"), dict) else {}
-    raw_target_leverage = (
-        raw.get("target_leverage")
-        if isinstance(raw.get("target_leverage"), dict)
-        else {}
-    )
     pressure = raw.get("pressure_test") if isinstance(raw.get("pressure_test"), dict) else {}
     mode = str(raw.get("mode") or "semi_auto")
     if mode not in {"semi_auto", "full_auto"}:
@@ -1226,10 +1227,6 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     cap = _num(raw.get("weekly_loss_cap_usdc"))
     max_spread = _num(raw.get("max_auto_spread_bps"))
     ratio = _num(raw.get("major_ratio"))
-    target_leverage: Dict[str, str] = {}
-    for strategy, default in (("A", 6.0), ("B", 4.0)):
-        value = _num(raw_target_leverage.get(strategy))
-        target_leverage[strategy] = str(min(40.0, max(1.0, value if value is not None else default)))
     hosts: Dict[str, dict] = {}
     for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
         configured = raw_hosts.get(host) if isinstance(raw_hosts.get(host), dict) else {}
@@ -1244,7 +1241,6 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
         "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 2)),
         "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
-        "target_leverage": target_leverage,
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": max(1, min_minutes),
@@ -1924,6 +1920,67 @@ def _maker_shadow() -> Dict[str, Any]:
 _HTTP_CACHE: Dict[str, tuple] = {}
 
 
+def _persist_account_ops_snapshot(data: dict) -> None:
+    """Keep a local last-known-good copy so a slow Windows/Tailnet hop cannot blank the UI."""
+    try:
+        ACCOUNT_OPS_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp = ACCOUNT_OPS_SNAPSHOT_PATH.with_suffix(
+            ACCOUNT_OPS_SNAPSHOT_PATH.suffix + ".tmp"
+        )
+        temp.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temp, ACCOUNT_OPS_SNAPSHOT_PATH)
+    except OSError:
+        pass
+
+
+def _account_ops_version(data: Any) -> Optional[float]:
+    if not isinstance(data, dict):
+        return None
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    raw = str(meta.get("as_of") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _store_http_cache(url: str, data: Optional[dict]) -> None:
+    if url == ACCOUNT_OPS_URL and isinstance(data, dict):
+        cached = _HTTP_CACHE.get(url)
+        current = cached[0] if cached is not None else None
+        if not isinstance(current, dict):
+            current = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+        current_version = _account_ops_version(current)
+        incoming_version = _account_ops_version(data)
+        if (
+            current_version is not None
+            and incoming_version is not None
+            and incoming_version < current_version
+        ):
+            return
+    _HTTP_CACHE[url] = (data, time.time())
+    if url == ACCOUNT_OPS_URL and isinstance(data, dict):
+        _persist_account_ops_snapshot(data)
+
+
+def _merge_account_ops_cache(section: str, value: Any) -> None:
+    """Apply successful writes immediately without forcing a fragile Windows refetch."""
+    if not isinstance(value, dict):
+        return
+    cached = _HTTP_CACHE.get(ACCOUNT_OPS_URL)
+    base = cached[0] if cached is not None else _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+    if not isinstance(base, dict):
+        return
+    merged = dict(base)
+    merged[section] = value
+    _store_http_cache(ACCOUNT_OPS_URL, merged)
+
+
 def _do_fetch(url: str, timeout: float = 4.0) -> Optional[dict]:
     import urllib.request
 
@@ -1942,12 +1999,27 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
     cached = _HTTP_CACHE.get(url)
     if cached is not None:
         return cached[0]  # 有缓存(含 None=上次拉失败)就立即返回,不阻塞
+    if url == ACCOUNT_OPS_URL:
+        snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+        if isinstance(snapshot, dict):
+            _HTTP_CACHE[url] = (snapshot, time.time())
+            return snapshot
     data = _do_fetch(url, timeout=2.0)  # 冷启动:短超时同步一次
-    _HTTP_CACHE[url] = (data, time.time())
+    _store_http_cache(url, data)
     return data
 
 
-_PREFETCH_URLS = [ACCOUNT_OPS_URL, IPO_STATE_URL, MACMINI_STATUS_URL, GRID_CONSOLE_URL]
+# Every remote document that can be cached by ``_fetch_json`` must also be
+# refreshed here.  IPO_PACK_URL used to be omitted, so the first judgment pack
+# read after service startup remained frozen in memory even after a new GPT
+# judgment completed.
+_PREFETCH_URLS = [
+    ACCOUNT_OPS_URL,
+    IPO_STATE_URL,
+    IPO_PACK_URL,
+    MACMINI_STATUS_URL,
+    GRID_CONSOLE_URL,
+]
 
 
 def _grid() -> Dict[str, Any]:
@@ -2041,12 +2113,21 @@ def _prefetch_loop() -> None:
         for url in _PREFETCH_URLS:
             data = _do_fetch(url, timeout=10.0)  # 放宽超时:Windows 源偶尔慢到 5-6s
             if data is None:
+                if url == ACCOUNT_OPS_URL:
+                    # 账号数据宁可展示本地最后成功快照并标记迟滞，也不因链路抖动遮住内容。
+                    prev = _HTTP_CACHE.get(url)
+                    if prev is not None and isinstance(prev[0], dict):
+                        continue
+                    snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
+                    if isinstance(snapshot, dict):
+                        _HTTP_CACHE[url] = (snapshot, time.time())
+                        continue
                 # 单次拉取失败别急着翻成"不可达":保留 5 分钟内的上一次好值,
                 # 慢源/瞬时抖动不再造成 present=false 闪断(配合告警防抖彻底消除假警)
                 prev = _HTTP_CACHE.get(url)
                 if prev is not None and prev[0] is not None and (time.time() - prev[1]) < 300:
                     continue
-            _HTTP_CACHE[url] = (data, time.time())
+            _store_http_cache(url, data)
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
         _HTTP_CACHE["var_signer_up"] = (_probe_var_signer(), time.time())
         try:
@@ -2075,6 +2156,22 @@ def _account_ops() -> Dict[str, Any]:
                  if isinstance(d.get("reminders"), dict) else {}) or {}
     risks = d.get("risks") if isinstance(d.get("risks"), list) else []
     meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    broker_ready = sum(1 for a in accounts if isinstance(a, dict) and str(a.get("broker") or "").strip())
+    cash_ready = sum(
+        1
+        for a in accounts
+        if isinstance(a, dict)
+        and any(a.get(key) not in (None, "") for key in ("availableCash", "available_cash", "available"))
+    )
+    margin_ready = sum(
+        1
+        for a in accounts
+        if isinstance(a, dict)
+        and any(
+            (_num(a.get(key)) or 0) > 0
+            for key in ("financingLimit", "financing_limit", "marginLimit", "margin_limit")
+        )
+    )
     # ④ 人员明细:accounts 按 owner 聚合,share 从 people 表补
     share_by_name = {str(p.get("name") or ""): _num(p.get("share"))
                      for p in (d.get("people") or []) if isinstance(p, dict)}
@@ -2090,9 +2187,21 @@ def _account_ops() -> Dict[str, Any]:
         o["wear"] += _num(a.get("wear")) or 0.0
         if len(o["accounts"]) < 6:
             o["accounts"].append({"id": a.get("id"), "platform": a.get("platform"),
+                                  "broker": a.get("broker"),
                                   "status": a.get("status"),
                                   "capital": round(_num(a.get("capital")) or 0.0, 2),
-                                  "income": round(_num(a.get("income")) or 0.0, 2)})
+                                  "income": round(_num(a.get("income")) or 0.0, 2),
+                                  "available_cash": _num(
+                                      a.get("availableCash")
+                                      or a.get("available_cash")
+                                      or a.get("available")
+                                  ),
+                                  "financing_limit": _num(
+                                      a.get("financingLimit")
+                                      or a.get("financing_limit")
+                                      or a.get("marginLimit")
+                                      or a.get("margin_limit")
+                                  )})
     owner_rows = []
     for o in sorted(owners.values(), key=lambda x: -x["capital"])[:8]:
         owner_rows.append({
@@ -2101,11 +2210,284 @@ def _account_ops() -> Dict[str, Any]:
             "wear_pct": round(o["wear"] / o["capital"] * 100, 2) if o["capital"] else None,
             "share": share_by_name.get(o["name"]),
         })
+    alpha_accounts_raw = [
+        a
+        for a in accounts
+        if isinstance(a, dict)
+        and (
+            str(a.get("platform") or "").strip().lower() in {"binance alpha", "alpha", "binance"}
+            or str(a.get("id") or "").upper().startswith("BN-")
+        )
+    ]
+    ledger = d.get("ledger") if isinstance(d.get("ledger"), list) else []
+    alpha_account_ids = {str(a.get("id") or "") for a in alpha_accounts_raw}
+    alpha_rows = []
+    for account in alpha_accounts_raw:
+        account_id = str(account.get("id") or "")
+        account_ledger = [
+            row
+            for row in ledger
+            if isinstance(row, dict) and str(row.get("account") or "") == account_id
+        ]
+        deposits = 0.0
+        withdrawals = 0.0
+        rewards = 0.0
+        for row in account_ledger:
+            amount = _num(row.get("amount")) or 0.0
+            row_type = str(row.get("type") or "")
+            if row_type.startswith("本金"):
+                if amount >= 0:
+                    deposits += amount
+                else:
+                    withdrawals += abs(amount)
+            elif row_type.startswith("奖励"):
+                rewards += max(0.0, amount)
+        account_income = _num(account.get("income")) or 0.0
+        account_wear = _num(account.get("wear")) or 0.0
+        alpha_rows.append(
+            {
+                "id": account_id,
+                "owner": str(account.get("owner") or ""),
+                "status": str(account.get("status") or ""),
+                "currency": str(account.get("currency") or "USDT"),
+                "capital": round(_num(account.get("capital")) or 0.0, 2),
+                "deposits": round(deposits, 2),
+                "withdrawals": round(withdrawals, 2),
+                "wear": round(account_wear, 2),
+                "rewards": round(rewards, 2),
+                "profit": round(account_income - rewards, 2),
+                "net": round(account_income - account_wear, 2),
+            }
+        )
+    booster_state = (
+        d.get("alpha_booster")
+        if isinstance(d.get("alpha_booster"), dict)
+        else {"tasks": [], "updated_at": ""}
+    )
+    booster_tasks = [
+        task
+        for task in booster_state.get("tasks", [])
+        if isinstance(task, dict) and not task.get("archived")
+    ]
+    booster_accounts = [
+        item
+        for task in booster_tasks
+        for item in (task.get("accounts") or [])
+        if isinstance(item, dict)
+        and (not alpha_account_ids or str(item.get("accountId") or "") in alpha_account_ids)
+    ]
+    alpha = {
+        "accounts": alpha_rows,
+        "account_count": len(alpha_rows),
+        "capital": round(sum(row["capital"] for row in alpha_rows), 2),
+        "wear": round(sum(row["wear"] for row in alpha_rows), 2),
+        "rewards": round(sum(row["rewards"] for row in alpha_rows), 2),
+        "profit": round(sum(row["profit"] for row in alpha_rows), 2),
+        "net": round(sum(row["net"] for row in alpha_rows), 2),
+        "tasks": booster_tasks,
+        "active_tasks": sum(
+            1
+            for item in booster_accounts
+            if str(item.get("status") or "待完成") in {"待完成", "已完成", "可领取"}
+        ),
+        "claimable": sum(
+            1 for item in booster_accounts if str(item.get("status") or "") == "可领取"
+        ),
+        "claimed": sum(
+            1 for item in booster_accounts if str(item.get("status") or "") == "已领取"
+        ),
+        "updated_at": str(booster_state.get("updated_at") or ""),
+    }
+    onboarding_state = (
+        d.get("onboarding")
+        if isinstance(d.get("onboarding"), dict)
+        else {"records": [], "updated_at": ""}
+    )
+    onboarding_records = [
+        item
+        for item in onboarding_state.get("records", [])
+        if isinstance(item, dict)
+    ]
+    today = datetime.now().astimezone().date()
+
+    def _days_until(value: Any) -> Optional[int]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return (datetime.fromisoformat(raw.replace("Z", "+00:00")).date() - today).days
+        except ValueError:
+            try:
+                return (datetime.strptime(raw[:10], "%Y-%m-%d").date() - today).days
+            except ValueError:
+                return None
+
+    normalized_onboarding = []
+    for item in onboarding_records:
+        status = str(item.get("status") or "待准备")
+        deadline_days = _days_until(item.get("deadline"))
+        reward_days = _days_until(item.get("rewardDue"))
+        normalized_onboarding.append(
+            {
+                "id": str(item.get("id") or ""),
+                "person": str(item.get("person") or ""),
+                "account_id": str(item.get("accountId") or ""),
+                "institution": str(item.get("institution") or ""),
+                "institution_type": str(item.get("institutionType") or "券商"),
+                "activity_name": str(item.get("activityName") or ""),
+                "status": status,
+                "opened_at": str(item.get("openedAt") or ""),
+                "deadline": str(item.get("deadline") or ""),
+                "deadline_days": deadline_days,
+                "deposit_amount": _num(item.get("depositAmount")),
+                "currency": str(item.get("currency") or "HKD"),
+                "hold_days": item.get("holdDays"),
+                "reward_value": _num(item.get("rewardValue")),
+                "reward_currency": str(item.get("rewardCurrency") or "HKD"),
+                "reward_due": str(item.get("rewardDue") or ""),
+                "reward_days": reward_days,
+                "actual_reward": _num(item.get("actualReward")),
+                "funding_path": str(item.get("fundingPath") or ""),
+                "source_url": str(item.get("sourceUrl") or ""),
+                "notes": str(item.get("notes") or ""),
+                "reward_tiers": [
+                    tier
+                    for tier in item.get("rewardTiers", [])
+                    if isinstance(tier, dict)
+                ],
+                "updated_at": str(item.get("updatedAt") or ""),
+            }
+        )
+    active_onboarding = [
+        item
+        for item in normalized_onboarding
+        if item["status"] not in {"已完成", "失败"}
+    ]
+    funding_plans = [
+        item
+        for item in onboarding_state.get("fundingPlans", [])
+        if isinstance(item, dict)
+    ]
+    active_plan_statuses = {"计划中", "待转入", "锁资中", "可释放"}
+    capital_batches: Dict[str, Dict[str, Any]] = {}
+    for plan in funding_plans:
+        if str(plan.get("status") or "计划中") not in active_plan_statuses:
+            continue
+        amount = _num(plan.get("amount"))
+        if not amount:
+            continue
+        currency = str(plan.get("currency") or "HKD").upper()
+        batch_id = str(plan.get("batchId") or "").strip()
+        if not batch_id:
+            batch_id = "|".join(
+                [str(plan.get("person") or ""), currency, f"{amount:.2f}"]
+            )
+        if batch_id not in capital_batches:
+            capital_batches[batch_id] = {
+                "id": batch_id,
+                "name": str(plan.get("batchName") or ""),
+                "person": str(plan.get("person") or ""),
+                "amount": amount,
+                "currency": currency,
+            }
+    locked_capital_by_currency: Dict[str, float] = {}
+    expected_rewards_by_currency: Dict[str, float] = {}
+    if capital_batches:
+        for batch in capital_batches.values():
+            currency = batch["currency"]
+            locked_capital_by_currency[currency] = (
+                locked_capital_by_currency.get(currency, 0.0)
+                + batch["amount"]
+            )
+    else:
+        for item in normalized_onboarding:
+            if item["status"] not in {"待入金", "锁资中", "待交易", "待领奖"}:
+                continue
+            currency = item["currency"] or "HKD"
+            locked_capital_by_currency[currency] = (
+                locked_capital_by_currency.get(currency, 0.0)
+                + (item["deposit_amount"] or 0.0)
+            )
+    for item in normalized_onboarding:
+        if item["status"] not in {"已完成", "失败"}:
+            reward_currency = item["reward_currency"] or "HKD"
+            expected_rewards_by_currency[reward_currency] = (
+                expected_rewards_by_currency.get(reward_currency, 0.0)
+                + (item["reward_value"] or 0.0)
+            )
+    onboarding = {
+        "records": normalized_onboarding,
+        "profiles": [
+            item
+            for item in onboarding_state.get("profiles", [])
+            if isinstance(item, dict)
+        ],
+        "funding_plans": funding_plans,
+        "capital_batches": list(capital_batches.values()),
+        "updated_at": str(onboarding_state.get("updated_at") or ""),
+        "total": len(normalized_onboarding),
+        "active": len(active_onboarding),
+        "expiring_7d": sum(
+            1
+            for item in active_onboarding
+            if item["deadline_days"] is not None and 0 <= item["deadline_days"] <= 7
+        ),
+        "overdue": sum(
+            1
+            for item in active_onboarding
+            if item["deadline_days"] is not None and item["deadline_days"] < 0
+        ),
+        "locked_capital": round(sum(locked_capital_by_currency.values()), 2),
+        "locked_capital_by_currency": {
+            key: round(value, 2) for key, value in sorted(locked_capital_by_currency.items())
+        },
+        "pending_rewards": sum(
+            1 for item in normalized_onboarding if item["status"] == "待领奖"
+        ),
+        "expected_rewards": round(
+            sum(
+                item["reward_value"] or 0.0
+                for item in normalized_onboarding
+                if item["status"] not in {"已完成", "失败"}
+            ),
+            2,
+        ),
+        "expected_rewards_by_currency": {
+            key: round(value, 2) for key, value in sorted(expected_rewards_by_currency.items())
+        },
+        "people": sorted(
+            {
+                str(person.get("name") or "").strip()
+                for person in (d.get("people") or [])
+                if isinstance(person, dict) and str(person.get("name") or "").strip()
+            }
+            | {
+                str(account.get("owner") or "").strip()
+                for account in accounts
+                if isinstance(account, dict) and str(account.get("owner") or "").strip()
+            }
+        ),
+        "accounts": [
+            {
+                "id": str(account.get("id") or ""),
+                "owner": str(account.get("owner") or ""),
+                "platform": str(account.get("platform") or ""),
+                "broker": str(account.get("broker") or ""),
+            }
+            for account in accounts
+            if isinstance(account, dict) and str(account.get("id") or "")
+        ],
+    }
     return {
         "owners": owner_rows,
+        "alpha": alpha,
+        "onboarding": onboarding,
         "present": True,
         "accounts": len(accounts),
         "people": len(d.get("people") or []),
+        "broker_ready": broker_ready,
+        "cash_ready": cash_ready,
+        "margin_ready": margin_ready,
         "capital": round(capital, 2),
         "income": round(income, 2),
         "roi_pct": round(income / capital * 100, 2) if capital else None,
@@ -2121,6 +2503,56 @@ def _account_ops() -> Dict[str, Any]:
         "as_of_age": _age_text(_iso_age(meta.get("as_of"))),
         "age_sec": _iso_age(meta.get("as_of")),
     }
+
+
+def _parse_ipo_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw or raw in {"待确认", "—"}:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return parsed
+    except ValueError:
+        pass
+    normalized = (
+        raw.replace(" noon ", " PM ")
+        .replace(" a.m. ", " AM ")
+        .replace(" p.m. ", " PM ")
+        .replace("a.m.", "AM")
+        .replace("p.m.", "PM")
+    )
+    for pattern in (
+        "%I:%M %p on %A, %d %B %Y",
+        "%I:%M %p on %A, %B %d, %Y",
+        "%A, %d %B %Y",
+        "%A, %B %d, %Y",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.strptime(normalized, pattern)
+            return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        except ValueError:
+            continue
+    return None
+
+
+def _ipo_stock_is_open(stock: dict, now: Optional[datetime] = None) -> bool:
+    code = str(stock.get("code") or "").strip().upper()
+    if not code or code.startswith(("IPO-", "STR-", "SIM")):
+        return False
+    if str(stock.get("status") or "").strip() not in {"申购中", "招股中", "待申购"}:
+        return False
+    current = now or datetime.now().astimezone()
+    close_at = _parse_ipo_datetime(stock.get("closeAt") or stock.get("deadlineAt"))
+    if close_at is not None and close_at <= current:
+        return False
+    listing_at = _parse_ipo_datetime(stock.get("listingAt"))
+    if listing_at is not None and listing_at <= current:
+        return False
+    return True
 
 
 def _ipo() -> Dict[str, Any]:
@@ -2149,6 +2581,8 @@ def _ipo() -> Dict[str, Any]:
                 "score": s.get("expectedScore") if s.get("expectedScore") is not None else s.get("score"),
                 "hit_rate": s.get("hitRateScore"),
                 "turnover": s.get("turnoverScore"),
+                "data_completeness": s.get("dataCompletenessScore"),
+                "capital_efficiency": s.get("capitalEfficiencyScore"),
                 "fee": _num(s.get("minCapital")) or _num(s.get("fee")) or _num(s.get("entryFee")),
                 "risk": str(s.get("risk") or s.get("riskLabel") or "")[:12],
                 "status": status,
@@ -2161,17 +2595,36 @@ def _ipo() -> Dict[str, Any]:
     def _entry(e: dict) -> dict:
         return {"account": str(e.get("account") or e.get("accountId") or "")[:14],
                 "person": str(e.get("person") or e.get("owner") or "")[:10],
-                "stock": str(e.get("stock") or e.get("code") or e.get("suggestion") or "")[:20],
+                "stock": str(e.get("stockName") or e.get("stock") or e.get("stockCode")
+                             or e.get("code") or e.get("suggestion") or "")[:20],
                 "fee": e.get("fee") or e.get("entryFee"),
                 "due": str(e.get("due") or e.get("lockUntil") or e.get("deadline") or "")[:12],
                 "status": str(e.get("status") or "")[:14],
+                "broker": str(e.get("broker") or "")[:20],
+                "method": str(e.get("method") or "")[:8],
+                "financing_cost": _num(e.get("financingCost") if e.get("financingCost") is not None else e.get("financing_cost")) or 0,
+                "fee_rule_version": str(e.get("feeRuleVersion") or e.get("fee_rule_version") or "")[:40],
+                "strategy_source": str(e.get("strategySource") or e.get("strategy_source") or "")[:16],
+                "strategy_override": bool(e.get("strategyOverride") or e.get("strategy_override")),
+                "suggested_action": str(e.get("suggestedAction") or e.get("suggested_action") or "")[:40],
+                "suggested_method": str(e.get("suggestedMethod") or e.get("suggested_method") or "")[:12],
+                "suggested_reason": str(e.get("suggestedReason") or e.get("suggested_reason") or "")[:140],
+                "suggestion_verdict": str(e.get("suggestionVerdict") or e.get("suggestion_verdict") or "")[:12],
+                "suggestion_score": e.get("suggestionScore") if e.get("suggestionScore") is not None else e.get("suggestion_score"),
+                "available_capital": _num(e.get("availableCapital") if e.get("availableCapital") is not None else e.get("available_capital")) or 0,
+                "required_capital": _num(e.get("requiredCapital") if e.get("requiredCapital") is not None else e.get("required_capital")) or 0,
+                "trade_pnl": _num(e.get("tradePnl") if e.get("tradePnl") is not None else e.get("trade_pnl")) or 0,
+                "net_pnl": _num(e.get("netPnl") if e.get("netPnl") is not None else e.get("net_pnl")) or 0,
+                "settlement_note": str(e.get("settlementNote") or e.get("settlement_note") or "")[:80],
+                "settled_at": str(e.get("settledAt") or e.get("settled_at") or "")[:24],
                 "reason": str(e.get("reason") or e.get("explain") or e.get("note") or "")[:40]}
 
-    stock_rows = [_stock(s) for s in stocks[:20] if isinstance(s, dict)]
-    # 申购中的只数(数据里 status 可能滞后,仅作参考展示;彻底过滤过期股需 router 补 detail)
-    active_n = sum(1 for s in stock_rows if s.get("status") in ("申购中", "招股中", "待申购"))
-    # AI 判研(判研包)——现在判研整套跑在 Windows(常开、router 本机、Claude Code 已装),
-    # 判研包由 Windows :8085 pack 服务对 tailnet 暴露,控制台 HTTP 拉取(不再读本地文件)。
+    stock_rows = [
+        _stock(s)
+        for s in stocks
+        if isinstance(s, dict) and _ipo_stock_is_open(s)
+    ][:20]
+    # AI 判研由 Windows OpenClaw/GPT 写入 router judgment-pack,按代码贴到确定性事实旁。
     pack = _fetch_json(IPO_PACK_URL, ttl=120.0)
     judged_at = None
     if isinstance(pack, dict):
@@ -2179,21 +2632,28 @@ def _ipo() -> Dict[str, Any]:
         jmap = {str(s.get("code")): s for s in (pack.get("stocks") or []) if isinstance(s, dict)}
         for row in stock_rows:
             j = jmap.get(row["code"])
-            if j:
-                row["lockup_cost_hkd"] = _num(j.get("lockup_cost_hkd"))
-                row["boss_views_count"] = len(j.get("boss_views") or [])
-                if j.get("verdict"):
-                    row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
-                    row["ai_expected"] = j.get("expected_net")    # 期望净收益
-                    row["ai_reason"] = str(j.get("reason") or "")[:80]
+            if j and j.get("verdict"):
+                row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                row["ai_expected"] = j.get("expected_net")    # 期望净收益
+                row["ai_reason"] = str(j.get("reason") or "")[:80]
+                row["ai_score"] = j.get("overall_score")
+                row["ai_confidence"] = j.get("confidence")
+                row["ai_scores"] = j.get("score_breakdown") if isinstance(j.get("score_breakdown"), dict) else {}
+                row["ai_sources"] = j.get("sources") if isinstance(j.get("sources"), list) else []
+                row["ai_gaps"] = j.get("evidence_gaps") if isinstance(j.get("evidence_gaps"), list) else []
+    # 上游 status 偶尔没有随招股截止更新。AI 明确判为“已过期”时，不能继续在
+    # “当前可申购”里展示，避免同一行同时出现“申购中 / 已过期”的自相矛盾。
+    stock_rows = [row for row in stock_rows if "已过期" not in str(row.get("ai_verdict") or "")]
+    active_n = len(stock_rows)
     return {
         "present": True, "mode": inner.get("mode"),
         "round": {"title": rnd.get("title"), "code": rnd.get("code"),
                   "deadline": rnd.get("deadline"), "currency": rnd.get("currency")},
         "updated_age": _age_text(_iso_age(inner.get("updated_at"))),
         "stocks": stock_rows,
-        "entries": [_entry(e) for e in entries[:12] if isinstance(e, dict)],
-        "stocks_total": len(stocks), "entries_total": len(entries),
+        "entries": [_entry(e) for e in entries[:50] if isinstance(e, dict)],
+        "round_strategy": inner.get("round_strategy") if isinstance(inner.get("round_strategy"), dict) else {},
+        "stocks_total": active_n, "entries_total": len(entries),
         "active_stocks": active_n,
         "ai_judged_at": judged_at,
         "ai_judged_age": _age_text(_iso_age(judged_at)) if judged_at else None,
@@ -2347,7 +2807,9 @@ def _events(pm_fills: List[dict]) -> List[dict]:
     return merged[:12]
 
 
-IPO_IMPORT_LOG = Path(os.getenv("IPO_IMPORT_LOG", "/home/ubuntu/ipo_import.log"))
+IPO_IMPORT_SUCCESS_STAMP = Path(
+    os.getenv("IPO_IMPORT_SUCCESS_STAMP", "/home/ubuntu/ipo_import.success")
+)
 
 
 def _tier(age: Optional[int]) -> str:
@@ -2410,14 +2872,7 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
             if isinstance(a.get("days_left"), (int, float)) and a["days_left"] < 30:
                 alerts.append({"tag": "GRID", "msg": f"<b>HL agent「{a.get('name')}」{a['days_left']:.0f} 天后到期</b>:需在 app.hyperliquid.xyz/API 续签", "page": "grid", "sev": "warn"})
     for item in vd.get("single_leg") or []:
-        alerts.append(
-            {
-                "tag": "VAR/DEC",
-                "msg": f"<b>{item} 单腿</b>:双腿不对称；系统仅做有限自救，未恢复前暂停新开仓",
-                "page": "vardec",
-                "sev": "crit",
-            }
-        )
+        alerts.append({"tag": "VAR/DEC", "msg": f"<b>{item} 单腿</b>:双腿不对称,janitor 应在处置", "page": "vardec", "sev": "crit"})
     for host, h in (vd.get("hosts") or {}).items():
         if h.get("age_sec") is not None and h["age_sec"] > STALE_SEC:
             alerts.append({"tag": "VAR/DEC", "msg": f"<b>{host.upper()} ops 心跳过期</b>:{_age_text(h['age_sec'])}", "page": "vardec", "sev": "warn"})
@@ -2428,7 +2883,9 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
         alerts.append({"tag": "HK/US", "msg": "<b>account-ops 数据源不可达</b>(Windows :8081)", "page": "hk", "sev": "warn"})
     elif ao.get("age_sec") is not None and ao["age_sec"] > 1800:
         alerts.append({"tag": "HK/US", "msg": f"<b>account-ops 数据迟滞</b>:{_age_text(ao['age_sec'])} 未更新(>30m)", "page": "hk", "sev": "warn"})
-    imp_age = _mtime_age(IPO_IMPORT_LOG)
+    # Only a verified successful import updates this stamp.  A silent curl timeout must
+    # remain visible as a failure instead of looking like a cron job that never existed.
+    imp_age = _mtime_age(IPO_IMPORT_SUCCESS_STAMP)
     if imp_age is not None and imp_age > 26 * 3600:
         alerts.append({"tag": "IPO", "msg": f"<b>每日新股导入超期</b>:{_age_text(imp_age)} 未跑(cron 每日 01:00,错过一轮即报)", "page": "hk", "sev": "warn"})
     if not mm.get("present"):
@@ -2941,6 +3398,7 @@ IPO_ROUTER_BASE = os.getenv("IPO_ROUTER_BASE", "http://100.82.86.62:8080")
 
 
 def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, Any]:
+    import urllib.error
     import urllib.request
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -2952,8 +3410,42 @@ def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, An
                 return {"ok": True, "status": resp.status, "data": json.loads(raw)}
             except Exception:
                 return {"ok": True, "status": resp.status, "data": raw[:300]}
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = payload.get("detail") or payload.get("error")
+        except Exception:
+            detail = None
+        return {"ok": False, "status": exc.code, "error": str(detail or exc.reason)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+
+def _http_post_bytes(
+    url: str,
+    body: bytes,
+    *,
+    headers: Optional[dict] = None,
+    timeout: float = 240.0,
+) -> Dict[str, Any]:
+    import urllib.error
+    import urllib.request
+
+    request_headers = {"Content-Type": "application/pdf", **(headers or {})}
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
+        with opener.open(req, timeout=timeout) as resp:
+            return {"ok": True, "status": resp.status, "data": json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = payload.get("detail") or payload.get("error")
+        except Exception:
+            detail = None
+        return {"ok": False, "status": exc.code, "error": str(detail or exc.reason)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
 
 
 def _ipo_current_state() -> Optional[dict]:
@@ -2974,8 +3466,8 @@ async def ipo_import(payload: dict, request: Request) -> JSONResponse:
     """立即导入新股(HKEX)——独立端点、无状态、最安全。等价日 cron 的 on-demand 版。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
-    body = {"include_pdf_details": bool((payload or {}).get("include_pdf_details"))}
-    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/import/hkex", body, timeout=90.0)
+    body = {"include_pdf_details": bool((payload or {}).get("include_pdf_details", True))}
+    r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/import/hkex", body, timeout=240.0)
     _audit("ipo_import", ok=r.get("ok"), body=body,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     if not r.get("ok"):
@@ -2985,6 +3477,113 @@ async def ipo_import(payload: dict, request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "msg": f"HKEX 新股已导入(新股池 {n} 只)", "stocks": n})
 
 
+@app.post("/api/ipo/judgment")
+async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
+    """让 Windows OpenClaw 使用固定的 OpenAI 模型生成当前轮次判研包。"""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    state = _ipo_current_state()
+    if state is None:
+        return JSONResponse({"ok": False, "error": "当前新股状态不可达"}, status_code=502)
+    active_stocks = [
+        item
+        for item in state.get("stocks", [])
+        if isinstance(item, dict) and _ipo_stock_is_open(item)
+    ]
+    if not active_stocks:
+        return JSONResponse(
+            {"ok": False, "error": "当前没有申购中的真实新股，无需运行 GPT 判研"},
+            status_code=400,
+        )
+    body = {
+        "research_text": str((payload or {}).get("research_text") or "")[:48000],
+        "stocks": active_stocks,
+    }
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/ipo/openclaw/judgment",
+        body,
+        timeout=160.0,
+    )
+    _audit(
+        "ipo_judgment",
+        ok=r.get("ok"),
+        research_chars=len(body["research_text"]),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
+    judgment = data.get("judgment") if isinstance(data.get("judgment"), dict) else {}
+    _HTTP_CACHE.pop(IPO_PACK_URL, None)
+    _HTTP_CACHE.pop(IPO_STATE_URL, None)
+    return JSONResponse(
+        {
+            "ok": True,
+            "msg": f"GPT 判研已更新({len(judgment.get('stocks') or [])} 只)",
+            "judged_at": judgment.get("judged_at"),
+        }
+    )
+
+
+@app.post("/api/ipo/research-pdf")
+async def ipo_research_pdf(request: Request) -> JSONResponse:
+    """Proxy a PDF to Windows where selected pages are rendered for GPT vision."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    content_length = request.headers.get("content-length")
+    try:
+        declared_size = int(content_length) if content_length else 0
+    except ValueError:
+        declared_size = 0
+    max_bytes = 20 * 1024 * 1024
+    if declared_size > max_bytes:
+        return JSONResponse({"ok": False, "error": "单个 PDF 不能超过 20MB"}, status_code=413)
+
+    pdf_bytes = await request.body()
+    if len(pdf_bytes) > max_bytes:
+        return JSONResponse({"ok": False, "error": "单个 PDF 不能超过 20MB"}, status_code=413)
+    if not pdf_bytes:
+        return JSONResponse({"ok": False, "error": "没有收到 PDF 文件"}, status_code=400)
+
+    filename = str(request.headers.get("x-file-name") or "研究材料.pdf")[:240]
+    if not filename.lower().endswith(".pdf"):
+        return JSONResponse({"ok": False, "error": "只支持 PDF 文件"}, status_code=415)
+    page_range = str(request.headers.get("x-page-range") or "").strip()[:120]
+    forwarded = _http_post_bytes(
+        f"{IPO_ROUTER_BASE}/dashboard/ipo/research/pdf-vision",
+        pdf_bytes,
+        headers={"X-File-Name": filename, "X-Page-Range": page_range},
+        timeout=240.0,
+    )
+    if not forwarded.get("ok"):
+        return JSONResponse(
+            {"ok": False, "error": forwarded.get("error") or "PDF 视觉分析失败"},
+            status_code=int(forwarded.get("status") or 502),
+        )
+    result = forwarded.get("data") if isinstance(forwarded.get("data"), dict) else {}
+
+    _audit(
+        "ipo_research_pdf",
+        ok=True,
+        filename=filename,
+        bytes=len(pdf_bytes),
+        pages=result.get("pages"),
+        mode="page_images",
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "filename": result.get("filename") or filename,
+            "text": str(result.get("visual_summary") or ""),
+            "pages": result.get("pages") or [],
+            "total_pages": result.get("total_pages"),
+            "model": result.get("model"),
+            "mode": "page_images",
+        }
+    )
+
+
 @app.post("/api/ipo/action")
 async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     """打新操作:set_mode / set_status / subscribe_active / subscribe_all / finish_round。
@@ -2992,7 +3591,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
-    allowed = {"set_mode", "set_status", "subscribe_active", "subscribe_all", "finish_round"}
+    allowed = {"set_mode", "set_status", "set_strategy", "apply_round_strategy", "settle_result", "subscribe_active", "subscribe_all", "finish_round"}
     if action not in allowed:
         return JSONResponse({"ok": False, "error": f"action 须为 {sorted(allowed)}"}, status_code=400)
     st = _ipo_current_state()
@@ -3002,6 +3601,7 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     round_ = st.get("round") or {}
     stocks = st.get("stocks") or []
     entries = [dict(e) for e in (st.get("entries") or []) if isinstance(e, dict)]
+    settlements = [dict(e) for e in (st.get("settlements") or []) if isinstance(e, dict)]
 
     detail = ""
     if action == "set_mode":
@@ -3023,6 +3623,38 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
         if not hit:
             return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
         detail = f"{acc} 状态 → {status}"
+    elif action == "set_strategy":
+        acc = str((payload or {}).get("account_id") or "")
+        method = str((payload or {}).get("method") or "")
+        if not acc or method not in ("现金", "融资"):
+            return JSONResponse({"ok": False, "error": "设置策略需要账号及现金/融资方式"}, status_code=400)
+        if not any(str(e.get("accountId")) == acc for e in entries):
+            return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
+        detail = f"{acc} 策略已锁定：{payload.get('broker') or '未填券商'} · {method}"
+    elif action == "apply_round_strategy":
+        strategy = (payload or {}).get("strategy") if isinstance((payload or {}).get("strategy"), dict) else {}
+        method = str(strategy.get("method") or "自动")
+        if method not in ("自动", "现金", "融资"):
+            return JSONResponse({"ok": False, "error": "统一策略须为自动、现金或融资"}, status_code=400)
+        eligible = [e for e in entries if e.get("status") not in ("中签", "未中签", "跳过", "未申购", "已卖出")]
+        overrides = [e for e in eligible if e.get("strategyOverride")]
+        applied = len(eligible) if (payload or {}).get("force") else len(eligible) - len(overrides)
+        detail = f"统一方案已应用到 {applied} 个账号"
+        if overrides and not (payload or {}).get("force"):
+            detail += f"；保留 {len(overrides)} 个人工调整"
+    elif action == "settle_result":
+        acc = str((payload or {}).get("account_id") or "")
+        status = str((payload or {}).get("status") or "")
+        if not acc or status not in ("中签", "未中签"):
+            return JSONResponse({"ok": False, "error": "结算需要账号及中签/未中签结果"}, status_code=400)
+        if not any(str(e.get("accountId")) == acc for e in entries):
+            return JSONResponse({"ok": False, "error": f"排班里没有账号 {acc}"}, status_code=404)
+        try:
+            float((payload or {}).get("trade_pnl") or 0)
+            float((payload or {}).get("financing_cost") or 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "盈亏和融资成本必须是数字"}, status_code=400)
+        detail = f"{acc} 已结算：{status}"
     elif action in ("subscribe_active", "subscribe_all"):
         target_all = action == "subscribe_all"
         n = 0
@@ -3037,13 +3669,108 @@ async def ipo_action(payload: dict, request: Request) -> JSONResponse:
     elif action == "finish_round":
         detail = "结束本轮(router 生成手续费流水)"
 
-    body = {"action": action, "mode": mode, "round": round_, "stocks": stocks, "entries": entries}
+    body = {
+        "action": action, "mode": mode, "round": round_, "stocks": stocks,
+        "entries": entries, "settlements": settlements,
+        "account_id": (payload or {}).get("account_id"),
+        "status": (payload or {}).get("status"),
+        "broker": (payload or {}).get("broker") or "",
+        "method": (payload or {}).get("method") or "",
+        "financing_cost": (payload or {}).get("financing_cost"),
+        "fee_rule_version": (payload or {}).get("fee_rule_version") or "",
+        "trade_pnl": (payload or {}).get("trade_pnl"),
+        "settlement_note": (payload or {}).get("settlement_note") or "",
+        "strategy": (payload or {}).get("strategy") or {},
+        "force": bool((payload or {}).get("force")),
+    }
     r = _http_post_json(f"{IPO_ROUTER_BASE}/dashboard/ipo/action", body, timeout=40.0)
     _audit("ipo_action", request_action=action, detail=detail, ok=r.get("ok"),
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     if not r.get("ok"):
         return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
     return JSONResponse({"ok": True, "msg": detail or (action + " 已提交")})
+
+
+@app.post("/api/alpha/action")
+async def alpha_action(payload: dict, request: Request) -> JSONResponse:
+    """Persist Binance Alpha Booster task progress through the account router."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    if action not in {"add_task", "set_status", "archive_task"}:
+        return JSONResponse({"ok": False, "error": "不支持的 Alpha 操作"}, status_code=400)
+    body = dict(payload or {})
+    body["action"] = action
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/alpha/action",
+        body,
+        timeout=40.0,
+    )
+    _audit(
+        "alpha_action",
+        request_action=action,
+        task_id=str(body.get("task_id") or ""),
+        account_id=str(body.get("account_id") or ""),
+        ok=r.get("ok"),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    _merge_account_ops_cache("alpha_booster", r.get("alpha"))
+    detail = {
+        "add_task": "Booster 任务已保存",
+        "set_status": "Booster 状态已更新",
+        "archive_task": "Booster 任务已归档",
+    }[action]
+    return JSONResponse({"ok": True, "msg": detail})
+
+
+@app.post("/api/onboarding/action")
+async def onboarding_action(payload: dict, request: Request) -> JSONResponse:
+    """Persist broker/bank onboarding, funding and reward progress through the router."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    action = str((payload or {}).get("action") or "")
+    if action not in {
+        "upsert_record",
+        "set_status",
+        "delete_record",
+        "set_requirement_progress",
+        "upsert_profile",
+        "delete_profile",
+        "upsert_funding_plan",
+        "delete_funding_plan",
+    }:
+        return JSONResponse({"ok": False, "error": "不支持的开户操作"}, status_code=400)
+    body = dict(payload or {})
+    body["action"] = action
+    r = _http_post_json(
+        f"{IPO_ROUTER_BASE}/dashboard/onboarding/action",
+        body,
+        timeout=40.0,
+    )
+    _audit(
+        "onboarding_action",
+        request_action=action,
+        record_id=str(body.get("record_id") or ""),
+        institution=str(body.get("institution") or ""),
+        ok=r.get("ok"),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    if not r.get("ok"):
+        return JSONResponse({"ok": False, "error": r.get("error")}, status_code=502)
+    _merge_account_ops_cache("onboarding", r.get("onboarding"))
+    detail = {
+        "upsert_record": "开户记录已保存",
+        "set_status": "开户进度已更新",
+        "delete_record": "开户记录已删除",
+        "set_requirement_progress": "奖励条件进度已更新",
+        "upsert_profile": "账号档案已保存",
+        "delete_profile": "账号档案已删除",
+        "upsert_funding_plan": "资金排期已保存",
+        "delete_funding_plan": "资金排期已删除",
+    }[action]
+    return JSONResponse({"ok": True, "msg": detail})
 
 
 # ---------- 二期:Scan 后台任务 / 市场配置应用 / 代理池 / SA 草稿 ----------
@@ -3381,15 +4108,6 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
     cap = _num(payload.get("weekly_loss_cap_usdc"))
     max_spread = _num(payload.get("max_auto_spread_bps"))
     ratio = _num(payload.get("major_ratio"))
-    raw_target_leverage = (
-        payload.get("target_leverage")
-        if isinstance(payload.get("target_leverage"), dict)
-        else {}
-    )
-    strategy_a_leverage = _num(raw_target_leverage.get("A"))
-    strategy_b_leverage = _num(raw_target_leverage.get("B"))
-    strategy_a_leverage = 6.0 if strategy_a_leverage is None else strategy_a_leverage
-    strategy_b_leverage = 4.0 if strategy_b_leverage is None else strategy_b_leverage
     pressure = payload.get("pressure_test") if isinstance(payload.get("pressure_test"), dict) else {}
     min_minutes = _num(pressure.get("min_open_interval_minutes"))
     max_minutes = _num(pressure.get("max_open_interval_minutes"))
@@ -3400,10 +4118,6 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
         raise ValueError("最高综合点差须为 0.1–100 bps")
     if ratio is None or not 0 <= ratio <= 1:
         raise ValueError("A 策略主流币比例须为 0–100%")
-    if not 1 <= strategy_a_leverage <= 40:
-        raise ValueError("A 策略目标杠杆须为 1–40x")
-    if not 1 <= strategy_b_leverage <= 40:
-        raise ValueError("B 策略目标杠杆须为 1–40x")
     if min_minutes is None or max_minutes is None or not 1 <= min_minutes <= max_minutes <= 1440:
         raise ValueError("开仓间隔须为 1–1440 分钟，且最长不小于最短")
     normalized_hosts: Dict[str, dict] = {}
@@ -3419,10 +4133,6 @@ def _varia_auto_payload(payload: dict) -> Dict[str, Any]:
         "weekly_loss_cap_usdc": str(cap),
         "max_auto_spread_bps": str(max_spread),
         "major_ratio": str(ratio),
-        "target_leverage": {
-            "A": str(strategy_a_leverage),
-            "B": str(strategy_b_leverage),
-        },
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": int(min_minutes),
