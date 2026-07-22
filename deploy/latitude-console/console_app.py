@@ -1388,6 +1388,10 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         observed = [var_spread, dec_spread] + ([entry_cost] if entry_cost is not None else [])
         worst = max(observed)
         can_trade = worst <= max_spread_bps
+        recommended = {
+            "var_buy": "Var 买 / Decibel 卖",
+            "var_sell": "Var 卖 / Decibel 买",
+        }.get(str(quote.get("recommended") or ""), "方向待定")
         metrics[symbol] = {
             "var_spread_bps": round(var_spread, 2),
             "decibel_spread_bps": round(dec_spread, 2),
@@ -1395,8 +1399,21 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "display_bps": round(worst, 2),
             "allowed": can_trade,
             "age_sec": int(age),
+            "recommended": recommended,
         }
         (allowed if can_trade else blocked).append(symbol)
+    decibel_pool = {
+        "host": "vps1",
+        "pair": "Var/Decibel",
+        "total": len(all_symbols),
+        "symbols": all_symbols,
+        "quote_ready": [symbol for symbol in all_symbols if symbol in set(ready)],
+        "allowed": [symbol for symbol in all_symbols if symbol in set(allowed)],
+        "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
+        "metrics": metrics,
+        "max_spread_bps": max_spread_bps,
+    }
+    ondo_pool = _varia_ondo_strategy_pool()
     return {
         "total": len(all_symbols),
         "major": majors,
@@ -1406,6 +1423,7 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
         "metrics": metrics,
         "max_spread_bps": max_spread_bps,
+        "venues": {"decibel": decibel_pool, "ondo": ondo_pool},
         "strategy_a": {
             "eligible": all_symbols,
             "major": majors,
@@ -1417,6 +1435,77 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "eligible": opportunity_pool + majors,
         },
     }
+
+
+def _varia_ondo_strategy_pool() -> Dict[str, Any]:
+    """Expose only VPS2's own read-only Var/Ondo scan; never reuse VPS1 quotes."""
+    state = _varia_raw_states().get("vps2", {})
+    scan = state.get("var_ondo_market_scan") if isinstance(state, dict) else None
+    scan = scan if isinstance(scan, dict) else {}
+    generated_at = str(scan.get("generated_at") or "")
+    generated_ts = _parse_ts(generated_at)
+    age_sec = max(0, int(time.time() - generated_ts)) if generated_ts is not None else None
+    stale = age_sec is None or age_sec > STALE_SEC
+    source_rows = scan.get("rows") if isinstance(scan.get("rows"), list) else []
+    rows: List[dict] = []
+    metrics: Dict[str, dict] = {}
+    allowed: List[str] = []
+    blocked: List[str] = []
+    for raw in source_rows:
+        if not isinstance(raw, dict):
+            continue
+        symbol = str(raw.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        reasons = [str(item) for item in (raw.get("block_reasons") or []) if item]
+        eligible = bool(raw.get("eligible") is True and not stale)
+        if stale and "scan_stale" not in reasons:
+            reasons.append("scan_stale")
+        metric = {
+            "category": str(raw.get("category") or "opportunity"),
+            "var_spread_bps": _num(raw.get("var_half_spread_bps")),
+            "ondo_spread_bps": _num(raw.get("ondo_half_spread_bps")),
+            "entry_cost_bps": _num(raw.get("recommended_entry_cost_bps")),
+            "net_funding_24h_bps": _num(raw.get("recommended_net_funding_24h_bps")),
+            "expected_24h_cost_bps": _num(raw.get("recommended_expected_24h_cost_bps")),
+            "basis_bps": _num(raw.get("midpoint_basis_bps")),
+            "recommended": _varia_direction_cn(raw.get("recommended"), "Ondo"),
+            "allowed": eligible,
+            "block_reasons": reasons,
+            "age_sec": _num(raw.get("quote_age_seconds")),
+            "volume_24h": _num(raw.get("volume_24h")),
+            "max_spread_bps": _num(raw.get("max_spread_bps")),
+        }
+        rows.append({"symbol": symbol, **metric})
+        metrics[symbol] = metric
+        (allowed if eligible else blocked).append(symbol)
+    summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
+    return {
+        "host": "vps2",
+        "pair": "Var/Ondo",
+        "present": bool(scan.get("present")),
+        "ok": bool(scan.get("ok")) and not stale,
+        "stale": stale,
+        "generated_at": generated_at or None,
+        "age_sec": age_sec,
+        "total": int(summary.get("common_markets") or len(rows)),
+        "quote_ready": [row["symbol"] for row in rows if "ondo_quote_failed" not in row["block_reasons"]],
+        "allowed": allowed,
+        "blocked": blocked,
+        "metrics": metrics,
+        "rows": rows,
+        "thresholds_bps": scan.get("thresholds_bps") if isinstance(scan.get("thresholds_bps"), dict) else {},
+        "funding_horizon_hours": int(scan.get("funding_horizon_hours") or 24),
+    }
+
+
+def _varia_direction_cn(value: Any, hedge_label: str) -> str:
+    text = str(value or "")
+    if text == f"Var buy / {hedge_label} sell":
+        return f"Var 买 / {hedge_label} 卖"
+    if text == f"Var sell / {hedge_label} buy":
+        return f"Var 卖 / {hedge_label} 买"
+    return text
 
 
 def _varia_host_live_readiness(

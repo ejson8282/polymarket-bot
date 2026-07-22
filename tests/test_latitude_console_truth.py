@@ -645,9 +645,11 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-ondo-acceptance"' in html
     assert "VPS2 · Var/Ondo" in html
     assert "Ondo 正式环境验收" in html
-    assert "下方颜色仅反映 VPS1 Var/Decibel" in html
-    assert "VPS2 Var/Ondo 不复用这些报价" in html
+    assert "两列各读对应 VPS 的真实来源" in html
+    assert "VPS2 Var/Ondo 不复用这些报价" not in html
     assert "普通币 2bp、RWA 3bp" in html
+    assert "VPS2 · Var/Ondo 共同币" in html
+    assert "24h 净资金费" in html
     assert 'id="vdauto-spread"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
@@ -780,6 +782,74 @@ def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
     assert result["allowed"] == []
     assert result["blocked"] == ["SOL"]
     assert result["metrics"]["SOL"]["display_bps"] > 5
+
+
+def test_varia_strategy_pools_do_not_invent_direction_without_quote_recommendation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("BTC",))
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": ["BTC"], "opportunity_symbols": [],
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [{
+        "symbol": "BTC", "age_sec": 20,
+        "var_bid": 99.99, "var_ask": 100.01,
+        "decibel_bid": 99.99, "decibel_ask": 100.01,
+        "costs": {"var_buy": 2, "var_sell": 2},
+        "recommended": None,
+    }])
+
+    result = console._varia_strategy_pools()
+
+    assert result["metrics"]["BTC"]["recommended"] == "方向待定"
+
+
+def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    peer_dir = data_dir / "ops_peer_state"
+    peer_dir.mkdir(parents=True)
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("BTC", "XAU"))
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": ["BTC"], "opportunity_symbols": ["XAU"],
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [{
+        "symbol": "BTC", "age_sec": 20,
+        "var_bid": 99.99, "var_ask": 100.01,
+        "decibel_bid": 99.99, "decibel_ask": 100.01,
+        "costs": {"var_buy": 2, "var_sell": 2},
+    }])
+    _write_json(peer_dir / "vps2.json", {
+        "host_id": "vps2",
+        "var_ondo_market_scan": {
+            "present": True,
+            "ok": True,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {"common_markets": 1},
+            "thresholds_bps": {"standard": "2", "rwa": "3"},
+            "rows": [{
+                "symbol": "XAU", "category": "rwa", "eligible": True,
+                "var_half_spread_bps": "0.8", "ondo_half_spread_bps": "1.2",
+                "recommended_entry_cost_bps": "0.4",
+                "recommended_net_funding_24h_bps": "1.5",
+                "recommended_expected_24h_cost_bps": "-1.1",
+                "recommended": "Var buy / Ondo sell",
+                "quote_age_seconds": "2", "volume_24h": "100000",
+                "max_spread_bps": "3", "block_reasons": [],
+            }],
+        },
+    })
+
+    result = console._varia_strategy_pools()
+    decibel = result["venues"]["decibel"]
+    ondo = result["venues"]["ondo"]
+
+    assert decibel["allowed"] == ["BTC"]
+    assert ondo["allowed"] == ["XAU"]
+    assert ondo["metrics"]["XAU"]["recommended"] == "Var 买 / Ondo 卖"
+    assert "BTC" not in ondo["metrics"]
 
 
 def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:
