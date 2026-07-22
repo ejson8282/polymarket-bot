@@ -651,12 +651,16 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-opportunity-symbols"' in html
     assert 'id="vdauto-ondo-acceptance"' in html
     assert 'id="vdauto-route-comparison"' in html
+    assert 'id="vdauto-symbol-route-comparison"' in html
+    assert 'id="vdauto-route-wrap"' in html
     assert 'id="vdauto-compare-dec-markets"' in html
     assert 'id="vdauto-compare-ondo-markets"' in html
     assert 'id="vdauto-compare-dec-status"' in html
     assert 'id="vdauto-compare-ondo-status"' in html
     assert "选择双腿入场成本更低的方向" in html
     assert "接近时再比较净资金费" in html
+    assert "同币种入场成本对比" in html
+    assert "低入场成本路线" in html
     assert "VPS2 · Var/Ondo" in html
     assert "Ondo 正式环境验收" in html
     assert "两列各读对应 VPS 的真实来源" in html
@@ -964,6 +968,69 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
     )
     assert ondo["metrics"]["XAU"]["minimum_net_funding_24h_bps"] == 0
     assert "BTC" not in ondo["metrics"]
+
+
+def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    peer_dir = data_dir / "ops_peer_state"
+    peer_dir.mkdir(parents=True)
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("BTC",))
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": ["BTC"], "opportunity_symbols": [],
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [{
+        "symbol": "BTC", "age_sec": 20,
+        "var_bid": 99.99, "var_ask": 100.01,
+        "decibel_bid": 99.99, "decibel_ask": 100.01,
+        "costs": {"var_buy": 1.4, "var_sell": 1.8},
+        "recommended": "var_buy",
+    }])
+    _write_json(peer_dir / "vps2.json", {
+        "host_id": "vps2",
+        "var_ondo_market_scan": {
+            "present": True,
+            "ok": True,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {"common_markets": 1},
+            "thresholds_bps": {"standard": "2", "rwa": "3"},
+            "rows": [{
+                "symbol": "BTC", "category": "major", "eligible": True,
+                "var_half_spread_bps": "0.7", "ondo_half_spread_bps": "0.9",
+                "recommended_entry_cost_bps": "0.6",
+                "recommended_net_funding_24h_bps": "2.5",
+                "recommended_expected_24h_cost_bps": "-1.9",
+                "recommended": "Var sell / Ondo buy",
+                "quote_age_seconds": "2", "volume_24h": "100000",
+                "max_spread_bps": "2", "block_reasons": [],
+            }],
+        },
+    })
+
+    comparison = console._varia_strategy_pools()["route_comparison"]
+
+    assert comparison == [{
+        "symbol": "BTC",
+        "preferred": "ondo",
+        "preferred_label": "Var/Ondo",
+        "reason": "两边均通过，Ondo 入场成本更低",
+        "entry_savings_bps": 0.8,
+        "decibel": {
+            "allowed": True,
+            "direction": "Var 买 / Decibel 卖",
+            "entry_cost_bps": 1.4,
+            "spread_bps": 1.4,
+        },
+        "ondo": {
+            "allowed": True,
+            "direction": "Var 卖 / Ondo 买",
+            "entry_cost_bps": 0.6,
+            "net_funding_24h_bps": 2.5,
+            "spread_bps": 0.9,
+        },
+    }]
 
 
 def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:

@@ -1476,6 +1476,7 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "max_spread_bps": max_spread_bps,
     }
     ondo_pool = _varia_ondo_strategy_pool()
+    route_comparison = _varia_route_comparison(decibel_pool, ondo_pool)
     return {
         "total": len(all_symbols),
         "major": majors,
@@ -1486,6 +1487,7 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "metrics": metrics,
         "max_spread_bps": max_spread_bps,
         "venues": {"decibel": decibel_pool, "ondo": ondo_pool},
+        "route_comparison": route_comparison,
         "strategy_a": {
             "eligible": all_symbols,
             "major": majors,
@@ -1497,6 +1499,88 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "eligible": opportunity_pool + majors,
         },
     }
+
+
+def _varia_route_comparison(decibel_pool: dict, ondo_pool: dict) -> List[dict]:
+    """Compare like-for-like entry friction without crossing account ownership."""
+    decibel_metrics = decibel_pool.get("metrics") if isinstance(decibel_pool.get("metrics"), dict) else {}
+    ondo_metrics = ondo_pool.get("metrics") if isinstance(ondo_pool.get("metrics"), dict) else {}
+    ordered_symbols = [
+        str(symbol).upper() for symbol in (decibel_pool.get("symbols") or [])
+        if str(symbol).upper() in decibel_metrics and str(symbol).upper() in ondo_metrics
+    ]
+    rows: List[dict] = []
+    for symbol in ordered_symbols:
+        decibel = decibel_metrics[symbol]
+        ondo = ondo_metrics[symbol]
+        decibel_cost = _num(decibel.get("entry_cost_bps"))
+        ondo_cost = _num(ondo.get("entry_cost_bps"))
+        decibel_allowed = decibel.get("allowed") is True
+        ondo_allowed = ondo.get("allowed") is True
+        preferred: Optional[str]
+        reason: str
+        if decibel_allowed and ondo_allowed:
+            if decibel_cost is None and ondo_cost is None:
+                preferred, reason = None, "两边成本均待定"
+            elif ondo_cost is not None and (decibel_cost is None or ondo_cost < decibel_cost):
+                preferred, reason = "ondo", "两边均通过，Ondo 入场成本更低"
+            else:
+                preferred, reason = "decibel", "两边均通过，Decibel 入场成本更低"
+        elif decibel_allowed:
+            preferred, reason = "decibel", "仅 Decibel 当前通过门槛"
+        elif ondo_allowed:
+            preferred, reason = "ondo", "仅 Ondo 当前通过门槛"
+        else:
+            preferred, reason = None, "两条路线当前均未通过门槛"
+        savings = (
+            abs(decibel_cost - ondo_cost)
+            if decibel_cost is not None and ondo_cost is not None else None
+        )
+        rows.append({
+            "symbol": symbol,
+            "preferred": preferred,
+            "preferred_label": {"decibel": "Var/Decibel", "ondo": "Var/Ondo"}.get(preferred, "暂不交易"),
+            "reason": reason,
+            "entry_savings_bps": round(savings, 4) if savings is not None else None,
+            "decibel": {
+                "allowed": decibel_allowed,
+                "direction": str(decibel.get("recommended") or "方向待定"),
+                "entry_cost_bps": decibel_cost,
+                "spread_bps": _num(decibel.get("display_bps")),
+            },
+            "ondo": {
+                "allowed": ondo_allowed,
+                "direction": str(ondo.get("recommended") or "方向待定"),
+                "entry_cost_bps": ondo_cost,
+                "net_funding_24h_bps": _num(ondo.get("net_funding_24h_bps")),
+                "spread_bps": max(
+                    value for value in (
+                        _num(ondo.get("var_spread_bps")),
+                        _num(ondo.get("ondo_spread_bps")),
+                    ) if value is not None
+                ) if any(
+                    value is not None for value in (
+                        _num(ondo.get("var_spread_bps")),
+                        _num(ondo.get("ondo_spread_bps")),
+                    )
+                ) else None,
+            },
+        })
+    rows.sort(key=lambda row: (
+        row["preferred"] is None,
+        not (row["decibel"]["allowed"] and row["ondo"]["allowed"]),
+        min(
+            value for value in (
+                row["decibel"]["entry_cost_bps"], row["ondo"]["entry_cost_bps"]
+            ) if value is not None
+        ) if any(
+            value is not None for value in (
+                row["decibel"]["entry_cost_bps"], row["ondo"]["entry_cost_bps"]
+            )
+        ) else float("inf"),
+        row["symbol"],
+    ))
+    return rows
 
 
 def _varia_ondo_strategy_pool() -> Dict[str, Any]:
