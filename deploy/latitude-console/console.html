@@ -3037,7 +3037,7 @@
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
     document.getElementById('vdauto-pool-b-rule').textContent='Var/Ondo '+(ondo.total??0)+' 个共同币；普通币 2bp、RWA 3bp，且净资金费方向不为负';
-    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场成本过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_carry_below_minimum:'净资金费方向不合格'};
+    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场成本过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格'};
     const signed=(value,digits=2)=>{if(value==null||!Number.isFinite(Number(value)))return '—';const n=Number(value);return (n>0?'+':'')+n.toFixed(digits);};
     const category={major:'主流',rwa:'RWA',opportunity:'机会'};
     const rows=Array.isArray(ondo.rows)?ondo.rows:[];
