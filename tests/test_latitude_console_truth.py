@@ -58,6 +58,13 @@ def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
 
 
+def test_parse_ts_treats_naive_recorder_timestamp_as_utc() -> None:
+    expected = datetime(2026, 7, 22, 18, 34, 8, tzinfo=timezone.utc).timestamp()
+
+    assert console._parse_ts("2026-07-22 18:34:08") == expected
+    assert console._parse_ts("2026-07-22T18:34:08Z") == expected
+
+
 def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
     snapshot = tmp_path / "account_ops_last_good.json"
     payload = {

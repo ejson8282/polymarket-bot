@@ -339,7 +339,13 @@ def _pid_file_alive(*paths: Path) -> bool:
 
 def _parse_ts(value: Any) -> Optional[float]:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        # SQLite timestamps written by the Varia recorder are UTC but do not
+        # carry an offset. Treating them as server-local time makes fresh
+        # quotes look eight hours old on hosts configured for China time.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
     except Exception:
         return None
 
