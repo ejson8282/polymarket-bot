@@ -57,8 +57,8 @@
   .f-old{color:var(--ok);border:1px solid rgba(70,178,107,.45)}
   .f-new{color:var(--var);border:1px solid rgba(94,200,216,.45)}
   .f-plan{color:var(--plan);border:1px solid rgba(123,140,222,.45)}
-  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-top:16px}
-  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+  .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-top:16px}
+  .kpi{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
   .kpi .label{font-size:12px;color:var(--muted)}
   .kpi .value{font-family:var(--mono);font-size:21px;font-weight:600;margin-top:3px}
   .kpi .sub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:3px}
@@ -272,7 +272,8 @@
   .flow span.here{color:var(--text);background:#1E2A38;box-shadow:inset 0 -2px 0 var(--var)}
   @media (max-width:1100px){.phases{flex-wrap:wrap}.phase{min-width:45%}}
   footer{padding:20px 24px 28px;font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);margin-top:24px}
-  @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}.proj{grid-template-columns:1fr}.ipo3{grid-template-columns:1fr}}
+  @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.grid2{grid-template-columns:1fr}.proj{grid-template-columns:1fr}.ipo3{grid-template-columns:1fr}}
+  @media (max-width:700px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpi .value,.kpi .sub{overflow-wrap:anywhere}}
 .opin{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-family:var(--mono);font-size:11px}
 .fresh-badge{font-family:var(--mono);font-size:11px;margin-right:10px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);white-space:nowrap}
 .fresh-badge.ok{color:#3fb950}.fresh-badge.warn{color:#d29922}.fresh-badge.danger{color:#f85149;border-color:#f85149}
