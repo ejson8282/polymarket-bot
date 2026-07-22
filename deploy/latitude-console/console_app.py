@@ -1348,10 +1348,32 @@ def _varia_worker_status(host: str) -> str:
 def _varia_auto_runtime(host: str) -> Dict[str, Any]:
     path = (VARIA_DIR / "auto_strategy_runtime.json" if host == "vps1" else
             VARIA_DIR / "auto_strategy_peer_runtime" / "vps2.json")
-    runtime = _read_json(path)
-    if not isinstance(runtime, dict):
+    candidates = [_read_json(path)]
+    if host == "vps2":
+        peer_state = _varia_raw_states().get("vps2", {})
+        embedded = peer_state.get("auto_strategy_runtime") if isinstance(peer_state, dict) else None
+        if isinstance(embedded, dict):
+            candidates.append(embedded)
+    runtime = max(
+        (item for item in candidates if isinstance(item, dict)),
+        key=lambda item: _parse_ts(item.get("updated_at") or item.get("last_checked_at")) or 0,
+        default={},
+    )
+    if not runtime:
         return {"present": False, "age_sec": None}
     updated = runtime.get("updated_at") or runtime.get("last_checked_at")
+    plan = dict(runtime.get("next_open_plan")) if isinstance(runtime.get("next_open_plan"), dict) else {}
+    plan_updated = plan.get("generated_at") or updated
+    plan_age = _iso_age(plan_updated)
+    if plan:
+        market_age = _iso_age(plan.get("market_scan_generated_at"))
+        plan["age_sec"] = plan_age
+        plan["market_data_age_sec"] = market_age
+        plan["stale"] = (
+            plan_age is None
+            or plan_age > STALE_SEC
+            or (market_age is not None and market_age > STALE_SEC)
+        )
     return {
         "present": True,
         "age_sec": _iso_age(updated),
@@ -1360,7 +1382,7 @@ def _varia_auto_runtime(host: str) -> Dict[str, Any]:
         "last_checked_at": runtime.get("last_checked_at"),
         "last_action_at": runtime.get("last_action_at"),
         "pressure_test": runtime.get("pressure_test") if isinstance(runtime.get("pressure_test"), dict) else {},
-        "next_open_plan": runtime.get("next_open_plan") if isinstance(runtime.get("next_open_plan"), dict) else {},
+        "next_open_plan": plan,
     }
 
 

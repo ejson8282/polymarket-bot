@@ -3029,6 +3029,7 @@
     const el=document.getElementById('vdauto-'+host+'-plan'); if(!el)return;
     const plan=((data||{}).runtime||{}).next_open_plan||{};
     if(!plan.status){el.innerHTML='<span>下一单计划</span><b class="wait">等待后台生成</b>';return;}
+    if(plan.stale===true){el.innerHTML='<span>下一单计划</span><b class="wait">计划已过期，等待只读行情刷新</b>';return;}
     if(plan.status!=='ready'){
       const reasons={no_open_candidate:'当前没有同时满足点差、资金费和预算的币种',waiting_rwa_candidate:'正在等待符合 RWA 规则的币种',open_orders_present:'当前存在挂单，暂不生成新计划',single_leg_risk:'检测到单腿仓位，已暂停新计划',max_positions:'已达到最大持仓数量'};
       const reason=reasons[plan.reason]||plan.reason||'当前没有满足条件的候选';
@@ -3038,7 +3039,9 @@
     const venue=plan.hedge_venue==='ondo'?'Ondo':'Decibel', num=v=>(v==null||v===''?null:Number(v));
     const notional=num(plan.notional_usdc), leverage=num(plan.leverage), cost=num(plan.expected_entry_cost_bps), funding=num(plan.net_funding_24h_bps);
     const direction=plan.var_side==='buy'?_vdDirectionLabel('var_buy',venue):plan.var_side==='sell'?_vdDirectionLabel('var_sell',venue):(plan.direction||('Var / '+venue));
-    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':''].filter(Boolean);
+    const scanAge=num(plan.market_data_age_sec), planAge=num(plan.age_sec);
+    const age=scanAge!=null&&Number.isFinite(scanAge)?scanAge:planAge;
+    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
     const ready=plan.ready_for_live===true;
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
