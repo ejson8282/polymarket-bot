@@ -651,6 +651,7 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-plan"' in html
     assert "_vdAutoRenderNextPlan(host,h)" in html
     assert "只读，未下单" in html
+    assert "计划已过期，等待只读行情刷新" in html
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
     assert 'id="vdauto-ondo-acceptance"' in html
@@ -768,6 +769,8 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
         "status": "plan_ready_read_only",
         "message": "只读计划已生成",
         "next_open_plan": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "market_scan_generated_at": datetime.now(timezone.utc).isoformat(),
             "status": "ready",
             "host": "vps1",
             "strategy": "A",
@@ -786,6 +789,59 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
     assert result["status"] == "plan_ready_read_only"
     assert result["next_open_plan"]["symbol"] == "BTC"
     assert result["next_open_plan"]["ready_for_live"] is False
+    assert result["next_open_plan"]["stale"] is False
+    assert result["next_open_plan"]["market_data_age_sec"] is not None
+
+
+def test_varia_auto_runtime_prefers_fresh_embedded_vps2_runtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
+    peer_dir = tmp_path / "auto_strategy_peer_runtime"
+    peer_dir.mkdir()
+    _write_json(peer_dir / "vps2.json", {
+        "updated_at": old,
+        "next_open_plan": {"status": "ready", "symbol": "OLD", "generated_at": old},
+    })
+    monkeypatch.setattr(console, "_varia_raw_states", lambda: {
+        "vps2": {
+            "auto_strategy_runtime": {
+                "updated_at": fresh,
+                "status": "plan_ready_read_only",
+                "next_open_plan": {
+                    "status": "ready", "symbol": "XAG", "generated_at": fresh,
+                    "ready_for_live": False,
+                },
+            }
+        }
+    })
+
+    result = console._varia_auto_runtime("vps2")
+
+    assert result["next_open_plan"]["symbol"] == "XAG"
+    assert result["next_open_plan"]["stale"] is False
+
+
+def test_varia_auto_runtime_marks_stale_market_scan_plan(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    fresh = datetime.now(timezone.utc).isoformat()
+    stale_scan = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    _write_json(tmp_path / "auto_strategy_runtime.json", {
+        "updated_at": fresh,
+        "next_open_plan": {
+            "status": "ready",
+            "symbol": "XAG",
+            "generated_at": fresh,
+            "market_scan_generated_at": stale_scan,
+        },
+    })
+
+    result = console._varia_auto_runtime("vps1")
+
+    assert result["next_open_plan"]["stale"] is True
+    assert result["next_open_plan"]["market_data_age_sec"] > console.STALE_SEC
 
 
 def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
