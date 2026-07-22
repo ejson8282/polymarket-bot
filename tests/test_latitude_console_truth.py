@@ -643,6 +643,13 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
     assert 'id="vdauto-ondo-acceptance"' in html
+    assert 'id="vdauto-route-comparison"' in html
+    assert 'id="vdauto-compare-dec-markets"' in html
+    assert 'id="vdauto-compare-ondo-markets"' in html
+    assert 'id="vdauto-compare-dec-status"' in html
+    assert 'id="vdauto-compare-ondo-status"' in html
+    assert "选择双腿入场成本更低的方向" in html
+    assert "接近时再比较净资金费" in html
     assert "VPS2 · Var/Ondo" in html
     assert "Ondo 正式环境验收" in html
     assert "两列各读对应 VPS 的真实来源" in html
