@@ -3050,7 +3050,7 @@
   }
 
   function _vdAutoRenderOndoAcceptance(hosts){
-    const h=hosts.vps2||{}, acceptance=h.acceptance||{}, ro=acceptance.read_only||{}, mutation=acceptance.mutation||{};
+    const h=hosts.vps2||{}, acceptance=h.acceptance||{}, ro=acceptance.read_only||{}, mutation=acceptance.mutation||{}, policy=acceptance.policy||{};
     const summary=document.getElementById('vdauto-ondo-summary'), checks=document.getElementById('vdauto-ondo-checks');
     if(!summary||!checks) return;
     if(!acceptance.present){
@@ -3065,6 +3065,8 @@
     const labels={leverage_sync:'杠杆同步',post_only_cancel:'挂单撤单',partial_fill_reconcile:'部分成交对账',reduce_only_close:'只减仓平仓',paired_micro_hedge:'微量双腿'};
     const pills=['<span class="vdauto-check-pill '+(readOnlyOk?'ok':'wait')+'">'+(readOnlyOk?'只读已通过':'只读待通过')+'</span>'];
     Object.entries(labels).forEach(([key,label])=>pills.push('<span class="vdauto-check-pill '+(mutation[key]===true?'ok':'wait')+'">'+esc(label)+' '+(mutation[key]===true?'✓':'待验收')+'</span>'));
+    const policyOk=policy.variational_automated_trading_authorized===true;
+    pills.push('<span class="vdauto-check-pill '+(policyOk?'ok':'wait')+'">'+(policyOk?'Var 自动授权已记录':'Var 自动授权待确认')+'</span>');
     const quotes=ro.quotes||{};
     Object.entries(quotes).forEach(([symbol,row])=>{if(row&&row.spread_bps!=null)pills.push('<span class="vdauto-check-pill">'+esc(symbol)+' '+Number(row.spread_bps).toFixed(2)+'bp</span>');});
     checks.innerHTML=pills.join('');

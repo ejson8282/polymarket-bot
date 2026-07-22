@@ -1531,18 +1531,28 @@ def _varia_host_live_readiness(
     acceptance = acceptance if isinstance(acceptance, dict) else {"present": False}
     read_only = acceptance.get("read_only") if isinstance(acceptance.get("read_only"), dict) else {}
     mutation = acceptance.get("mutation") if isinstance(acceptance.get("mutation"), dict) else {}
+    policy = acceptance.get("policy") if isinstance(acceptance.get("policy"), dict) else {}
     pending = [
         label for name, label in VARIA_ONDO_MUTATION_LABELS
         if mutation.get(name) is not True
     ]
     read_only_ok = read_only.get("passed") is True and read_only.get("mutations_sent") is False
-    ready = bool(strategy_ok and read_only_ok and acceptance.get("live_ready") is True and not pending)
+    policy_ok = policy.get("variational_automated_trading_authorized") is True
+    ready = bool(
+        strategy_ok
+        and read_only_ok
+        and policy_ok
+        and acceptance.get("live_ready") is True
+        and not pending
+    )
     if not strategy_ok:
         reason = f"当前只验收策略 {expected_strategy}（Var/{_venue_label(hedge_venue)}）"
     elif not read_only_ok:
         reason = "Ondo 正式环境只读验收未通过"
     elif pending:
         reason = "Ondo 真实交易验收待完成：" + "、".join(pending)
+    elif not policy_ok:
+        reason = "Variational 自动交易书面授权尚未记录"
     elif not ready:
         reason = "Ondo 尚未标记为可实盘"
     else:
@@ -1551,6 +1561,7 @@ def _varia_host_live_readiness(
         "ready": ready, "hedge_venue": hedge_venue,
         "hedge_label": _venue_label(hedge_venue),
         "expected_strategy": expected_strategy, "reason": reason,
+        "variational_policy_ready": policy_ok,
         "acceptance": acceptance,
     }
 
