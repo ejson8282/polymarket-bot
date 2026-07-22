@@ -1000,6 +1000,7 @@ def test_ondo_live_readiness_requires_correct_strategy_and_all_mutations() -> No
             "environment": "production",
             "live_ready": True,
             "read_only": {"passed": True, "mutations_sent": False},
+            "policy": {"variational_automated_trading_authorized": True},
             "mutation": {
                 "leverage_sync": True,
                 "post_only_cancel": True,
@@ -1014,6 +1015,31 @@ def test_ondo_live_readiness_requires_correct_strategy_and_all_mutations() -> No
     wrong = console._varia_host_live_readiness("vps2", state, "A")
     assert wrong["ready"] is False
     assert "策略 B" in wrong["reason"]
+
+
+def test_ondo_live_readiness_keeps_variational_authorization_as_a_hard_gate() -> None:
+    state = {
+        "ondo_acceptance": {
+            "present": True,
+            "environment": "production",
+            "live_ready": False,
+            "read_only": {"passed": True, "mutations_sent": False},
+            "policy": {"variational_automated_trading_authorized": False},
+            "mutation": {
+                "leverage_sync": True,
+                "post_only_cancel": True,
+                "partial_fill_reconcile": True,
+                "reduce_only_close": True,
+                "paired_micro_hedge": True,
+            },
+        }
+    }
+
+    readiness = console._varia_host_live_readiness("vps2", state, "B")
+
+    assert readiness["ready"] is False
+    assert readiness["variational_policy_ready"] is False
+    assert "Variational" in readiness["reason"]
 
 
 def test_stop_automation_only_stops_workers_and_leaves_positions_alone(
