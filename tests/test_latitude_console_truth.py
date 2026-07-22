@@ -659,6 +659,7 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "当前费率折算 24h" in html
     assert "资金费是当前费率的 24h 等效值，不是收益预测" in html
     assert "净资金费方向不合格" in html
+    assert "资金费率异常" in html
     assert 'id="vdauto-spread"' in html
     assert "/api/varia/control/open" in html
     assert "/api/varia/control/close-all" in html
