@@ -351,6 +351,15 @@
 .vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
 .vdauto-symbol.blocked{border-color:rgba(229,72,77,.5);color:var(--danger);padding-left:15px}.vdauto-symbol.blocked:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--danger)}
 .vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
+.vdauto-venue-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:12px}
+.vdauto-venue-section{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}
+.vdauto-venue-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line)}
+.vdauto-venue-title{font-family:var(--mono);font-size:12px;font-weight:700}.vdauto-venue-meta{font-family:var(--mono);font-size:9.5px;color:var(--faint);text-align:right}
+.vdauto-venue-body{padding:8px 12px}.vdauto-venue-body .vdauto-pool-row{grid-template-columns:86px 1fr;padding:5px 0}
+.vdauto-market-wrap{max-height:330px;overflow:auto}.vdauto-market{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10px}
+.vdauto-market th{position:sticky;top:0;z-index:1;padding:7px 8px;background:var(--panel);color:var(--faint);font-weight:550;text-align:left;border-bottom:1px solid var(--line)}
+.vdauto-market td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.vdauto-market tr:last-child td{border-bottom:0}
+.vdauto-market .market-ok{color:var(--ok)}.vdauto-market .market-block{color:var(--danger)}.vdauto-market-empty{padding:16px 12px;color:var(--faint);font-size:10.5px}
 .vdauto-settings{display:grid;grid-template-columns:1.1fr .8fr .8fr 1fr 1.5fr;gap:12px;margin-top:12px}
 .vdauto-field{min-width:0}
 .vdauto-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px}
@@ -367,7 +376,7 @@
 .vdauto-foot{font-size:11px;color:var(--faint);margin-top:10px}
 @media (max-width:1050px){.vdctl-form{grid-template-columns:repeat(3,minmax(120px,1fr))}}
 @media (max-width:1050px){.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-hosts{grid-template-columns:1fr}.vdauto-host+.vdauto-host{border-left:0;border-top:1px solid var(--line)}}
-@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-acceptance{grid-template-columns:1fr}.vdauto-pool-rules{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
+@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-acceptance{grid-template-columns:1fr}.vdauto-pool-rules,.vdauto-venue-grid{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
 @media (max-width:700px){
   .topbar{flex-wrap:wrap;gap:8px 12px;padding:10px 12px}
   .topbar nav{order:3;flex:0 0 100%;width:100%;min-width:0;padding-bottom:2px}
@@ -501,9 +510,20 @@
         <div class="vdauto-pool-rule"><b>策略 A · 高交易量</b><span id="vdauto-pool-a-rule">按设定比例交错选择主流币与机会币</span></div>
         <div class="vdauto-pool-rule"><b>策略 B · 高权重长持仓</b><span id="vdauto-pool-b-rule">机会币优先，主流币仅作兜底</span></div>
       </div>
-      <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
-      <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他共同币</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
-      <div class="vdauto-pool-foot">下方颜色仅反映 VPS1 Var/Decibel：绿色可做、红色点差过高、灰色等待报价。VPS2 Var/Ondo 不复用这些报价，会由后台每轮重新筛选。</div>
+      <div class="vdauto-venue-grid">
+        <div class="vdauto-venue-section">
+          <div class="vdauto-venue-head"><div class="vdauto-venue-title">VPS1 · Var/Decibel</div><div class="vdauto-venue-meta" id="vdauto-decibel-meta">等待 VPS1 报价</div></div>
+          <div class="vdauto-venue-body">
+            <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-major-label">主流池</div><div class="vdauto-symbols" id="vdauto-major-symbols"></div></div>
+            <div class="vdauto-pool-row"><div class="vdauto-pool-label" id="vdauto-opportunity-label">机会/其他</div><div class="vdauto-symbols" id="vdauto-opportunity-symbols"></div></div>
+          </div>
+        </div>
+        <div class="vdauto-venue-section">
+          <div class="vdauto-venue-head"><div class="vdauto-venue-title">VPS2 · Var/Ondo 共同币</div><div class="vdauto-venue-meta" id="vdauto-ondo-meta">等待 VPS2 扫描</div></div>
+          <div class="vdauto-market-wrap" id="vdauto-ondo-market-wrap"><div class="vdauto-market-empty">正在读取共同币、挂单成本与净资金费率</div></div>
+        </div>
+      </div>
+      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。入场成本按 Ondo 挂单优先计算；资金费率按当前值外推 24 小时，实际结算会变化。普通币上限 2bp，RWA 上限 3bp。</div>
     </div>
     <div class="vdauto-settings">
       <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
@@ -2973,16 +2993,30 @@
   function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
 
   function _vdAutoRenderPools(state){
-    const pools=state.strategy_pools||{}, major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(pools.allowed||[]), blocked=new Set(pools.blocked||[]), metrics=pools.metrics||{};
-    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 开仓 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    const pools=state.strategy_pools||{}, venues=pools.venues||{}, dec=venues.decibel||pools, ondo=venues.ondo||{};
+    const major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(dec.allowed||[]), blocked=new Set(dec.blocked||[]), metrics=dec.metrics||{};
+    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 入场 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')+' / '+(m.recommended||'方向待定')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
     document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
-    document.getElementById('vdauto-pools-meta').textContent='VPS1 Var/Decibel · '+(pools.total??major.length+opportunity.length)+' 个候选 · '+allowed.size+' 个可做 · '+blocked.size+' 个点差过高';
+    const decReady=(dec.quote_ready||[]).length, ondoReady=(ondo.quote_ready||[]).length, ondoAllowed=(ondo.allowed||[]).length;
+    document.getElementById('vdauto-pools-meta').textContent='VPS1 可做 '+allowed.size+' · VPS2 可做 '+ondoAllowed;
+    document.getElementById('vdauto-decibel-meta').textContent=decReady+' 个有报价 · '+allowed.size+' 个通过';
+    document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个有报价 · '+ondoAllowed+' 个通过 · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
-    document.getElementById('vdauto-pool-b-rule').textContent='VPS2 每轮取 Var/Ondo 共同币；普通币 2bp、RWA 3bp，未通过不下单';
+    document.getElementById('vdauto-pool-b-rule').textContent='Var/Ondo '+(ondo.total??0)+' 个共同币；普通币 2bp、RWA 3bp，未通过不下单';
+    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场成本过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整'};
+    const signed=(value,digits=2)=>{if(value==null||!Number.isFinite(Number(value)))return '—';const n=Number(value);return (n>0?'+':'')+n.toFixed(digits);};
+    const category={major:'主流',rwa:'RWA',opportunity:'机会'};
+    const rows=Array.isArray(ondo.rows)?ondo.rows:[];
+    const wrap=document.getElementById('vdauto-ondo-market-wrap');
+    if(!rows.length){wrap.innerHTML='<div class="vdauto-market-empty">'+esc(ondo.stale?'VPS2 扫描已过期，等待下一轮':'尚未收到 VPS2 共同币扫描')+'</div>';}
+    else{
+      const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+signed(row.net_funding_24h_bps)+' bp</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'可做':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
+      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>低成本方向</th><th>入场成本</th><th>24h 净资金费</th><th>点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
+    }
   }
 
   function _vdAutoRenderOndoAcceptance(hosts){
