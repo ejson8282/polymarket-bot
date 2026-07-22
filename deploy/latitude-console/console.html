@@ -339,6 +339,12 @@
 .vdauto-acceptance-title{font-family:var(--mono);font-size:12px;font-weight:650}.vdauto-acceptance-sub{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.55}
 .vdauto-checks{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.vdauto-check-pill{border:1px solid var(--line);border-radius:5px;padding:4px 7px;font-family:var(--mono);font-size:10px;color:var(--faint)}
 .vdauto-check-pill.ok{border-color:rgba(70,178,107,.45);color:var(--ok)}.vdauto-check-pill.wait{border-color:rgba(231,197,71,.45);color:var(--warn)}
+.vdauto-compare{margin-top:12px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}
+.vdauto-compare-grid{display:grid;grid-template-columns:104px minmax(0,1fr) minmax(0,1fr)}
+.vdauto-compare-cell{min-width:0;padding:9px 12px;border-top:1px solid var(--line);border-left:1px solid var(--line);font-family:var(--mono);font-size:10.5px;line-height:1.45;overflow-wrap:anywhere}
+.vdauto-compare-cell:nth-child(-n+3){border-top:0}.vdauto-compare-cell:nth-child(3n+1){border-left:0;color:var(--faint)}
+.vdauto-compare-head{font-size:11.5px;font-weight:650;color:var(--text)}.vdauto-compare-head:first-child{color:var(--muted)}
+.vdauto-compare-cell.ok{color:var(--ok)}.vdauto-compare-cell.wait{color:var(--warn)}.vdauto-compare-cell.bad{color:var(--danger)}
 .vdauto-pools{margin-top:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:13px 0}
 .vdauto-pools-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
 .vdauto-pools-title{font-size:13px;font-weight:650}.vdauto-pools-meta{font-family:var(--mono);font-size:10px;color:var(--faint)}
@@ -377,7 +383,7 @@
 .vdauto-foot{font-size:11px;color:var(--faint);margin-top:10px}
 @media (max-width:1050px){.vdctl-form{grid-template-columns:repeat(3,minmax(120px,1fr))}}
 @media (max-width:1050px){.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-hosts{grid-template-columns:1fr}.vdauto-host+.vdauto-host{border-left:0;border-top:1px solid var(--line)}}
-@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-acceptance{grid-template-columns:1fr}.vdauto-pool-rules,.vdauto-venue-grid{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
+@media (max-width:700px){.operation-head,.vdauto-head{align-items:flex-start;flex-direction:column;gap:6px}.vdctl-form,.vdauto-settings{grid-template-columns:1fr 1fr}.vdauto-host{grid-template-columns:1fr}.vdauto-acceptance{grid-template-columns:1fr}.vdauto-compare-grid{grid-template-columns:70px minmax(0,1fr) minmax(0,1fr)}.vdauto-compare-cell{padding:8px 7px;font-size:9.5px}.vdauto-pool-rules,.vdauto-venue-grid{grid-template-columns:1fr}.vdauto-pool-rule+.vdauto-pool-rule{border-left:0;border-top:1px solid var(--line)}.vdauto-pool-row{grid-template-columns:1fr;gap:3px}.vdctl-quote{grid-template-columns:1fr 1fr}.vdctl-q:nth-child(3){border-left:0;border-top:1px solid var(--line)}.vdctl-q:nth-child(4){border-top:1px solid var(--line)}.vdctl-tpsl{grid-template-columns:1fr}.vdctl-job{grid-template-columns:48px 72px 1fr}.vdctl-job .vdctl-job-time{display:none}.vdctl-message,.vdauto-message{width:100%;margin-left:0}}
 @media (max-width:700px){
   .topbar{flex-wrap:wrap;gap:8px 12px;padding:10px 12px}
   .topbar nav{order:3;flex:0 0 100%;width:100%;min-width:0;padding-bottom:2px}
@@ -504,6 +510,18 @@
     <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
       <div><div class="vdauto-acceptance-title">VPS2 · Ondo 正式环境验收</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
       <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
+    </div>
+    <div class="vdauto-compare" id="vdauto-route-comparison">
+      <div class="vdauto-compare-grid">
+        <div class="vdauto-compare-cell vdauto-compare-head">路线对比</div>
+        <div class="vdauto-compare-cell vdauto-compare-head">VPS1 · Var/Decibel</div>
+        <div class="vdauto-compare-cell vdauto-compare-head">VPS2 · Var/Ondo</div>
+        <div class="vdauto-compare-cell">定位</div><div class="vdauto-compare-cell">策略 A · 高交易量</div><div class="vdauto-compare-cell">策略 B · 高权重长持仓</div>
+        <div class="vdauto-compare-cell">当前候选</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-markets">等待 VPS1 报价</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-markets">等待 VPS2 扫描</div>
+        <div class="vdauto-compare-cell">点差门槛</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-spread">读取中</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-spread">读取中</div>
+        <div class="vdauto-compare-cell">方向依据</div><div class="vdauto-compare-cell">选择双腿入场成本更低的方向</div><div class="vdauto-compare-cell">入场成本优先；接近时再比较净资金费</div>
+        <div class="vdauto-compare-cell">自动运行</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-status">核对中</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-status">核对中</div>
+      </div>
     </div>
     <div class="vdauto-pools">
       <div class="vdauto-pools-head"><div class="vdauto-pools-title">候选配置与实时门槛</div><div class="vdauto-pools-meta" id="vdauto-pools-meta">正在读取实际候选池</div></div>
@@ -3005,6 +3023,17 @@
     document.getElementById('vdauto-pools-meta').textContent='VPS1 可做 '+allowed.size+' · VPS2 可做 '+ondoAllowed;
     document.getElementById('vdauto-decibel-meta').textContent=decReady+' 个有报价 · '+allowed.size+' 个通过';
     document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个有报价 · '+ondoAllowed+' 个通过 · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
+    const hosts=state.hosts||{}, thresholds=ondo.thresholds_bps||{};
+    const standard=Number(thresholds.standard??thresholds.default??state.max_auto_spread_bps??2);
+    const rwa=Number(thresholds.rwa??standard);
+    const decLimit=Number(dec.max_spread_bps??state.max_auto_spread_bps??2);
+    document.getElementById('vdauto-compare-dec-markets').textContent=(dec.total??pools.total??0)+' 候选 · '+decReady+' 报价 · '+allowed.size+' 可做';
+    document.getElementById('vdauto-compare-ondo-markets').textContent=(ondo.total??0)+' 共同币 · '+ondoReady+' 报价 · '+ondoAllowed+' 可做';
+    document.getElementById('vdauto-compare-dec-spread').textContent='单边不高于 '+(Number.isFinite(decLimit)?decLimit.toFixed(1):'—')+' bp';
+    document.getElementById('vdauto-compare-ondo-spread').textContent='普通币 '+(Number.isFinite(standard)?standard.toFixed(1):'—')+' bp · RWA '+(Number.isFinite(rwa)?rwa.toFixed(1):'—')+' bp';
+    const routeStatus=(host,id)=>{const h=hosts[host]||{}, el=document.getElementById(id);let text='暂不可启动',cls='bad';if(h.running){text='自动运行中';cls='ok';}else if(h.live_ready){text='验收完成，可启动';cls='ok';}else if(h.start_blocked){text=host==='vps2'?'真实交易验收待完成':'验收待完成';cls='wait';}el.textContent=text;el.className='vdauto-compare-cell '+cls;};
+    routeStatus('vps1','vdauto-compare-dec-status');
+    routeStatus('vps2','vdauto-compare-ondo-status');
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
     document.getElementById('vdauto-pool-b-rule').textContent='Var/Ondo '+(ondo.total??0)+' 个共同币；普通币 2bp、RWA 3bp，且净资金费方向不为负';
