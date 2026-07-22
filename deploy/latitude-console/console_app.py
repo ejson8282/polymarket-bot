@@ -3224,6 +3224,53 @@ def _http_post_json(url: str, body: dict, timeout: float = 20.0) -> Dict[str, An
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
+def _extract_pdf_text(pdf_bytes: bytes, *, max_pages: int = 80, max_chars: int = 14000) -> dict:
+    """Extract a bounded, non-persistent text view of an uploaded research PDF."""
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise ValueError("文件不是有效的 PDF")
+    try:
+        from io import BytesIO
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - deployment dependency guard
+        raise RuntimeError("服务器尚未安装 PDF 解析组件") from exc
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+    except Exception as exc:
+        raise ValueError("PDF 无法读取或文件已损坏") from exc
+
+    total_pages = len(reader.pages)
+    chunks: list[str] = []
+    char_count = 0
+    pages_read = 0
+    for page_number, page in enumerate(reader.pages[:max_pages], start=1):
+        try:
+            text = str(page.extract_text() or "").strip()
+        except Exception:
+            text = ""
+        pages_read = page_number
+        if not text:
+            continue
+        remaining = max_chars - char_count
+        if remaining <= 0:
+            break
+        page_text = text[:remaining]
+        chunks.append(page_text)
+        char_count += len(page_text)
+        if char_count >= max_chars:
+            break
+
+    extracted = "\n\n".join(chunks).strip()
+    if not extracted:
+        raise ValueError("没有提取到文字；该 PDF 可能是扫描图片，请先进行 OCR")
+    return {
+        "text": extracted,
+        "pages_read": pages_read,
+        "total_pages": total_pages,
+        "truncated": total_pages > pages_read or len(extracted) >= max_chars,
+    }
+
+
 def _ipo_current_state() -> Optional[dict]:
     """拉 router 当前打新状态(内层 ipo dict),回传式操作的基底。
     Windows 源偶尔慢:先较长超时新拉;失败回退到 prefetch 热缓存(~20s 新鲜,IPO 手动操作
@@ -3272,7 +3319,7 @@ async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
             status_code=400,
         )
     body = {
-        "research_text": str((payload or {}).get("research_text") or "")[:16000],
+        "research_text": str((payload or {}).get("research_text") or "")[:48000],
         "stocks": active_stocks,
     }
     r = _http_post_json(
@@ -3299,6 +3346,48 @@ async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
             "judged_at": judgment.get("judged_at"),
         }
     )
+
+
+@app.post("/api/ipo/research-pdf")
+async def ipo_research_pdf(request: Request) -> JSONResponse:
+    """Read research material from a PDF without retaining the uploaded file."""
+    if not WRITES_ENABLED:
+        return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
+    content_length = request.headers.get("content-length")
+    try:
+        declared_size = int(content_length) if content_length else 0
+    except ValueError:
+        declared_size = 0
+    max_bytes = 20 * 1024 * 1024
+    if declared_size > max_bytes:
+        return JSONResponse({"ok": False, "error": "单个 PDF 不能超过 20MB"}, status_code=413)
+
+    pdf_bytes = await request.body()
+    if len(pdf_bytes) > max_bytes:
+        return JSONResponse({"ok": False, "error": "单个 PDF 不能超过 20MB"}, status_code=413)
+    if not pdf_bytes:
+        return JSONResponse({"ok": False, "error": "没有收到 PDF 文件"}, status_code=400)
+
+    from urllib.parse import unquote
+
+    filename = unquote(str(request.headers.get("x-file-name") or "研究材料.pdf"))[:160]
+    if not filename.lower().endswith(".pdf"):
+        return JSONResponse({"ok": False, "error": "只支持 PDF 文件"}, status_code=415)
+    try:
+        result = _extract_pdf_text(pdf_bytes)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
+    _audit(
+        "ipo_research_pdf",
+        ok=True,
+        filename=filename,
+        bytes=len(pdf_bytes),
+        pages_read=result["pages_read"],
+        extracted_chars=len(result["text"]),
+        source="cloudflare" if _is_cloudflare(request) else "tailnet",
+    )
+    return JSONResponse({"ok": True, "filename": filename, **result})
 
 
 @app.post("/api/ipo/action")

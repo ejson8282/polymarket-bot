@@ -5,3 +5,4 @@ yfinance>=1.2
 # 统一导航壳聚合器(施工包05·5C)
 fastapi>=0.128
 uvicorn>=0.39
+pypdf>=5.0

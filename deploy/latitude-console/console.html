@@ -165,6 +165,10 @@
   .ipo-research summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--var)}
   .ipo-research-copy{font-size:12px;color:var(--muted);margin:8px 0}
   .ipo-research textarea{width:100%;min-height:110px;resize:vertical;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:12px;font:13px/1.55 var(--mono)}
+  .ipo-pdf-upload{display:flex;align-items:center;gap:10px;margin:10px 0;flex-wrap:wrap}
+  .ipo-pdf-picker{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--var);border-radius:7px;color:var(--var);background:rgba(94,200,216,.06);font-size:13px;font-weight:600;cursor:pointer}
+  .ipo-pdf-picker:hover{background:rgba(94,200,216,.12)}.ipo-pdf-picker input{display:none}
+  .ipo-pdf-status{font:12px/1.45 var(--mono);color:var(--muted)}.ipo-pdf-status.ok{color:var(--ok)}.ipo-pdf-status.error{color:var(--danger)}
   .ipo-research-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:9px}
   .ipo-real-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr);gap:14px;margin-top:14px}
   .ipo-account-readiness{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
@@ -944,7 +948,13 @@
         </div>
         <details class="ipo-research">
           <summary>投喂打新文章 / 研究材料（可选）</summary>
-          <div class="ipo-research-copy">粘贴文章正文、群聊观点或研究摘要。GPT 只会依据已导入的新股事实和这里的材料生成建议；资料不足会明确标记“待补资料”。</div>
+          <div class="ipo-research-copy">可以粘贴文章正文、群聊观点或研究摘要，也可以上传带文字层的 PDF。文件只用于本次提取，不会保存在服务器；资料不足会明确标记“待补资料”。</div>
+          <div class="ipo-pdf-upload">
+            <label class="ipo-pdf-picker">选择 PDF
+              <input id="ipo-pdf-input" type="file" accept="application/pdf,.pdf" multiple>
+            </label>
+            <span class="ipo-pdf-status" id="ipo-pdf-status">最多 3 个，每个不超过 20MB；扫描件需先 OCR。</span>
+          </div>
           <textarea id="ipo-research-input" placeholder="在这里粘贴港股打新文章；也可以不填，直接让 GPT 根据当前已知事实判研。"></textarea>
           <div class="ipo-research-actions">
             <span class="ipo-step-note" id="ipo-judgment-note">当前判研由 OpenClaw / GPT 生成，不再读取 Claude。</span>
@@ -2384,6 +2394,54 @@
     if(quickJudge) quickJudge.addEventListener('click',()=>runIpoJudgment(quickJudge));
     const researchJudge=document.getElementById('ipo-research-run');
     if(researchJudge) researchJudge.addEventListener('click',()=>runIpoJudgment(researchJudge));
+    const pdfInput=document.getElementById('ipo-pdf-input');
+    const pdfStatus=document.getElementById('ipo-pdf-status');
+    if(pdfInput) pdfInput.addEventListener('change',async()=>{
+      const files=Array.from(pdfInput.files||[]);
+      if(!files.length) return;
+      if(files.length>3){
+        pdfStatus.className='ipo-pdf-status error';
+        pdfStatus.textContent='一次最多选择 3 个 PDF。';
+        pdfInput.value='';
+        return;
+      }
+      const tooLarge=files.find(file=>file.size>20*1024*1024);
+      if(tooLarge){
+        pdfStatus.className='ipo-pdf-status error';
+        pdfStatus.textContent=tooLarge.name+' 超过 20MB。';
+        pdfInput.value='';
+        return;
+      }
+      pdfInput.disabled=true;
+      const input=document.getElementById('ipo-research-input');
+      const extracted=[];
+      try{
+        for(let i=0;i<files.length;i++){
+          const file=files[i];
+          pdfStatus.className='ipo-pdf-status';
+          pdfStatus.textContent='正在读取 '+file.name+'（'+(i+1)+'/'+files.length+'）…';
+          const response=await fetch('/api/ipo/research-pdf',{
+            method:'POST',
+            headers:{'Content-Type':'application/pdf','X-File-Name':encodeURIComponent(file.name)},
+            body:file
+          });
+          let result={};
+          try{result=await response.json();}catch(_){result={error:'服务器返回无法解析'};}
+          if(!response.ok||!result.ok) throw new Error(result.error||('读取失败（HTTP '+response.status+'）'));
+          extracted.push('【PDF：'+result.filename+'｜已读取 '+result.pages_read+'/'+result.total_pages+' 页】\n'+result.text);
+        }
+        const prefix=(input.value||'').trim();
+        input.value=(prefix?prefix+'\n\n':'')+extracted.join('\n\n');
+        pdfStatus.className='ipo-pdf-status ok';
+        pdfStatus.textContent='已读取 '+files.length+' 个 PDF，内容已加入下方材料框；确认后点击分析。';
+      }catch(error){
+        pdfStatus.className='ipo-pdf-status error';
+        pdfStatus.textContent=error&&error.message?error.message:'PDF 读取失败';
+      }finally{
+        pdfInput.disabled=false;
+        pdfInput.value='';
+      }
+    });
     document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
       b.disabled=true;
       const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
