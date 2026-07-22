@@ -810,6 +810,53 @@ def test_varia_latest_quotes_prefers_independent_readonly_scan(monkeypatch) -> N
     assert result[0]["age_sec"] <= 2
 
 
+def test_varia_decibel_scan_state_uses_newer_direct_scan(monkeypatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "_varia_raw_states", lambda: {
+        "vps1": {
+            "var_decibel_market_scan": {
+                "generated_at": "2026-07-22T19:25:00+00:00",
+                "rows": [{"symbol": "BTC"}],
+            }
+        }
+    })
+    _write_json(data_dir / "var_decibel_market_scan.json", {
+        "generated_at": "2026-07-22T19:29:00+00:00",
+        "read_only": True,
+        "mutations_sent": False,
+        "rows": [{"symbol": "ETH"}],
+    })
+
+    result = console._varia_decibel_scan_state()
+
+    assert result["rows"] == [{"symbol": "ETH"}]
+    assert result["read_only"] is True
+
+
+def test_varia_decibel_scan_state_keeps_newer_embedded_scan(monkeypatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    monkeypatch.setattr(console, "_varia_raw_states", lambda: {
+        "vps1": {
+            "var_decibel_market_scan": {
+                "generated_at": "2026-07-22T19:30:00+00:00",
+                "rows": [{"symbol": "BTC"}],
+            }
+        }
+    })
+    _write_json(data_dir / "var_decibel_market_scan.json", {
+        "generated_at": "2026-07-22T19:29:00+00:00",
+        "rows": [{"symbol": "ETH"}],
+    })
+
+    result = console._varia_decibel_scan_state()
+
+    assert result["rows"] == [{"symbol": "BTC"}]
+
+
 def test_varia_readonly_scan_ignores_incomplete_double_sided_quote() -> None:
     result = console._varia_quotes_from_readonly_scan({
         "generated_at": datetime.now(timezone.utc).isoformat(),

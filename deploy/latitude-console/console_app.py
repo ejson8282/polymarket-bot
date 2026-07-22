@@ -1076,8 +1076,17 @@ def _varia_detail() -> Dict[str, Any]:
 
 def _varia_decibel_scan_state() -> dict:
     state = _varia_raw_states().get("vps1", {})
-    scan = state.get("var_decibel_market_scan") if isinstance(state, dict) else None
-    return scan if isinstance(scan, dict) else {}
+    embedded = state.get("var_decibel_market_scan") if isinstance(state, dict) else None
+    direct = _read_json(VARIA_DIR / "var_decibel_market_scan.json")
+    candidates = [item for item in (embedded, direct) if isinstance(item, dict) and item]
+    if not candidates:
+        return {}
+
+    def generated_at(item: dict) -> float:
+        parsed = _parse_ts(item.get("generated_at"))
+        return parsed if parsed is not None else 0.0
+
+    return max(candidates, key=generated_at)
 
 
 def _varia_quotes_from_readonly_scan(scan: dict) -> List[dict]:
@@ -1452,7 +1461,7 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
     decibel_pool = {
         "host": "vps1",
         "pair": "Var/Decibel",
-        "present": bool(scan.get("present")),
+        "present": bool(scan.get("present") is True or scan.get("rows")),
         "read_only": scan.get("read_only") is True,
         "mutations_sent": scan.get("mutations_sent"),
         "age_sec": scan_age,
@@ -1539,7 +1548,7 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
     return {
         "host": "vps2",
         "pair": "Var/Ondo",
-        "present": bool(scan.get("present")),
+        "present": bool(scan.get("present") is True or scan.get("rows")),
         "ok": bool(scan.get("ok")) and not stale,
         "stale": stale,
         "generated_at": generated_at or None,
