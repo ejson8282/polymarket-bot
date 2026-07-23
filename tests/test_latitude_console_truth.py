@@ -537,6 +537,68 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
     assert capital["pnl_pct"] == 5.26
 
 
+def test_vps2_decibel_to_ondo_transfer_preserves_principal_and_counts_ondo_once(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    vps1 = _state("vps1", now, _venue(ok=True), _venue(ok=True))
+    vps2 = _state(
+        "vps2",
+        now,
+        _venue(ok=True),
+        _venue(ok=True),
+        ondo=_venue(ok=True),
+    )
+    vps1["exchanges"]["decibel"]["balance"]["total_equity"] = "520.443289"
+    vps1["exchanges"]["variational"]["balance"]["total_equity"] = "499.778932"
+    # The legacy Decibel account stays in the audit data but is no longer an
+    # active VPS2 leg after the internal venue migration.
+    vps2["exchanges"]["decibel"]["balance"]["total_equity"] = "0"
+    vps2["exchanges"]["variational"]["balance"]["total_equity"] = "533.659805"
+    vps2["exchanges"]["ondo"]["balance"]["total_equity"] = "463.4"
+    _write_json(tmp_path / "ops_state.json", vps1)
+    _write_json(tmp_path / "ops_peer_state" / "vps2.json", vps2)
+    _write_json(
+        tmp_path / "home_equity_principal.json",
+        {
+            "vps1": {
+                "decibel": {"initial": 499.894658, "cashflows": [], "reconciled": True},
+                "variational": {"initial": 497.718961, "cashflows": [], "reconciled": True},
+            },
+            "vps2": {
+                "decibel": {
+                    "initial": 499.85787,
+                    "cashflows": [],
+                    "reconciled": True,
+                    "migrated_to": "ondo",
+                },
+                "ondo": {
+                    "initial": 499.85787,
+                    "cashflows": [],
+                    "reconciled": True,
+                    "capital_source": "vps2.decibel",
+                },
+                "variational": {"initial": 499.9, "cashflows": [], "reconciled": True},
+            },
+        },
+    )
+
+    result = console._var_decibel()
+    capital = result["capital"]
+
+    assert result["equity_total"] == 2017.28
+    assert result["hosts"]["vps2"]["equity_hedge"] == 463.4
+    assert capital["principal_total"] == 1997.37
+    assert capital["current_equity"] == 2017.28
+    assert capital["pnl"] == 19.91
+    assert capital["pnl_pct"] == 1.0
+    assert not any(
+        row["host"] == "vps2" and row["venue"] == "decibel"
+        for row in capital["sources"]
+    )
+
+
 def test_stopped_polymarket_engine_does_not_claim_historical_orders(
     monkeypatch, tmp_path: Path
 ) -> None:
