@@ -163,7 +163,7 @@
   .ipo-next-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
   .ipo-next-actions .btn{font-size:10px;padding:3px 7px}
   .ipo-console .btn:disabled{cursor:not-allowed;opacity:.45}
-  .ipo-mode.active{color:var(--var);border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.10)}
+  .ipo-auto-mode{font-size:13px;padding:8px 11px;border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.10);color:var(--var)}
   .ipo-done{font-family:var(--mono);font-size:10px;color:var(--faint)}
   .ipo-step-note.paused{color:var(--warn)}
   .ipo-row-msg{width:100%;font-family:var(--mono);font-size:10px;text-align:right;color:var(--faint)}
@@ -945,10 +945,8 @@
             </div>
           </div>
           <div class="ipo-console-actions">
-            <span class="ipo-step-note">策略</span>
-            <button class="btn ghost ipo-mode" data-mode="conservative">保守</button>
-            <button class="btn ghost ipo-mode" data-mode="balanced">均衡</button>
-            <button class="btn ghost ipo-mode" data-mode="aggressive">进攻</button>
+            <span class="ipo-step-note">GPT 自动策略</span>
+            <span class="chip ipo-auto-mode" id="ipo-auto-mode">等待判研</span>
             <button class="btn primary" id="ipo-import-btn">刷新申购中新股</button>
             <button class="btn ghost" id="ipo-judge-btn">GPT 判研</button>
           </div>
@@ -1795,7 +1793,15 @@
     setK('ipo-pending-count',pending+' 个');
     setK('ipo-subscribed-count',subscribed+' 个');
     setK('ipo-updated-age',esc(ipo.updated_age||'—'));
-    document.querySelectorAll('.ipo-mode').forEach(button=>button.classList.toggle('active',button.dataset.mode===ipo.mode));
+    const autoMode=document.getElementById('ipo-auto-mode');
+    if(autoMode){
+      const lead=(ipo.stocks||[])[0]||{};
+      const grade=lead.ai_grade||'';
+      const modeText={conservative:'保守',balanced:'均衡',aggressive:'进攻'}[ipo.mode]||'待判';
+      const gradeText={A:'进攻',B:'均衡',C:'保守',D:'不参与'}[grade]||modeText;
+      autoMode.textContent=grade?('结论 '+grade+' · '+gradeText):('自动 · '+modeText);
+      autoMode.title='由 GPT 结合 PDF、官方资料、认购热度、估值与风险自动生成；账号执行前仍需确认。';
+    }
     const chips=document.getElementById('hk-round-chips');
     if(chips){
       const r=ipo.round||{};
@@ -2487,12 +2493,6 @@
         pdfInput.disabled=false;
       }
     }
-    document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
-      b.disabled=true;
-      const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
-      showIpoToast(result&&result.ok?(result.msg||'策略已切换'):(result&&result.error||'策略切换失败'),result&&result.ok?'ok':'error');
-      b.disabled=false;
-    }));
     const applySuggestion=document.getElementById('ipo-apply-suggestion');
     if(applySuggestion) applySuggestion.addEventListener('click',openIpoBatchDialog);
     const dialog=document.getElementById('ipo-entry-dialog');
