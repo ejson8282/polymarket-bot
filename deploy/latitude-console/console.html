@@ -975,7 +975,7 @@
           <div class="vdauto-market-wrap" id="vdauto-ondo-market-wrap"><div class="vdauto-market-empty">正在读取共同币、挂单成本与净资金费率</div></div>
         </div>
       </div>
-      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。平台点差与跨平台扫描价差分开计算。Var/Ondo 候选须连续两轮方向一致且价差稳定；开仓前再用同步报价复核方向和成本。负扫描价差只代表当时报价有利，不保证成交或盈利。资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
+      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。平台点差与跨平台扫描价差分开计算。Var/Ondo 候选须连续两轮方向一致且价差稳定；开仓前再用同步报价复核方向和成本。负扫描价差只代表当时报价有利，不保证成交或盈利。资金费按当前费率外推 24 小时并用百分比显示，不是平台点差，也不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
     </div>
   </div>
 
@@ -3609,6 +3609,11 @@
 
   function _vdAutoServiceLabel(value){return ({active:'后台在线',activating:'启动中',deactivating:'停止中',inactive:'已停止',failed:'后台异常',unknown:'状态未知'})[value]||value||'状态未知';}
   function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
+  function _vdFundingPercent(value,digits=4){
+    if(value==null||!Number.isFinite(Number(value))) return '—';
+    const pct=Number(value)/100;
+    return (pct>0?'+':'')+pct.toFixed(digits)+'%';
+  }
 
   function _vdAutoRenderNextPlan(host,data){
     const el=document.getElementById('vdauto-'+host+'-plan'); if(!el)return;
@@ -3626,7 +3631,7 @@
     const direction=plan.var_side==='buy'?_vdDirectionLabel('var_buy',venue):plan.var_side==='sell'?_vdDirectionLabel('var_sell',venue):(plan.direction||('Var / '+venue));
     const scanAge=num(plan.market_data_age_sec), planAge=num(plan.age_sec);
     const age=scanAge!=null&&Number.isFinite(scanAge)?scanAge:planAge;
-    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',varOne!=null&&hedgeOne!=null&&Number.isFinite(varOne)&&Number.isFinite(hedgeOne)?'平台单边点差 Var '+varOne.toFixed(2)+' / '+venue+' '+hedgeOne.toFixed(2)+' bp':'',cost!=null&&Number.isFinite(cost)?'扫描价差参考 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'当前净资金费折算24小时 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
+    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',varOne!=null&&hedgeOne!=null&&Number.isFinite(varOne)&&Number.isFinite(hedgeOne)?'平台单边点差 Var '+varOne.toFixed(2)+' / '+venue+' '+hedgeOne.toFixed(2)+' bp':'',cost!=null&&Number.isFinite(cost)?'扫描价差参考 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'当前资金费外推24小时 '+_vdFundingPercent(funding):'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
     const ready=plan.ready_for_live===true;
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
@@ -3660,7 +3665,7 @@
   function _vdAutoRenderPools(state){
     const pools=state.strategy_pools||{}, venues=pools.venues||{}, dec=venues.decibel||pools, ondo=venues.ondo||{};
     const major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(dec.allowed||[]), blocked=new Set(dec.blocked||[]), metrics=dec.metrics||{};
-    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const platformBp=m.platform_spread_bps==null?null:Number(m.platform_spread_bps), bp=Number.isFinite(platformBp)?(' · 点差 '+platformBp.toFixed(2)+'bp'):''; const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · 平台单边点差 Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 异步跨平台参考（非点差） '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')+' / 当前费率 24h 净成本 '+(m.expected_24h_cost_bps==null?'—':Number(m.expected_24h_cost_bps).toFixed(2)+'bp')+' / '+(m.recommended||'方向待定')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const platformBp=m.platform_spread_bps==null?null:Number(m.platform_spread_bps), bp=Number.isFinite(platformBp)?(' · 点差 '+platformBp.toFixed(2)+'bp'):''; const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · 平台单边点差 Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 异步跨平台参考（非点差） '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')+' / 当前费率外推 24h 净成本 '+_vdFundingPercent(m.expected_24h_cost_bps)+' / '+(m.recommended||'方向待定')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
     document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
@@ -3688,8 +3693,8 @@
     routeMeta.textContent=comparison.length+' 个共同报价 · '+actionable+' 个扫描候选 · '+bothReady+' 个双路线候选';
     if(!comparison.length){routeWrap.innerHTML='<div class="vdauto-market-empty">尚无可直接比较的同币种新鲜报价</div>';}
     else{
-      const routeLeg=(leg,venue)=>{const fee=Number(leg?.maker_fee_bps), feeNote=Number.isFinite(fee)&&fee>0?'（含 '+venue+' maker '+fee.toFixed(2)+' bp）':''; const varSpread=signed(leg?.var_spread_bps), hedgeSpread=signed(leg?.hedge_spread_bps), funding=leg?.net_funding_24h_bps, expected=leg?.expected_24h_cost_bps; return '<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>跨平台扫描价差（非点差） '+signed(leg?.entry_cost_bps)+' bp'+feeNote+'</span><span class="vdauto-route-small">平台单边点差 Var '+varSpread+' / '+venue+' '+hedgeSpread+' bp</span><span class="vdauto-route-small">当前费率折算 24h '+signed(funding)+' bp · 净成本 '+signed(expected)+' bp</span><span class="vdauto-route-small">'+(leg?.allowed?'通过扫描门槛；开仓前复核':'当前未通过')+'</span></div>';};
-      const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 入场差 '+Number(row.entry_savings_bps).toFixed(2)+' bp'), expectedSaved=row.expected_24h_savings_bps==null?'':(' · 24h 净成本差 '+Number(row.expected_24h_savings_bps).toFixed(2)+' bp');return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,'Decibel')+'</td><td>'+routeLeg(row.ondo,'Ondo')+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved+expectedSaved+'；开仓前同步复核')+'</div></td></tr>';}).join('');
+      const routeLeg=(leg,venue)=>{const fee=Number(leg?.maker_fee_bps), feeNote=Number.isFinite(fee)&&fee>0?'（含 '+venue+' maker '+fee.toFixed(2)+' bp）':''; const varSpread=signed(leg?.var_spread_bps), hedgeSpread=signed(leg?.hedge_spread_bps), funding=leg?.net_funding_24h_bps, expected=leg?.expected_24h_cost_bps; return '<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>跨平台扫描价差（非点差） '+signed(leg?.entry_cost_bps)+' bp'+feeNote+'</span><span class="vdauto-route-small">平台单边点差 Var '+varSpread+' / '+venue+' '+hedgeSpread+' bp</span><span class="vdauto-route-small">当前资金费外推 24h '+_vdFundingPercent(funding)+' · 估算净成本 '+_vdFundingPercent(expected)+'</span><span class="vdauto-route-small">'+(leg?.allowed?'通过扫描门槛；开仓前复核':'当前未通过')+'</span></div>';};
+      const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 入场差 '+Number(row.entry_savings_bps).toFixed(2)+' bp'), expectedSaved=row.expected_24h_savings_bps==null?'':(' · 24h 估算净成本差 '+_vdFundingPercent(row.expected_24h_savings_bps));return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,'Decibel')+'</td><td>'+routeLeg(row.ondo,'Ondo')+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved+expectedSaved+'；开仓前同步复核')+'</div></td></tr>';}).join('');
       routeWrap.innerHTML='<table class="vdauto-route"><thead><tr><th>币种</th><th>Var/Decibel</th><th>Var/Ondo</th><th>扫描参考路线</th></tr></thead><tbody>'+routeBody+'</tbody></table>';
     }
     const ratio=document.getElementById('vdauto-ratio').value||80;
@@ -3701,8 +3706,8 @@
     const wrap=document.getElementById('vdauto-ondo-market-wrap');
     if(!rows.length){wrap.innerHTML='<div class="vdauto-market-empty">'+esc(ondo.stale?'VPS2 扫描已过期，等待下一轮':'尚未收到 VPS2 共同币扫描')+'</div>';}
     else{
-      const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+signed(row.net_funding_24h_bps)+' bp</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'扫描候选':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
-      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>跨平台扫描价差<br>（非点差）</th><th>当前费率折算 24h</th><th>平台单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
+      const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+_vdFundingPercent(row.net_funding_24h_bps)+'</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'扫描候选':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
+      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>跨平台扫描价差<br>（非点差）</th><th>当前资金费外推 24h<br>（非点差）</th><th>平台单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
     }
   }
 

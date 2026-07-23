@@ -835,7 +835,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "扫描参考路线" in html
     assert "负扫描价差只代表当时报价有利" in html
     assert "扫描价差参考" in html
-    assert "当前净资金费折算24小时" in html
+    assert "当前资金费外推24小时" in html
+    assert "_vdFundingPercent" in html
     assert "平台单边点差" in html
     assert "跨平台扫描价差" in html
     assert "点差 '+platformBp.toFixed(2)+'bp" in html
@@ -846,8 +847,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 Var/Ondo 不复用这些报价" not in html
     assert "普通币 2bp、RWA 3bp" in html
     assert "VPS2 · Var/Ondo 共同币" in html
-    assert "当前费率折算 24h" in html
-    assert "资金费是当前费率的 24h 等效值，不是收益预测" in html
+    assert "当前资金费外推 24h" in html
+    assert "资金费按当前费率外推 24 小时并用百分比显示" in html
+    assert "不是平台点差，也不是收益预测" in html
     assert "净资金费方向不合格" in html
     assert "资金费率异常" in html
     assert 'id="vdauto-spread"' in html
