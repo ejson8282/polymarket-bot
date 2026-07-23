@@ -936,6 +936,35 @@ def test_varia_automation_status_requires_config_and_live_worker(
     assert result["hosts"]["vps2"]["running"] is False
 
 
+def test_varia_automation_state_exposes_execution_freeze_as_hard_block(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": True,
+        "execution_frozen": True,
+        "execution_frozen_reason": "leverage_readback_guard_deploy",
+        "mode": "full_auto",
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    monkeypatch.setattr(console, "_varia_worker_status", lambda host: "active")
+
+    result = console._varia_automation_state({"budget": {"hosts": {}}})
+
+    assert result["status"] == "frozen"
+    assert result["execution_frozen"] is True
+    assert result["running_hosts"] == []
+    assert result["start_blocked"] is True
+    assert all(item["start_blocked"] is True for item in result["hosts"].values())
+    assert all(
+        "只读维护" in item["start_block_reason"]
+        for item in result["hosts"].values()
+    )
+
+
 def test_varia_auto_runtime_exposes_worker_next_open_plan(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1544,6 +1573,42 @@ def test_start_automation_reconciles_selected_hosts_without_trading(
     assert ("vps1", "start") in actions
     assert ("vps2", "stop") in actions
     assert not any("open" in action or "close" in action for _, action in actions)
+
+
+def test_start_automation_rejects_execution_freeze_without_touching_workers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": True,
+        "execution_frozen": True,
+        "execution_frozen_reason": "leverage_readback_guard_deploy",
+        "mode": "full_auto",
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": False, "strategy": "B"},
+        },
+    })
+    actions = []
+    monkeypatch.setattr(
+        console, "_varia_worker_action",
+        lambda host, action: actions.append((host, action)),
+    )
+    monkeypatch.setattr(
+        console, "_varia_automation_state",
+        lambda vd=None: {"status": "frozen", "execution_frozen": True},
+    )
+    request = type("RequestStub", (), {"headers": {}})()
+
+    response = asyncio.run(console.varia_automation_start(request))
+    body = json.loads(response.body)
+
+    assert response.status_code == 409
+    assert "只读维护" in body["error"]
+    assert "未启动任何 worker" in body["error"]
+    assert actions == []
 
 
 def test_start_automation_blocks_vps2_until_ondo_mutations_are_verified(

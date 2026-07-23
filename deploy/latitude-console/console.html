@@ -3608,7 +3608,7 @@
   })();
 
   function _vdAutoServiceLabel(value){return ({active:'后台在线',activating:'启动中',deactivating:'停止中',inactive:'已停止',failed:'后台异常',unknown:'状态未知'})[value]||value||'状态未知';}
-  function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',stopped:'自动化已停止'})[value]||'状态未知';}
+  function _vdAutoStatusLabel(value){return ({running:'自动运行中',starting:'正在启动',partial:'部分运行',attention:'需要检查',frozen:'只读维护',stopped:'自动化已停止'})[value]||'状态未知';}
   function _vdFundingPercent(value,digits=4){
     if(value==null||!Number.isFinite(Number(value))) return '—';
     const pct=Number(value)/100;
@@ -3685,7 +3685,7 @@
     document.getElementById('vdauto-compare-dec-spread').textContent='单边不高于 '+(Number.isFinite(decLimit)?decLimit.toFixed(1):'—')+' bp';
     document.getElementById('vdauto-compare-ondo-spread').textContent='普通币 '+(Number.isFinite(standard)?standard.toFixed(1):'—')+' bp · RWA '+(Number.isFinite(rwa)?rwa.toFixed(1):'—')+' bp';
     const signed=(value,digits=2)=>{if(value==null||!Number.isFinite(Number(value)))return '—';const n=Number(value);return (n>0?'+':'')+n.toFixed(digits);};
-    const routeStatus=(host,id)=>{const h=hosts[host]||{}, el=document.getElementById(id);let text='暂不可启动',cls='bad';if(h.running){text='自动运行中';cls='ok';}else if(h.live_ready){text='验收完成，可启动';cls='ok';}else if(h.start_blocked){text=host==='vps2'?'真实交易验收待完成':'验收待完成';cls='wait';}el.textContent=text;el.className='vdauto-compare-cell '+cls;};
+    const routeStatus=(host,id)=>{const h=hosts[host]||{}, el=document.getElementById(id);let text='暂不可启动',cls='bad';if(h.execution_frozen){text='只读维护';cls='wait';}else if(h.running){text='自动运行中';cls='ok';}else if(h.live_ready){text='验收完成，可启动';cls='ok';}else if(h.start_blocked){text=host==='vps2'?'真实交易验收待完成':'验收待完成';cls='wait';}el.textContent=text;el.className='vdauto-compare-cell '+cls;};
     routeStatus('vps1','vdauto-compare-dec-status');
     routeStatus('vps2','vdauto-compare-ondo-status');
     const comparison=Array.isArray(pools.route_comparison)?pools.route_comparison:[], routeWrap=document.getElementById('vdauto-route-wrap'), routeMeta=document.getElementById('vdauto-route-meta');
@@ -3745,7 +3745,7 @@
       const mutation=((h.acceptance||{}).mutation)||{}, mutationKeys=['leverage_sync','post_only_cancel','partial_fill_reconcile','reduce_only_close','paired_micro_hedge'];
       const pendingMutations=mutationKeys.filter(key=>mutation[key]!==true).length;
       const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
-      status.textContent=(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service))+blocked+age;
+      status.textContent=(h.execution_frozen?'只读维护':(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service)))+blocked+age;
       status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':(h.start_blocked?'var(--warn)':'var(--muted)'));
       _vdAutoRenderNextPlan(host,h);
     });
@@ -3780,7 +3780,7 @@
     const selectedBlocked=selected.filter(host=>(hosts[host]||{}).start_blocked);
     const selectedStartable=selected.filter(host=>!(hosts[host]||{}).start_blocked&&!(hosts[host]||{}).running&&(hosts[host]||{}).service!=='activating');
     const startButton=document.getElementById('vdauto-start');
-    startButton.textContent=selectedBlocked.length?'启动可运行 VPS':'启动自动化';
+    startButton.textContent=state.execution_frozen?'只读维护中':(selectedBlocked.length?'启动可运行 VPS':'启动自动化');
     startButton.disabled=state.status==='starting'||!selectedStartable.length;
     const msg=document.getElementById('vdauto-msg');
     if(selectedBlocked.length&&!msg.textContent) {msg.className='vdauto-message';msg.textContent=selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；')+(selectedStartable.length?'；其余已验收 VPS 仍可启动。':'');}

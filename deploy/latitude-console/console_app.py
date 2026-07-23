@@ -1758,6 +1758,8 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         }
     return {
         "enabled": bool(raw.get("enabled")),
+        "execution_frozen": bool(raw.get("execution_frozen")),
+        "execution_frozen_reason": str(raw.get("execution_frozen_reason") or ""),
         "mode": mode,
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
         "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 2)),
@@ -2321,6 +2323,9 @@ def _varia_host_live_readiness(
 
 
 def _varia_selected_start_blocks(state: dict) -> List[str]:
+    if state.get("execution_frozen"):
+        reason = str(state.get("execution_frozen_reason") or "安全保护尚未解除")
+        return [f"全部 VPS：只读维护（{reason}）"]
     raw_states = _varia_raw_states()
     blocks: List[str] = []
     for host, configured in (state.get("hosts") or {}).items():
@@ -2336,6 +2341,8 @@ def _varia_selected_start_blocks(state: dict) -> List[str]:
 
 def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
+    execution_frozen = state["execution_frozen"]
+    freeze_reason = state["execution_frozen_reason"] or "安全保护尚未解除"
     vd = vd if isinstance(vd, dict) else _var_decibel()
     budget = vd.get("budget") if isinstance(vd.get("budget"), dict) else {}
     host_budget = budget.get("hosts") if isinstance(budget.get("hosts"), dict) else {}
@@ -2348,24 +2355,36 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         readiness = _varia_host_live_readiness(
             host, raw_states.get(host), str(configured.get("strategy") or ""),
         )
+        live_ready = bool(readiness["ready"] and not execution_frozen)
+        start_block_reason = (
+            f"只读维护：{freeze_reason}" if execution_frozen else readiness["reason"]
+        )
         hosts[host] = {
             **configured,
             "service": service,
-            "running": bool(state["enabled"] and configured["enabled"] and service == "active"),
+            "running": bool(
+                state["enabled"]
+                and configured["enabled"]
+                and service == "active"
+                and not execution_frozen
+            ),
             "runtime": runtime,
             "budget": host_budget.get(host) if isinstance(host_budget.get(host), dict) else None,
             "hedge_venue": readiness["hedge_venue"],
             "hedge_label": readiness["hedge_label"],
             "expected_strategy": readiness["expected_strategy"],
-            "live_ready": readiness["ready"],
-            "start_blocked": not readiness["ready"],
-            "start_block_reason": readiness["reason"],
+            "live_ready": live_ready,
+            "start_blocked": not live_ready,
+            "start_block_reason": start_block_reason,
+            "execution_frozen": execution_frozen,
             "acceptance": readiness["acceptance"],
         }
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     running = [host for host, item in hosts.items() if item.get("running")]
     starting = [host for host, item in hosts.items() if item.get("service") == "activating"]
-    if not state["enabled"]:
+    if execution_frozen:
+        status = "frozen"
+    elif not state["enabled"]:
         status = "stopped"
     elif starting:
         status = "starting"
@@ -5045,6 +5064,13 @@ async def varia_automation_start(request: Request) -> JSONResponse:
     if blocked is not None:
         return blocked
     state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
+    if state["execution_frozen"]:
+        reason = state["execution_frozen_reason"] or "安全保护尚未解除"
+        return JSONResponse({
+            "ok": False,
+            "error": f"自动化处于只读维护：{reason}。未启动任何 worker。",
+            "state": _varia_automation_state(),
+        }, status_code=409)
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     if not selected:
         return JSONResponse({"ok": False, "error": "请先至少启用一台 VPS 并保存配置"}, status_code=409)
