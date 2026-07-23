@@ -3037,11 +3037,11 @@
       return;
     }
     const venue=plan.hedge_venue==='ondo'?'Ondo':'Decibel', num=v=>(v==null||v===''?null:Number(v));
-    const notional=num(plan.notional_usdc), leverage=num(plan.leverage), cost=num(plan.expected_entry_cost_bps), funding=num(plan.net_funding_24h_bps);
+    const notional=num(plan.notional_usdc), leverage=num(plan.leverage), cost=num(plan.expected_entry_cost_bps), funding=num(plan.net_funding_24h_bps), varOne=num(plan.var_one_way_spread_bps), hedgeOne=num(plan.hedge_one_way_spread_bps);
     const direction=plan.var_side==='buy'?_vdDirectionLabel('var_buy',venue):plan.var_side==='sell'?_vdDirectionLabel('var_sell',venue):(plan.direction||('Var / '+venue));
     const scanAge=num(plan.market_data_age_sec), planAge=num(plan.age_sec);
     const age=scanAge!=null&&Number.isFinite(scanAge)?scanAge:planAge;
-    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
+    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',varOne!=null&&hedgeOne!=null&&Number.isFinite(varOne)&&Number.isFinite(hedgeOne)?'单边点差 Var '+varOne.toFixed(2)+' / '+venue+' '+hedgeOne.toFixed(2)+' bp':'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
     const ready=plan.ready_for_live===true;
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
@@ -3075,7 +3075,7 @@
     routeMeta.textContent=comparison.length+' 个共同报价 · '+actionable+' 个有可用路线 · '+bothReady+' 个双路线均可';
     if(!comparison.length){routeWrap.innerHTML='<div class="vdauto-market-empty">尚无可直接比较的同币种新鲜报价</div>';}
     else{
-      const routeLeg=(leg,funding)=>'<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>入场 '+signed(leg?.entry_cost_bps)+' bp · 点差 '+signed(leg?.spread_bps)+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';
+      const routeLeg=(leg,funding)=>'<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>入场 '+signed(leg?.entry_cost_bps)+' bp · 单边点差 '+signed(leg?.spread_bps)+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';
       const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 成本差 '+Number(row.entry_savings_bps).toFixed(2)+' bp');return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,false)+'</td><td>'+routeLeg(row.ondo,true)+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved)+'</div></td></tr>';}).join('');
       routeWrap.innerHTML='<table class="vdauto-route"><thead><tr><th>币种</th><th>Var/Decibel</th><th>Var/Ondo</th><th>低入场成本路线</th></tr></thead><tbody>'+routeBody+'</tbody></table>';
     }
@@ -3089,7 +3089,7 @@
     if(!rows.length){wrap.innerHTML='<div class="vdauto-market-empty">'+esc(ondo.stale?'VPS2 扫描已过期，等待下一轮':'尚未收到 VPS2 共同币扫描')+'</div>';}
     else{
       const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+signed(row.net_funding_24h_bps)+' bp</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'可做':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
-      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>入场成本</th><th>当前费率折算 24h</th><th>点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
+      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>入场成本</th><th>当前费率折算 24h</th><th>单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
     }
   }
 
