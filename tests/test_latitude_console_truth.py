@@ -826,18 +826,18 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-compare-ondo-markets"' in html
     assert 'id="vdauto-compare-dec-status"' in html
     assert 'id="vdauto-compare-ondo-status"' in html
-    assert "选择双腿入场价差更低的方向" in html
-    assert "接近时再比较净资金费" in html
-    assert "同币种跨平台入场差对比" in html
-    assert "跨平台入场差（非点差）" in html
+    assert "开仓前同步重算双腿价格" in html
+    assert "实时价差优先，接近时再比较净资金费" in html
+    assert "同币种跨平台价差参考" in html
+    assert "跨平台扫描价差（非点差）" in html
     assert "entry_signal_unconfirmed:'等待下一轮稳定确认'" in html
     assert "entry_signal_unstable:'两轮报价变化过大'" in html
-    assert "低入场价差路线" in html
-    assert "负入场价差只代表当时报价有利" in html
-    assert "当前入场价差" in html
+    assert "扫描参考路线" in html
+    assert "负扫描价差只代表当时报价有利" in html
+    assert "扫描价差参考" in html
     assert "当前净资金费折算24小时" in html
     assert "平台单边点差" in html
-    assert "跨平台入场差" in html
+    assert "跨平台扫描价差" in html
     assert "点差 '+platformBp.toFixed(2)+'bp" in html
     assert "预计入场成本" not in html
     assert "VPS2 · Var/Ondo" in html
