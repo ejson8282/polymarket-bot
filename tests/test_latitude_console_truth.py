@@ -1377,10 +1377,13 @@ def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
         "preferred_label": "Var/Ondo",
         "reason": "两边均通过，Ondo 入场价差更低",
         "entry_savings_bps": 0.8,
+        "expected_24h_savings_bps": None,
         "decibel": {
             "allowed": True,
             "direction": "Var 买 / Decibel 卖",
             "entry_cost_bps": 1.4,
+            "net_funding_24h_bps": None,
+            "expected_24h_cost_bps": None,
             "var_spread_bps": 1.0,
             "hedge_spread_bps": 1.0,
             "spread_bps": 1.0,
@@ -1391,12 +1394,77 @@ def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
             "direction": "Var 卖 / Ondo 买",
             "entry_cost_bps": 0.6,
             "net_funding_24h_bps": 2.5,
+            "expected_24h_cost_bps": -1.9,
             "var_spread_bps": 0.7,
             "hedge_spread_bps": 0.9,
             "maker_fee_bps": 1.0,
             "spread_bps": 0.9,
         },
     }]
+
+
+def test_varia_decibel_direction_uses_lowest_expected_24h_cost_within_tolerance() -> None:
+    result = console._varia_quote_direction({
+        "var_bid": 100.00,
+        "var_ask": 100.01,
+        "decibel_bid": 100.00,
+        "decibel_ask": 100.02,
+        # Var is +0.001% per 8h (0.3 bp/day), Decibel is flat.
+        "var_funding": 0.001,
+        "decibel_funding": 0,
+    })
+
+    assert result["costs"]["var_buy"] < result["costs"]["var_sell"]
+    assert result["net_funding_24h_bps"] == {
+        "var_buy": -0.3,
+        "var_sell": 0.3,
+    }
+    # The funding-positive direction costs ~1 bp more to enter, so its
+    # current-rate 24h total is still worse than the cheaper entry direction.
+    assert result["recommended"] == "var_buy"
+    assert (
+        result["expected_24h_cost_bps"]["var_buy"]
+        < result["expected_24h_cost_bps"]["var_sell"]
+    )
+
+
+def test_varia_route_comparison_prefers_lower_expected_24h_cost() -> None:
+    rows = console._varia_route_comparison(
+        {
+            "symbols": ["BTC"],
+            "metrics": {
+                "BTC": {
+                    "allowed": True,
+                    "recommended": "Var 买 / Decibel 卖",
+                    "entry_cost_bps": 0.2,
+                    "net_funding_24h_bps": -1.0,
+                    "expected_24h_cost_bps": 1.2,
+                    "var_spread_bps": 0.4,
+                    "decibel_spread_bps": 0.2,
+                    "platform_spread_bps": 0.4,
+                },
+            },
+        },
+        {
+            "metrics": {
+                "BTC": {
+                    "allowed": True,
+                    "recommended": "Var 卖 / Ondo 买",
+                    "entry_cost_bps": 0.8,
+                    "net_funding_24h_bps": 2.0,
+                    "expected_24h_cost_bps": -1.2,
+                    "var_spread_bps": 0.4,
+                    "ondo_spread_bps": 0.3,
+                    "maker_fee_bps": 0,
+                },
+            },
+        },
+    )
+
+    assert rows[0]["preferred"] == "ondo"
+    assert rows[0]["reason"] == "两边均通过，按当前费率折算的 24h 净成本更低"
+    assert rows[0]["entry_savings_bps"] == 0.6
+    assert rows[0]["expected_24h_savings_bps"] == 2.4
 
 
 def test_varia_worker_actions_use_each_hosts_own_service(monkeypatch) -> None:

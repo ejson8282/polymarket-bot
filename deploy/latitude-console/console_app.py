@@ -1524,6 +1524,8 @@ def _varia_quotes_from_readonly_scan(scan: dict) -> List[dict]:
             "var_ask": _num(row.get("var_ask_1k")),
             "decibel_bid": _num(row.get("decibel_bid")),
             "decibel_ask": _num(row.get("decibel_ask")),
+            "var_funding": _num(row.get("var_funding")),
+            "decibel_funding": _num(row.get("decibel_funding")),
             "source": "read_only_market_scan",
         }
         if not quote["symbol"] or None in (
@@ -1548,18 +1550,24 @@ def _varia_latest_quotes() -> List[dict]:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         cur = conn.execute(
             "SELECT m.symbol, m.timestamp, m.var_bid_1k, m.var_ask_1k, "
-            "m.decibel_bid, m.decibel_ask FROM market_snapshots m "
+            "m.decibel_bid, m.decibel_ask, m.var_funding, m.decibel_funding "
+            "FROM market_snapshots m "
             "JOIN (SELECT symbol, MAX(id) AS max_id FROM market_snapshots "
             "WHERE var_bid_1k IS NOT NULL AND var_ask_1k IS NOT NULL "
             "AND decibel_bid IS NOT NULL AND decibel_ask IS NOT NULL GROUP BY symbol) latest "
             "ON m.id = latest.max_id ORDER BY m.symbol"
         )
-        for symbol, timestamp, var_bid, var_ask, dec_bid, dec_ask in cur.fetchall():
+        for (
+            symbol, timestamp, var_bid, var_ask, dec_bid, dec_ask,
+            var_funding, decibel_funding,
+        ) in cur.fetchall():
             quote = {
                 "symbol": str(symbol or "").upper(),
                 "timestamp": str(timestamp or ""),
                 "var_bid": _num(var_bid), "var_ask": _num(var_ask),
                 "decibel_bid": _num(dec_bid), "decibel_ask": _num(dec_ask),
+                "var_funding": _num(var_funding),
+                "decibel_funding": _num(decibel_funding),
             }
             ts = _parse_ts(timestamp)
             quote["age_sec"] = max(0, int(time.time() - ts)) if ts is not None else None
@@ -1583,7 +1591,48 @@ def _varia_quote_direction(quote: dict) -> Dict[str, Any]:
         "var_buy": round((va - db) / mid * 10000, 4),
         "var_sell": round((da - vb) / mid * 10000, 4),
     }
-    return {"recommended": min(costs, key=costs.get), "costs": costs}
+    best_entry = min(costs, key=costs.get)
+    carry = _varia_decibel_funding_by_direction(quote)
+    expected = {
+        direction: round(cost - carry[direction], 4)
+        for direction, cost in costs.items()
+        if direction in carry
+    }
+    candidates = [
+        direction for direction, cost in costs.items()
+        if direction in expected and cost <= costs[best_entry] + 2
+    ]
+    recommended = (
+        min(candidates, key=lambda direction: (expected[direction], costs[direction]))
+        if candidates else best_entry
+    )
+    return {
+        "recommended": recommended,
+        "costs": costs,
+        "net_funding_24h_bps": carry,
+        "expected_24h_cost_bps": expected,
+        "direction_selection_policy": (
+            "entry_cost_first_expected_24h_cost_within_2bps"
+            if expected else "lowest_entry_cost"
+        ),
+    }
+
+
+def _varia_decibel_funding_by_direction(quote: dict) -> Dict[str, float]:
+    """Normalize current rates to a 24-hour reference, not a forecast."""
+    var_rate = _num(quote.get("var_funding"))
+    decibel_rate = _num(quote.get("decibel_funding"))
+    if var_rate is None or decibel_rate is None:
+        return {}
+    # Variational publishes percent per 8 hours; Decibel stores fraction per hour.
+    var_24h_bps = var_rate / 100 * 10000 * 3
+    decibel_24h_bps = decibel_rate * 10000 * 24
+    if abs(var_24h_bps) > 200 or abs(decibel_24h_bps) > 200:
+        return {}
+    return {
+        "var_buy": round(-var_24h_bps + decibel_24h_bps, 4),
+        "var_sell": round(var_24h_bps - decibel_24h_bps, 4),
+    }
 
 
 def _varia_recent_jobs(limit: int = 8) -> List[dict]:
@@ -1889,11 +1938,24 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         dec_spread = (dec_ask - dec_bid) / dec_mid * 10000 / 2
         costs = quote.get("costs") if isinstance(quote.get("costs"), dict) else {}
         numeric_costs = [value for value in (_num(item) for item in costs.values()) if value is not None]
+        direction_key = str(quote.get("recommended") or "")
+        entry_cost = _num(costs.get(direction_key))
+        if entry_cost is None:
+            entry_cost = min(numeric_costs) if numeric_costs else None
+        funding_by_direction = (
+            quote.get("net_funding_24h_bps")
+            if isinstance(quote.get("net_funding_24h_bps"), dict) else {}
+        )
+        expected_by_direction = (
+            quote.get("expected_24h_cost_bps")
+            if isinstance(quote.get("expected_24h_cost_bps"), dict) else {}
+        )
+        net_funding = _num(funding_by_direction.get(direction_key))
+        expected_24h_cost = _num(expected_by_direction.get(direction_key))
         # Keep the sign for like-for-like route comparison. A negative value
         # means the current executable cross-venue quotes are favorable; the
         # spread guard below still uses max(), so a favorable basis never
         # bypasses either venue's own spread limit.
-        entry_cost = min(numeric_costs) if numeric_costs else None
         observed = [var_spread, dec_spread] + ([entry_cost] if entry_cost is not None else [])
         worst = max(observed)
         can_trade = worst <= max_spread_bps
@@ -1907,6 +1969,20 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "decibel_spread_bps": round(dec_spread, 2),
             "platform_spread_bps": round(max(var_spread, dec_spread), 2),
             "entry_cost_bps": round(entry_cost, 2) if entry_cost is not None else None,
+            "net_funding_24h_bps": (
+                round(net_funding, 2) if net_funding is not None else None
+            ),
+            "expected_24h_cost_bps": (
+                round(expected_24h_cost, 2)
+                if expected_24h_cost is not None else None
+            ),
+            "funding_projection_note": (
+                "current_rate_24h_equivalent_not_forecast"
+                if expected_24h_cost is not None else ""
+            ),
+            "direction_selection_policy": str(
+                quote.get("direction_selection_policy") or ""
+            ),
             "display_bps": round(worst, 2),
             "allowed": can_trade,
             "age_sec": int(age),
@@ -1986,12 +2062,22 @@ def _varia_route_comparison(decibel_pool: dict, ondo_pool: dict) -> List[dict]:
         ondo = ondo_metrics[symbol]
         decibel_cost = _num(decibel.get("entry_cost_bps"))
         ondo_cost = _num(ondo.get("entry_cost_bps"))
+        decibel_expected = _num(decibel.get("expected_24h_cost_bps"))
+        ondo_expected = _num(ondo.get("expected_24h_cost_bps"))
         decibel_allowed = decibel.get("allowed") is True
         ondo_allowed = ondo.get("allowed") is True
         preferred: Optional[str]
         reason: str
         if decibel_allowed and ondo_allowed:
-            if decibel_cost is None and ondo_cost is None:
+            if decibel_expected is not None and ondo_expected is not None:
+                if ondo_expected < decibel_expected:
+                    preferred = "ondo"
+                else:
+                    preferred = "decibel"
+                reason = (
+                    "两边均通过，按当前费率折算的 24h 净成本更低"
+                )
+            elif decibel_cost is None and ondo_cost is None:
                 preferred, reason = None, "两边入场价差均待定"
             elif ondo_cost is not None and (decibel_cost is None or ondo_cost < decibel_cost):
                 preferred, reason = "ondo", "两边均通过，Ondo 入场价差更低"
@@ -2007,16 +2093,25 @@ def _varia_route_comparison(decibel_pool: dict, ondo_pool: dict) -> List[dict]:
             abs(decibel_cost - ondo_cost)
             if decibel_cost is not None and ondo_cost is not None else None
         )
+        expected_savings = (
+            abs(decibel_expected - ondo_expected)
+            if decibel_expected is not None and ondo_expected is not None else None
+        )
         rows.append({
             "symbol": symbol,
             "preferred": preferred,
             "preferred_label": {"decibel": "Var/Decibel", "ondo": "Var/Ondo"}.get(preferred, "暂不交易"),
             "reason": reason,
             "entry_savings_bps": round(savings, 4) if savings is not None else None,
+            "expected_24h_savings_bps": (
+                round(expected_savings, 4) if expected_savings is not None else None
+            ),
             "decibel": {
                 "allowed": decibel_allowed,
                 "direction": str(decibel.get("recommended") or "方向待定"),
                 "entry_cost_bps": decibel_cost,
+                "net_funding_24h_bps": _num(decibel.get("net_funding_24h_bps")),
+                "expected_24h_cost_bps": decibel_expected,
                 "var_spread_bps": _num(decibel.get("var_spread_bps")),
                 "hedge_spread_bps": _num(decibel.get("decibel_spread_bps")),
                 "spread_bps": _num(decibel.get("platform_spread_bps")),
@@ -2027,6 +2122,7 @@ def _varia_route_comparison(decibel_pool: dict, ondo_pool: dict) -> List[dict]:
                 "direction": str(ondo.get("recommended") or "方向待定"),
                 "entry_cost_bps": ondo_cost,
                 "net_funding_24h_bps": _num(ondo.get("net_funding_24h_bps")),
+                "expected_24h_cost_bps": ondo_expected,
                 "var_spread_bps": _num(ondo.get("var_spread_bps")),
                 "hedge_spread_bps": _num(ondo.get("ondo_spread_bps")),
                 "maker_fee_bps": _num(ondo.get("maker_fee_bps")),
