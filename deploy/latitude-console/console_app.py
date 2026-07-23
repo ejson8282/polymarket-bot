@@ -2457,8 +2457,10 @@ def _ipo() -> Dict[str, Any]:
             j = jmap.get(row["code"])
             if j and j.get("verdict"):
                 row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                row["ai_grade"] = str(j.get("grade") or "")[:1]
                 row["ai_expected"] = j.get("expected_net")    # 期望净收益
-                row["ai_reason"] = str(j.get("reason") or "")[:80]
+                row["ai_reason"] = str(j.get("reason") or "")[:500]
+                row["ai_pdf_conclusion"] = str(j.get("pdf_conclusion") or "")[:1200]
                 row["ai_score"] = j.get("overall_score")
                 row["ai_confidence"] = j.get("confidence")
                 row["ai_scores"] = j.get("score_breakdown") if isinstance(j.get("score_breakdown"), dict) else {}
@@ -3320,7 +3322,7 @@ async def ipo_judgment(payload: dict, request: Request) -> JSONResponse:
     r = _http_post_json(
         f"{IPO_ROUTER_BASE}/dashboard/ipo/openclaw/judgment",
         body,
-        timeout=160.0,
+        timeout=330.0,
     )
     _audit(
         "ipo_judgment",

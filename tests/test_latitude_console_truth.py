@@ -1013,6 +1013,28 @@ def test_ipo_entries_read_router_stock_name_and_code(monkeypatch) -> None:
     assert result["entries"][1]["net_pnl"] == 1112
 
 
+def test_ipo_exposes_grade_and_pdf_author_conclusion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        console,
+        "_fetch_json",
+        lambda url, **_kwargs: {
+            "ipo": {"stocks": [{"code": "3308", "name": "中际旭创", "status": "申购中"}]}
+        } if url == console.IPO_STATE_URL else {
+            "stocks": [{
+                "code": "3308",
+                "grade": "B",
+                "verdict": "打",
+                "reason": "结合热度后可以参与。",
+                "pdf_conclusion": "PDF 作者建议乙头参与。",
+            }]
+        },
+    )
+
+    stock = console._ipo()["stocks"][0]
+    assert stock["ai_grade"] == "B"
+    assert stock["ai_pdf_conclusion"] == "PDF 作者建议乙头参与。"
+
+
 def test_ipo_console_uses_contextual_account_actions() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
@@ -1045,9 +1067,13 @@ def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:
     assert "function showIpoRowStatus(button,text,kind)" in html
     assert "window.confirm('确认将 '" in html
     assert 'class="ipo-stock-card"' in html
-    assert "建议：" in html
+    assert "结论 " in html
     assert "资料完整度" in html
-    assert "基本面" in html and "估值" in html and "热度" in html and "首日" in html
+    assert "基本面" in html and "估值" in html and "热度" in html and "资金效率" in html
+    assert "首日表现" not in html
+    assert "PDF 观点" in html
+    assert "GPT 综合判断" in html
+    assert "关键待确认" in html
     assert "include_pdf_details:true" in html
 
 

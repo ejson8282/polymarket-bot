@@ -146,6 +146,8 @@
   .ipo-stock-analysis{padding:15px 16px;border-right:1px solid var(--line)}
   .ipo-stock-verdict{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
   .ipo-stock-reason{font-size:14px;line-height:1.65;color:var(--text)}
+  .ipo-stock-reference{margin:10px 0;padding:10px 12px;border-left:3px solid var(--var);background:rgba(68,192,211,.06);font-size:13px;line-height:1.65;color:var(--muted)}
+  .ipo-stock-reference b{color:var(--var);margin-right:7px}
   .ipo-stock-evidence{margin-top:9px;color:var(--faint);font:12px/1.55 var(--mono)}
   .ipo-stock-score-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
   .ipo-stock-score{padding:5px 8px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font:12px var(--mono)}
@@ -971,8 +973,8 @@
             <label class="ipo-pdf-picker">选择 PDF
               <input id="ipo-pdf-input" type="file" accept="application/pdf,.pdf" multiple>
             </label>
-            <input class="ipo-pdf-pages" id="ipo-pdf-pages" placeholder="重点页码，如 1-5,12,20-22">
-            <span class="ipo-pdf-status" id="ipo-pdf-status">最多 3 个、每个 20MB；选择后点击右下角分析，长文可填重点页码。</span>
+            <input class="ipo-pdf-pages" id="ipo-pdf-pages" placeholder="重点页码（可选），如 1-5,12,20-22">
+            <span class="ipo-pdf-status" id="ipo-pdf-status">最多 3 个、每个 20MB；长文会自动查看首页和最后总结页，也可选填重点页码。</span>
           </div>
           <textarea id="ipo-research-input" placeholder="在这里粘贴港股打新文章；也可以不填，直接让 GPT 根据当前已知事实判研。"></textarea>
           <div class="ipo-research-actions">
@@ -1815,14 +1817,19 @@
       let analysis;
       if(x.ai_verdict){
         const v=x.ai_verdict, cls=v.includes('打')?'ok':(v.includes('跳')?'danger':'warn');
+        const grade=x.ai_grade||({打:'A',谨慎:'C',跳:'D','待补资料':'C'}[v]||'C');
+        const gradeText={A:'积极参与',B:'参与',C:'谨慎 / 有条件',D:'不参与'}[grade]||v;
         const exp=x.ai_expected!=null?' <b class="'+(x.ai_expected>=0?'up':'down')+'">'+(x.ai_expected>=0?'+':'')+'$'+Math.round(x.ai_expected)+'</b>':'';
         const sb=x.ai_scores||{};
         const scorePart=(label,value)=>'<span class="ipo-stock-score">'+label+' <b>'+(value==null?'—':value)+'</b></span>';
-        const breakdown='<div class="ipo-stock-score-list">'+scorePart('基本面',sb.fundamentals)+scorePart('估值',sb.valuation)+scorePart('认购热度',sb.demand)+scorePart('首日表现',sb.first_day)+scorePart('资金效率',sb.capital_efficiency)+'</div>';
+        const breakdown='<div class="ipo-stock-score-list">'+scorePart('基本面',sb.fundamentals)+scorePart('估值',sb.valuation)+scorePart('认购热度',sb.demand)+scorePart('资金效率',sb.capital_efficiency)+scorePart('风险',sb.risk)+'</div>';
         const source=(x.ai_sources||[])[0];
         const sourceLink=source&&String(source.url||'').startsWith('http')?' <a href="'+esc(source.url)+'" target="_blank" rel="noopener" style="color:var(--var)">查看依据（'+(x.ai_sources||[]).length+'）</a>':'';
-        const gaps=(x.ai_gaps||[]).length?'<div class="ipo-stock-evidence">仍缺：'+esc(x.ai_gaps.slice(0,3).join('；'))+'</div>':'';
-        analysis='<div class="ipo-stock-verdict"><span class="chip '+cls+'">建议：'+esc(v)+'</span><span class="chip">综合 '+esc(x.ai_score??'—')+'</span><span class="chip">置信 '+esc(x.ai_confidence??'—')+'</span>'+exp+sourceLink+'</div><div class="ipo-stock-reason">'+esc(x.ai_reason||'GPT 未给出简要理由')+'</div>'+breakdown+gaps;
+        const nonBlockingInternational=/国际配售.*(覆盖倍数|订单集中度|长线资金|长线投资者)/;
+        const keyGaps=(x.ai_gaps||[]).filter(g=>!nonBlockingInternational.test(String(g)));
+        const gaps=keyGaps.length?'<div class="ipo-stock-evidence">关键待确认：'+esc(keyGaps.slice(0,3).join('；'))+'</div>':'';
+        const pdfView=x.ai_pdf_conclusion?'<div class="ipo-stock-reference"><b>PDF 观点</b>'+esc(x.ai_pdf_conclusion)+'</div>':'';
+        analysis='<div class="ipo-stock-verdict"><span class="chip '+cls+'">结论 '+esc(grade)+' · '+esc(gradeText)+'</span><span class="chip">综合 '+esc(x.ai_score??'—')+'</span><span class="chip">置信 '+esc(x.ai_confidence??'—')+'</span>'+exp+sourceLink+'</div>'+pdfView+'<div class="ipo-stock-reason"><b>GPT 综合判断：</b>'+esc(x.ai_reason||'尚未给出综合理由')+'</div>'+breakdown+gaps;
       } else {
         analysis='<div class="ipo-stock-verdict"><span class="chip warn">等待 GPT 判研</span></div><div class="ipo-stock-reason">'+esc(x.note||'已读取新股资料，尚未形成申购建议。')+'</div>';
       }
@@ -2431,7 +2438,7 @@
       const files=Array.from(pdfInput.files||[]);
       if(!files.length){
         pdfStatus.className='ipo-pdf-status';
-        pdfStatus.textContent='最多 3 个、每个 20MB；选择后点击右下角分析，长文可填重点页码。';
+        pdfStatus.textContent='最多 3 个、每个 20MB；长文会自动查看首页和最后总结页，也可选填重点页码。';
         return;
       }
       pdfStatus.className='ipo-pdf-status ok';
