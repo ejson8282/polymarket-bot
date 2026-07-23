@@ -870,7 +870,7 @@
       <article class="vd-strategy-card a">
         <div class="tagline">VPS1 · VAR/DECIBEL</div>
         <h3>策略 A · 高交易量</h3>
-        <p>以主流币提供稳定交易量，穿插低点差机会币与 RWA。方向自动选择双腿入场成本更低的一侧。</p>
+        <p>以主流币提供稳定交易量，穿插低点差机会币与 RWA。方向自动选择双腿入场价差更低的一侧。</p>
         <div class="vd-strategy-facts">
           <div><span>主流币比例</span><b>默认 80%</b></div>
           <div><span>持仓</span><b>30 分钟–36 小时</b></div>
@@ -880,7 +880,7 @@
       <article class="vd-strategy-card b">
         <div class="tagline">VPS2 · VAR/ONDO</div>
         <h3>策略 B · 高权重长持仓</h3>
-        <p>优先 RWA、低 OI 与高权重币，普通币 2 bp、RWA 3 bp；入场成本接近时再比较净资金费。</p>
+        <p>优先 RWA、低 OI 与高权重币，普通币 2 bp、RWA 3 bp；入场价差接近时再比较净资金费。</p>
         <div class="vd-strategy-facts">
           <div><span>候选重点</span><b>RWA / 机会币</b></div>
           <div><span>持仓</span><b>24–72 小时</b></div>
@@ -936,7 +936,7 @@
 
   <div class="vd-native-view vd-opportunity-stack" data-vd-view="行情机会">
     <div class="vd-view-head">
-      <div><h2>行情机会</h2><p>先看两边共同市场和报价新鲜度，再判断点差、入场成本与资金费是否通过。</p></div>
+      <div><h2>行情机会</h2><p>先看两边共同市场和报价新鲜度，再判断平台点差、入场价差与资金费是否通过。</p></div>
     </div>
     <div class="vdauto-compare vd-compare-native" id="vdauto-route-comparison">
       <div class="vdauto-compare-grid">
@@ -3624,7 +3624,7 @@
     const direction=plan.var_side==='buy'?_vdDirectionLabel('var_buy',venue):plan.var_side==='sell'?_vdDirectionLabel('var_sell',venue):(plan.direction||('Var / '+venue));
     const scanAge=num(plan.market_data_age_sec), planAge=num(plan.age_sec);
     const age=scanAge!=null&&Number.isFinite(scanAge)?scanAge:planAge;
-    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',varOne!=null&&hedgeOne!=null&&Number.isFinite(varOne)&&Number.isFinite(hedgeOne)?'单边点差 Var '+varOne.toFixed(2)+' / '+venue+' '+hedgeOne.toFixed(2)+' bp':'',cost!=null&&Number.isFinite(cost)?'预计入场成本 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'预计24小时净资金费 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
+    const pieces=[plan.symbol||'—',direction,leverage!=null&&Number.isFinite(leverage)?leverage.toFixed(0)+'x':'',notional!=null&&Number.isFinite(notional)?money(notional):'',varOne!=null&&hedgeOne!=null&&Number.isFinite(varOne)&&Number.isFinite(hedgeOne)?'平台单边点差 Var '+varOne.toFixed(2)+' / '+venue+' '+hedgeOne.toFixed(2)+' bp':'',cost!=null&&Number.isFinite(cost)?'当前入场价差 '+cost.toFixed(2)+' bp':'',funding!=null&&Number.isFinite(funding)?'当前净资金费折算24小时 '+(funding>0?'+':'')+funding.toFixed(2)+' bp':'',age!=null&&Number.isFinite(age)?'行情 '+_fmtAge(age):''].filter(Boolean);
     const ready=plan.ready_for_live===true;
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
@@ -3656,7 +3656,7 @@
   function _vdAutoRenderPools(state){
     const pools=state.strategy_pools||{}, venues=pools.venues||{}, dec=venues.decibel||pools, ondo=venues.ondo||{};
     const major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(dec.allowed||[]), blocked=new Set(dec.blocked||[]), metrics=dec.metrics||{};
-    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 入场 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')+' / '+(m.recommended||'方向待定')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
+    const chips=items=>items.length?items.map(symbol=>{const m=metrics[symbol]||{}, cls=allowed.has(symbol)?'ready':(blocked.has(symbol)?'blocked':''); const bp=m.display_bps==null?'':(' · '+Number(m.display_bps).toFixed(2)+'bp'); const tip=m.var_spread_bps==null?'等待 VPS1 新鲜报价':('VPS1 · Var '+Number(m.var_spread_bps).toFixed(2)+'bp / Decibel '+Number(m.decibel_spread_bps).toFixed(2)+'bp / 入场价差 '+(m.entry_cost_bps==null?'—':Number(m.entry_cost_bps).toFixed(2)+'bp')+' / '+(m.recommended||'方向待定')); return '<span class="vdauto-symbol '+cls+'" title="'+esc(tip)+'">'+esc(symbol+bp)+'</span>';}).join(''):'<span class="vdauto-pools-meta">暂无配置</span>';
     document.getElementById('vdauto-major-symbols').innerHTML=chips(major);
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
@@ -3691,14 +3691,14 @@
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
     document.getElementById('vdauto-pool-b-rule').textContent='Var/Ondo '+(ondo.total??0)+' 个共同币；普通币 2bp、RWA 3bp，且净资金费方向不为负';
-    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场成本过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格'};
+    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场价差过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格'};
     const category={major:'主流',rwa:'RWA',opportunity:'机会'};
     const rows=Array.isArray(ondo.rows)?ondo.rows:[];
     const wrap=document.getElementById('vdauto-ondo-market-wrap');
     if(!rows.length){wrap.innerHTML='<div class="vdauto-market-empty">'+esc(ondo.stale?'VPS2 扫描已过期，等待下一轮':'尚未收到 VPS2 共同币扫描')+'</div>';}
     else{
       const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+signed(row.net_funding_24h_bps)+' bp</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'可做':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
-      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>入场成本</th><th>当前费率折算 24h</th><th>单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
+      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>入场价差</th><th>当前费率折算 24h</th><th>平台单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
     }
   }
 
