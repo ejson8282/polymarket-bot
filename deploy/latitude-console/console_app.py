@@ -23,6 +23,8 @@ import re
 import shlex
 import sqlite3
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -89,6 +91,9 @@ GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/stat
 DEWU_INVENTORY_PATH = Path(
     os.getenv("DEWU_INVENTORY_PATH", DATA_DIR / "dewu_inventory.json")
 )
+DEWU_EXECUTOR_URL = os.getenv(
+    "DEWU_EXECUTOR_URL", "http://100.91.159.54:8621"
+).rstrip("/")
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
 PM_STATE_STALE_SEC = int(os.getenv("PM_STATE_STALE_SEC", "300"))
@@ -159,6 +164,27 @@ def _dewu_save(state: dict) -> None:
     tmp = DEWU_INVENTORY_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, DEWU_INVENTORY_PATH)
+
+
+def _dewu_executor(path: str, payload: Optional[dict] = None) -> tuple[dict, int]:
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{DEWU_EXECUTOR_URL}{path}",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="GET" if payload is None else "POST",
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=25) as response:
+            return json.loads(response.read()), response.status
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read()), exc.code
+        except Exception:
+            return {"ok": False, "error": f"执行器返回 HTTP {exc.code}"}, exc.code
+    except Exception as exc:
+        return {"ok": False, "error": f"Mac mini 执行器不可达：{exc}"}, 502
 
 
 def _xlsx_rows(blob: bytes) -> List[List[str]]:
@@ -284,6 +310,42 @@ def dewu_inventory_get() -> JSONResponse:
     state = _dewu_load()
     total = sum(int(item.get("quantity") or 0) for item in state["items"])
     return JSONResponse({**state, "total_quantity": total, "spec_count": len(state["items"])})
+
+
+@app.get("/api/dewu/executor")
+def dewu_executor_get() -> JSONResponse:
+    result, code = _dewu_executor("/status")
+    return JSONResponse(result, status_code=code)
+
+
+@app.post("/api/dewu/listings/start")
+async def dewu_listings_start(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if payload.get("confirmation") != "START_REAL_LISTING":
+        return JSONResponse({"ok": False, "error": "请确认真实上架操作"}, status_code=400)
+    state = _dewu_load()
+    items = [
+        {
+            "sku": item.get("sku"),
+            "name": item.get("name"),
+            "size": item.get("size"),
+            "quantity": item.get("quantity"),
+        }
+        for item in state["items"]
+        if int(item.get("quantity") or 0) > 0
+        and str(item.get("status") or "待处理") not in {"已上架", "已售出"}
+    ]
+    result, code = _dewu_executor(
+        "/jobs/listings",
+        {
+            "confirmation": "START_REAL_LISTING",
+            "items": items,
+        },
+    )
+    return JSONResponse(result, status_code=code)
 
 
 @app.post("/api/dewu/inventory/import")

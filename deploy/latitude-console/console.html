@@ -71,6 +71,13 @@
   .dw-message.ok{color:var(--ok)}.dw-message.bad{color:var(--danger)}
   .dw-history{list-style:none}.dw-history li{padding:9px 0;border-bottom:1px solid var(--panel2)}.dw-history li:last-child{border:0}.dw-history b{display:block;font:10px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dw-history span{display:block;color:var(--muted);font-size:10px;margin-top:3px}
   .dw-view{display:none}.dw-view.on{display:block}.dw-simple-panel{margin-top:14px;padding:22px}.dw-simple-panel h2{font-size:15px;margin-bottom:7px}.dw-simple-panel p{color:var(--muted);font-size:12px;line-height:1.7}
+  .dw-auto-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:14px;margin-top:14px}
+  .dw-auto-card{margin-top:0;padding:20px}.dw-auto-card h2{font-size:15px;margin-bottom:5px}.dw-auto-card .src{margin-bottom:16px}
+  .dw-auto-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px}.dw-auto-actions .btn{min-width:140px}
+  .dw-auto-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dw-auto-field label{display:block;color:var(--faint);font:10px var(--mono);margin-bottom:6px}.dw-auto-field select{width:100%;height:36px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);padding:0 10px}
+  .dw-auto-status{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--panel2)}.dw-auto-status:last-child{border:0}.dw-auto-status span{color:var(--muted);font-size:11px}.dw-auto-status b{font:11px var(--mono)}
+  .dw-task-preview{margin-top:14px}.dw-task-preview table{min-width:620px}
+  @media(max-width:900px){.dw-auto-grid{grid-template-columns:1fr}.dw-auto-fields{grid-template-columns:1fr}}
 
   /* 全局告警条(跨系统合并,任何页面可见) */
   .alert{display:flex;flex-direction:column;gap:10px;margin:14px 24px 0;padding:11px 16px;border-radius:8px;
@@ -713,11 +720,11 @@
   <div class="dw-view on" data-dw-view="inventory">
     <div class="dw-status">
       <div class="panel dw-device-panel">
-        <div class="dw-device-head"><h2>执行链路</h2><div class="dw-live"><i></i>库存服务已启用</div></div>
+        <div class="dw-device-head"><h2>执行链路</h2><div class="dw-live" id="dw-executor-summary"><i></i>正在连接 Mac mini</div></div>
         <div class="dw-device-grid">
           <div class="dw-device"><span>INVENTORY</span><b>Excel 库存库</b><small>● READY</small></div>
-          <div class="dw-device"><span>EXECUTOR</span><b>Mac mini</b><small>○ 待接入</small></div>
-          <div class="dw-device"><span>ANDROID / DEWU</span><b>个人卖家手机</b><small>○ 待设备回报</small></div>
+          <div class="dw-device"><span>EXECUTOR</span><b>Mac mini</b><small id="dw-executor-host">○ 正在读取</small></div>
+          <div class="dw-device"><span>ANDROID / DEWU</span><b>个人卖家手机</b><small id="dw-executor-phone">○ 正在读取</small></div>
         </div>
       </div>
     </div>
@@ -749,9 +756,15 @@
       </aside>
     </div>
   </div>
-  <div class="dw-view" data-dw-view="listing"><div class="panel dw-simple-panel"><h2>上架任务</h2><p>库存导入后，这里会生成逐个 SKU＋尺码的上架任务。Mac mini 手机执行器尚未接入，所以现在不会触发真实上架。</p></div></div>
-  <div class="dw-view" data-dw-view="pricing"><div class="panel dw-simple-panel"><h2>自动改价</h2><p>定价规则为“最低展示价齐平”。价格读取与改价动作将在手机执行器接入后启用，并保留每次调整记录。</p></div></div>
-  <div class="dw-view" data-dw-view="sold"><div class="panel dw-simple-panel"><h2>售出记录</h2><p>手机端盘点结果接入后，已售规格将在这里展示并自动扣减库存；目前没有同步记录。</p></div></div>
+  <div class="dw-view" data-dw-view="listing">
+    <div class="dw-auto-grid">
+      <div class="panel dw-auto-card"><h2>自动上架</h2><div class="src">按库存中的 SKU＋尺码逐项搜索商品并以上架规则执行</div><div class="dw-auto-fields"><div class="dw-auto-field"><label>执行方式</label><select id="dw-listing-mode"><option>自动连续上架</option><option disabled>逐单确认（稍后开放）</option><option disabled>仅预演（稍后开放）</option></select></div><div class="dw-auto-field"><label>初始定价</label><select id="dw-listing-price"><option>最低展示价齐平</option></select></div></div><div class="dw-auto-actions"><button class="btn primary" id="dw-start-listing" disabled>开始自动上架</button><button class="btn ghost" id="dw-stocktake" disabled>立即盘点</button><span class="chip warn" id="dw-executor-gate">正在核对执行器</span></div></div>
+      <div class="panel dw-auto-card"><h2>任务概况</h2><div class="src">库存导入后自动生成</div><div class="dw-auto-status"><span>待上架规格</span><b id="dw-listing-specs">0</b></div><div class="dw-auto-status"><span>待上架数量</span><b id="dw-listing-qty">0</b></div><div class="dw-auto-status"><span>执行器</span><b class="down" id="dw-executor-task-state">读取中</b></div></div>
+    </div>
+    <div class="panel dw-inventory dw-task-preview"><div class="dw-panel-head"><div><h2>待上架队列</h2><div class="src">按 Excel 库存实时生成，执行后记录结果</div></div></div><div class="dw-table-wrap"><table><thead><tr><th>SKU</th><th>名称</th><th>尺码</th><th>数量</th><th>目标价格</th><th>状态</th></tr></thead><tbody id="dw-listing-rows"></tbody></table></div></div>
+  </div>
+  <div class="dw-view" data-dw-view="pricing"><div class="dw-auto-grid"><div class="panel dw-auto-card"><h2>自动改价</h2><div class="src">核对同 SKU＋尺码的最低展示价后执行</div><div class="dw-auto-fields"><div class="dw-auto-field"><label>改价规则</label><select><option>与最低展示价齐平</option><option>最低展示价减 10 元</option></select></div><div class="dw-auto-field"><label>最低改价间隔</label><select><option>每 6 小时</option><option>每 12 小时</option><option>每天一次</option></select></div></div><div class="dw-auto-actions"><button class="btn primary" disabled>运行一次改价</button><span class="chip warn">等待手机执行器</span></div></div><div class="panel dw-auto-card"><h2>改价状态</h2><div class="src">只处理已上架商品</div><div class="dw-auto-status"><span>已上架规格</span><b>0</b></div><div class="dw-auto-status"><span>需要调整</span><b>0</b></div><div class="dw-auto-status"><span>最近运行</span><b>尚未运行</b></div></div></div></div>
+  <div class="dw-view" data-dw-view="sold"><div class="panel dw-auto-card"><h2>库存盘点与售出同步</h2><div class="src">从得物“出售中 / 已售出”读取状态并更新本地库存</div><div class="dw-auto-actions"><button class="btn primary" disabled>立即盘点库存</button><span class="chip warn">等待手机执行器</span></div><div class="dw-empty-state"><b>暂无售出记录</b><span>完成第一次手机盘点后显示</span></div></div></div>
   <div class="dw-view" data-dw-view="exceptions"><div class="panel dw-simple-panel"><h2>异常队列</h2><p id="dw-exceptions-real">暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。</p></div></div>
 </section>
 
@@ -1761,7 +1774,7 @@
   document.querySelectorAll('#dw-tabs button').forEach(button=>button.addEventListener('click',()=>{
     document.querySelectorAll('#dw-tabs button').forEach(x=>x.classList.toggle('on',x===button)); filterDewu();
   }));
-  let dewuItems=[];
+  let dewuItems=[], dewuJob=null, dewuExecutorReady=false;
   function renderDewuRows(){
     const q=(document.getElementById('dw-search-real').value||'').trim().toLowerCase();
     const items=dewuItems.filter(x=>([x.sku,x.name,x.size,x.color].join(' ').toLowerCase().includes(q)));
@@ -1771,6 +1784,21 @@
       return;
     }
     body.innerHTML=items.map(x=>'<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+Number(x.quantity||0)+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip info">'+esc(x.status||'待处理')+'</span></td></tr>').join('');
+  }
+  function renderDewuListing(){
+    const specs=document.getElementById('dw-listing-specs'), qty=document.getElementById('dw-listing-qty'), body=document.getElementById('dw-listing-rows');
+    if(!body)return;
+    if(specs)specs.textContent=dewuItems.length;
+    if(qty)qty.textContent=dewuItems.reduce((n,x)=>n+Number(x.quantity||0),0);
+    const results=(dewuJob&&dewuJob.results)||[];
+    body.innerHTML=dewuItems.length?dewuItems.map(x=>{
+      const result=[...results].reverse().find(r=>r.sku===x.sku&&String(r.size)===String(x.size));
+      const current=dewuJob&&dewuJob.state==='running'&&dewuJob.current&&dewuJob.current.sku===x.sku&&String(dewuJob.current.size)===String(x.size);
+      const label=current?'执行中':result?(result.ok?'已上架':'失败'):'待执行';
+      const kind=current?'warn':result?(result.ok?'ok':'danger'):'info';
+      const title=result&&!result.ok?' title="'+esc(result.detail||'执行失败')+'"':'';
+      return '<tr><td class="num">'+esc(x.sku)+'</td><td>'+esc(x.name||'未填写名称')+'</td><td class="num">'+esc(x.size)+'</td><td class="num">'+Number(x.quantity||0)+'</td><td>最低展示价齐平</td><td><span class="chip '+kind+'"'+title+'>'+label+'</span></td></tr>';
+    }).join(''):'<tr><td colspan="6"><div class="dw-empty-state"><b>暂无上架任务</b><span>请先导入库存 Excel</span></div></td></tr>';
   }
   async function loadDewu(){
     try{
@@ -1786,6 +1814,7 @@
       document.getElementById('dw-history-real').innerHTML=(s.imports||[]).length?s.imports.slice(0,8).map(x=>'<li><b>'+esc(x.filename)+'</b><span>'+new Date(x.at).toLocaleString('zh-CN')+' · '+x.specs+' 规格 / '+x.quantity+' 件</span></li>').join(''):'<li><span>还没有上传记录</span></li>';
       document.getElementById('dw-exceptions-real').textContent=(s.exceptions||[]).length?(s.exceptions||[]).slice(0,20).map(x=>'第 '+x.row+' 行 · '+(x.sku||'无 SKU')+' · '+x.reason).join('；'):'暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。';
       renderDewuRows();
+      renderDewuListing();
     }catch(e){
       const msg=document.getElementById('dw-message-real');msg.className='dw-page-note dw-message bad';msg.textContent='库存服务暂时不可达';
     }
@@ -1809,7 +1838,54 @@
     }catch(e){msg.className='dw-page-note dw-message bad';msg.textContent=e.message||'导入失败';}
     this.value='';
   });
+  async function loadDewuExecutor(){
+    const summary=document.getElementById('dw-executor-summary'), host=document.getElementById('dw-executor-host'), phone=document.getElementById('dw-executor-phone'), gate=document.getElementById('dw-executor-gate'), taskState=document.getElementById('dw-executor-task-state');
+    try{
+      const response=await fetch('/api/dewu/executor',{cache:'no-store'}), s=await response.json();
+      if(!response.ok)throw new Error(s.error||'执行器不可达');
+      host.textContent='● ONLINE';
+      phone.textContent=s.device_connected?(s.dewu_foreground?'● 手机在线 · 得物已打开':'● 手机在线 · 得物在后台'):'○ 手机未连接';
+      summary.innerHTML='<i></i>'+(s.device_connected?'Mac mini 与手机已连接':'Mac mini 在线，手机未连接');
+      const ready=!!(s.can_submit&&s.workflow_calibrated&&!s.dry_run);
+      dewuJob=s.job||null;
+      const running=dewuJob&&dewuJob.state==='running';
+      dewuExecutorReady=ready&&!running;
+      gate.textContent=running?('执行中 '+Number(dewuJob.completed||0)+' / '+Number(dewuJob.total||0)):ready?'可执行真实上架':(s.reason||'执行器安全门未通过');
+      gate.className='chip '+(running?'warn':ready?'ok':'warn');
+      taskState.textContent=running?'运行中':ready?'可执行':(s.workflow_calibrated?'已校准 · 预演':'在线 · 待校准');
+      taskState.className=ready?'up':'down';
+      const start=document.getElementById('dw-start-listing');
+      start.disabled=!dewuExecutorReady||!dewuItems.length;
+      start.textContent=running?'正在自动上架…':'开始自动上架';
+      document.getElementById('dw-stocktake').disabled=!s.device_connected;
+      renderDewuListing();
+    }catch(e){
+      dewuExecutorReady=false;
+      summary.innerHTML='<i></i>Mac mini 状态不可达';host.textContent='○ OFFLINE';phone.textContent='○ 未知';gate.textContent='执行器离线';taskState.textContent='未连接';
+      document.getElementById('dw-start-listing').disabled=true;
+    }
+  }
+  document.getElementById('dw-start-listing').addEventListener('click',async function(){
+    if(!dewuExecutorReady||!dewuItems.length)return;
+    const specs=dewuItems.length, qty=dewuItems.reduce((n,x)=>n+Number(x.quantity||0),0);
+    if(!confirm('即将真实上架 '+specs+' 个规格、共 '+qty+' 件。价格按最低展示价齐平；售后无忧可用时优先选择，否则自行承担。确认开始吗？'))return;
+    this.disabled=true;this.textContent='正在发送任务…';
+    const gate=document.getElementById('dw-executor-gate');
+    try{
+      const r=await fetch('/api/dewu/listings/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'START_REAL_LISTING'})});
+      const j=await r.json();
+      if(!r.ok)throw new Error(j.error||'启动失败');
+      dewuJob=j.job||null;
+      gate.textContent='任务已启动';gate.className='chip warn';
+      await loadDewuExecutor();
+    }catch(e){
+      gate.textContent=e.message||'启动失败';gate.className='chip danger';
+      this.textContent='开始自动上架';this.disabled=!dewuExecutorReady;
+    }
+  });
   loadDewu();
+  loadDewuExecutor();
+  setInterval(loadDewuExecutor,15000);
   function showPerson(id){
     ['zs','ls','ww'].forEach(k=>{
       document.getElementById('pd-'+k).classList.toggle('on',k===id);
