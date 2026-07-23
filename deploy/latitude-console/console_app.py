@@ -350,6 +350,16 @@ def _parse_ts(value: Any) -> Optional[float]:
         return None
 
 
+def _farming_week_cutoff_epoch(now: Optional[datetime] = None) -> float:
+    china_tz = timezone(timedelta(hours=8))
+    current = (now or datetime.now(timezone.utc)).astimezone(china_tz)
+    days_back = (current.weekday() - 4) % 7  # Friday
+    cutoff = current.replace(hour=8, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+    if cutoff > current:
+        cutoff -= timedelta(days=7)
+    return cutoff.timestamp()
+
+
 def _varia_trades_today() -> Dict[str, Any]:
     rows: List[dict] = []
     db = VARIA_DIR / "hedge_bot.sqlite3"
@@ -359,14 +369,14 @@ def _varia_trades_today() -> Dict[str, Any]:
             "SELECT id, host, status, timestamp_close, target_notional, funding_var, "
             "funding_decibel, realized_cost_bp, estimated_cost_bp, var_slippage_bp, "
             "decibel_slippage_bp, realized_pnl_usdc FROM trades "
-            "WHERE timestamp_close >= datetime('now','-7 day')")
+            "WHERE timestamp_close >= datetime('now','-8 day')")
         names = [d[0] for d in cur.description]
         rows += [dict(zip(names, r)) for r in cur.fetchall()]
         conn.close()
     except Exception:
         pass
     peer_dir = VARIA_DIR / "peer_trades"
-    cutoff_7d = time.time() - 7 * 86400
+    cutoff_week = _farming_week_cutoff_epoch()
     for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
         raw = _read_json(path)
         if not isinstance(raw, list):
@@ -375,7 +385,7 @@ def _varia_trades_today() -> Dict[str, Any]:
             if not isinstance(r, dict):
                 continue
             ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
-            if ts is None or ts < cutoff_7d:
+            if ts is None or ts < cutoff_week:
                 continue
             r = dict(r)
             r.setdefault("host", path.stem)
@@ -386,6 +396,7 @@ def _varia_trades_today() -> Dict[str, Any]:
     volume = pnl = fee = funding = slip = loss = 0.0
     loss_7d = 0.0
     loss_7d_by_host: Dict[str, float] = {}
+    net_week_by_host: Dict[str, float] = {}
     count = 0
     for r in rows:
         status = str(r.get("status") or "").strip().lower()
@@ -403,9 +414,13 @@ def _varia_trades_today() -> Dict[str, Any]:
             cost_bp = _num(r.get("estimated_cost_bp"))
         row_loss = (-r_pnl if (r_pnl is not None and r_pnl < 0) else
                     (abs(cost_bp) * notional / 10000.0 if (r_pnl is None and cost_bp is not None) else 0.0))
-        loss_7d += row_loss
-        loss_7d_by_host[host] = loss_7d_by_host.get(host, 0.0) + row_loss
         ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
+        if ts is not None and ts >= cutoff_week:
+            loss_7d += row_loss
+            loss_7d_by_host[host] = loss_7d_by_host.get(host, 0.0) + row_loss
+            net_week_by_host[host] = net_week_by_host.get(host, 0.0) + (
+                r_pnl if r_pnl is not None else -row_loss
+            )
         if ts is None or ts < cutoff_24h:
             continue
         volume += notional
@@ -423,6 +438,8 @@ def _varia_trades_today() -> Dict[str, Any]:
         "trades": count, "volume": round(volume, 2), "pnl": round(pnl, 2),
         "loss": round(loss, 2), "loss_7d": round(loss_7d, 2),
         "loss_7d_by_host": {h: round(v, 4) for h, v in loss_7d_by_host.items()},
+        "net_week_by_host": {h: round(v, 4) for h, v in net_week_by_host.items()},
+        "week_cutoff": datetime.fromtimestamp(cutoff_week, tz=timezone.utc).isoformat(),
         "loss_bps_wan": round(loss / volume * 10000.0, 2) if volume else None,
         "fee": round(fee, 2), "funding": round(funding, 2), "slip": round(slip, 2),
     }
@@ -507,6 +524,113 @@ def _host_hedge_venue(host: str) -> str:
 
 def _venue_label(venue: str) -> str:
     return VARIA_VENUE_LABELS.get(venue, venue.title())
+
+
+def _incentive_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
+    """Aggregate settled incentives without adding them to equity a second time."""
+    ondo_total = ondo_week = ondo_24h = 0.0
+    var_total = var_week = var_24h = 0.0
+    var_own = var_other = var_estimate = 0.0
+    current_pool = None
+    ondo_pool = None
+    complete = bool(hosts)
+    host_rows: Dict[str, dict] = {}
+    for host, host_state in sorted(hosts.items()):
+        incentives = host_state.get("incentives") if isinstance(host_state.get("incentives"), dict) else {}
+        var_row = incentives.get("variational") if isinstance(incentives.get("variational"), dict) else None
+        ondo_row = incentives.get("ondo") if isinstance(incentives.get("ondo"), dict) else None
+        row: Dict[str, Any] = {}
+        if var_row is None:
+            complete = False
+            row["variational"] = {"available": False}
+        else:
+            observed = {
+                "available": True,
+                "settled_total_usdc": round(_num(var_row.get("settled_total_usdc")) or 0.0, 6),
+                "settled_week_usdc": round(_num(var_row.get("settled_week_usdc")) or 0.0, 6),
+                "own_refunds_total_usdc": round(_num(var_row.get("own_refunds_total_usdc")) or 0.0, 6),
+                "other_rewards_total_usdc": round(_num(var_row.get("other_rewards_total_usdc")) or 0.0, 6),
+                "estimated_refund_usdc": round(_num(var_row.get("estimated_refund_usdc")) or 0.0, 6),
+                "estimated_hit_probability_pct": round(_num(var_row.get("estimated_hit_probability_pct")) or 0.0, 4),
+                "pool_usdc": round(_num(var_row.get("pool_usdc")) or 0.0, 2),
+                "pool_eligible": var_row.get("pool_eligible") is True,
+                "tier": var_row.get("tier"),
+                "odds_pct": _num(var_row.get("odds_pct")),
+                "estimate_status": var_row.get("estimate_status"),
+                "eligible_loss_count": int(_num(var_row.get("eligible_loss_count")) or 0),
+                "coverage_start": var_row.get("coverage_start"),
+                "complete": var_row.get("complete") is True,
+            }
+            row["variational"] = observed
+            var_total += observed["settled_total_usdc"]
+            var_week += observed["settled_week_usdc"]
+            var_24h += _num(var_row.get("settled_24h_usdc")) or 0.0
+            var_own += observed["own_refunds_total_usdc"]
+            var_other += observed["other_rewards_total_usdc"]
+            var_estimate += observed["estimated_refund_usdc"]
+            current_pool = max(current_pool or 0.0, observed["pool_usdc"])
+            if observed["complete"] is not True:
+                complete = False
+        if host_state.get("hedge_venue") == "ondo":
+            if ondo_row is None:
+                complete = False
+                row["ondo"] = {"available": False}
+            else:
+                observed = {
+                    "available": True,
+                    "settled_total_usdc": round(_num(ondo_row.get("settled_total_usdc")) or 0.0, 6),
+                    "settled_week_usdc": round(_num(ondo_row.get("settled_week_usdc")) or 0.0, 6),
+                    "current_week": ondo_row.get("current_week"),
+                    "current_week_pool_usdc": _num(ondo_row.get("current_week_pool_usdc")),
+                    "current_week_status": ondo_row.get("current_week_status"),
+                    "pending_account_reward_usdc": _num(ondo_row.get("pending_account_reward_usdc")),
+                    "complete": ondo_row.get("complete") is True,
+                }
+                row["ondo"] = observed
+                ondo_total += observed["settled_total_usdc"]
+                ondo_week += observed["settled_week_usdc"]
+                ondo_24h += _num(ondo_row.get("settled_24h_usdc")) or 0.0
+                if observed["current_week_pool_usdc"] is not None:
+                    ondo_pool = max(ondo_pool or 0.0, observed["current_week_pool_usdc"])
+                if observed["complete"] is not True:
+                    complete = False
+        host_rows[host] = row
+    settled_total = ondo_total + var_total
+    settled_week = ondo_week + var_week
+    return {
+        "present": bool(hosts),
+        "complete": complete,
+        "settled_total_usdc": round(settled_total, 6),
+        "settled_week_usdc": round(settled_week, 6),
+        "settled_24h_usdc": round(ondo_24h + var_24h, 6),
+        "ondo": {
+            "settled_total_usdc": round(ondo_total, 6),
+            "settled_week_usdc": round(ondo_week, 6),
+            "current_week_pool_usdc": round(ondo_pool, 2) if ondo_pool is not None else None,
+        },
+        "variational": {
+            "settled_total_usdc": round(var_total, 6),
+            "settled_week_usdc": round(var_week, 6),
+            "own_refunds_total_usdc": round(var_own, 6),
+            "other_rewards_total_usdc": round(var_other, 6),
+            "estimated_refund_usdc": round(var_estimate, 6),
+            "pool_usdc": round(current_pool, 2) if current_pool is not None else None,
+        },
+        "hosts": host_rows,
+    }
+
+
+def _pnl_attribution(capital: Dict[str, Any], incentives: Dict[str, Any]) -> Dict[str, Any]:
+    net_pnl = _num(capital.get("pnl")) if capital.get("complete") else None
+    settled = _num(incentives.get("settled_total_usdc"))
+    complete = net_pnl is not None and incentives.get("complete") is True and settled is not None
+    return {
+        "complete": complete,
+        "net_pnl_usdc": round(net_pnl, 2) if net_pnl is not None else None,
+        "settled_incentives_usdc": round(settled, 2) if settled is not None else None,
+        "trading_funding_fees_usdc": round(net_pnl - settled, 2) if complete else None,
+        "note": "Settled incentives are already inside equity and are not added twice.",
+    }
 
 
 def _var_decibel() -> Dict[str, Any]:
@@ -594,6 +718,18 @@ def _var_decibel() -> Dict[str, Any]:
                 h["points_variational"] = tp if h["points_var_available"] else None
                 if h["points_var_available"]:
                     points_var = (points_var or 0.0) + tp
+        var_payload = exchanges.get("variational") if isinstance(exchanges.get("variational"), dict) else {}
+        hedge_payload = exchanges.get(hedge_venue) if isinstance(exchanges.get(hedge_venue), dict) else {}
+        h["incentives"] = {}
+        if not h["stale"] and var_payload.get("ok") is True and isinstance(var_payload.get("loss_refunds"), dict):
+            h["incentives"]["variational"] = var_payload["loss_refunds"]
+        if (
+            hedge_venue == "ondo"
+            and not h["stale"]
+            and hedge_payload.get("ok") is True
+            and isinstance(hedge_payload.get("rewards"), dict)
+        ):
+            h["incentives"]["ondo"] = hedge_payload["rewards"]
         hedge_alias = {"decibel": "dec", "ondo": "ondo"}.get(hedge_venue, hedge_venue)
         h["equity_hedge"] = h.get(f"equity_{hedge_alias}")
         h["equity_hedge_last_seen"] = h.get(f"equity_{hedge_alias}_last_seen")
@@ -719,6 +855,8 @@ def _var_decibel() -> Dict[str, Any]:
     volume_weekly_complete = bool(hosts) and len(volume_weekly_hosts) == len(hosts)
     volume_total_complete = bool(hosts) and len(volume_total_hosts) == len(hosts)
     capital = _capital_accounting(hosts)
+    incentives = _incentive_accounting(hosts)
+    pnl_attribution = _pnl_attribution(capital, incentives)
     equity_history = _reconciled_pnl_history(capital)
     points_by_venue = {
         "decibel": {
@@ -740,6 +878,17 @@ def _var_decibel() -> Dict[str, Any]:
             "complete": points_var_complete,
         },
     }
+    today = _varia_trades_today()
+    weekly_net_by_host: Dict[str, float] = {}
+    for host in (hosts or {"vps1": {}}):
+        host_incentives = incentives.get("hosts", {}).get(host, {})
+        var_incentive = host_incentives.get("variational") or {}
+        ondo_incentive = host_incentives.get("ondo") or {}
+        weekly_net_by_host[host] = (
+            (_num(today.get("net_week_by_host", {}).get(host)) or 0.0)
+            + (_num(var_incentive.get("settled_week_usdc")) or 0.0)
+            + (_num(ondo_incentive.get("settled_week_usdc")) or 0.0)
+        )
     return {
         "present": bool(hosts), "hosts": hosts, "auto": auto_ctl,
         "host_venues": {
@@ -764,10 +913,11 @@ def _var_decibel() -> Dict[str, Any]:
             "verified_hosts": verified_hosts,
             "unverified": unverified_hosts,
         },
-        "today": (today := _varia_trades_today()),
-        "budget": _varia_budget({h: today.get("loss_7d_by_host", {}).get(h, 0.0)
-                                 for h in (hosts or {"vps1": {}})}),
+        "today": today,
+        "budget": _varia_budget(weekly_net_by_host),
         "capital": capital,
+        "incentives": incentives,
+        "pnl_attribution": pnl_attribution,
         "equity_history": equity_history,
     }
 
@@ -2986,22 +3136,30 @@ def _budget_cap_for_host() -> Optional[float]:
     return None
 
 
-def _varia_budget(loss_by_host: Dict[str, float]) -> Dict[str, Any]:
-    """③ 本周预算:每 VPS 各自 cap − 各自近7日损耗(每VPS独立,合计=各源相加)。
-    本机 cap 可读到生效值;peer VPS 的 cap 目前取同值(两台配置一致),标注口径。"""
+def _varia_budget(net_by_host: Dict[str, float]) -> Dict[str, Any]:
+    """Weekly available budget = base cap + settled net result.
+
+    Settled venue incentives are part of the net result. Pending or estimated
+    rewards never increase the available budget.
+    """
     cap = _budget_cap_for_host()
     if cap is None:
         return {"present": False}
     hosts = {}
     total_remaining = total_cap = 0.0
-    for host, loss in sorted(loss_by_host.items()):
-        rem = max(0.0, cap - loss)
-        hosts[host] = {"cap": cap, "loss_7d": round(loss, 2), "remaining": round(rem, 2)}
+    for host, net_result in sorted(net_by_host.items()):
+        rem = max(0.0, cap + net_result)
+        hosts[host] = {
+            "cap": cap,
+            "net_result_week": round(net_result, 2),
+            "remaining": round(rem, 2),
+        }
         total_remaining += rem
         total_cap += cap
     return {"present": True, "per_vps": True, "hosts": hosts,
             "cap_each": cap,
-            "total_cap": round(total_cap, 2), "total_remaining": round(total_remaining, 2)}
+            "total_cap": round(total_cap, 2), "total_remaining": round(total_remaining, 2),
+            "basis": "friday_0800_settled_net_including_incentives"}
 
 
 def _macmini() -> Dict[str, Any]:

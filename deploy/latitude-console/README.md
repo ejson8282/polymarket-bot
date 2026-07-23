@@ -72,6 +72,12 @@ sudo systemctl daemon-reload
 - 旧的 `home_active_total_equity_history.json` 是调试遗留聚合快照，不参与收益展示。
   新曲线只使用已对账后的 `reconciled_pnl_history.json`，其 `last` 为当前真实净交易结果，
   `change` 为本次已记录区间内的变化。
+- “奖励与退款”只展示真实到账归因：Ondo 读取账户 reward history，Variational 读取
+  transfer history 中已完成的退款与返佣。到账金额已经包含在账户权益和真实净交易结果中，
+  不得再次叠加。
+- Ondo 全站周奖池、账户未结算奖励和 Variational 概率退款估值均为只读提示，不进入权益、
+  盈亏或预算。每周预算按中国时间周五 08:00 切分，计算为
+  `基础预算 + 本周已结算净结果`，其中已到账奖励/退款属于已结算净结果。
 
 安装五分钟只读快照任务：
 

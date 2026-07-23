@@ -363,6 +363,10 @@
 .vdauto-pool-label{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding-top:4px}
 .vdauto-symbols{display:flex;gap:5px;flex-wrap:wrap}.vdauto-symbol{position:relative;border:1px solid var(--line);border-radius:5px;padding:3px 7px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel)}
 .equity-chart{position:relative;margin-top:8px}.equity-chart svg{display:block;cursor:crosshair}.equity-tooltip{position:absolute;z-index:2;min-width:122px;padding:7px 9px;border:1px solid var(--line);border-radius:5px;background:rgba(14,17,22,.96);box-shadow:0 6px 18px rgba(0,0,0,.28);font-family:var(--mono);font-size:11px;line-height:1.5;pointer-events:none;transform:translateX(-50%);white-space:nowrap}.equity-tooltip b{color:var(--muted);font-weight:500}.equity-tooltip .up{font-weight:600}.equity-tooltip .down{font-weight:600}
+.incentive-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.incentive-cell{min-width:0;padding:12px 14px;border-left:1px solid var(--line)}.incentive-cell:first-child{border-left:0}
+.incentive-cell .eyebrow{font-size:11px;color:var(--muted)}.incentive-cell .amount{font-family:var(--mono);font-size:19px;font-weight:600;margin-top:2px}.incentive-cell .detail{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:4px;line-height:1.55;overflow-wrap:anywhere}
+@media (max-width:900px){.incentive-strip{grid-template-columns:1fr}.incentive-cell{border-left:0;border-top:1px solid var(--line)}.incentive-cell:first-child{border-top:0}}
 .vdauto-symbol.ready{border-color:rgba(70,178,107,.45);color:var(--ok);padding-left:15px}.vdauto-symbol.ready:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--ok)}
 .vdauto-symbol.blocked{border-color:rgba(229,72,77,.5);color:var(--danger);padding-left:15px}.vdauto-symbol.blocked:before{content:'';position:absolute;left:6px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--danger)}
 .vdauto-pool-foot{font-size:10.5px;color:var(--faint);margin-top:7px}
@@ -575,9 +579,9 @@
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">今日净损耗</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">等待实时数据</div></div>
+    <div class="kpi"><div class="label">今日净结果</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">交易结果 + 已到账激励</div></div>
     <div class="kpi"><div class="label" data-k="vdk.vol_label">交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">旧周预算（只读）</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">旧 worker 已退出生产</div></div>
+    <div class="kpi"><div class="label">本周可用预算</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">盈利增加，亏损扣减；只算已结算</div></div>
     <div class="kpi"><div class="label">积分（Dec / Var）</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
   </div>
   <div class="grid2">
@@ -609,6 +613,28 @@
         </div>
         <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
         <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
+      </div>
+      <div class="panel" id="vd-incentive-panel">
+        <h2>奖励与退款 <span class="feat f-new">真实到账归因</span></h2>
+        <div class="src">已到账金额已经包含在总权益与真实净结果中，这里只解释来源，不会重复相加；待结算与概率估算不计入盈亏或预算。</div>
+        <div class="incentive-strip">
+          <div class="incentive-cell">
+            <div class="eyebrow">Ondo USDC 奖励</div>
+            <div class="amount" data-k="vd.inc_ondo">—</div>
+            <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
+          </div>
+          <div class="incentive-cell">
+            <div class="eyebrow">Var 亏损退款 / 返佣</div>
+            <div class="amount" data-k="vd.inc_var">—</div>
+            <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
+          </div>
+          <div class="incentive-cell">
+            <div class="eyebrow">真实净结果归因</div>
+            <div class="amount" data-k="vd.inc_net">—</div>
+            <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
+          </div>
+        </div>
+        <div class="src" style="margin-top:9px" data-k="vd.inc_host_detail"></div>
       </div>
     </div>
     <aside>
@@ -1607,11 +1633,14 @@
       const verified=(sourceState.verified_hosts||[]).length;
       pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">'+(verified?'当前无持仓（已由 '+verified+' 台主机的双边快照确认）':'没有足够数据确认仓位')+'</td></tr>';
     }
-    // 今日损耗(近24h,(host,id) 去重后真实计算)
+    const incentives=vd.incentives||{};
+    const incentive24=Number(incentives.settled_24h_usdc||0);
+    // 今日净结果(近24h交易净结果 + 已到账激励；待结算/估算不计入)
     const t=vd.today||{};
     if(t.present){
-      setK('vdk.loss', (t.loss>0?'−':'')+money(t.loss).replace('$','$'));
-      setK('vdk.loss_sub', (t.loss_bps_wan!=null?t.loss_bps_wan+' bps/万U':'—')+' · '+t.trades+' 笔 · 量 '+money(t.volume));
+      const todayNet=Number(t.pnl||0)+incentive24;
+      setK('vdk.loss', pnlSpan(todayNet));
+      setK('vdk.loss_sub', '交易 '+pnlSpan(Number(t.pnl||0))+' · 已到账激励 '+pnlSpan(incentive24)+' · '+t.trades+' 笔');
       const bar=document.getElementById('vd-loss-bar');
       const total=Math.max(0.0001,(t.fee||0)+Math.abs(t.funding||0)+(t.slip||0));
       if(bar){
@@ -1624,8 +1653,8 @@
       setK('vd.vol_label','本周量 / 今日损耗');
       if(vd.volume_weekly!=null) setK('vd.vol', money(vd.volume_weekly)+' · <span class="down">−'+money(t.loss).slice(1)+'</span>('+(t.loss_bps_wan??'—')+'bps/万U)');
     } else {
-      setK('vdk.loss','—');
-      setK('vdk.loss_sub','近24小时没有可核验的已执行交易');
+      setK('vdk.loss', incentive24?pnlSpan(incentive24):'—');
+      setK('vdk.loss_sub', incentive24?('近24h 无交易 · 已到账激励 '+pnlSpan(incentive24)):'近24小时没有可核验的交易或已到账激励');
       const bar=document.getElementById('vd-loss-bar');
       if(bar) bar.innerHTML='<span style="width:100%;display:flex;align-items:center;color:var(--faint)">近24小时没有可核验的已执行交易</span>';
       setK('vd.loss_src','没有已执行交易数据，不计算损耗、费率或滑点');
@@ -1682,14 +1711,45 @@
       });
       setK('vd.eq_sources', pieces.length?'四账户：'+pieces.join(' · '):'四账户拆分待最新快照');
     }
-    // 本周预算:每 VPS 各 cap − 各自近7日损耗(每VPS独立;总卡显示合计,悬停看分解)
+    const ondoInc=incentives.ondo||{}, varInc=incentives.variational||{}, attribution=vd.pnl_attribution||{};
+    const hostIncentives=incentives.hosts||{};
+    const ondoAvailable=Object.values(hostIncentives).some(row=>row&&row.ondo&&row.ondo.available);
+    const varAvailable=Object.values(hostIncentives).some(row=>row&&row.variational&&row.variational.available);
+    setK('vd.inc_ondo', ondoAvailable?money(ondoInc.settled_total_usdc||0):'—');
+    setK('vd.inc_ondo_sub', ondoAvailable?(
+      '本周已到账 '+money(ondoInc.settled_week_usdc||0)+
+      (ondoInc.current_week_pool_usdc!=null?' · 本周全站奖池 '+money(ondoInc.current_week_pool_usdc):'')+
+      '<br>账号待结算金额：平台结算前不公布'):'奖励历史尚未从 Ondo 账号读取');
+    setK('vd.inc_var', varAvailable?money(varInc.settled_total_usdc||0):'—');
+    const varPool=varInc.pool_usdc!=null?money(varInc.pool_usdc):'—';
+    setK('vd.inc_var_sub', varAvailable?(
+      '本人亏损退款 '+money(varInc.own_refunds_total_usdc||0)+' · 返佣/其他 '+money(varInc.other_rewards_total_usdc||0)+
+      '<br>当前退款池 '+varPool+' · 概率估值 '+money(varInc.estimated_refund_usdc||0)+'（不入账）'):'Var transfer history 或退款池尚未读取');
+    if(attribution.net_pnl_usdc!=null){
+      setK('vd.inc_net', pnlSpan(attribution.net_pnl_usdc));
+      setK('vd.inc_net_sub',
+        '其中已到账奖励/退款 '+pnlSpan(attribution.settled_incentives_usdc||0)+'<br>'+
+        (attribution.complete?'交易、资金费与手续费 '+pnlSpan(attribution.trading_funding_fees_usdc||0):'激励历史不完整，暂不计算剩余归因'));
+    } else {
+      setK('vd.inc_net','—');
+      setK('vd.inc_net_sub','本金或四账户权益尚未完成对账');
+    }
+    const incentiveHostText=Object.entries(hostIncentives).map(([host,row])=>{
+      const vr=(row||{}).variational||{}, od=(row||{}).ondo||{};
+      const bits=[];
+      if(vr.available) bits.push('Var 已到账 '+money(vr.settled_total_usdc||0)+' / 估算 '+money(vr.estimated_refund_usdc||0));
+      if(od.available) bits.push('Ondo 已到账 '+money(od.settled_total_usdc||0));
+      return host.toUpperCase()+'：'+(bits.join(' · ')||'激励数据待读取');
+    });
+    setK('vd.inc_host_detail', incentiveHostText.join('　'));
+    // 本周预算:每台 VPS 基础预算 + 周五08:00以来已结算净结果(含已到账奖励/退款)
     const b=vd.budget||{};
     if(b.present){
       window.__budgetCap=b.cap_each;
       const hs=Object.entries(b.hosts||{});
       setK('vdk.budget', money(b.total_remaining)+'<span style="font-size:13px;color:var(--faint)">/'+money(b.total_cap).slice(1)+'</span>');
-      const detail=hs.map(([h,x])=>h.toUpperCase()+' '+money(x.remaining).slice(0)+'/'+ (x.cap)).join(' · ');
-      setK('vdk.budget_sub', '每VPS各$'+(b.cap_each??'—')+' · '+detail+'(滚动7日)');
+      const detail=hs.map(([h,x])=>h.toUpperCase()+' '+money(x.remaining)+'（本周净 '+(Number(x.net_result_week||0)>=0?'+':'−')+money(Math.abs(Number(x.net_result_week||0)))+'）').join(' · ');
+      setK('vdk.budget_sub', detail+' · 周五08:00结算口径');
     }
   }
 

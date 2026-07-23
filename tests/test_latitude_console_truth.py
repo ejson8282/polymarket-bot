@@ -537,6 +537,94 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
     assert capital["pnl_pct"] == 5.26
 
 
+def test_settled_incentives_are_attributed_without_double_counting_equity(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    vps1 = _state("vps1", now, _venue(ok=True), _venue(ok=True))
+    vps2 = _state(
+        "vps2",
+        now,
+        _venue(ok=True),
+        _venue(ok=True),
+        ondo=_venue(ok=True),
+    )
+    vps1["exchanges"]["variational"]["loss_refunds"] = {
+        "settled_total_usdc": 1,
+        "settled_week_usdc": 1,
+        "settled_24h_usdc": 0,
+        "own_refunds_total_usdc": 1,
+        "other_rewards_total_usdc": 0,
+        "estimated_refund_usdc": 0,
+        "pool_usdc": 0,
+        "complete": True,
+    }
+    vps2["exchanges"]["variational"]["loss_refunds"] = {
+        "settled_total_usdc": 2,
+        "settled_week_usdc": 2,
+        "settled_24h_usdc": 0,
+        "own_refunds_total_usdc": 1.5,
+        "other_rewards_total_usdc": 0.5,
+        "estimated_refund_usdc": 0.2,
+        "pool_usdc": 6000,
+        "complete": True,
+    }
+    vps2["exchanges"]["ondo"]["rewards"] = {
+        "settled_total_usdc": 5,
+        "settled_week_usdc": 4,
+        "settled_24h_usdc": 1,
+        "current_week": 8,
+        "current_week_pool_usdc": 175000,
+        "current_week_status": "pending",
+        "pending_account_reward_usdc": None,
+        "complete": True,
+    }
+    _write_json(tmp_path / "ops_state.json", vps1)
+    _write_json(tmp_path / "ops_peer_state/vps2.json", vps2)
+    _write_json(
+        tmp_path / "home_equity_principal.json",
+        {
+            "vps1": {
+                "decibel": {"initial": 90, "cashflows": [], "reconciled": True},
+                "variational": {"initial": 100, "cashflows": [], "reconciled": True},
+            },
+            "vps2": {
+                "ondo": {"initial": 90, "cashflows": [], "reconciled": True},
+                "variational": {"initial": 100, "cashflows": [], "reconciled": True},
+            },
+        },
+    )
+
+    result = console._var_decibel()
+
+    assert result["capital"]["current_equity"] == 400.0
+    assert result["capital"]["pnl"] == 20.0
+    assert result["incentives"]["complete"] is True
+    assert result["incentives"]["settled_total_usdc"] == 8.0
+    assert result["incentives"]["settled_week_usdc"] == 7.0
+    assert result["incentives"]["ondo"]["current_week_pool_usdc"] == 175000
+    assert result["incentives"]["variational"]["estimated_refund_usdc"] == 0.2
+    assert result["pnl_attribution"] == {
+        "complete": True,
+        "net_pnl_usdc": 20.0,
+        "settled_incentives_usdc": 8.0,
+        "trading_funding_fees_usdc": 12.0,
+        "note": "Settled incentives are already inside equity and are not added twice.",
+    }
+
+
+def test_weekly_budget_adds_profit_and_subtracts_loss(monkeypatch) -> None:
+    monkeypatch.setattr(console, "_budget_cap_for_host", lambda: 15.0)
+
+    result = console._varia_budget({"vps1": 3.0, "vps2": -2.0})
+
+    assert result["hosts"]["vps1"]["remaining"] == 18.0
+    assert result["hosts"]["vps2"]["remaining"] == 13.0
+    assert result["total_remaining"] == 31.0
+    assert result["basis"] == "friday_0800_settled_net_including_incentives"
+
+
 def test_vps2_decibel_to_ondo_transfer_preserves_principal_and_counts_ondo_once(
     monkeypatch, tmp_path: Path
 ) -> None:
