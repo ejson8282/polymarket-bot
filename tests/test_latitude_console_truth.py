@@ -834,6 +834,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "当前入场价差" in html
     assert "当前净资金费折算24小时" in html
     assert "平台单边点差" in html
+    assert "跨平台入场差" in html
+    assert "点差 '+platformBp.toFixed(2)+'bp" in html
     assert "预计入场成本" not in html
     assert "VPS2 · Var/Ondo" in html
     assert "Ondo 正式环境验收" in html
@@ -1051,6 +1053,7 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
     assert result["allowed"] == ["BTC"]
     assert result["blocked"] == []
     assert result["metrics"]["BTC"]["display_bps"] == 2.0
+    assert result["metrics"]["BTC"]["platform_spread_bps"] == 1.0
     assert result["venues"]["decibel"]["common"] == ["BTC", "XAU"]
     assert result["venues"]["decibel"]["categories"]["BTC"] == "crypto"
     assert result["venues"]["decibel"]["categories"]["XAU"] == "rwa"
@@ -1292,6 +1295,7 @@ def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
             "rows": [{
                 "symbol": "BTC", "category": "major", "eligible": True,
                 "var_half_spread_bps": "0.7", "ondo_half_spread_bps": "0.9",
+                "ondo_maker_fee_bps": "1",
                 "recommended_entry_cost_bps": "0.6",
                 "recommended_net_funding_24h_bps": "2.5",
                 "recommended_expected_24h_cost_bps": "-1.9",
@@ -1314,13 +1318,19 @@ def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
             "allowed": True,
             "direction": "Var 买 / Decibel 卖",
             "entry_cost_bps": 1.4,
-            "spread_bps": 1.4,
+            "var_spread_bps": 1.0,
+            "hedge_spread_bps": 1.0,
+            "spread_bps": 1.0,
+            "maker_fee_bps": 0.0,
         },
         "ondo": {
             "allowed": True,
             "direction": "Var 卖 / Ondo 买",
             "entry_cost_bps": 0.6,
             "net_funding_24h_bps": 2.5,
+            "var_spread_bps": 0.7,
+            "hedge_spread_bps": 0.9,
+            "maker_fee_bps": 1.0,
             "spread_bps": 0.9,
         },
     }]
