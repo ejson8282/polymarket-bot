@@ -826,10 +826,11 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-compare-ondo-markets"' in html
     assert 'id="vdauto-compare-dec-status"' in html
     assert 'id="vdauto-compare-ondo-status"' in html
-    assert "选择双腿入场成本更低的方向" in html
+    assert "选择双腿入场价差更低的方向" in html
     assert "接近时再比较净资金费" in html
-    assert "同币种入场成本对比" in html
-    assert "低入场成本路线" in html
+    assert "同币种入场价差对比" in html
+    assert "低入场价差路线" in html
+    assert "负入场价差只代表当时报价有利" in html
     assert "VPS2 · Var/Ondo" in html
     assert "Ondo 正式环境验收" in html
     assert "两列各读对应 VPS 的真实来源" in html
@@ -1160,6 +1161,27 @@ def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
     assert result["metrics"]["SOL"]["display_bps"] > 5
 
 
+def test_varia_strategy_pools_preserve_favorable_signed_entry_difference(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("BTC",))
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": ["BTC"], "opportunity_symbols": [],
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [{
+        "symbol": "BTC", "age_sec": 20,
+        "var_bid": 100.02, "var_ask": 100.03,
+        "decibel_bid": 100.00, "decibel_ask": 100.01,
+        "costs": {"var_buy": 0.3, "var_sell": -0.1},
+        "recommended": "var_sell",
+    }])
+
+    result = console._varia_strategy_pools()
+
+    assert result["metrics"]["BTC"]["entry_cost_bps"] == -0.1
+    assert result["metrics"]["BTC"]["allowed"] is True
+
+
 def test_varia_strategy_pools_do_not_invent_direction_without_quote_recommendation(
     monkeypatch,
 ) -> None:
@@ -1282,7 +1304,7 @@ def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
         "symbol": "BTC",
         "preferred": "ondo",
         "preferred_label": "Var/Ondo",
-        "reason": "两边均通过，Ondo 入场成本更低",
+        "reason": "两边均通过，Ondo 入场价差更低",
         "entry_savings_bps": 0.8,
         "decibel": {
             "allowed": True,
@@ -1422,6 +1444,57 @@ def test_start_automation_blocks_vps2_until_ondo_mutations_are_verified(
     assert "未启动任何 worker" in body["error"]
     assert actions == []
     assert json.loads((tmp_path / "auto_strategy_state.json").read_text())["enabled"] is False
+
+
+def test_start_automation_starts_ready_vps1_and_keeps_blocked_vps2_stopped(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    monkeypatch.setattr(console, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": False,
+        "mode": "full_auto",
+        "weekly_loss_cap_usdc": 15,
+        "major_ratio": 0.8,
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    _write_json(tmp_path / "ops_peer_state" / "vps2.json", {
+        "host_id": "vps2",
+        "ondo_acceptance": {
+            "present": True,
+            "environment": "production",
+            "live_ready": False,
+            "read_only": {"passed": True, "mutations_sent": False},
+            "mutation": {},
+        },
+    })
+    monkeypatch.setattr(console, "_sync_varia_auto_state_to_vps2", lambda: {"ok": True})
+    monkeypatch.setattr(console, "_varia_automation_state", lambda vd=None: {"status": "partial"})
+    actions = []
+
+    def fake_action(host, action):
+        actions.append((host, action))
+        return {"rc": 0, "out": "active" if host == "vps1" else "inactive", "err": ""}
+
+    monkeypatch.setattr(console, "_varia_worker_action", fake_action)
+    request = type("RequestStub", (), {"headers": {}})()
+
+    response = asyncio.run(console.varia_automation_start(request))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["started_hosts"] == ["vps1"]
+    assert any("VPS2" in reason for reason in body["blocked_hosts"])
+    assert ("vps1", "start") in actions
+    assert ("vps2", "stop") in actions
+    saved = json.loads((tmp_path / "auto_strategy_state.json").read_text())
+    assert saved["enabled"] is True
+    assert saved["hosts"]["vps1"]["enabled"] is True
+    assert saved["hosts"]["vps2"]["enabled"] is False
 
 
 def test_ondo_live_readiness_requires_correct_strategy_and_all_mutations() -> None:

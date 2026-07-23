@@ -786,7 +786,7 @@
           <div class="vd-command-note">启动后由各 VPS 独立选择币种、方向和持仓时长；停止自动调度不会自动平仓。</div>
         </div>
         <div class="vd-command-actions">
-          <button class="btn primary" id="vdauto-start">启动自动化</button>
+          <button class="btn primary" id="vdauto-start">启动可运行 VPS</button>
           <button class="btn danger" id="vdauto-stop">停止自动化</button>
         </div>
       </div>
@@ -933,12 +933,12 @@
         <div class="vdauto-compare-cell">定位</div><div class="vdauto-compare-cell">策略 A · 高交易量</div><div class="vdauto-compare-cell">策略 B · 高权重长持仓</div>
         <div class="vdauto-compare-cell">当前候选</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-markets">等待 VPS1 报价</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-markets">等待 VPS2 扫描</div>
         <div class="vdauto-compare-cell">点差门槛</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-spread">读取中</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-spread">读取中</div>
-        <div class="vdauto-compare-cell">方向依据</div><div class="vdauto-compare-cell">选择双腿入场成本更低的方向</div><div class="vdauto-compare-cell">入场成本优先；接近时再比较净资金费</div>
+        <div class="vdauto-compare-cell">方向依据</div><div class="vdauto-compare-cell">选择双腿入场价差更低的方向</div><div class="vdauto-compare-cell">入场价差优先；接近时再比较净资金费</div>
         <div class="vdauto-compare-cell">自动运行</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-status">核对中</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-status">核对中</div>
       </div>
     </div>
     <div class="vdauto-route-detail vd-route-native" id="vdauto-symbol-route-comparison">
-      <div class="vdauto-route-head"><div><div class="vdauto-route-title">同币种入场成本对比</div><div class="vdauto-route-note">只比较两边都有新鲜报价的同一币种；结论仅指开仓磨损，不把缺失的 Decibel 持仓期资金费硬算进去。</div></div><div class="vdauto-route-meta" id="vdauto-route-meta">等待两台 VPS 报价</div></div>
+      <div class="vdauto-route-head"><div><div class="vdauto-route-title">同币种入场价差对比</div><div class="vdauto-route-note">入场价差按两腿可成交价计算：正数是预计磨损，负数是当时报价有利；它不等于已实现利润。Decibel 缺失的持仓期资金费不会被硬算进去。</div></div><div class="vdauto-route-meta" id="vdauto-route-meta">等待两台 VPS 报价</div></div>
       <div class="vdauto-route-wrap" id="vdauto-route-wrap"><div class="vdauto-market-empty">正在匹配 Decibel 与 Ondo 的共同币</div></div>
     </div>
     <div class="vdauto-pools">
@@ -960,7 +960,7 @@
           <div class="vdauto-market-wrap" id="vdauto-ondo-market-wrap"><div class="vdauto-market-empty">正在读取共同币、挂单成本与净资金费率</div></div>
         </div>
       </div>
-      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。方向先比较入场成本，只在 2bp 容差内参考净资金费；资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
+      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。方向先比较入场价差，只在 2bp 容差内参考净资金费；负入场价差只代表当时报价有利，不保证成交或盈利。资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
     </div>
   </div>
 
@@ -3608,9 +3608,9 @@
     routeMeta.textContent=comparison.length+' 个共同报价 · '+actionable+' 个有可用路线 · '+bothReady+' 个双路线均可';
     if(!comparison.length){routeWrap.innerHTML='<div class="vdauto-market-empty">尚无可直接比较的同币种新鲜报价</div>';}
     else{
-      const routeLeg=(leg,funding)=>'<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>入场 '+signed(leg?.entry_cost_bps)+' bp · 单边点差 '+signed(leg?.spread_bps)+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';
-      const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 成本差 '+Number(row.entry_savings_bps).toFixed(2)+' bp');return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,false)+'</td><td>'+routeLeg(row.ondo,true)+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved)+'</div></td></tr>';}).join('');
-      routeWrap.innerHTML='<table class="vdauto-route"><thead><tr><th>币种</th><th>Var/Decibel</th><th>Var/Ondo</th><th>低入场成本路线</th></tr></thead><tbody>'+routeBody+'</tbody></table>';
+      const routeLeg=(leg,funding)=>'<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>入场价差 '+signed(leg?.entry_cost_bps)+' bp · 平台单边点差 '+signed(leg?.spread_bps)+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';
+      const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 价差优势 '+Number(row.entry_savings_bps).toFixed(2)+' bp');return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,false)+'</td><td>'+routeLeg(row.ondo,true)+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved)+'</div></td></tr>';}).join('');
+      routeWrap.innerHTML='<table class="vdauto-route"><thead><tr><th>币种</th><th>Var/Decibel</th><th>Var/Ondo</th><th>低入场价差路线</th></tr></thead><tbody>'+routeBody+'</tbody></table>';
     }
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
@@ -3693,9 +3693,12 @@
     });
     const services=Object.values(hosts).map(h=>h.service), selected=['vps1','vps2'].filter(h=>document.getElementById('vdauto-'+h+'-enabled').checked);
     const selectedBlocked=selected.filter(host=>(hosts[host]||{}).start_blocked);
-    document.getElementById('vdauto-start').disabled=state.status==='running'||state.status==='starting'||!selected.length||!!selectedBlocked.length;
+    const selectedStartable=selected.filter(host=>!(hosts[host]||{}).start_blocked&&!(hosts[host]||{}).running&&(hosts[host]||{}).service!=='activating');
+    const startButton=document.getElementById('vdauto-start');
+    startButton.textContent=selectedBlocked.length?'启动可运行 VPS':'启动自动化';
+    startButton.disabled=state.status==='starting'||!selectedStartable.length;
     const msg=document.getElementById('vdauto-msg');
-    if(selectedBlocked.length&&!msg.textContent) {msg.className='vdauto-message';msg.textContent=selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；');}
+    if(selectedBlocked.length&&!msg.textContent) {msg.className='vdauto-message';msg.textContent=selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；')+(selectedStartable.length?'；其余已验收 VPS 仍可启动。':'');}
     document.getElementById('vdauto-stop').disabled=state.status==='stopped'&&!services.some(x=>['active','activating','deactivating'].includes(x));
   }
 

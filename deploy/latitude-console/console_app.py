@@ -1827,7 +1827,11 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         dec_spread = (dec_ask - dec_bid) / dec_mid * 10000 / 2
         costs = quote.get("costs") if isinstance(quote.get("costs"), dict) else {}
         numeric_costs = [value for value in (_num(item) for item in costs.values()) if value is not None]
-        entry_cost = max(0.0, min(numeric_costs)) if numeric_costs else None
+        # Keep the sign for like-for-like route comparison. A negative value
+        # means the current executable cross-venue quotes are favorable; the
+        # spread guard below still uses max(), so a favorable basis never
+        # bypasses either venue's own spread limit.
+        entry_cost = min(numeric_costs) if numeric_costs else None
         observed = [var_spread, dec_spread] + ([entry_cost] if entry_cost is not None else [])
         worst = max(observed)
         can_trade = worst <= max_spread_bps
@@ -1925,11 +1929,11 @@ def _varia_route_comparison(decibel_pool: dict, ondo_pool: dict) -> List[dict]:
         reason: str
         if decibel_allowed and ondo_allowed:
             if decibel_cost is None and ondo_cost is None:
-                preferred, reason = None, "两边成本均待定"
+                preferred, reason = None, "两边入场价差均待定"
             elif ondo_cost is not None and (decibel_cost is None or ondo_cost < decibel_cost):
-                preferred, reason = "ondo", "两边均通过，Ondo 入场成本更低"
+                preferred, reason = "ondo", "两边均通过，Ondo 入场价差更低"
             else:
-                preferred, reason = "decibel", "两边均通过，Decibel 入场成本更低"
+                preferred, reason = "decibel", "两边均通过，Decibel 入场价差更低"
         elif decibel_allowed:
             preferred, reason = "decibel", "仅 Decibel 当前通过门槛"
         elif ondo_allowed:
@@ -4846,14 +4850,37 @@ async def varia_automation_start(request: Request) -> JSONResponse:
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     if not selected:
         return JSONResponse({"ok": False, "error": "请先至少启用一台 VPS 并保存配置"}, status_code=409)
-    start_blocks = _varia_selected_start_blocks(state)
-    if start_blocks:
+    raw_states = _varia_raw_states()
+    startable: List[str] = []
+    start_blocks: List[str] = []
+    for host in selected:
+        configured = state["hosts"][host]
+        readiness = _varia_host_live_readiness(
+            host, raw_states.get(host), str(configured.get("strategy") or ""),
+        )
+        if readiness.get("ready"):
+            startable.append(host)
+        else:
+            start_blocks.append(
+                f"{host.upper()}：{readiness.get('reason') or '实盘验收未完成'}"
+            )
+    if not startable:
         return JSONResponse({
             "ok": False,
             "error": "；".join(start_blocks) + "。未启动任何 worker。",
             "state": _varia_automation_state(),
         }, status_code=409)
-    written = _write_auto_strategy({"enabled": True})
+    effective_hosts = {
+        host: dict(configured)
+        for host, configured in state["hosts"].items()
+    }
+    for host in selected:
+        if host not in startable:
+            effective_hosts[host]["enabled"] = False
+    written = _write_auto_strategy({
+        "enabled": True,
+        "hosts": effective_hosts,
+    })
     if not written.get("ok"):
         return JSONResponse(written, status_code=int(written.pop("code", 500)))
     sync = _sync_varia_auto_state_to_vps2()
@@ -4864,19 +4891,33 @@ async def varia_automation_start(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "VPS2 配置同步失败，自动化未启动"}, status_code=502)
     results: Dict[str, Dict[str, Any]] = {}
     for host in ("vps1", "vps2"):
-        results[host] = _varia_worker_action(host, "start" if host in selected else "stop")
+        results[host] = _varia_worker_action(host, "start" if host in startable else "stop")
     if any(item.get("rc") != 0 for item in results.values()):
         _stop_all_varia_auto_workers()
         _write_auto_strategy({"enabled": False})
         _sync_varia_auto_state_to_vps2()
-        _audit("varia_auto_start_failed", selected=selected, source="tailnet")
+        _audit(
+            "varia_auto_start_failed", selected=selected, startable=startable,
+            blocked=start_blocks, source="tailnet",
+        )
         return JSONResponse({
             "ok": False, "error": "后台未能全部按配置启动，已回滚并停止两台 worker",
             "state": _varia_automation_state(),
         }, status_code=502)
-    _audit("varia_auto_start", selected=selected, source="tailnet")
+    _audit(
+        "varia_auto_start", selected=selected, started=startable,
+        blocked=start_blocks, source="tailnet",
+    )
+    started_label = "、".join(host.upper() for host in startable)
+    skipped_label = (
+        "；" + "；".join(start_blocks) + "，已取消参与并保持停止。"
+        if start_blocks else "。"
+    )
     return JSONResponse({
-        "ok": True, "note": "自动化启动命令已发送，后台正在接管所选 VPS。",
+        "ok": True,
+        "note": f"已向 {started_label} 发送启动命令{skipped_label}",
+        "started_hosts": startable,
+        "blocked_hosts": start_blocks,
         "state": _varia_automation_state(),
     })
 
