@@ -1713,6 +1713,11 @@ def test_ipo_console_uses_contextual_account_actions() -> None:
     assert "人工调整过的账号会保留" in html
     assert "一键申购(活跃)" not in html
     assert "结束本轮" not in html
+    assert 'id="ipo-auto-mode"' in html
+    assert "GPT 自动策略" in html
+    assert "由 GPT 结合 PDF" in html
+    assert 'data-mode="conservative"' not in html
+    assert "action:'set_mode'" not in html
 
 
 def test_ipo_console_shows_live_summary_and_safe_action_feedback() -> None:

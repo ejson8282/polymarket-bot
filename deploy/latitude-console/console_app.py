@@ -15,14 +15,20 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import io
 import json
 import os
+import re
 import shlex
 import sqlite3
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
+from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -80,6 +86,9 @@ IPO_PACK_URL = os.getenv(
 )
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
+DEWU_INVENTORY_PATH = Path(
+    os.getenv("DEWU_INVENTORY_PATH", DATA_DIR / "dewu_inventory.json")
+)
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
 PM_STATE_STALE_SEC = int(os.getenv("PM_STATE_STALE_SEC", "300"))
@@ -127,6 +136,200 @@ def _num(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------- 得物库存(Excel 为唯一入库来源) ----------
+
+def _dewu_empty() -> dict:
+    return {"version": 1, "items": [], "imports": [], "exceptions": [], "updated_at": None}
+
+
+def _dewu_load() -> dict:
+    state = _read_json(DEWU_INVENTORY_PATH)
+    if not isinstance(state, dict):
+        return _dewu_empty()
+    for key in ("items", "imports", "exceptions"):
+        if not isinstance(state.get(key), list):
+            state[key] = []
+    return state
+
+
+def _dewu_save(state: dict) -> None:
+    DEWU_INVENTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DEWU_INVENTORY_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, DEWU_INVENTORY_PATH)
+
+
+def _xlsx_rows(blob: bytes) -> List[List[str]]:
+    """用标准库读取首个工作表，避免为控制台引入额外运行依赖。"""
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pkg_rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        shared: List[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall(f"{{{ns}}}si"):
+                shared.append("".join(t.text or "" for t in si.iter(f"{{{ns}}}t")))
+        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+        sheet = workbook.find(f".//{{{ns}}}sheet")
+        if sheet is None:
+            return []
+        rel_id = sheet.attrib.get(f"{{{rel_ns}}}id")
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        target = None
+        for rel in rels.findall(f"{{{pkg_rel_ns}}}Relationship"):
+            if rel.attrib.get("Id") == rel_id:
+                target = rel.attrib.get("Target")
+                break
+        if not target:
+            return []
+        path = target.lstrip("/")
+        if not path.startswith("xl/"):
+            path = "xl/" + path
+        root = ET.fromstring(zf.read(path))
+        rows: List[List[str]] = []
+        for row in root.findall(f".//{{{ns}}}row"):
+            values: Dict[int, str] = {}
+            for cell in row.findall(f"{{{ns}}}c"):
+                ref = cell.attrib.get("r", "A1")
+                letters = re.match(r"[A-Z]+", ref)
+                if not letters:
+                    continue
+                col = 0
+                for char in letters.group(0):
+                    col = col * 26 + ord(char) - 64
+                typ = cell.attrib.get("t")
+                value = ""
+                if typ == "inlineStr":
+                    value = "".join(t.text or "" for t in cell.iter(f"{{{ns}}}t"))
+                else:
+                    node = cell.find(f"{{{ns}}}v")
+                    raw = node.text if node is not None and node.text is not None else ""
+                    if typ == "s" and raw:
+                        value = shared[int(raw)]
+                    else:
+                        value = raw
+                values[col - 1] = str(value).strip()
+            if values:
+                width = max(values) + 1
+                rows.append([values.get(i, "") for i in range(width)])
+        return rows
+
+
+def _dewu_parse_xlsx(blob: bytes) -> tuple[List[dict], List[dict]]:
+    rows = _xlsx_rows(blob)
+    header_idx = -1
+    columns: Dict[str, int] = {}
+    aliases = {
+        "sku": ("sku", "货号"),
+        "name": ("名称", "商品名称", "品名"),
+        "color": ("颜色", "配色"),
+        "size": ("尺码", "尺码（eur/服装）", "eur尺码", "size"),
+        "quantity": ("数量", "库存", "qty"),
+    }
+    for idx, row in enumerate(rows):
+        normalized = [re.sub(r"\s+", "", str(v)).lower() for v in row]
+        found: Dict[str, int] = {}
+        for key, names in aliases.items():
+            for col, value in enumerate(normalized):
+                if any(value == re.sub(r"\s+", "", name).lower() or
+                       (key == "size" and "尺码" in value) for name in names):
+                    found[key] = col
+                    break
+        if all(key in found for key in ("sku", "name", "size", "quantity")):
+            header_idx, columns = idx, found
+            break
+    if header_idx < 0:
+        raise ValueError("找不到表头：需要 SKU、名称、尺码（EUR/服装）、数量")
+    merged: Dict[str, dict] = {}
+    errors: List[dict] = []
+    for excel_row, row in enumerate(rows[header_idx + 1:], start=header_idx + 2):
+        get = lambda key: row[columns[key]].strip() if columns.get(key, -1) < len(row) else ""
+        sku, name, size = get("sku").upper(), get("name"), get("size")
+        color = get("color") if "color" in columns else ""
+        raw_qty = get("quantity")
+        if not any((sku, name, size, raw_qty)):
+            continue
+        if sku and not any((name, size, raw_qty)):
+            continue  # 表尾“整理说明”等单格文字
+        if not sku or not size:
+            errors.append({"row": excel_row, "sku": sku, "reason": "缺少 SKU 或尺码"})
+            continue
+        try:
+            quantity = int(float(raw_qty))
+            if quantity <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append({"row": excel_row, "sku": sku, "reason": "数量必须是正整数"})
+            continue
+        normalized_size = re.sub(r"\s+", " ", size).upper()
+        key = f"{sku}|{normalized_size}"
+        item = merged.setdefault(key, {
+            "key": key, "sku": sku, "name": name, "color": color, "size": size,
+            "quantity": 0, "status": "待处理", "lowest_price": None,
+            "listing_price": None, "updated_at": None,
+        })
+        item["quantity"] += quantity
+        if name:
+            item["name"] = name
+        if color:
+            item["color"] = color
+    return list(merged.values()), errors
+
+
+@app.get("/api/dewu/inventory")
+def dewu_inventory_get() -> JSONResponse:
+    state = _dewu_load()
+    total = sum(int(item.get("quantity") or 0) for item in state["items"])
+    return JSONResponse({**state, "total_quantity": total, "spec_count": len(state["items"])})
+
+
+@app.post("/api/dewu/inventory/import")
+async def dewu_inventory_import(request: Request) -> JSONResponse:
+    blob = await request.body()
+    if not blob or len(blob) > 15 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "文件为空或超过 15 MB"}, status_code=400)
+    digest = hashlib.sha256(blob).hexdigest()
+    state = _dewu_load()
+    if any(row.get("sha256") == digest for row in state["imports"]):
+        return JSONResponse({"ok": False, "duplicate": True,
+                             "error": "这个文件已经导入过，库存未重复累加"}, status_code=409)
+    try:
+        incoming, errors = _dewu_parse_xlsx(blob)
+    except (ValueError, zipfile.BadZipFile, KeyError, ET.ParseError) as exc:
+        return JSONResponse({"ok": False, "error": f"Excel 解析失败：{exc}"}, status_code=400)
+    now = datetime.now(timezone.utc).isoformat()
+    by_key = {str(item.get("key")): item for item in state["items"]}
+    added_specs = added_quantity = 0
+    for item in incoming:
+        existing = by_key.get(item["key"])
+        if existing:
+            existing["quantity"] = int(existing.get("quantity") or 0) + item["quantity"]
+            existing["name"] = item["name"] or existing.get("name") or ""
+            existing["color"] = item["color"] or existing.get("color") or ""
+            existing["updated_at"] = now
+        else:
+            item["updated_at"] = now
+            state["items"].append(item)
+            by_key[item["key"]] = item
+            added_specs += 1
+        added_quantity += item["quantity"]
+    filename = unquote(request.headers.get("x-filename", "库存.xlsx"))[:180]
+    record = {"id": digest[:12], "sha256": digest, "filename": filename, "at": now,
+              "specs": len(incoming), "quantity": added_quantity, "errors": len(errors)}
+    state["imports"].insert(0, record)
+    state["imports"] = state["imports"][:50]
+    state["exceptions"] = [{"import_id": record["id"], **row} for row in errors] + state["exceptions"]
+    state["exceptions"] = state["exceptions"][:200]
+    state["updated_at"] = now
+    _dewu_save(state)
+    return JSONResponse({"ok": True, "import": record, "added_specs": added_specs,
+                         "merged_specs": len(incoming) - added_specs, "errors": errors,
+                         "total_specs": len(state["items"]),
+                         "total_quantity": sum(int(x.get("quantity") or 0)
+                                               for x in state["items"])})
 
 
 # ---------- Polymarket(engine_state_N 逐账号,不混算) ----------
@@ -3086,6 +3289,7 @@ def _ipo() -> Dict[str, Any]:
             j = jmap.get(row["code"])
             if j and j.get("verdict"):
                 row["ai_verdict"] = j.get("verdict")          # 打 / 跳 / 观望
+                row["ai_grade"] = str(j.get("grade") or "")[:1]
                 row["ai_expected"] = j.get("expected_net")    # 期望净收益
                 row["ai_reason"] = str(j.get("reason") or "")[:80]
                 row["ai_score"] = j.get("overall_score")
@@ -4717,7 +4921,10 @@ async def set_varia_auto(payload: dict, request: Request) -> JSONResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    return HTMLResponse(CONSOLE_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        CONSOLE_HTML.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/healthz")

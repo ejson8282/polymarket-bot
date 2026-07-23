@@ -35,6 +35,43 @@
   .pill .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:6px;vertical-align:1px}
   .clock{font-family:var(--mono);font-size:11px;color:var(--faint)}
 
+  /* ── 得物库存(二级页设计预览) ── */
+  .dw-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:22px 0 2px}
+  .dw-title{font-size:24px;font-weight:650;letter-spacing:.01em}.dw-title small{display:block;margin-top:5px;color:var(--muted);font:12px var(--mono)}
+  .dw-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .dw-preview{color:var(--warn);border-color:rgba(231,197,71,.45)}
+  .dw-status{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
+  .dw-device-panel{position:relative;overflow:hidden;padding:18px 20px;background:linear-gradient(115deg,#141c23,#111921)}
+  .dw-device-panel:after{content:"";position:absolute;width:330px;height:330px;border:1px solid rgba(94,200,216,.10);border-radius:50%;right:-110px;top:-220px;box-shadow:0 0 0 55px rgba(94,200,216,.025)}
+  .dw-device-head{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:1}
+  .dw-device-head h2{font-size:15px}.dw-live{display:flex;align-items:center;gap:7px;color:var(--ok);font:11px var(--mono)}
+  .dw-live i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 5px rgba(70,178,107,.10)}
+  .dw-device-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px;position:relative;z-index:1}
+  .dw-device{padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(26,34,44,.65)}
+  .dw-device span{display:block;color:var(--faint);font:10px var(--mono);text-transform:uppercase}.dw-device b{display:block;margin-top:5px;font-size:13px}.dw-device small{display:block;margin-top:4px;color:var(--ok);font:10px var(--mono)}
+  .dw-run-panel{padding:17px}.dw-run-panel label{display:block;color:var(--faint);font:10px var(--mono);margin-bottom:7px}
+  .dw-modes{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:3px;background:var(--bg);border-radius:7px}
+  .dw-modes button{height:31px;border:0;border-radius:5px;background:transparent;color:var(--muted);font:10px var(--mono);cursor:pointer}.dw-modes button.on{background:var(--panel2);color:var(--var)}
+  .dw-run-meta{display:flex;justify-content:space-between;margin:13px 1px 10px;color:var(--muted);font:10px var(--mono)}.dw-run-meta b{color:var(--text)}
+  .dw-run{width:100%;height:38px}.dw-run.running{background:var(--danger);border-color:var(--danger);color:#fff}
+  .dw-kpis{grid-template-columns:repeat(5,minmax(0,1fr))}.dw-kpi .value{font-size:19px}.dw-kpi .sub{font-size:9px}
+  .dw-main{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:14px;margin-top:14px}
+  .dw-inventory{padding:0;overflow:hidden;margin-top:0}.dw-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .dw-panel-head h2{font-size:14px}.dw-panel-head .src{margin:3px 0 0}.dw-tools{display:flex;align-items:center;gap:7px}
+  .dw-search{width:220px;height:33px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);padding:0 10px;font:11px var(--mono);outline:none}.dw-search:focus{border-color:var(--var)}
+  .dw-tabs{display:flex;gap:4px;padding:10px 14px;border-bottom:1px solid var(--line);overflow-x:auto}.dw-tabs button{border:0;background:transparent;color:var(--muted);padding:5px 10px;border-radius:5px;font:10px var(--mono);cursor:pointer}.dw-tabs button.on{color:var(--var);background:rgba(94,200,216,.09)}
+  .dw-table-wrap{overflow:auto}.dw-table{min-width:850px}.dw-table td{padding-top:10px;padding-bottom:10px}.dw-product b{display:block;font-size:12px}.dw-product small{display:block;color:var(--faint);font:10px var(--mono);margin-top:3px}
+  .dw-price{font:12px var(--mono)}.dw-price small{display:block;color:var(--faint);font-size:9px}.dw-empty{color:var(--faint)}
+  .dw-side{display:grid;gap:14px;align-content:start}.dw-side .panel{margin-top:0}.dw-side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.dw-side h2{font-size:13px}
+  .dw-progress{height:6px;border-radius:4px;background:var(--panel2);overflow:hidden;margin:9px 0 5px}.dw-progress i{display:block;height:100%;width:3%;background:var(--var)}
+  .dw-queue{list-style:none}.dw-queue li{padding:10px 0;border-bottom:1px solid var(--panel2)}.dw-queue li:last-child{border-bottom:0}.dw-queue b{display:flex;justify-content:space-between;font:11px var(--mono)}.dw-queue span{display:block;margin-top:4px;color:var(--muted);font-size:11px}.dw-queue em{color:var(--danger);font-style:normal}
+  .dw-rule{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--line);font-size:11px}.dw-rule:last-child{border:0}.dw-rule span{color:var(--muted)}.dw-rule b{font:10px var(--mono);text-align:right}
+  .dw-page-note{padding:10px 14px;border-top:1px solid var(--line);color:var(--faint);font:10px var(--mono)}
+  .dw-empty-state{padding:58px 20px;text-align:center;color:var(--muted)}.dw-empty-state b{display:block;color:var(--text);font-size:15px;margin-bottom:8px}.dw-empty-state span{font-size:11px}
+  .dw-message.ok{color:var(--ok)}.dw-message.bad{color:var(--danger)}
+  .dw-history{list-style:none}.dw-history li{padding:9px 0;border-bottom:1px solid var(--panel2)}.dw-history li:last-child{border:0}.dw-history b{display:block;font:10px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dw-history span{display:block;color:var(--muted);font-size:10px;margin-top:3px}
+  .dw-view{display:none}.dw-view.on{display:block}.dw-simple-panel{margin-top:14px;padding:22px}.dw-simple-panel h2{font-size:15px;margin-bottom:7px}.dw-simple-panel p{color:var(--muted);font-size:12px;line-height:1.7}
+
   /* 全局告警条(跨系统合并,任何页面可见) */
   .alert{display:flex;flex-direction:column;gap:10px;margin:14px 24px 0;padding:11px 16px;border-radius:8px;
          background:rgba(229,72,77,.10);border:1px solid rgba(229,72,77,.45)}
@@ -161,7 +198,7 @@
   .ipo-next-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
   .ipo-next-actions .btn{font-size:10px;padding:3px 7px}
   .ipo-console .btn:disabled{cursor:not-allowed;opacity:.45}
-  .ipo-mode.active{color:var(--var);border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.10)}
+  .ipo-auto-mode{font-size:13px;padding:8px 11px;border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.10);color:var(--var)}
   .ipo-done{font-family:var(--mono);font-size:10px;color:var(--faint)}
   .ipo-step-note.paused{color:var(--warn)}
   .ipo-row-msg{width:100%;font-family:var(--mono);font-size:10px;text-align:right;color:var(--faint)}
@@ -514,6 +551,7 @@
     <a data-page="sa">Single Account<span class="b b-paper">PAPER</span></a>
     <a data-page="grid">网格 Grid<span class="b b-shadow">SHADOW</span></a>
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
+    <a data-page="dewu">得物库存<span class="b b-paper">EXCEL</span></a>
   </nav>
   <div class="status-cluster">
     <span class="pill" data-k="pill.alerts"><span class="dot"></span>告警读取中</span>
@@ -588,6 +626,133 @@
       <li><span class="dot d-info"></span><div><div>等待实时事件数据</div></div></li>
     </ul>
   </div>
+</section>
+
+<!-- ════════════ 页面 · 得物库存(二级页设计预览;不触发真实手机操作) ════════════ -->
+<section class="page" id="page-dewu-preview" hidden>
+  <div class="dw-head">
+    <div class="dw-title">得物库存<small>DEWU INVENTORY · 自动上架 / 库存同步 / 价格管理</small></div>
+    <div class="dw-actions"><span class="chip dw-preview">DESIGN PREVIEW</span><button class="btn ghost">导入库存</button><button class="btn primary">＋ 添加商品</button></div>
+  </div>
+
+  <div class="subnav" id="dw-subnav">
+    <span class="on">库存总览</span><span>上架任务</span><span>自动改价</span><span>售出记录</span><span>异常队列</span>
+  </div>
+
+  <div class="dw-status">
+    <div class="panel dw-device-panel">
+      <div class="dw-device-head"><h2>执行链路</h2><div class="dw-live"><i></i>全部在线</div></div>
+      <div class="dw-device-grid">
+        <div class="dw-device"><span>EXECUTOR</span><b>Mac mini</b><small>● ONLINE · 12ms</small></div>
+        <div class="dw-device"><span>ANDROID</span><b>Seeker</b><small>● ADB CONNECTED</small></div>
+        <div class="dw-device"><span>DEWU APP</span><b>个人卖家</b><small>● 已登录</small></div>
+      </div>
+    </div>
+    <div class="panel dw-run-panel">
+      <label>运行模式</label>
+      <div class="dw-modes"><button>预演</button><button>逐单确认</button><button class="on">自动上架</button></div>
+      <div class="dw-run-meta"><span>本次任务</span><b>104 规格 · 162 双</b></div>
+      <button class="btn primary dw-run" id="dw-run">开始自动上架</button>
+    </div>
+  </div>
+
+  <div class="kpis dw-kpis">
+    <div class="kpi dw-kpi"><div class="label">库存总量</div><div class="value">167 <small>双</small></div><div class="sub">109 个规格</div></div>
+    <div class="kpi dw-kpi"><div class="label">已上架</div><div class="value up">5 <small>双</small></div><div class="sub">3 个规格完成</div></div>
+    <div class="kpi dw-kpi"><div class="label">待处理</div><div class="value">160 <small>双</small></div><div class="sub">104 个规格排队</div></div>
+    <div class="kpi dw-kpi"><div class="label">异常</div><div class="value down">1 <small>项</small></div><div class="sub">商品匹配待确认</div></div>
+    <div class="kpi dw-kpi"><div class="label">已跳过</div><div class="value">2 <small>双</small></div><div class="sub">暂无最低价</div></div>
+  </div>
+
+  <div class="dw-main">
+    <div class="panel dw-inventory">
+      <div class="dw-panel-head">
+        <div><h2>库存清单</h2><div class="src">国内鞋服库存.xlsx · 今天 18:42 更新</div></div>
+        <div class="dw-tools"><input class="dw-search" id="dw-search" placeholder="搜索 SKU / 名称 / 尺码"><button class="btn ghost">筛选</button></div>
+      </div>
+      <div class="dw-tabs" id="dw-tabs"><button class="on" data-status="全部">全部 109</button><button data-status="待处理">待处理 104</button><button data-status="已上架">已上架 3</button><button data-status="异常">异常 1</button><button data-status="已跳过">已跳过 1</button></div>
+      <div class="dw-table-wrap">
+        <table class="dw-table"><thead><tr><th>商品 / SKU</th><th>尺码</th><th>数量</th><th>最低展示价</th><th>卖家出价</th><th>状态</th><th></th></tr></thead>
+        <tbody id="dw-rows">
+          <tr data-status="已上架" data-search="165609c converse 37.5"><td class="dw-product"><b>Converse Chuck Taylor All Star 高帮</b><small>165609C</small></td><td class="num">EUR 37.5</td><td class="num">1 双</td><td class="dw-price">¥299</td><td class="dw-price">¥294<small>预计收入 ¥230.64</small></td><td><span class="chip ok">已上架</span></td><td><button class="btn ghost">详情</button></td></tr>
+          <tr data-status="已上架" data-search="165609c converse 39"><td class="dw-product"><b>Converse Chuck Taylor All Star 高帮</b><small>165609C</small></td><td class="num">EUR 39</td><td class="num">2 双</td><td class="dw-price">¥478</td><td class="dw-price">¥468</td><td><span class="chip ok">已上架</span></td><td><button class="btn ghost">详情</button></td></tr>
+          <tr data-status="已上架" data-search="165609c converse 40"><td class="dw-product"><b>Converse Chuck Taylor All Star 高帮</b><small>165609C</small></td><td class="num">EUR 40</td><td class="num">2 双</td><td class="dw-price">¥664</td><td class="dw-price">¥654</td><td><span class="chip ok">已上架</span></td><td><button class="btn ghost">详情</button></td></tr>
+          <tr data-status="待处理" data-search="dd1391-001 nike dunk 48.5"><td class="dw-product"><b>Nike Dunk Low Retro 黑白熊猫</b><small>DD1391-001</small></td><td class="num">EUR 48.5</td><td class="num">1 双</td><td class="dw-price">¥649</td><td class="dw-price">¥639</td><td><span class="chip info">待处理</span></td><td><button class="btn ghost">预览</button></td></tr>
+          <tr data-status="待处理" data-search="bq6472-602 jordan 39"><td class="dw-product"><b>Air Jordan 1 Low 粉白</b><small>BQ6472-602</small></td><td class="num">EUR 39</td><td class="num">1 双</td><td class="dw-price">¥739</td><td class="dw-price">¥729</td><td><span class="chip info">待处理</span></td><td><button class="btn ghost">预览</button></td></tr>
+          <tr data-status="已跳过" data-search="fy5346 yeezy 50"><td class="dw-product"><b>adidas Yeezy Boost 350 V2 Sulfur</b><small>FY5346</small></td><td class="num">EUR 50 2/3</td><td class="num">2 双</td><td class="dw-price dw-empty">¥--</td><td class="dw-price dw-empty">—</td><td><span class="chip">已跳过</span></td><td><button class="btn ghost">详情</button></td></tr>
+          <tr data-status="异常" data-search="717302-600 jordan 42"><td class="dw-product"><b>Air Jordan 11 Retro Low</b><small>717302-600</small></td><td class="num">EUR 42</td><td class="num">1 双</td><td class="dw-price">¥1,299</td><td class="dw-price">—</td><td><span class="chip danger">待确认</span></td><td><button class="btn ghost">处理</button></td></tr>
+        </tbody></table>
+      </div>
+      <div class="dw-page-note">当前为设计预览：页面按钮不会向 Mac mini 或手机发送任务。</div>
+    </div>
+
+    <aside class="dw-side">
+      <div class="panel">
+        <div class="dw-side-head"><h2>当前任务</h2><span class="chip info">READY</span></div>
+        <div class="src">批次 DW-0723-01</div>
+        <div class="dw-rule"><span>处理进度</span><b>3 / 109 规格</b></div><div class="dw-progress"><i></i></div>
+        <div class="dw-rule"><span>安全策略</span><b>SKU + 尺码强校验</b></div><div class="dw-rule"><span>定价规则</span><b>最低展示价齐平</b></div><div class="dw-rule"><span>无最低价</span><b>自动跳过</b></div>
+      </div>
+      <div class="panel">
+        <div class="dw-side-head"><h2>异常队列</h2><span class="chip danger">1</span></div>
+        <ul class="dw-queue"><li><b>717302-600 <em>商品待确认</em></b><span>搜索结果存在多个相似商品，需要核对名称关键词。</span></li><li><b>FY5346 <span class="chip">已跳过</span></b><span>EUR 50 2/3 暂无最低出售价格。</span></li></ul>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ════════════ 页面 · 得物库存 ════════════ -->
+<section class="page" id="page-dewu">
+  <div class="dw-head">
+    <div class="dw-title">得物库存<small>DEWU INVENTORY · Excel 库存 / 上架 / 改价</small></div>
+    <div class="dw-actions"><span class="chip ok">EXCEL SOURCE</span><input id="dw-file" type="file" accept=".xlsx" hidden><button class="btn primary" id="dw-import">导入 Excel</button></div>
+  </div>
+  <div class="subnav" id="dw-subnav-real">
+    <span class="on" data-view="inventory">库存总览</span><span data-view="listing">上架任务</span><span data-view="pricing">自动改价</span><span data-view="sold">售出记录</span><span data-view="exceptions">异常队列</span>
+  </div>
+  <div class="dw-view on" data-dw-view="inventory">
+    <div class="dw-status">
+      <div class="panel dw-device-panel">
+        <div class="dw-device-head"><h2>执行链路</h2><div class="dw-live"><i></i>库存服务已启用</div></div>
+        <div class="dw-device-grid">
+          <div class="dw-device"><span>INVENTORY</span><b>Excel 库存库</b><small>● READY</small></div>
+          <div class="dw-device"><span>EXECUTOR</span><b>Mac mini</b><small>○ 待接入</small></div>
+          <div class="dw-device"><span>ANDROID / DEWU</span><b>个人卖家手机</b><small>○ 待设备回报</small></div>
+        </div>
+      </div>
+    </div>
+    <div class="kpis dw-kpis">
+      <div class="kpi dw-kpi"><div class="label">库存总量</div><div class="value" id="dw-total-real">0 <small>件</small></div><div class="sub" id="dw-specs-real">0 个规格</div></div>
+      <div class="kpi dw-kpi"><div class="label">已上架</div><div class="value up">0 <small>件</small></div><div class="sub">等待手机同步</div></div>
+      <div class="kpi dw-kpi"><div class="label">待处理</div><div class="value" id="dw-pending-real">0 <small>件</small></div><div class="sub">已导入未上架</div></div>
+      <div class="kpi dw-kpi"><div class="label">导入异常</div><div class="value down" id="dw-error-real">0 <small>项</small></div><div class="sub">错误行不会入库</div></div>
+      <div class="kpi dw-kpi"><div class="label">导入批次</div><div class="value" id="dw-imports-real">0</div><div class="sub">相同文件自动防重</div></div>
+    </div>
+    <div class="dw-main">
+      <div class="panel dw-inventory">
+        <div class="dw-panel-head">
+          <div><h2>库存清单</h2><div class="src" id="dw-source-real">尚未上传库存文件</div></div>
+          <div class="dw-tools"><input class="dw-search" id="dw-search-real" placeholder="搜索 SKU / 名称 / 尺码"></div>
+        </div>
+        <div class="dw-table-wrap"><table class="dw-table"><thead><tr><th>商品 / SKU</th><th>尺码</th><th>颜色</th><th>数量</th><th>最低展示价</th><th>上架价</th><th>状态</th></tr></thead><tbody id="dw-rows-real"></tbody></table></div>
+        <div class="dw-page-note dw-message" id="dw-message-real">库存已清空。请选择参照格式的 .xlsx 文件导入；每次导入会合并累加。</div>
+      </div>
+      <aside class="dw-side">
+        <div class="panel">
+          <div class="dw-side-head"><h2>合并规则</h2><span class="chip ok">ACTIVE</span></div>
+          <div class="dw-rule"><span>唯一键</span><b>SKU + 尺码</b></div><div class="dw-rule"><span>重复规格</span><b>数量累加</b></div><div class="dw-rule"><span>相同文件</span><b>自动防重</b></div><div class="dw-rule"><span>颜色</span><b>可选字段</b></div>
+        </div>
+        <div class="panel">
+          <div class="dw-side-head"><h2>上传记录</h2><span class="chip" id="dw-history-count-real">0</span></div>
+          <ul class="dw-history" id="dw-history-real"><li><span>还没有上传记录</span></li></ul>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <div class="dw-view" data-dw-view="listing"><div class="panel dw-simple-panel"><h2>上架任务</h2><p>库存导入后，这里会生成逐个 SKU＋尺码的上架任务。Mac mini 手机执行器尚未接入，所以现在不会触发真实上架。</p></div></div>
+  <div class="dw-view" data-dw-view="pricing"><div class="panel dw-simple-panel"><h2>自动改价</h2><p>定价规则为“最低展示价齐平”。价格读取与改价动作将在手机执行器接入后启用，并保留每次调整记录。</p></div></div>
+  <div class="dw-view" data-dw-view="sold"><div class="panel dw-simple-panel"><h2>售出记录</h2><p>手机端盘点结果接入后，已售规格将在这里展示并自动扣减库存；目前没有同步记录。</p></div></div>
+  <div class="dw-view" data-dw-view="exceptions"><div class="panel dw-simple-panel"><h2>异常队列</h2><p id="dw-exceptions-real">暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。</p></div></div>
 </section>
 
 <!-- ════════════ 页面 2 · Var 对冲(每台 VPS 使用自己的 hedge venue) ════════════ -->
@@ -1251,10 +1416,8 @@
             </div>
           </div>
           <div class="ipo-console-actions">
-            <span class="ipo-step-note">策略</span>
-            <button class="btn ghost ipo-mode" data-mode="conservative">保守</button>
-            <button class="btn ghost ipo-mode" data-mode="balanced">均衡</button>
-            <button class="btn ghost ipo-mode" data-mode="aggressive">进攻</button>
+            <span class="ipo-step-note">GPT 自动策略</span>
+            <span class="chip ipo-auto-mode" id="ipo-auto-mode">等待判研</span>
             <button class="btn primary" id="ipo-import-btn">刷新申购中新股</button>
             <button class="btn ghost" id="ipo-judge-btn">GPT 判研</button>
           </div>
@@ -1578,6 +1741,75 @@
     document.querySelectorAll('.ops-subnav button').forEach(button=>button.classList.toggle('on',button.dataset.opsPage===p));
   }
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));
+  document.querySelectorAll('#dw-subnav span').forEach(sp=>sp.addEventListener('click',()=>{
+    document.querySelectorAll('#dw-subnav span').forEach(x=>x.classList.toggle('on',x===sp));
+  }));
+  document.querySelectorAll('.dw-modes button').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('.dw-modes button').forEach(x=>x.classList.toggle('on',x===button));
+    const run=document.getElementById('dw-run'); if(run&&!run.classList.contains('running')) run.textContent='开始'+button.textContent;
+  }));
+  document.getElementById('dw-run').addEventListener('click',function(){
+    this.classList.toggle('running');
+    this.textContent=this.classList.contains('running')?'暂停任务':'开始'+(document.querySelector('.dw-modes button.on')||{}).textContent;
+  });
+  function filterDewu(){
+    const q=(document.getElementById('dw-search').value||'').toLowerCase();
+    const st=(document.querySelector('#dw-tabs button.on')||{}).dataset.status||'全部';
+    document.querySelectorAll('#dw-rows tr').forEach(row=>{row.style.display=((st==='全部'||row.dataset.status===st)&&(row.dataset.search||'').includes(q))?'':'none';});
+  }
+  document.getElementById('dw-search').addEventListener('input',filterDewu);
+  document.querySelectorAll('#dw-tabs button').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('#dw-tabs button').forEach(x=>x.classList.toggle('on',x===button)); filterDewu();
+  }));
+  let dewuItems=[];
+  function renderDewuRows(){
+    const q=(document.getElementById('dw-search-real').value||'').trim().toLowerCase();
+    const items=dewuItems.filter(x=>([x.sku,x.name,x.size,x.color].join(' ').toLowerCase().includes(q)));
+    const body=document.getElementById('dw-rows-real');
+    if(!items.length){
+      body.innerHTML='<tr><td colspan="7"><div class="dw-empty-state"><b>'+(dewuItems.length?'没有匹配结果':'库存为空')+'</b><span>'+(dewuItems.length?'换一个关键词试试':'点击右上角“导入 Excel”开始建立库存')+'</span></div></td></tr>';
+      return;
+    }
+    body.innerHTML=items.map(x=>'<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+Number(x.quantity||0)+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip info">'+esc(x.status||'待处理')+'</span></td></tr>').join('');
+  }
+  async function loadDewu(){
+    try{
+      const r=await fetch('/api/dewu/inventory',{cache:'no-store'}), s=await r.json();
+      dewuItems=s.items||[];
+      document.getElementById('dw-total-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
+      document.getElementById('dw-specs-real').textContent=Number(s.spec_count||0)+' 个规格';
+      document.getElementById('dw-pending-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
+      document.getElementById('dw-error-real').innerHTML=Number((s.exceptions||[]).length)+' <small>项</small>';
+      document.getElementById('dw-imports-real').textContent=Number((s.imports||[]).length);
+      document.getElementById('dw-source-real').textContent=s.imports&&s.imports.length?s.imports[0].filename+' · 最近导入 '+new Date(s.imports[0].at).toLocaleString('zh-CN'):'尚未上传库存文件';
+      document.getElementById('dw-history-count-real').textContent=Number((s.imports||[]).length);
+      document.getElementById('dw-history-real').innerHTML=(s.imports||[]).length?s.imports.slice(0,8).map(x=>'<li><b>'+esc(x.filename)+'</b><span>'+new Date(x.at).toLocaleString('zh-CN')+' · '+x.specs+' 规格 / '+x.quantity+' 件</span></li>').join(''):'<li><span>还没有上传记录</span></li>';
+      document.getElementById('dw-exceptions-real').textContent=(s.exceptions||[]).length?(s.exceptions||[]).slice(0,20).map(x=>'第 '+x.row+' 行 · '+(x.sku||'无 SKU')+' · '+x.reason).join('；'):'暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。';
+      renderDewuRows();
+    }catch(e){
+      const msg=document.getElementById('dw-message-real');msg.className='dw-page-note dw-message bad';msg.textContent='库存服务暂时不可达';
+    }
+  }
+  document.querySelectorAll('#dw-subnav-real span').forEach(sp=>sp.addEventListener('click',()=>{
+    document.querySelectorAll('#dw-subnav-real span').forEach(x=>x.classList.toggle('on',x===sp));
+    document.querySelectorAll('#page-dewu .dw-view').forEach(x=>x.classList.toggle('on',x.dataset.dwView===sp.dataset.view));
+  }));
+  document.getElementById('dw-search-real').addEventListener('input',renderDewuRows);
+  document.getElementById('dw-import').addEventListener('click',()=>document.getElementById('dw-file').click());
+  document.getElementById('dw-file').addEventListener('change',async function(){
+    const file=this.files&&this.files[0];if(!file)return;
+    const msg=document.getElementById('dw-message-real');
+    msg.className='dw-page-note dw-message';msg.textContent='正在校验并合并 '+file.name+'…';
+    try{
+      const r=await fetch('/api/dewu/inventory/import',{method:'POST',headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','X-Filename':encodeURIComponent(file.name)},body:file});
+      const j=await r.json();
+      if(!r.ok)throw new Error(j.error||'导入失败');
+      msg.className='dw-page-note dw-message ok';msg.textContent='导入完成：新增 '+j.added_specs+' 个规格，合并 '+j.merged_specs+' 个规格，共增加 '+j.import.quantity+' 件。';
+      await loadDewu();
+    }catch(e){msg.className='dw-page-note dw-message bad';msg.textContent=e.message||'导入失败';}
+    this.value='';
+  });
+  loadDewu();
   function showPerson(id){
     ['zs','ls','ww'].forEach(k=>{
       document.getElementById('pd-'+k).classList.toggle('on',k===id);
@@ -2144,7 +2376,15 @@
     setK('ipo-pending-count',pending+' 个');
     setK('ipo-subscribed-count',subscribed+' 个');
     setK('ipo-updated-age',esc(ipo.updated_age||'—'));
-    document.querySelectorAll('.ipo-mode').forEach(button=>button.classList.toggle('active',button.dataset.mode===ipo.mode));
+    const autoMode=document.getElementById('ipo-auto-mode');
+    if(autoMode){
+      const lead=(ipo.stocks||[])[0]||{};
+      const grade=lead.ai_grade||'';
+      const modeText={conservative:'保守',balanced:'均衡',aggressive:'进攻'}[ipo.mode]||'待判';
+      const gradeText={A:'进攻',B:'均衡',C:'保守',D:'不参与'}[grade]||modeText;
+      autoMode.textContent=grade?('结论 '+grade+' · '+gradeText):('自动 · '+modeText);
+      autoMode.title='由 GPT 结合 PDF、官方资料、认购热度、估值与风险自动生成；账号执行前仍需确认。';
+    }
     const chips=document.getElementById('hk-round-chips');
     if(chips){
       const r=ipo.round||{};
@@ -2831,12 +3071,6 @@
         pdfInput.disabled=false;
       }
     }
-    document.querySelectorAll('.ipo-mode').forEach(b=>b.addEventListener('click',async()=>{
-      b.disabled=true;
-      const result=await postOp('/api/ipo/action',{action:'set_mode',mode:b.dataset.mode},msg,'切换策略「'+b.textContent+'」');
-      showIpoToast(result&&result.ok?(result.msg||'策略已切换'):(result&&result.error||'策略切换失败'),result&&result.ok?'ok':'error');
-      b.disabled=false;
-    }));
     const applySuggestion=document.getElementById('ipo-apply-suggestion');
     if(applySuggestion) applySuggestion.addEventListener('click',openIpoBatchDialog);
     const dialog=document.getElementById('ipo-entry-dialog');
@@ -3794,7 +4028,7 @@
   }
   async function refresh(){
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }
-    catch(e){ document.querySelectorAll('.page').forEach(p=>p.classList.add('nodata')); return; }
+    catch(e){ document.querySelectorAll('.page:not(#page-dewu)').forEach(p=>p.classList.add('nodata')); return; }
     window.__state=s;
     setK('clock', (s.ts||'')+' · 刚刷新');
     window.__writesEnabled=!!s.writes_enabled;
