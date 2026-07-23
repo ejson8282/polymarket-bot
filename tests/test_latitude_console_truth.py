@@ -779,6 +779,8 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
             "direction": "Var buy / Decibel sell",
             "leverage": "6",
             "notional_usdc": "100",
+            "var_spread_bps": "4.2",
+            "hedge_spread_bps": "3.4",
             "ready_for_live": False,
             "mutations_sent": False,
         },
@@ -791,6 +793,8 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
     assert result["next_open_plan"]["ready_for_live"] is False
     assert result["next_open_plan"]["stale"] is False
     assert result["next_open_plan"]["market_data_age_sec"] is not None
+    assert result["next_open_plan"]["var_one_way_spread_bps"] == 2.1
+    assert result["next_open_plan"]["hedge_one_way_spread_bps"] == 1.7
 
 
 def test_varia_auto_runtime_prefers_fresh_embedded_vps2_runtime(

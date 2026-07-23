@@ -1367,6 +1367,16 @@ def _varia_auto_runtime(host: str) -> Dict[str, Any]:
     plan_age = _iso_age(plan_updated)
     if plan:
         market_age = _iso_age(plan.get("market_scan_generated_at"))
+        for leg in ("var", "hedge"):
+            explicit = _num(plan.get(f"{leg}_one_way_spread_bps"))
+            full = _num(
+                plan.get(f"{leg}_full_spread_bps")
+                if plan.get(f"{leg}_full_spread_bps") not in (None, "")
+                else plan.get(f"{leg}_spread_bps")
+            )
+            plan[f"{leg}_one_way_spread_bps"] = (
+                explicit if explicit is not None else full / 2 if full is not None else None
+            )
         plan["age_sec"] = plan_age
         plan["market_data_age_sec"] = market_age
         plan["stale"] = (
