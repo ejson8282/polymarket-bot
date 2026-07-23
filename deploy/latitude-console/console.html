@@ -405,6 +405,101 @@
   .page{padding:0 12px 18px}.alert{margin:10px 12px 0}.panel{padding:13px}
   footer{padding:16px 12px 22px}
 }
+
+/* Var hedge native workspace */
+.vd-page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:24px 0 2px}
+.vd-page-title{font-size:26px;font-weight:650;letter-spacing:.01em}
+.vd-page-note{max-width:760px;margin-top:6px;color:var(--muted);font-size:13px}
+.vd-native-nav{gap:4px;margin-top:15px;padding-bottom:1px;border-bottom:1px solid var(--line)}
+.vd-native-nav span{border:0;border-radius:0;padding:8px 13px 10px;background:transparent}
+.vd-native-nav span.on{color:var(--text);background:transparent;box-shadow:inset 0 -2px 0 var(--var)}
+.vd-native-view{display:none}
+.vd-native-view.on{display:block}
+.vd-native-detail{min-height:120px}
+.vdauto.vdauto-home{margin-top:0;padding:0;border:0}
+.vd-commandbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 0 14px;border-bottom:1px solid var(--line)}
+.vd-command-copy{min-width:0}
+.vd-command-eyebrow{font-family:var(--mono);font-size:10px;color:var(--var);letter-spacing:.12em}
+.vd-command-title{margin-top:2px;font-size:18px;font-weight:650}
+.vd-command-note{margin-top:3px;color:var(--muted);font-size:12px}
+.vd-command-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.vd-command-actions .vdauto-status{margin-right:5px}
+.vd-command-actions .btn{min-width:112px}
+.vd-command-actions .btn:disabled{opacity:.38;cursor:not-allowed}
+.vdauto-message.vd-command-message{display:block;min-height:18px;margin:8px 0 0;text-align:right}
+.vd-kpis{grid-template-columns:repeat(5,minmax(0,1fr));margin-top:14px}
+.vd-kpis .kpi{min-height:106px}
+.vd-kpis .kpi .value{font-size:19px}
+.vd-host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.vd-host-card{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+.vd-host-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:15px 16px;border-bottom:1px solid var(--line)}
+.vd-host-route{font-size:15px;font-weight:650}
+.vd-host-route small{display:block;margin-top:3px;color:var(--faint);font:10px var(--mono);font-weight:400}
+.vd-host-card .vdauto-host-state{max-width:56%;text-align:right;line-height:1.45}
+.vd-host-controls{display:grid;grid-template-columns:minmax(132px,.65fr) minmax(170px,1fr);gap:12px;align-items:end;padding:13px 16px 0}
+.vd-host-controls .vdauto-check{height:38px;margin:0}
+.vd-host-controls .vdauto-field select{height:38px}
+.vd-host-strategy-note{min-height:34px;padding:8px 16px 0;color:var(--muted);font-size:11px}
+.vd-funnel{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:13px 16px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.vd-funnel-step{min-width:0;padding:10px;background:var(--panel2)}
+.vd-funnel-step+.vd-funnel-step{border-left:1px solid var(--line)}
+.vd-funnel-step span{display:block;color:var(--faint);font:9.5px var(--mono);white-space:nowrap}
+.vd-funnel-step b{display:block;margin-top:4px;font:600 17px var(--mono)}
+.vd-funnel-step.ready b{color:var(--ok)}
+.vd-funnel-step.wait b{color:var(--warn)}
+.vd-funnel-note{padding:7px 16px 0;color:var(--faint);font:10px var(--mono)}
+.vd-host-card .vdauto-next-plan{margin:13px 16px 16px;grid-column:auto}
+.vd-home-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;color:var(--faint);font-size:11px}
+.vd-home-foot strong{color:var(--muted);font-weight:600}
+.vd-view-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:19px 0 4px}
+.vd-view-head h2{font-size:18px}
+.vd-view-head p{margin-top:4px;color:var(--muted);font-size:12px}
+.vd-strategy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:12px}
+.vd-strategy-card{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:16px}
+.vd-strategy-card.a{border-top:3px solid var(--var)}
+.vd-strategy-card.b{border-top:3px solid var(--dec)}
+.vd-strategy-card .tagline{font:10px var(--mono);color:var(--faint);letter-spacing:.09em}
+.vd-strategy-card h3{margin-top:4px;font-size:16px}
+.vd-strategy-card p{margin-top:7px;color:var(--muted);font-size:12px;line-height:1.6}
+.vd-strategy-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;margin-top:12px;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--line)}
+.vd-strategy-facts div{padding:9px 10px;background:var(--panel2)}
+.vd-strategy-facts span{display:block;color:var(--faint);font:9px var(--mono)}
+.vd-strategy-facts b{display:block;margin-top:3px;font:600 11px var(--mono);overflow-wrap:anywhere}
+.vd-settings-panel{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.vd-settings-panel .vdauto-settings{margin-top:0}
+.vd-settings-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px}
+.vd-settings-actions .vdauto-message{margin-right:auto;margin-left:0}
+.vd-positions-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:14px}
+.vd-positions-grid aside .panel{height:calc(100% - 16px)}
+.vd-stats-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.72fr);gap:14px}
+.vd-stats-grid .panel{height:auto}
+.vd-stats-breakdown{margin-top:14px}
+.vd-stats-breakdown .grid2{grid-template-columns:1fr 1fr}
+.vd-opportunity-stack>.vdauto-pools{margin-top:14px}
+.vdauto-route-detail.vd-route-native,.vdauto-compare.vd-compare-native{margin-top:14px}
+@media (max-width:1180px){
+  .vd-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .vd-funnel{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .vd-funnel-step:nth-child(4){border-left:0;border-top:1px solid var(--line)}
+  .vd-funnel-step:nth-child(5){border-top:1px solid var(--line)}
+  .vd-positions-grid,.vd-stats-grid{grid-template-columns:1fr}
+}
+@media (max-width:900px){
+  .vd-page-head,.vd-commandbar,.vd-view-head{align-items:flex-start;flex-direction:column}
+  .vd-command-actions{justify-content:flex-start}
+  .vd-host-grid,.vd-strategy-grid{grid-template-columns:1fr}
+  .vd-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:700px){
+  .vd-native-nav{flex-wrap:nowrap;overflow-x:auto}
+  .vd-native-nav span{flex:none}
+  .vd-host-controls,.vdauto-settings,.vd-stats-breakdown .grid2{grid-template-columns:1fr}
+  .vd-funnel{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .vd-funnel-step:nth-child(odd){border-left:0}
+  .vd-funnel-step:nth-child(n+3){border-top:1px solid var(--line)}
+  .vd-kpis{grid-template-columns:1fr 1fr}
+  .vd-home-foot{align-items:flex-start;flex-direction:column}
+}
 </style>
 </head>
 <body>
@@ -497,35 +592,175 @@
 
 <!-- ════════════ 页面 2 · Var 对冲(每台 VPS 使用自己的 hedge venue) ════════════ -->
 <section class="page" id="page-vardec">
-  <div class="subnav">
-    <span class="on">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>
-  </div>
-  <div class="vdauto" id="vdauto-root">
-    <div class="vdauto-head">
-      <div><div class="vdauto-title">自动运行</div><div class="vdauto-note">VPS1 使用 Var/Decibel；VPS2 使用 Var/Ondo。每台主机独立核对资金、仓位与验收状态。</div></div>
-      <div class="vdauto-status" id="vdauto-status"><i></i><span>正在核对两台 VPS</span></div>
+  <div class="vd-page-head">
+    <div>
+      <div class="vd-page-title">Var 对冲</div>
+      <div class="vd-page-note">VPS1 运行 Var/Decibel，VPS2 运行 Var/Ondo。自动调度、仓位核验、行情门槛和资金结果均使用各自主机的真实来源。</div>
     </div>
-    <div class="vdauto-hosts">
-      <div class="vdauto-host">
-        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS1 · Var/Decibel</span><span class="vdauto-host-state" id="vdauto-vps1-state">读取中</span></div>
-        <label class="vdauto-check"><input type="checkbox" id="vdauto-vps1-enabled"> 参与自动运行</label>
-        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B" disabled>策略 B · 仅 VPS2/Ondo</option></select></div>
-        <div class="vdauto-strategy-note" id="vdauto-vps1-note"></div>
-        <div class="vdauto-next-plan" id="vdauto-vps1-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
+    <div>
+      <div class="vdauto-status" id="vdauto-status"><i></i><span>正在核对两台 VPS</span></div>
+      <span class="vdauto-message vd-command-message" id="vdauto-msg"></span>
+    </div>
+  </div>
+  <div class="subnav vd-native-nav" data-vd-native-nav>
+    <span class="on" data-vd-tab="自动运行">自动运行</span>
+    <span data-vd-tab="策略设置">策略设置</span>
+    <span data-vd-tab="仓位">仓位</span>
+    <span data-vd-tab="行情机会">行情机会</span>
+    <span data-vd-tab="统计与奖励">统计与奖励</span>
+    <span data-vd-tab="手动交易">手动交易</span>
+    <span data-vd-tab="成交记录">成交记录</span>
+  </div>
+
+  <div class="vd-native-view on" data-vd-view="自动运行">
+    <div class="vdauto vdauto-home" id="vdauto-root">
+      <div class="vd-commandbar">
+        <div class="vd-command-copy">
+          <div class="vd-command-eyebrow">AUTO HEDGE</div>
+          <div class="vd-command-title">自动对冲</div>
+          <div class="vd-command-note">启动后由各 VPS 独立选择币种、方向和持仓时长；停止自动调度不会自动平仓。</div>
+        </div>
+        <div class="vd-command-actions">
+          <button class="btn primary" id="vdauto-start">启动自动化</button>
+          <button class="btn danger" id="vdauto-stop">停止自动化</button>
+        </div>
       </div>
-      <div class="vdauto-host">
-        <div class="vdauto-host-head"><span class="vdauto-host-name">VPS2 · Var/Ondo</span><span class="vdauto-host-state" id="vdauto-vps2-state">读取中</span></div>
-        <label class="vdauto-check"><input type="checkbox" id="vdauto-vps2-enabled"> 参与自动运行</label>
-        <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A" disabled>策略 A · 仅 VPS1/Decibel</option><option value="B">策略 B · 高权重长持仓</option></select></div>
-        <div class="vdauto-strategy-note" id="vdauto-vps2-note"></div>
-        <div class="vdauto-next-plan" id="vdauto-vps2-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
+
+      <div class="kpis vd-kpis">
+        <div class="kpi"><div class="label">总权益（两 VPS）</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
+        <div class="kpi"><div class="label">今日净结果</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">交易结果 + 已到账激励</div></div>
+        <div class="kpi"><div class="label" data-k="vdk.vol_label">本周交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
+        <div class="kpi"><div class="label">本周可用预算</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">盈利增加，亏损扣减</div></div>
+        <div class="kpi"><div class="label">积分（Dec / Var）</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
+      </div>
+
+      <div class="vd-host-grid">
+        <article class="vd-host-card">
+          <div class="vd-host-card-head">
+            <div class="vd-host-route">VPS1 · Var/Decibel<small>策略 A · 高交易量</small></div>
+            <span class="vdauto-host-state" id="vdauto-vps1-state">读取中</span>
+          </div>
+          <div class="vd-host-controls">
+            <label class="vdauto-check"><input type="checkbox" id="vdauto-vps1-enabled"> 参与自动运行</label>
+            <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B" disabled>策略 B · 仅 VPS2/Ondo</option></select></div>
+          </div>
+          <div class="vd-host-strategy-note" id="vdauto-vps1-note"></div>
+          <div class="vd-funnel" aria-label="VPS1 候选漏斗">
+            <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps1-candidates">—</b></div>
+            <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps1-common">—</b></div>
+            <div class="vd-funnel-step"><span>报价新鲜</span><b id="vdauto-vps1-fresh">—</b></div>
+            <div class="vd-funnel-step ready"><span>加密可做</span><b id="vdauto-vps1-crypto">—</b></div>
+            <div class="vd-funnel-step ready"><span>RWA 可做</span><b id="vdauto-vps1-rwa">—</b></div>
+          </div>
+          <div class="vd-funnel-note" id="vdauto-vps1-funnel-note">等待 VPS1 独立行情扫描</div>
+          <div class="vdauto-next-plan" id="vdauto-vps1-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
+        </article>
+
+        <article class="vd-host-card">
+          <div class="vd-host-card-head">
+            <div class="vd-host-route">VPS2 · Var/Ondo<small>策略 B · 高权重长持仓</small></div>
+            <span class="vdauto-host-state" id="vdauto-vps2-state">读取中</span>
+          </div>
+          <div class="vd-host-controls">
+            <label class="vdauto-check"><input type="checkbox" id="vdauto-vps2-enabled"> 参与自动运行</label>
+            <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A" disabled>策略 A · 仅 VPS1/Decibel</option><option value="B">策略 B · 高权重长持仓</option></select></div>
+          </div>
+          <div class="vd-host-strategy-note" id="vdauto-vps2-note"></div>
+          <div class="vd-funnel" aria-label="VPS2 候选漏斗">
+            <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps2-candidates">—</b></div>
+            <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps2-common">—</b></div>
+            <div class="vd-funnel-step"><span>报价新鲜</span><b id="vdauto-vps2-fresh">—</b></div>
+            <div class="vd-funnel-step ready"><span>加密可做</span><b id="vdauto-vps2-crypto">—</b></div>
+            <div class="vd-funnel-step ready"><span>RWA 可做</span><b id="vdauto-vps2-rwa">—</b></div>
+          </div>
+          <div class="vd-funnel-note" id="vdauto-vps2-funnel-note">等待 VPS2 独立行情扫描</div>
+          <div class="vdauto-next-plan" id="vdauto-vps2-plan"><span>下一单计划</span><b class="wait">等待后台生成</b></div>
+        </article>
+      </div>
+      <div class="vd-home-foot">
+        <span><strong>候选漏斗：</strong>共同市场 → 新鲜双边报价 → 点差与资金费门槛 → 可自动开仓。</span>
+        <span>行情、仓位和余额按 VPS 独立读取，不跨账号复用。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="vd-native-view" data-vd-view="策略设置">
+    <div class="vd-view-head">
+      <div><h2>策略设置</h2><p>先确定每台 VPS 的目标，再设置全局预算和开仓门槛。保存配置不会启动后台。</p></div>
+    </div>
+    <div class="vd-strategy-grid">
+      <article class="vd-strategy-card a">
+        <div class="tagline">VPS1 · VAR/DECIBEL</div>
+        <h3>策略 A · 高交易量</h3>
+        <p>以主流币提供稳定交易量，穿插低点差机会币与 RWA。方向自动选择双腿入场成本更低的一侧。</p>
+        <div class="vd-strategy-facts">
+          <div><span>主流币比例</span><b>默认 80%</b></div>
+          <div><span>持仓</span><b>30 分钟–36 小时</b></div>
+          <div><span>路线</span><b>Var / Decibel</b></div>
+        </div>
+      </article>
+      <article class="vd-strategy-card b">
+        <div class="tagline">VPS2 · VAR/ONDO</div>
+        <h3>策略 B · 高权重长持仓</h3>
+        <p>优先 RWA、低 OI 与高权重币，普通币 2 bp、RWA 3 bp；入场成本接近时再比较净资金费。</p>
+        <div class="vd-strategy-facts">
+          <div><span>候选重点</span><b>RWA / 机会币</b></div>
+          <div><span>持仓</span><b>24–72 小时</b></div>
+          <div><span>路线</span><b>Var / Ondo</b></div>
+        </div>
+      </article>
+    </div>
+    <div class="vd-settings-panel">
+      <div class="vdauto-settings">
+        <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
+        <div class="vdauto-field"><label>每台 VPS 每周预算 USDC</label><input id="vdauto-cap" type="number" min="0" max="500" step="1"></div>
+        <div class="vdauto-field"><label>普通币单边点差上限 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
+        <div class="vdauto-field"><label>A 策略主流币比例</label><div class="vdauto-ratio"><input id="vdauto-ratio" type="range" min="0" max="100" step="5"><output id="vdauto-ratio-out">80%</output></div></div>
+        <div class="vdauto-field"><label>新开仓间隔</label><div class="vdauto-interval"><label class="vdauto-check"><input id="vdauto-pressure" type="checkbox"> 启用</label><input id="vdauto-min" type="number" min="1" max="1440" step="5"><span>至</span><input id="vdauto-max" type="number" min="1" max="1440" step="5"></div></div>
+      </div>
+      <div class="vd-settings-actions">
+        <span class="src" style="margin:0">RWA 上限固定为 3 bp；自动运行只选择通过实时门槛的币种。</span>
+        <button class="btn primary" id="vdauto-save">保存配置</button>
       </div>
     </div>
     <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
       <div><div class="vdauto-acceptance-title">VPS2 · Ondo 正式环境验收</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
       <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
     </div>
-    <div class="vdauto-compare" id="vdauto-route-comparison">
+  </div>
+
+  <div class="vd-native-view" data-vd-view="仓位">
+    <div class="vd-view-head">
+      <div><h2>当前仓位</h2><p>只展示交易所实时快照；读取不完整时明确标记未知，不把旧仓位当成当前仓位。</p></div>
+    </div>
+    <div class="vd-positions-grid">
+      <div class="panel">
+        <h2>对冲仓位</h2>
+        <div class="src">source · ops_state.json + runtime 双边交易所快照</div>
+        <table>
+          <thead><tr><th>交易对 / 主机</th><th>VAR · HEDGE</th><th>净敞口</th><th>清算 Var/Hedge</th><th>时长</th><th>状态</th></tr></thead>
+          <tbody id="vd-pair-body">
+            <tr><td colspan="6" style="color:var(--faint)">正在核对两台 VPS 的双边真实仓位…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside>
+        <div class="panel">
+          <h2>双 VPS 数据源</h2>
+          <div class="src">source · runtime + data/ops_peer_state</div>
+          <div class="proj" style="grid-template-columns:1fr;margin-top:0" id="vd-host-cards">
+            <div class="card"><div class="head"><span class="name num">读取中</span><span class="chip">UNKNOWN</span></div></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="vd-native-view vd-opportunity-stack" data-vd-view="行情机会">
+    <div class="vd-view-head">
+      <div><h2>行情机会</h2><p>先看两边共同市场和报价新鲜度，再判断点差、入场成本与资金费是否通过。</p></div>
+    </div>
+    <div class="vdauto-compare vd-compare-native" id="vdauto-route-comparison">
       <div class="vdauto-compare-grid">
         <div class="vdauto-compare-cell vdauto-compare-head">路线对比</div>
         <div class="vdauto-compare-cell vdauto-compare-head">VPS1 · Var/Decibel</div>
@@ -537,7 +772,7 @@
         <div class="vdauto-compare-cell">自动运行</div><div class="vdauto-compare-cell" id="vdauto-compare-dec-status">核对中</div><div class="vdauto-compare-cell" id="vdauto-compare-ondo-status">核对中</div>
       </div>
     </div>
-    <div class="vdauto-route-detail" id="vdauto-symbol-route-comparison">
+    <div class="vdauto-route-detail vd-route-native" id="vdauto-symbol-route-comparison">
       <div class="vdauto-route-head"><div><div class="vdauto-route-title">同币种入场成本对比</div><div class="vdauto-route-note">只比较两边都有新鲜报价的同一币种；结论仅指开仓磨损，不把缺失的 Decibel 持仓期资金费硬算进去。</div></div><div class="vdauto-route-meta" id="vdauto-route-meta">等待两台 VPS 报价</div></div>
       <div class="vdauto-route-wrap" id="vdauto-route-wrap"><div class="vdauto-market-empty">正在匹配 Decibel 与 Ondo 的共同币</div></div>
     </div>
@@ -562,90 +797,67 @@
       </div>
       <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。方向先比较入场成本，只在 2bp 容差内参考净资金费；资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
     </div>
-    <div class="vdauto-settings">
-      <div class="vdauto-field"><label>运行方式</label><select id="vdauto-mode"><option value="full_auto">全自动 · 到期后自动轮换</option><option value="semi_auto">半自动 · 下一单等待人工</option></select></div>
-      <div class="vdauto-field"><label>每台 VPS 每周预算 USDC</label><input id="vdauto-cap" type="number" min="0" max="500" step="1"></div>
-      <div class="vdauto-field"><label>单边点差上限 bps</label><input id="vdauto-spread" type="number" min="0.1" max="100" step="0.5"></div>
-      <div class="vdauto-field"><label>A 策略主流币比例</label><div class="vdauto-ratio"><input id="vdauto-ratio" type="range" min="0" max="100" step="5"><output id="vdauto-ratio-out">80%</output></div></div>
-      <div class="vdauto-field"><label>新开仓间隔</label><div class="vdauto-interval"><label class="vdauto-check"><input id="vdauto-pressure" type="checkbox"> 启用</label><input id="vdauto-min" type="number" min="1" max="1440" step="5"><span>至</span><input id="vdauto-max" type="number" min="1" max="1440" step="5"></div></div>
-    </div>
-    <div class="vdauto-actions">
-      <button class="btn ghost" id="vdauto-save">保存配置</button>
-      <button class="btn primary" id="vdauto-start">启动自动化</button>
-      <button class="btn danger" id="vdauto-stop">停止自动化</button>
-      <span class="vdauto-message" id="vdauto-msg"></span>
-    </div>
-    <div class="vdauto-foot">保存配置不会启动后台。只有对应对冲平台完成验收后才能启动；停止只停止自动调度，不会自动平仓。</div>
   </div>
-  <div class="kpis">
-    <div class="kpi"><div class="label">总权益(两VPS)</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">今日净结果</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">交易结果 + 已到账激励</div></div>
-    <div class="kpi"><div class="label" data-k="vdk.vol_label">交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">本周可用预算</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">盈利增加，亏损扣减；只算已结算</div></div>
-    <div class="kpi"><div class="label">积分（Dec / Var）</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
-  </div>
-  <div class="grid2">
-    <div>
-      <div class="panel">
-        <h2>对冲仓位(配对腿) <span class="feat f-new">新增呈现</span></h2>
-        <div class="src">source · ops_state.json + runtime(交易所快照);原 Home 的 Hedge Pair Preview / 最近执行记录 移入本区下方折叠</div>
-        <table>
-          <thead><tr><th>SYMBOL/HOST</th><th>← VAR · HEDGE →</th><th>净敞口</th><th>清算 Var/Hedge</th><th>时长</th><th>状态</th></tr></thead>
-          <tbody id="vd-pair-body">
-            <tr><td colspan="6" style="color:var(--faint)">正在核对两台 VPS 的双边真实仓位…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h2>今日损耗分解 <span class="feat f-old">原 Statistics 提级</span></h2>
-        <div class="src">source · trades 表 cost_bp/funding/slippage 列(近24h,(host,id) 去重)</div>
-        <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
-          <span style="width:100%;display:flex;align-items:center;color:var(--faint)">等待真实交易数据</span>
-        </div>
-        <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
-      </div>
-      <div class="panel" id="vd-equity-panel" style="display:none">
-        <h2>真实净交易结果 <span class="feat f-new">四账户已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
-        <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
-        <div class="equity-chart" id="vd-equity-chart">
-          <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
-          <div class="equity-tooltip" id="vd-equity-tooltip" hidden></div>
-        </div>
-        <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
-        <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
-      </div>
-      <div class="panel" id="vd-incentive-panel">
-        <h2>奖励与退款 <span class="feat f-new">真实到账归因</span></h2>
-        <div class="src">已到账金额已经包含在总权益与真实净结果中，这里只解释来源，不会重复相加；待结算与概率估算不计入盈亏或预算。</div>
-        <div class="incentive-strip">
-          <div class="incentive-cell">
-            <div class="eyebrow">Ondo USDC 奖励</div>
-            <div class="amount" data-k="vd.inc_ondo">—</div>
-            <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
+
+  <div class="vd-native-view" data-vd-view="统计与奖励">
+    <div class="vd-view-head">
+      <div><h2>统计与奖励</h2><p>损耗、真实净交易结果、已到账奖励和退款分开呈现，待结算估算不计入权益。</p></div>
+    </div>
+    <div class="vd-stats-grid">
+      <div>
+        <div class="panel" id="vd-equity-panel" style="display:none">
+          <h2>真实净交易结果 <span class="feat f-new">四账户已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
+          <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
+          <div class="equity-chart" id="vd-equity-chart">
+            <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
+            <div class="equity-tooltip" id="vd-equity-tooltip" hidden></div>
           </div>
-          <div class="incentive-cell">
-            <div class="eyebrow">Var 亏损退款 / 返佣</div>
-            <div class="amount" data-k="vd.inc_var">—</div>
-            <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
-          </div>
-          <div class="incentive-cell">
-            <div class="eyebrow">真实净结果归因</div>
-            <div class="amount" data-k="vd.inc_net">—</div>
-            <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
-          </div>
+          <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
+          <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
         </div>
-        <div class="src" style="margin-top:9px" data-k="vd.inc_host_detail"></div>
+        <div class="panel" id="vd-incentive-panel">
+          <h2>奖励与退款 <span class="feat f-new">真实到账归因</span></h2>
+          <div class="src">已到账金额已经包含在总权益与真实净结果中，这里只解释来源，不会重复相加；待结算与概率估算不计入盈亏或预算。</div>
+          <div class="incentive-strip">
+            <div class="incentive-cell">
+              <div class="eyebrow">Ondo USDC 奖励</div>
+              <div class="amount" data-k="vd.inc_ondo">—</div>
+              <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
+            </div>
+            <div class="incentive-cell">
+              <div class="eyebrow">Var 亏损退款 / 返佣</div>
+              <div class="amount" data-k="vd.inc_var">—</div>
+              <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
+            </div>
+            <div class="incentive-cell">
+              <div class="eyebrow">真实净结果归因</div>
+              <div class="amount" data-k="vd.inc_net">—</div>
+              <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
+            </div>
+          </div>
+          <div class="src" style="margin-top:9px" data-k="vd.inc_host_detail"></div>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <h2>今日损耗分解</h2>
+          <div class="src">source · trades 表 cost_bp / funding / slippage（近 24h）</div>
+          <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
+            <span style="width:100%;display:flex;align-items:center;color:var(--faint)">等待真实交易数据</span>
+          </div>
+          <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
+        </div>
       </div>
     </div>
-    <aside>
-      <div class="panel" style="margin-top:16px">
-        <h2>双 VPS 状态 <span class="feat f-old">原 Peer Snapshots 提级</span></h2>
-        <div class="src">source · runtime + data/ops_peer_state</div>
-        <div class="proj" style="grid-template-columns:1fr;margin-top:0" id="vd-host-cards">
-          <div class="card"><div class="head"><span class="name num">读取中</span><span class="chip">UNKNOWN</span></div></div>
-        </div>
-      </div>
-    </aside>
+    <div class="panel vd-stats-breakdown" id="vd-stats-breakdown">
+      <h2>交易统计</h2>
+      <div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>
+      <div style="color:var(--faint);padding:10px">等待真实交易数据</div>
+    </div>
+  </div>
+
+  <div class="vd-native-view vd-native-detail" data-vd-view="动态详情">
+    <div id="detail-vardec"></div>
   </div>
 </section>
 
@@ -1751,6 +1963,7 @@
       const detail=hs.map(([h,x])=>h.toUpperCase()+' '+money(x.remaining)+'（本周净 '+(Number(x.net_result_week||0)>=0?'+':'−')+money(Math.abs(Number(x.net_result_week||0)))+'）').join(' · ');
       setK('vdk.budget_sub', detail+' · 周五08:00结算口径');
     }
+    renderVarDecStats();
   }
 
   function bindPFIntents(pi){
@@ -3106,6 +3319,30 @@
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
 
+  function _vdAutoRenderFunnel(host,pool){
+    pool=pool||{};
+    const common=Array.isArray(pool.common)?pool.common:[], fresh=Array.isArray(pool.quote_ready)?pool.quote_ready:[], allowed=Array.isArray(pool.allowed)?pool.allowed:[], categories=pool.categories||{}, metrics=pool.metrics||{};
+    const category=symbol=>String(categories[symbol]||(metrics[symbol]||{}).category||'crypto').toLowerCase();
+    const rwa=allowed.filter(symbol=>category(symbol)==='rwa').length;
+    const crypto=allowed.length-rwa;
+    const put=(name,value)=>{
+      const el=document.getElementById('vdauto-'+host+'-'+name);
+      if(el) el.textContent=value==null?'—':String(value);
+    };
+    put('candidates',pool.total);
+    put('common',common.length);
+    put('fresh',fresh.length);
+    put('crypto',crypto);
+    put('rwa',rwa);
+    const note=document.getElementById('vdauto-'+host+'-funnel-note');
+    if(note){
+      const age=pool.age_sec==null?'时间未知':_fmtAge(pool.age_sec);
+      const stale=pool.stale===true?' · 扫描已过期':'';
+      note.textContent='最新扫描 '+age+' · '+allowed.length+' 个通过实时门槛'+stale;
+      note.style.color=pool.stale===true?'var(--warn)':'var(--faint)';
+    }
+  }
+
   function _vdAutoRenderPools(state){
     const pools=state.strategy_pools||{}, venues=pools.venues||{}, dec=venues.decibel||pools, ondo=venues.ondo||{};
     const major=pools.major||[], opportunity=pools.opportunity||[], allowed=new Set(dec.allowed||[]), blocked=new Set(dec.blocked||[]), metrics=dec.metrics||{};
@@ -3115,6 +3352,8 @@
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
     const decReady=(dec.quote_ready||[]).length, ondoReady=(ondo.quote_ready||[]).length, ondoAllowed=(ondo.allowed||[]).length;
+    _vdAutoRenderFunnel('vps1',dec);
+    _vdAutoRenderFunnel('vps2',ondo);
     document.getElementById('vdauto-pools-meta').textContent='VPS1 可做 '+allowed.size+' · VPS2 可做 '+ondoAllowed;
     document.getElementById('vdauto-decibel-meta').textContent=dec.present?(decReady+' 个有报价 · '+allowed.size+' 个通过 · '+(dec.age_sec==null?'时间未知':_fmtAge(dec.age_sec))):(decReady+' 个兼容快照 · '+allowed.size+' 个通过');
     document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个有报价 · '+ondoAllowed+' 个通过 · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
@@ -3279,6 +3518,7 @@
       const pid=pg.id.replace('page-','');
       const nav=pg.querySelector('.subnav');
       if(!nav) return;
+      if(nav.hasAttribute('data-vd-native-nav')) return;
       const box=document.createElement('div');
       box.className='panel'; box.style.display='none'; box.id='detail-'+pid;
       nav.parentNode.insertBefore(box, nav.nextSibling);
@@ -3306,10 +3546,46 @@
     });
   })();
 
+  function activateVarDecTab(name){
+    const page=document.getElementById('page-vardec');
+    if(!page) return;
+    page.querySelectorAll('[data-vd-native-nav] [data-vd-tab]').forEach(tab=>tab.classList.toggle('on',tab.dataset.vdTab===name));
+    page.querySelectorAll('.vd-native-view').forEach(view=>view.classList.remove('on'));
+    const dynamic=name==='手动交易'||name==='成交记录';
+    const target=dynamic
+      ?page.querySelector('[data-vd-view="动态详情"]')
+      :page.querySelector('[data-vd-view="'+name+'"]');
+    if(target) target.classList.add('on');
+    window.__detail.vardec=dynamic?name:null;
+    if(dynamic) renderDetail('vardec');
+    if(name==='统计与奖励') renderVarDecStats();
+  }
+
+  (function(){
+    const nav=document.querySelector('#page-vardec [data-vd-native-nav]');
+    if(!nav) return;
+    nav.querySelectorAll('[data-vd-tab]').forEach(tab=>{
+      tab.title='在当前页面内切换';
+      tab.addEventListener('click',()=>activateVarDecTab(tab.dataset.vdTab));
+    });
+  })();
+
   function _table(cols, rows, rowfn){
     if(!rows||!rows.length) return '<div style="color:var(--faint);padding:10px">暂无数据</div>';
     return '<table><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'+
       rows.map(rowfn).join('')+'</tbody></table>';
+  }
+
+  function renderVarDecStats(){
+    const box=document.getElementById('vd-stats-breakdown');
+    if(!box) return;
+    const detail=((window.__state||{}).varia_detail)||{};
+    box.innerHTML='<h2>交易统计</h2><div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>'+
+      '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
+      _table(['VPS','笔数','名义','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+      '</div><div><h2 style="font-size:12px">按交易对</h2>'+
+      _table(['交易对','笔数','名义','净 PnL','胜率'],detail.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+      '</div></div>';
   }
 
   function _vdDirectionLabel(v,hedgeLabel){hedgeLabel=hedgeLabel||'Decibel';return v==='var_buy'?'Var 买 / '+hedgeLabel+' 卖':v==='var_sell'?'Var 卖 / '+hedgeLabel+' 买':'自动选择低成本方向';}

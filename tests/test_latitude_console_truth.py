@@ -781,7 +781,13 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "双边交易量不完整" in html
     assert "const score=vd.points_by_venue||{}" in html
     assert "旧自动化" not in html
-    assert "<span class=\"on\">自动运行</span><span>手动交易</span><span>成交记录</span><span>统计汇总</span>" in html
+    assert 'data-vd-tab="自动运行"' in html
+    assert 'data-vd-tab="策略设置"' in html
+    assert 'data-vd-tab="仓位"' in html
+    assert 'data-vd-tab="行情机会"' in html
+    assert 'data-vd-tab="统计与奖励"' in html
+    assert 'data-vd-tab="手动交易"' in html
+    assert 'data-vd-tab="成交记录"' in html
     for duplicate_tab in (">Trade <", ">Statistics <", ">Research <", ">Execution <", ">Advanced <"):
         assert duplicate_tab not in html
     assert "进入 Var/Decibel 操作面板" not in html
@@ -799,6 +805,14 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-strategy"' in html
     assert 'id="vdauto-vps1-plan"' in html
     assert 'id="vdauto-vps2-plan"' in html
+    assert 'id="vdauto-vps1-common"' in html
+    assert 'id="vdauto-vps1-crypto"' in html
+    assert 'id="vdauto-vps1-rwa"' in html
+    assert 'id="vdauto-vps2-common"' in html
+    assert 'id="vdauto-vps2-crypto"' in html
+    assert 'id="vdauto-vps2-rwa"' in html
+    assert "_vdAutoRenderFunnel('vps1',dec)" in html
+    assert "_vdAutoRenderFunnel('vps2',ondo)" in html
     assert "_vdAutoRenderNextPlan(host,h)" in html
     assert "只读，未下单" in html
     assert "计划已过期，等待只读行情刷新" in html
@@ -1015,6 +1029,11 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
          "decibel_bid": 99.99, "decibel_ask": 100.01, "costs": {"var_buy": 2, "var_sell": 2}},
         {"symbol": "SOL", "age_sec": 601},
     ])
+    monkeypatch.setattr(console, "_varia_decibel_scan_state", lambda: {
+        "present": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rows": [{"symbol": "BTC"}, {"symbol": "XAU"}],
+    })
 
     result = console._varia_strategy_pools()
 
@@ -1027,6 +1046,9 @@ def test_varia_strategy_pools_show_all_configured_symbols_and_readiness(
     assert result["allowed"] == ["BTC"]
     assert result["blocked"] == []
     assert result["metrics"]["BTC"]["display_bps"] == 2.0
+    assert result["venues"]["decibel"]["common"] == ["BTC", "XAU"]
+    assert result["venues"]["decibel"]["categories"]["BTC"] == "crypto"
+    assert result["venues"]["decibel"]["categories"]["XAU"] == "rwa"
 
 
 def test_varia_latest_quotes_prefers_independent_readonly_scan(monkeypatch) -> None:
@@ -1210,6 +1232,8 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
         "current_rate_24h_equivalent_not_forecast"
     )
     assert ondo["metrics"]["XAU"]["minimum_net_funding_24h_bps"] == 0
+    assert ondo["common"] == ["XAU"]
+    assert ondo["categories"] == {"XAU": "rwa"}
     assert "BTC" not in ondo["metrics"]
 
 

@@ -62,6 +62,12 @@ VARIA_MARKET_CANDIDATES = tuple(
         "TRUMP,WLFI,CBRS,ZRO,CHIP",
     ).split(",") if item.strip()
 )
+VARIA_RWA_SYMBOLS = frozenset(
+    item.strip().upper() for item in os.getenv(
+        "VARIA_RWA_SYMBOLS",
+        "XAU,SPCX,MU,QQQ,CL,NVDA,TSLA,SNDK,COPPER,NATGAS,EWY,CHIP",
+    ).split(",") if item.strip()
+)
 # 跨机只读数据源(tailnet 内):打新核算台已构建 JSON、router ipo 状态、mac-mini 状态导出器
 ACCOUNT_OPS_URL = os.getenv("ACCOUNT_OPS_URL", "http://100.82.86.62:8081/data/dashboard.json")
 ACCOUNT_OPS_SNAPSHOT_PATH = Path(
@@ -1627,6 +1633,7 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             "var_sell": "Var 卖 / Decibel 买",
         }.get(str(quote.get("recommended") or ""), "方向待定")
         metrics[symbol] = {
+            "category": "rwa" if symbol in VARIA_RWA_SYMBOLS else "crypto",
             "var_spread_bps": round(var_spread, 2),
             "decibel_spread_bps": round(dec_spread, 2),
             "entry_cost_bps": round(entry_cost, 2) if entry_cost is not None else None,
@@ -1641,6 +1648,12 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
     scan_ts = _parse_ts(scan_generated)
     scan_age = max(0, int(time.time() - scan_ts)) if scan_ts is not None else None
     scan_summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
+    scan_rows = scan.get("rows") if isinstance(scan.get("rows"), list) else []
+    common_symbols = list(dict.fromkeys(
+        str(row.get("symbol") or "").strip().upper()
+        for row in scan_rows if isinstance(row, dict)
+        and str(row.get("symbol") or "").strip().upper() in all_set
+    ))
     decibel_pool = {
         "host": "vps1",
         "pair": "Var/Decibel",
@@ -1652,6 +1665,11 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "scan_summary": scan_summary,
         "total": len(all_symbols),
         "symbols": all_symbols,
+        "common": common_symbols,
+        "categories": {
+            symbol: ("rwa" if symbol in VARIA_RWA_SYMBOLS else "crypto")
+            for symbol in all_symbols
+        },
         "quote_ready": [symbol for symbol in all_symbols if symbol in set(ready)],
         "allowed": [symbol for symbol in all_symbols if symbol in set(allowed)],
         "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
@@ -1821,6 +1839,8 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
         "generated_at": generated_at or None,
         "age_sec": age_sec,
         "total": int(summary.get("common_markets") or len(rows)),
+        "common": [row["symbol"] for row in rows],
+        "categories": {row["symbol"]: row["category"] for row in rows},
         "quote_ready": [row["symbol"] for row in rows if "ondo_quote_failed" not in row["block_reasons"]],
         "allowed": allowed,
         "blocked": blocked,
