@@ -2074,6 +2074,17 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
     metrics: Dict[str, dict] = {}
     allowed: List[str] = []
     blocked: List[str] = []
+    confirmed: List[str] = []
+    pending_confirmation: List[str] = []
+    unstable: List[str] = []
+    quote_ready: List[str] = []
+    quote_block_reasons = {
+        "ondo_quote_failed",
+        "var_quote_incomplete",
+        "stale_quote",
+        "quote_age_unknown",
+        "scan_stale",
+    }
     for raw in source_rows:
         if not isinstance(raw, dict):
             continue
@@ -2084,6 +2095,15 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
         eligible = bool(raw.get("eligible") is True and not stale)
         if stale and "scan_stale" not in reasons:
             reasons.append("scan_stale")
+        signal_confirmed = bool(raw.get("entry_signal_confirmed") is True and not stale)
+        if not any(reason in quote_block_reasons for reason in reasons):
+            quote_ready.append(symbol)
+        if signal_confirmed:
+            confirmed.append(symbol)
+        if "entry_signal_unconfirmed" in reasons:
+            pending_confirmation.append(symbol)
+        if "entry_signal_unstable" in reasons:
+            unstable.append(symbol)
         metric = {
             "category": str(raw.get("category") or "opportunity"),
             "var_spread_bps": _num(raw.get("var_half_spread_bps")),
@@ -2100,6 +2120,15 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
             "allowed": eligible,
             "block_reasons": reasons,
             "age_sec": _num(raw.get("quote_age_seconds")),
+            "quote_observation_gap_seconds": _num(raw.get("quote_observation_gap_seconds")),
+            "entry_signal_confirmed": signal_confirmed,
+            "entry_signal_confirmation_count": int(
+                raw.get("entry_signal_confirmation_count") or 0
+            ),
+            "entry_signal_confirmation_required": int(
+                raw.get("entry_signal_confirmation_required") or 1
+            ),
+            "pre_confirmation_eligible": raw.get("pre_confirmation_eligible") is True,
             "volume_24h": _num(raw.get("volume_24h")),
             "max_spread_bps": _num(raw.get("max_spread_bps")),
         }
@@ -2118,7 +2147,10 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
         "total": int(summary.get("common_markets") or len(rows)),
         "common": [row["symbol"] for row in rows],
         "categories": {row["symbol"]: row["category"] for row in rows},
-        "quote_ready": [row["symbol"] for row in rows if "ondo_quote_failed" not in row["block_reasons"]],
+        "quote_ready": quote_ready,
+        "confirmed": confirmed,
+        "pending_confirmation": pending_confirmation,
+        "unstable": unstable,
         "allowed": allowed,
         "blocked": blocked,
         "metrics": metrics,

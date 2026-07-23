@@ -484,7 +484,7 @@
 .vd-host-controls .vdauto-check{height:38px;margin:0}
 .vd-host-controls .vdauto-field select{height:38px}
 .vd-host-strategy-note{min-height:34px;padding:8px 16px 0;color:var(--muted);font-size:11px}
-.vd-funnel{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:13px 16px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.vd-funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));margin:13px 16px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .vd-funnel-step{min-width:0;padding:10px;background:var(--panel2)}
 .vd-funnel-step+.vd-funnel-step{border-left:1px solid var(--line)}
 .vd-funnel-step span{display:block;color:var(--faint);font:9.5px var(--mono);white-space:nowrap}
@@ -525,7 +525,7 @@
   .vd-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
   .vd-funnel{grid-template-columns:repeat(3,minmax(0,1fr))}
   .vd-funnel-step:nth-child(4){border-left:0;border-top:1px solid var(--line)}
-  .vd-funnel-step:nth-child(5){border-top:1px solid var(--line)}
+  .vd-funnel-step:nth-child(n+5){border-top:1px solid var(--line)}
   .vd-positions-grid,.vd-stats-grid{grid-template-columns:1fr}
 }
 @media (max-width:900px){
@@ -827,6 +827,7 @@
             <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps1-candidates">—</b></div>
             <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps1-common">—</b></div>
             <div class="vd-funnel-step"><span>报价新鲜</span><b id="vdauto-vps1-fresh">—</b></div>
+            <div class="vd-funnel-step"><span>稳定确认</span><b id="vdauto-vps1-confirmed">—</b></div>
             <div class="vd-funnel-step ready"><span>加密可做</span><b id="vdauto-vps1-crypto">—</b></div>
             <div class="vd-funnel-step ready"><span>RWA 可做</span><b id="vdauto-vps1-rwa">—</b></div>
           </div>
@@ -848,6 +849,7 @@
             <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps2-candidates">—</b></div>
             <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps2-common">—</b></div>
             <div class="vd-funnel-step"><span>报价新鲜</span><b id="vdauto-vps2-fresh">—</b></div>
+            <div class="vd-funnel-step"><span>稳定确认</span><b id="vdauto-vps2-confirmed">—</b></div>
             <div class="vd-funnel-step ready"><span>加密可做</span><b id="vdauto-vps2-crypto">—</b></div>
             <div class="vd-funnel-step ready"><span>RWA 可做</span><b id="vdauto-vps2-rwa">—</b></div>
           </div>
@@ -856,7 +858,7 @@
         </article>
       </div>
       <div class="vd-home-foot">
-        <span><strong>候选漏斗：</strong>共同市场 → 新鲜双边报价 → 点差与资金费门槛 → 可自动开仓。</span>
+        <span><strong>候选漏斗：</strong>共同市场 → 新鲜双边报价 → 连续两轮稳定确认 → 点差与资金费门槛 → 可自动开仓。</span>
         <span>行情、仓位和余额按 VPS 独立读取，不跨账号复用。</span>
       </div>
     </div>
@@ -951,7 +953,7 @@
       </div>
     </div>
     <div class="vdauto-route-detail vd-route-native" id="vdauto-symbol-route-comparison">
-      <div class="vdauto-route-head"><div><div class="vdauto-route-title">同币种入场价差对比</div><div class="vdauto-route-note">入场价差按两腿可成交价计算：正数是预计磨损，负数是当时报价有利；它不等于已实现利润。Decibel 缺失的持仓期资金费不会被硬算进去。</div></div><div class="vdauto-route-meta" id="vdauto-route-meta">等待两台 VPS 报价</div></div>
+      <div class="vdauto-route-head"><div><div class="vdauto-route-title">同币种跨平台入场差对比</div><div class="vdauto-route-note">跨平台入场差按两腿可成交价计算，不是 Var、Decibel 或 Ondo 自身的盘口点差。正数是预计磨损，负数仅表示当时报价有利；它不等于已实现利润。</div></div><div class="vdauto-route-meta" id="vdauto-route-meta">等待两台 VPS 报价</div></div>
       <div class="vdauto-route-wrap" id="vdauto-route-wrap"><div class="vdauto-market-empty">正在匹配 Decibel 与 Ondo 的共同币</div></div>
     </div>
     <div class="vdauto-pools">
@@ -973,7 +975,7 @@
           <div class="vdauto-market-wrap" id="vdauto-ondo-market-wrap"><div class="vdauto-market-empty">正在读取共同币、挂单成本与净资金费率</div></div>
         </div>
       </div>
-      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。方向先比较入场价差，只在 2bp 容差内参考净资金费；负入场价差只代表当时报价有利，不保证成交或盈利。资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
+      <div class="vdauto-pool-foot">两列各读对应 VPS 的真实来源。平台点差与跨平台入场差分开计算。Var/Ondo 候选须连续两轮方向一致且价差稳定；方向接近时才参考净资金费。负入场价差只代表当时报价有利，不保证成交或盈利。资金费是当前费率的 24h 等效值，不是收益预测。普通币上限 2bp，RWA 上限 3bp。</div>
     </div>
   </div>
 
@@ -3631,7 +3633,7 @@
 
   function _vdAutoRenderFunnel(host,pool){
     pool=pool||{};
-    const common=Array.isArray(pool.common)?pool.common:[], fresh=Array.isArray(pool.quote_ready)?pool.quote_ready:[], allowed=Array.isArray(pool.allowed)?pool.allowed:[], categories=pool.categories||{}, metrics=pool.metrics||{};
+    const common=Array.isArray(pool.common)?pool.common:[], fresh=Array.isArray(pool.quote_ready)?pool.quote_ready:[], allowed=Array.isArray(pool.allowed)?pool.allowed:[], confirmed=Array.isArray(pool.confirmed)?pool.confirmed:fresh, pending=Array.isArray(pool.pending_confirmation)?pool.pending_confirmation:[], unstable=Array.isArray(pool.unstable)?pool.unstable:[], categories=pool.categories||{}, metrics=pool.metrics||{};
     const category=symbol=>String(categories[symbol]||(metrics[symbol]||{}).category||'crypto').toLowerCase();
     const rwa=allowed.filter(symbol=>category(symbol)==='rwa').length;
     const crypto=allowed.length-rwa;
@@ -3642,13 +3644,15 @@
     put('candidates',pool.total);
     put('common',common.length);
     put('fresh',fresh.length);
+    put('confirmed',confirmed.length);
     put('crypto',crypto);
     put('rwa',rwa);
     const note=document.getElementById('vdauto-'+host+'-funnel-note');
     if(note){
       const age=pool.age_sec==null?'时间未知':_fmtAge(pool.age_sec);
       const stale=pool.stale===true?' · 扫描已过期':'';
-      note.textContent='最新扫描 '+age+' · '+allowed.length+' 个通过实时门槛'+stale;
+      const confirmation=(pending.length?' · '+pending.length+' 个待二次确认':'')+(unstable.length?' · '+unstable.length+' 个报价波动过大':'');
+      note.textContent='最新扫描 '+age+' · '+allowed.length+' 个通过实时门槛'+confirmation+stale;
       note.style.color=pool.stale===true?'var(--warn)':'var(--faint)';
     }
   }
@@ -3661,18 +3665,18 @@
     document.getElementById('vdauto-opportunity-symbols').innerHTML=chips(opportunity);
     document.getElementById('vdauto-major-label').textContent='主流池 · '+major.length;
     document.getElementById('vdauto-opportunity-label').textContent='机会/其他 · '+opportunity.length;
-    const decReady=(dec.quote_ready||[]).length, ondoReady=(ondo.quote_ready||[]).length, ondoAllowed=(ondo.allowed||[]).length;
+    const decReady=(dec.quote_ready||[]).length, ondoReady=(ondo.quote_ready||[]).length, ondoConfirmed=(ondo.confirmed||[]).length, ondoPending=(ondo.pending_confirmation||[]).length, ondoUnstable=(ondo.unstable||[]).length, ondoAllowed=(ondo.allowed||[]).length;
     _vdAutoRenderFunnel('vps1',dec);
     _vdAutoRenderFunnel('vps2',ondo);
     document.getElementById('vdauto-pools-meta').textContent='VPS1 可做 '+allowed.size+' · VPS2 可做 '+ondoAllowed;
     document.getElementById('vdauto-decibel-meta').textContent=dec.present?(decReady+' 个有报价 · '+allowed.size+' 个通过 · '+(dec.age_sec==null?'时间未知':_fmtAge(dec.age_sec))):(decReady+' 个兼容快照 · '+allowed.size+' 个通过');
-    document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个有报价 · '+ondoAllowed+' 个通过 · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
+    document.getElementById('vdauto-ondo-meta').textContent=ondo.present?(ondoReady+' 个新鲜报价 · '+ondoConfirmed+' 个稳定确认 · '+ondoAllowed+' 个通过'+(ondoPending?' · '+ondoPending+' 个待确认':'')+(ondoUnstable?' · '+ondoUnstable+' 个波动过大':'')+' · '+(ondo.age_sec==null?'时间未知':_fmtAge(ondo.age_sec))):'尚无 VPS2 扫描';
     const hosts=state.hosts||{}, thresholds=ondo.thresholds_bps||{};
     const standard=Number(thresholds.standard??thresholds.default??state.max_auto_spread_bps??2);
     const rwa=Number(thresholds.rwa??standard);
     const decLimit=Number(dec.max_spread_bps??state.max_auto_spread_bps??2);
     document.getElementById('vdauto-compare-dec-markets').textContent=(dec.total??pools.total??0)+' 候选 · '+decReady+' 报价 · '+allowed.size+' 可做';
-    document.getElementById('vdauto-compare-ondo-markets').textContent=(ondo.total??0)+' 共同币 · '+ondoReady+' 报价 · '+ondoAllowed+' 可做';
+    document.getElementById('vdauto-compare-ondo-markets').textContent=(ondo.total??0)+' 共同币 · '+ondoConfirmed+' 稳定确认 · '+ondoAllowed+' 可做';
     document.getElementById('vdauto-compare-dec-spread').textContent='单边不高于 '+(Number.isFinite(decLimit)?decLimit.toFixed(1):'—')+' bp';
     document.getElementById('vdauto-compare-ondo-spread').textContent='普通币 '+(Number.isFinite(standard)?standard.toFixed(1):'—')+' bp · RWA '+(Number.isFinite(rwa)?rwa.toFixed(1):'—')+' bp';
     const signed=(value,digits=2)=>{if(value==null||!Number.isFinite(Number(value)))return '—';const n=Number(value);return (n>0?'+':'')+n.toFixed(digits);};
@@ -3684,21 +3688,21 @@
     routeMeta.textContent=comparison.length+' 个共同报价 · '+actionable+' 个有可用路线 · '+bothReady+' 个双路线均可';
     if(!comparison.length){routeWrap.innerHTML='<div class="vdauto-market-empty">尚无可直接比较的同币种新鲜报价</div>';}
     else{
-      const routeLeg=(leg,funding,venue)=>{const fee=Number(leg?.maker_fee_bps), feeNote=Number.isFinite(fee)&&fee>0?'（含 '+venue+' maker '+fee.toFixed(2)+' bp）':''; const varSpread=signed(leg?.var_spread_bps), hedgeSpread=signed(leg?.hedge_spread_bps); return '<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>跨平台入场差 '+signed(leg?.entry_cost_bps)+' bp'+feeNote+'</span><span class="vdauto-route-small">平台单边点差 Var '+varSpread+' / '+venue+' '+hedgeSpread+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';};
+      const routeLeg=(leg,funding,venue)=>{const fee=Number(leg?.maker_fee_bps), feeNote=Number.isFinite(fee)&&fee>0?'（含 '+venue+' maker '+fee.toFixed(2)+' bp）':''; const varSpread=signed(leg?.var_spread_bps), hedgeSpread=signed(leg?.hedge_spread_bps); return '<div class="vdauto-route-leg"><span class="vdauto-route-dir">'+esc(leg?.direction||'方向待定')+'</span><span>跨平台入场差（非点差） '+signed(leg?.entry_cost_bps)+' bp'+feeNote+'</span><span class="vdauto-route-small">平台单边点差 Var '+varSpread+' / '+venue+' '+hedgeSpread+' bp</span>'+(funding?'<span class="vdauto-route-small">当前费率折算 24h '+signed(leg?.net_funding_24h_bps)+' bp</span>':'')+'<span class="vdauto-route-small">'+(leg?.allowed?'通过当前门槛':'当前未通过')+'</span></div>';};
       const routeBody=comparison.map(row=>{const canTrade=!!row.preferred, saved=row.entry_savings_bps==null?'':(' · 价差优势 '+Number(row.entry_savings_bps).toFixed(2)+' bp');return '<tr><td><b>'+esc(row.symbol||'—')+'</b></td><td>'+routeLeg(row.decibel,false,'Decibel')+'</td><td>'+routeLeg(row.ondo,true,'Ondo')+'</td><td><div class="vdauto-route-choice '+(canTrade?'ok':'wait')+'">'+esc(row.preferred_label||'暂不交易')+'</div><div class="vdauto-route-small">'+esc((row.reason||'')+saved)+'</div></td></tr>';}).join('');
       routeWrap.innerHTML='<table class="vdauto-route"><thead><tr><th>币种</th><th>Var/Decibel</th><th>Var/Ondo</th><th>低入场价差路线</th></tr></thead><tbody>'+routeBody+'</tbody></table>';
     }
     const ratio=document.getElementById('vdauto-ratio').value||80;
     document.getElementById('vdauto-pool-a-rule').textContent='全部 '+(pools.strategy_a?.eligible?.length??pools.total??0)+' 个候选；主流约 '+ratio+'%，其余为机会币';
     document.getElementById('vdauto-pool-b-rule').textContent='Var/Ondo '+(ondo.total??0)+' 个共同币；普通币 2bp、RWA 3bp，且净资金费方向不为负';
-    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'入场价差过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格'};
+    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'跨平台入场差过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格',entry_signal_unconfirmed:'等待下一轮稳定确认',entry_signal_unstable:'两轮报价变化过大'};
     const category={major:'主流',rwa:'RWA',opportunity:'机会'};
     const rows=Array.isArray(ondo.rows)?ondo.rows:[];
     const wrap=document.getElementById('vdauto-ondo-market-wrap');
     if(!rows.length){wrap.innerHTML='<div class="vdauto-market-empty">'+esc(ondo.stale?'VPS2 扫描已过期，等待下一轮':'尚未收到 VPS2 共同币扫描')+'</div>';}
     else{
       const body=rows.map(row=>{const reasons=(row.block_reasons||[]).map(x=>reasonLabel[x]||x), ok=row.allowed===true, funding=Number(row.net_funding_24h_bps), fundingCls=Number.isFinite(funding)?(funding>=0?'market-ok':'market-block'):'';return '<tr><td><b>'+esc(row.symbol||'—')+'</b><br><span style="color:var(--faint)">'+esc(category[row.category]||row.category||'—')+'</span></td><td>'+esc(row.recommended||'—')+'</td><td class="'+(Number(row.entry_cost_bps)<=0?'market-ok':'')+'">'+signed(row.entry_cost_bps)+' bp</td><td class="'+fundingCls+'">'+signed(row.net_funding_24h_bps)+' bp</td><td>'+signed(row.var_spread_bps)+' / '+signed(row.ondo_spread_bps)+' bp</td><td class="'+(ok?'market-ok':'market-block')+'" title="'+esc(reasons.join('；'))+'">'+(ok?'可做':esc(reasons[0]||'等待'))+'</td></tr>';}).join('');
-      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>入场价差</th><th>当前费率折算 24h</th><th>平台单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
+      wrap.innerHTML='<table class="vdauto-market"><thead><tr><th>币种</th><th>建议方向</th><th>跨平台入场差<br>（非点差）</th><th>当前费率折算 24h</th><th>平台单边点差 Var/Ondo</th><th>状态</th></tr></thead><tbody>'+body+'</tbody></table>';
     }
   }
 

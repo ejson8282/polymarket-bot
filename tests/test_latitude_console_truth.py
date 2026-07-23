@@ -828,7 +828,10 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-compare-ondo-status"' in html
     assert "选择双腿入场价差更低的方向" in html
     assert "接近时再比较净资金费" in html
-    assert "同币种入场价差对比" in html
+    assert "同币种跨平台入场差对比" in html
+    assert "跨平台入场差（非点差）" in html
+    assert "entry_signal_unconfirmed:'等待下一轮稳定确认'" in html
+    assert "entry_signal_unstable:'两轮报价变化过大'" in html
     assert "低入场价差路线" in html
     assert "负入场价差只代表当时报价有利" in html
     assert "当前入场价差" in html
@@ -1246,6 +1249,9 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
                 "recommended": "Var buy / Ondo sell",
                 "quote_age_seconds": "2", "volume_24h": "100000",
                 "max_spread_bps": "3", "block_reasons": [],
+                "entry_signal_confirmed": True,
+                "entry_signal_confirmation_count": 2,
+                "entry_signal_confirmation_required": 2,
             }],
         },
     })
@@ -1263,7 +1269,64 @@ def test_varia_strategy_pools_use_vps2_ondo_scan_without_reusing_vps1_quotes(
     assert ondo["metrics"]["XAU"]["minimum_net_funding_24h_bps"] == 0
     assert ondo["common"] == ["XAU"]
     assert ondo["categories"] == {"XAU": "rwa"}
+    assert ondo["quote_ready"] == ["XAU"]
+    assert ondo["confirmed"] == ["XAU"]
+    assert ondo["pending_confirmation"] == []
+    assert ondo["unstable"] == []
     assert "BTC" not in ondo["metrics"]
+
+
+def test_varia_ondo_strategy_pool_exposes_confirmation_and_fresh_quote_states(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    peer_dir = data_dir / "ops_peer_state"
+    peer_dir.mkdir(parents=True)
+    monkeypatch.setattr(console, "VARIA_DIR", data_dir)
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(peer_dir / "vps2.json", {
+        "host_id": "vps2",
+        "var_ondo_market_scan": {
+            "present": True,
+            "ok": True,
+            "generated_at": now,
+            "summary": {"common_markets": 3, "confirmed_markets": 1},
+            "rows": [
+                {
+                    "symbol": "BTC", "category": "major", "eligible": False,
+                    "quote_age_seconds": "5",
+                    "entry_signal_confirmation_count": 1,
+                    "entry_signal_confirmation_required": 2,
+                    "pre_confirmation_eligible": True,
+                    "block_reasons": ["entry_signal_unconfirmed"],
+                },
+                {
+                    "symbol": "XAU", "category": "rwa", "eligible": False,
+                    "quote_age_seconds": "6",
+                    "entry_signal_confirmation_count": 1,
+                    "entry_signal_confirmation_required": 2,
+                    "pre_confirmation_eligible": True,
+                    "block_reasons": ["entry_signal_unstable"],
+                },
+                {
+                    "symbol": "ETH", "category": "major", "eligible": False,
+                    "quote_age_seconds": "300",
+                    "entry_signal_confirmation_count": 0,
+                    "entry_signal_confirmation_required": 2,
+                    "block_reasons": ["stale_quote"],
+                },
+            ],
+        },
+    })
+
+    ondo = console._varia_ondo_strategy_pool()
+
+    assert ondo["quote_ready"] == ["BTC", "XAU"]
+    assert ondo["confirmed"] == []
+    assert ondo["pending_confirmation"] == ["BTC"]
+    assert ondo["unstable"] == ["XAU"]
+    assert ondo["metrics"]["BTC"]["entry_signal_confirmation_count"] == 1
+    assert ondo["metrics"]["BTC"]["entry_signal_confirmation_required"] == 2
 
 
 def test_varia_strategy_pools_compare_same_symbol_and_prefer_lower_allowed_cost(
