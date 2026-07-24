@@ -858,6 +858,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "'/api/varia/automation/'+action" in html
     assert "保存配置不会启动后台" in html
     assert "自动运行的补充入口" in html
+    assert "acceptance.present===true?mutationKeys.filter" in html
+    assert "if(selectedBlocked.length&&!msg.textContent)" not in html
+    assert "window.__vdAutoRequestActive" in html
     assert "打开旧只读详情" not in html
 
 

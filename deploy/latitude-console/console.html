@@ -3742,9 +3742,9 @@
       const h=hosts[host]||{}, status=document.getElementById('vdauto-'+host+'-state');
       const age=((h.runtime||{}).age_sec==null?'':(' · '+_fmtAge((h.runtime||{}).age_sec)));
       const strategy=h.strategy||'—', leverage=targetLeverage[strategy];
-      const mutation=((h.acceptance||{}).mutation)||{}, mutationKeys=['leverage_sync','post_only_cancel','partial_fill_reconcile','reduce_only_close','paired_micro_hedge'];
-      const pendingMutations=mutationKeys.filter(key=>mutation[key]!==true).length;
-      const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
+      const acceptance=h.acceptance||{}, mutation=acceptance.mutation||{}, mutationKeys=['leverage_sync','post_only_cancel','partial_fill_reconcile','reduce_only_close','paired_micro_hedge'];
+      const pendingMutations=acceptance.present===true?mutationKeys.filter(key=>mutation[key]!==true).length:null;
+      const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations!=null&&pendingMutations>0?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
       status.textContent=(h.execution_frozen?'只读维护':(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service)))+blocked+age;
       status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':(h.start_blocked?'var(--warn)':'var(--muted)'));
       _vdAutoRenderNextPlan(host,h);
@@ -3783,7 +3783,8 @@
     startButton.textContent=state.execution_frozen?'只读维护中':(selectedBlocked.length?'启动可运行 VPS':'启动自动化');
     startButton.disabled=state.status==='starting'||!selectedStartable.length;
     const msg=document.getElementById('vdauto-msg');
-    if(selectedBlocked.length&&!msg.textContent) {msg.className='vdauto-message';msg.textContent=selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；')+(selectedStartable.length?'；其余已验收 VPS 仍可启动。':'');}
+    const stateMessage=selectedBlocked.length?selectedBlocked.map(host=>host.toUpperCase()+'：'+((hosts[host]||{}).start_block_reason||'验收未完成')).join('；')+(selectedStartable.length?'；其余已验收 VPS 仍可启动。':''):'';
+    if(!window.__vdAutoRequestActive){msg.className='vdauto-message';msg.textContent=stateMessage;}
     document.getElementById('vdauto-stop').disabled=state.status==='stopped'&&!services.some(x=>['active','activating','deactivating'].includes(x));
   }
 
@@ -3801,6 +3802,7 @@
   async function vdAutoRequest(url,body,message){
     const msg=document.getElementById('vdauto-msg');
     if(window.__writesEnabled===false){msg.className='vdauto-message bad';msg.textContent='写通道未启用';return null;}
+    window.__vdAutoRequestActive=true;
     msg.className='vdauto-message';msg.textContent=message;
     ['vdauto-save','vdauto-start','vdauto-stop'].forEach(id=>document.getElementById(id).disabled=true);
     try{
@@ -3810,7 +3812,7 @@
       if(j.state){if(j.ok)window.__vdAutoDirty=false;bindVDAuto(j.state);}else setTimeout(vdAutoFetch,700);
       return j;
     }catch(e){msg.className='vdauto-message bad';msg.textContent='网络请求失败，未确认执行';return null;}
-    finally{setTimeout(vdAutoFetch,1200);}
+    finally{window.__vdAutoRequestActive=false;setTimeout(vdAutoFetch,1200);}
   }
 
   async function vdAutoSave(silent){
