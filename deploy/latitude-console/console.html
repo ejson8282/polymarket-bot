@@ -3938,9 +3938,9 @@
       lr.addEventListener('input',()=>{ln.value=lr.value;vdUpdateControl();});
       ln.addEventListener('input',()=>{const n=Math.max(1,Math.min(40,parseInt(ln.value||'1',10)));lr.value=String(n);vdUpdateControl();});
       document.getElementById('vdctl-notional').addEventListener('input',vdUpdateControl);
-      document.getElementById('vdctl-host').addEventListener('change',vdUpdateControl);
-      document.getElementById('vdctl-symbol').addEventListener('change',vdUpdateControl);
-      document.getElementById('vdctl-direction').addEventListener('change',vdUpdateControl);
+      document.getElementById('vdctl-host').addEventListener('change',()=>vdUpdateControl());
+      document.getElementById('vdctl-symbol').addEventListener('change',()=>vdUpdateControl());
+      document.getElementById('vdctl-direction').addEventListener('change',()=>vdUpdateControl());
       document.getElementById('vdctl-tpsl').addEventListener('change',e=>{
         const on=e.target.checked; document.getElementById('vdctl-tpsl-row').classList.toggle('off',!on);
         document.getElementById('vdctl-tp').disabled=!on; document.getElementById('vdctl-sl').disabled=!on;

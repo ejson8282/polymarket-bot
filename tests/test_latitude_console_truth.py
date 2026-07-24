@@ -798,6 +798,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdctl-symbol"' in html
     assert "state.symbols_by_host" in html
     assert "selectedHost+'|'+symbols.join('|')" in html
+    assert "addEventListener('change',()=>vdUpdateControl())" in html
+    assert "addEventListener('change',vdUpdateControl)" not in html
     assert 'id="vdctl-open"' in html
     assert 'id="vdctl-close"' in html
     assert 'id="vdauto-root"' in html
