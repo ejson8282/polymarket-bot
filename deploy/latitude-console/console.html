@@ -385,6 +385,8 @@
 .vdauto-acceptance-title{font-family:var(--mono);font-size:12px;font-weight:650}.vdauto-acceptance-sub{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.55}
 .vdauto-checks{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.vdauto-check-pill{border:1px solid var(--line);border-radius:5px;padding:4px 7px;font-family:var(--mono);font-size:10px;color:var(--faint)}
 .vdauto-check-pill.ok{border-color:rgba(70,178,107,.45);color:var(--ok)}.vdauto-check-pill.wait{border-color:rgba(231,197,71,.45);color:var(--warn)}
+.vdauto-acceptance-detail{display:grid;gap:5px;margin-top:9px}.vdauto-acceptance-detail-row{font-size:10.5px;line-height:1.55;color:var(--muted)}
+.vdauto-acceptance-detail-row b{color:var(--warn);font-weight:650}.vdauto-acceptance-detail-row.ok b{color:var(--ok)}
 .vdauto-compare{margin-top:12px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}
 .vdauto-compare-grid{display:grid;grid-template-columns:104px minmax(0,1fr) minmax(0,1fr)}
 .vdauto-compare-cell{min-width:0;padding:9px 12px;border-top:1px solid var(--line);border-left:1px solid var(--line);font-family:var(--mono);font-size:10.5px;line-height:1.45;overflow-wrap:anywhere}
@@ -905,7 +907,10 @@
     </div>
     <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
       <div><div class="vdauto-acceptance-title">VPS2 · Ondo 正式环境验收</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
-      <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
+      <div>
+        <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
+        <div class="vdauto-acceptance-detail" id="vdauto-ondo-detail"></div>
+      </div>
     </div>
   </div>
 
@@ -3711,13 +3716,14 @@
     }
   }
 
-  function _vdAutoRenderOndoAcceptance(hosts){
+  function _vdAutoRenderOndoAcceptance(hosts,pools){
     const h=hosts.vps2||{}, acceptance=h.acceptance||{}, ro=acceptance.read_only||{}, mutation=acceptance.mutation||{}, policy=acceptance.policy||{};
-    const summary=document.getElementById('vdauto-ondo-summary'), checks=document.getElementById('vdauto-ondo-checks');
-    if(!summary||!checks) return;
+    const summary=document.getElementById('vdauto-ondo-summary'), checks=document.getElementById('vdauto-ondo-checks'), detail=document.getElementById('vdauto-ondo-detail');
+    if(!summary||!checks||!detail) return;
     if(!acceptance.present){
       summary.textContent='尚未收到 Ondo 脱敏验收记录；VPS2 不允许启动';
       checks.innerHTML='<span class="vdauto-check-pill wait">等待只读验收</span>';
+      detail.innerHTML='';
       return;
     }
     const readOnlyOk=ro.passed===true&&ro.mutations_sent===false;
@@ -3732,6 +3738,32 @@
     const quotes=ro.quotes||{};
     Object.entries(quotes).forEach(([symbol,row])=>{if(row&&row.spread_bps!=null)pills.push('<span class="vdauto-check-pill">'+esc(symbol)+' '+Number(row.spread_bps).toFixed(2)+'bp</span>');});
     checks.innerHTML=pills.join('');
+    const mutationDetails=acceptance.mutation_details||{}, partial=(mutationDetails.partial_fill_reconcile||{}).error||{}, paired=(mutationDetails.paired_micro_hedge||{}).error||{};
+    const partialMeta=partial.details||{}, pairedMeta=paired.details||{};
+    const ondo=(((pools||{}).venues||{}).ondo)||{}, scanRows=Array.isArray(ondo.rows)?ondo.rows:[];
+    const symbol=String(partialMeta.symbol||pairedMeta.symbol||'AAPL').toUpperCase();
+    const scanRow=scanRows.find(row=>String(row.symbol||'').toUpperCase()===symbol)||{};
+    const reasonLabel={scan_stale:'扫描已过期',stale_quote:'报价已过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差过高',ondo_spread_too_wide:'Ondo 点差过高',entry_cost_too_high:'跨平台入场差过高',basis_too_wide:'两边价格尺度不一致',ondo_quote_failed:'Ondo 报价失败',var_quote_incomplete:'Var 报价不完整',funding_unavailable:'资金费数据不可用',funding_rate_out_of_range:'资金费率异常',funding_carry_below_minimum:'净资金费方向不合格',entry_signal_unconfirmed:'等待下一轮稳定确认',entry_signal_unstable:'两轮报价变化过大'};
+    const detailRows=[];
+    if(mutation.partial_fill_reconcile!==true){
+      const required=Number(partialMeta.required_notional), limit=Number(partialMeta.limit);
+      if(partial.code==='ondo_partial_fill_too_large'&&Number.isFinite(required)){
+        detailRows.push('<div class="vdauto-acceptance-detail-row"><b>部分成交待验收：</b>'+esc(symbol)+' 在 '+(Number.isFinite(limit)?money(limit):'当前')+' 上限内无法安全验证；盘口约需 '+money(required)+'。提高金额必须另行确认。</div>');
+      }else{
+        detailRows.push('<div class="vdauto-acceptance-detail-row"><b>部分成交待验收：</b>保持当前金额上限，尚未发送新订单。</div>');
+      }
+    }
+    if(mutation.paired_micro_hedge!==true){
+      const reasons=(pairedMeta.block_reasons||scanRow.block_reasons||[]).map(item=>reasonLabel[item]||item);
+      if(scanRow.allowed===true){
+        detailRows.push('<div class="vdauto-acceptance-detail-row ok"><b>微量双腿待验收：</b>'+esc(symbol)+' 当前只读门槛已通过；仍须在明确授权金额内完成真实配对。</div>');
+      }else if(reasons.length){
+        detailRows.push('<div class="vdauto-acceptance-detail-row"><b>微量双腿待验收：</b>'+esc(symbol)+' 当前未通过开仓门槛（'+esc(reasons.join('；'))+'），等待条件满足。</div>');
+      }else{
+        detailRows.push('<div class="vdauto-acceptance-detail-row"><b>微量双腿待验收：</b>等待共同币报价、点差和净资金费同时通过。</div>');
+      }
+    }
+    detail.innerHTML=detailRows.join('');
   }
 
   function bindVDAuto(state){
@@ -3769,7 +3801,7 @@
     }
     const major=document.getElementById('vdauto-ratio').value||80;
     _vdAutoRenderPools(state);
-    _vdAutoRenderOndoAcceptance(hosts);
+    _vdAutoRenderOndoAcceptance(hosts,state.strategy_pools||{});
     ['vps1','vps2'].forEach(host=>{
       const strategy=document.getElementById('vdauto-'+host+'-strategy').value;
       document.getElementById('vdauto-'+host+'-note').textContent=strategy==='A'

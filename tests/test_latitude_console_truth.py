@@ -823,6 +823,7 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-major-symbols"' in html
     assert 'id="vdauto-opportunity-symbols"' in html
     assert 'id="vdauto-ondo-acceptance"' in html
+    assert 'id="vdauto-ondo-detail"' in html
     assert 'id="vdauto-route-comparison"' in html
     assert 'id="vdauto-symbol-route-comparison"' in html
     assert 'id="vdauto-route-wrap"' in html
@@ -849,6 +850,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS / 路线" in html
     assert "_table(['时间','VPS','路线','SYMBOL'" in html
     assert "Ondo 正式环境验收" in html
+    assert "部分成交待验收" in html
+    assert "微量双腿待验收" in html
+    assert "提高金额必须另行确认" in html
     assert "两列各读对应 VPS 的真实来源" in html
     assert "VPS2 Var/Ondo 不复用这些报价" not in html
     assert "普通币 2bp、RWA 3bp" in html
