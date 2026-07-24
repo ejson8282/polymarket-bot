@@ -87,6 +87,11 @@ IPO_PACK_URL = os.getenv(
     "http://100.82.86.62:8080/dashboard/ipo/judgment-pack",
 )
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
+MACMINI_STATUS_SNAPSHOT_PATH = Path(
+    os.getenv("MACMINI_STATUS_SNAPSHOT_PATH", DATA_DIR / "macmini_status_last_good.json")
+)
+MACMINI_ALERT_GRACE_SECONDS = int(os.getenv("MACMINI_ALERT_GRACE_SECONDS", "600"))
+PROCESS_STARTED_AT = time.time()
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 DEWU_INVENTORY_PATH = Path(
     os.getenv("DEWU_INVENTORY_PATH", DATA_DIR / "dewu_inventory.json")
@@ -2840,6 +2845,22 @@ def _persist_account_ops_snapshot(data: dict) -> None:
         pass
 
 
+def _persist_macmini_snapshot(data: dict) -> None:
+    """Persist the last healthy exporter response across console restarts."""
+    try:
+        MACMINI_STATUS_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp = MACMINI_STATUS_SNAPSHOT_PATH.with_suffix(
+            MACMINI_STATUS_SNAPSHOT_PATH.suffix + ".tmp"
+        )
+        temp.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temp, MACMINI_STATUS_SNAPSHOT_PATH)
+    except OSError:
+        pass
+
+
 def _account_ops_version(data: Any) -> Optional[float]:
     if not isinstance(data, dict):
         return None
@@ -2870,6 +2891,8 @@ def _store_http_cache(url: str, data: Optional[dict]) -> None:
     _HTTP_CACHE[url] = (data, time.time())
     if url == ACCOUNT_OPS_URL and isinstance(data, dict):
         _persist_account_ops_snapshot(data)
+    if url == MACMINI_STATUS_URL and isinstance(data, dict):
+        _persist_macmini_snapshot(data)
 
 
 def _merge_account_ops_cache(section: str, value: Any) -> None:
@@ -2907,6 +2930,12 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
         snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
         if isinstance(snapshot, dict):
             _HTTP_CACHE[url] = (snapshot, time.time())
+            return snapshot
+    if url == MACMINI_STATUS_URL:
+        snapshot = _read_json(MACMINI_STATUS_SNAPSHOT_PATH)
+        if isinstance(snapshot, dict):
+            snapshot_age = _mtime_age(MACMINI_STATUS_SNAPSHOT_PATH) or 0
+            _HTTP_CACHE[url] = (snapshot, time.time() - snapshot_age)
             return snapshot
     data = _do_fetch(url, timeout=2.0)  # 冷启动:短超时同步一次
     _store_http_cache(url, data)
@@ -3025,6 +3054,17 @@ def _prefetch_loop() -> None:
                     snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
                     if isinstance(snapshot, dict):
                         _HTTP_CACHE[url] = (snapshot, time.time())
+                        continue
+                if url == MACMINI_STATUS_URL:
+                    # Console 重启或 Tailnet 瞬时抖动时继续展示最后一次健康状态；
+                    # 数据自身的 ts 会决定何时真正进入超时告警。
+                    prev = _HTTP_CACHE.get(url)
+                    if prev is not None and isinstance(prev[0], dict):
+                        continue
+                    snapshot = _read_json(MACMINI_STATUS_SNAPSHOT_PATH)
+                    if isinstance(snapshot, dict):
+                        snapshot_age = _mtime_age(MACMINI_STATUS_SNAPSHOT_PATH) or 0
+                        _HTTP_CACHE[url] = (snapshot, time.time() - snapshot_age)
                         continue
                 # 单次拉取失败别急着翻成"不可达":保留 5 分钟内的上一次好值,
                 # 慢源/瞬时抖动不再造成 present=false 闪断(配合告警防抖彻底消除假警)
@@ -3640,7 +3680,9 @@ def _macmini() -> Dict[str, Any]:
     if not isinstance(d, dict):
         return {"present": False}
     services = d.get("services") if isinstance(d.get("services"), dict) else {}
-    out = {"present": True, "age": _age_text(max(0, int(time.time() - (_num(d.get("ts")) or 0))))}
+    reported_at = _num(d.get("ts"))
+    age_sec = max(0, int(time.time() - reported_at)) if reported_at else None
+    out = {"present": True, "age": _age_text(age_sec), "age_sec": age_sec}
     for label, key in (("ai.codex.var-decibel-signer", "var_signer"),
                        ("ai.codex.predictfun-api-proxy", "pf_proxy"),
                        ("ai.codex.var-decibel-chrome-health", "chrome_health"),
@@ -3801,8 +3843,21 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
     imp_age = _mtime_age(IPO_IMPORT_SUCCESS_STAMP)
     if imp_age is not None and imp_age > 26 * 3600:
         alerts.append({"tag": "IPO", "msg": f"<b>每日新股导入超期</b>:{_age_text(imp_age)} 未跑(cron 每日 01:00,错过一轮即报)", "page": "hk", "sev": "warn"})
-    if not mm.get("present"):
+    process_age = max(0, int(time.time() - PROCESS_STARTED_AT))
+    if not mm.get("present") and process_age >= MACMINI_ALERT_GRACE_SECONDS:
         alerts.append({"tag": "INFRA", "msg": "<b>mac-mini 状态导出器失联</b>(:8620;影响 signer/pf-proxy 可见性)", "page": "vardec", "sev": "warn"})
+    elif (
+        mm.get("present")
+        and mm.get("age_sec") is not None
+        and mm["age_sec"] >= MACMINI_ALERT_GRACE_SECONDS
+    ):
+        alerts.append({
+            "tag": "INFRA",
+            "msg": f"<b>mac-mini 状态超过 {_age_text(mm['age_sec'])} 未更新</b>"
+                   "(:8620;影响 signer/pf-proxy 可见性)",
+            "page": "vardec",
+            "sev": "warn",
+        })
     eq = vd.get("equity_history") or {}
     auto_active = bool((vd.get("auto") or {}).get("enabled"))
     exposure_active = bool(vd.get("pairs"))

@@ -85,6 +85,48 @@ def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: P
     assert console._fetch_json(console.ACCOUNT_OPS_URL) == payload
 
 
+def test_macmini_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "macmini_status_last_good.json"
+    payload = {"ts": time.time() - 30, "services": {}}
+    _write_json(snapshot, payload)
+    monkeypatch.setattr(console, "MACMINI_STATUS_SNAPSHOT_PATH", snapshot)
+    console._HTTP_CACHE.pop(console.MACMINI_STATUS_URL, None)
+    monkeypatch.setattr(
+        console,
+        "_do_fetch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disk snapshot should avoid a cold mac-mini fetch")
+        ),
+    )
+
+    assert console._fetch_json(console.MACMINI_STATUS_URL) == payload
+
+
+def test_macmini_alert_waits_for_grace_period(monkeypatch) -> None:
+    monkeypatch.setattr(console, "MACMINI_ALERT_GRACE_SECONDS", 600)
+    monkeypatch.setattr(console, "PROCESS_STARTED_AT", time.time() - 60)
+
+    startup_alerts = console._alerts(
+        {}, {}, {}, {"present": True}, {"present": False}, {}, {}
+    )
+    assert not any(item.get("tag") == "INFRA" for item in startup_alerts)
+
+    monkeypatch.setattr(console, "PROCESS_STARTED_AT", time.time() - 601)
+    missing_alerts = console._alerts(
+        {}, {}, {}, {"present": True}, {"present": False}, {}, {}
+    )
+    assert any(item.get("tag") == "INFRA" for item in missing_alerts)
+
+    stale_alerts = console._alerts(
+        {}, {}, {}, {"present": True},
+        {"present": True, "age_sec": 601}, {}, {},
+    )
+    assert any(
+        item.get("tag") == "INFRA" and "超过" in item.get("msg", "")
+        for item in stale_alerts
+    )
+
+
 def test_prefetch_refreshes_ipo_judgment_pack() -> None:
     """A completed GPT run must replace the judgment pack cached at startup."""
 
