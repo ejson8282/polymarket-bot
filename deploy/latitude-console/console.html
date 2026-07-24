@@ -3906,7 +3906,7 @@
     const detail=((window.__state||{}).varia_detail)||{};
     box.innerHTML='<h2>交易统计</h2><div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>'+
       '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
-      _table(['VPS','笔数','名义','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+      _table(['VPS / 路线','笔数','名义','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
       '</div><div><h2 style="font-size:12px">按交易对</h2>'+
       _table(['交易对','笔数','名义','净 PnL','胜率'],detail.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
       '</div></div>';
@@ -3958,17 +3958,17 @@
     if(state) window.__vdControlState=state;
     state=window.__vdControlState||{};
     const symbolEl=document.getElementById('vdctl-symbol'); if(!symbolEl) return;
+    const hosts=state.hosts||{}, controls=state.host_controls||{}, hostEl=document.getElementById('vdctl-host');
+    ['vps1','vps2'].forEach((h,i)=>{const o=hostEl.options[i], x=hosts[h]||{}, c=controls[h]||{}, hedge=c.hedge_label||x.hedge_label||_vdVenueLabel(x.hedge_venue);if(o)o.textContent=h.toUpperCase()+' · Var '+money(x.equity_var)+' / '+hedge+' '+money(x.equity_hedge);});
+    const selectedHost=hostEl.value||'vps1', control=controls[selectedHost]||{}, selectedData=hosts[selectedHost]||{};
     const selected=symbolEl.value;
-    const symbols=state.symbols||[];
-    const signature=symbols.join('|');
+    const symbols=((state.symbols_by_host||{})[selectedHost]||control.symbols||state.symbols||[]);
+    const signature=selectedHost+'|'+symbols.join('|');
     if(symbolEl.dataset.sig!==signature){
       symbolEl.innerHTML=symbols.length?symbols.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join(''):'<option value="">暂无共同交易对</option>';
       symbolEl.dataset.sig=signature;
       if(symbols.includes(selected)) symbolEl.value=selected; else if(symbols.includes('BTC')) symbolEl.value='BTC';
     }
-    const hosts=state.hosts||{}, controls=state.host_controls||{}, hostEl=document.getElementById('vdctl-host');
-    ['vps1','vps2'].forEach((h,i)=>{const o=hostEl.options[i], x=hosts[h]||{}, c=controls[h]||{}, hedge=c.hedge_label||x.hedge_label||_vdVenueLabel(x.hedge_venue);if(o)o.textContent=h.toUpperCase()+' · Var '+money(x.equity_var)+' / '+hedge+' '+money(x.equity_hedge);});
-    const selectedHost=hostEl.value||'vps1', control=controls[selectedHost]||{}, selectedData=hosts[selectedHost]||{};
     const hedgeLabel=control.hedge_label||selectedData.hedge_label||_vdVenueLabel(selectedData.hedge_venue), manualSupported=control.manual_open_supported!==false;
     const directionEl=document.getElementById('vdctl-direction');
     [...directionEl.options].forEach(option=>{if(option.value!=='auto')option.textContent=_vdDirectionLabel(option.value,hedgeLabel);});
@@ -4050,8 +4050,8 @@
           '</div></div>';
       } else if(name.indexOf('成交记录')>=0){
         html+='<div class="src">近 40 笔对冲成交 · 数据来自 trades 表</div>'+
-          _table(['时间','VPS','SYMBOL','策略','名义','双腿方向','basis','净PnL','状态'],vdt.trades,r=>
-            '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
+          _table(['时间','VPS','路线','SYMBOL','策略','名义','双腿方向','basis','净PnL','状态'],vdt.trades,r=>
+            '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td>'+esc(r.route||'—')+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
       }
     } else if(pid==='pm'){
       const pmd=s.pm_detail||{};

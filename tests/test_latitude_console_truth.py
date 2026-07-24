@@ -796,6 +796,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "operation-frame" not in html
     assert 'id="vdctl-host"' in html
     assert 'id="vdctl-symbol"' in html
+    assert "state.symbols_by_host" in html
+    assert "selectedHost+'|'+symbols.join('|')" in html
     assert 'id="vdctl-open"' in html
     assert 'id="vdctl-close"' in html
     assert 'id="vdauto-root"' in html
@@ -842,6 +844,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "点差 '+platformBp.toFixed(2)+'bp" in html
     assert "预计入场成本" not in html
     assert "VPS2 · Var/Ondo" in html
+    assert "VPS / 路线" in html
+    assert "_table(['时间','VPS','路线','SYMBOL'" in html
     assert "Ondo 正式环境验收" in html
     assert "两列各读对应 VPS 的真实来源" in html
     assert "VPS2 Var/Ondo 不复用这些报价" not in html
@@ -1810,12 +1814,63 @@ def test_varia_control_lists_full_ranked_market_candidates(monkeypatch) -> None:
     monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [])
     monkeypatch.setattr(console, "_varia_recent_jobs", lambda: [])
     monkeypatch.setattr(console, "_varia_active_job", lambda: None)
+    monkeypatch.setattr(
+        console,
+        "_varia_ondo_strategy_pool",
+        lambda: {"common": ["BTC", "XAU", "AAPL"]},
+    )
 
     state = console._varia_control_state({"pairs": [], "single_leg": [], "hosts": {}})
 
     assert len(state["symbols"]) == 34
     assert state["symbols"][:6] == ["BTC", "ETH", "HYPE", "XAU", "SPCX", "SOL"]
     assert state["symbols"][-3:] == ["CBRS", "ZRO", "CHIP"]
+    assert state["symbols_by_host"]["vps1"] == state["symbols"]
+    assert state["symbols_by_host"]["vps2"] == ["BTC", "XAU", "AAPL"]
+    assert state["host_controls"]["vps2"]["symbols"] == ["BTC", "XAU", "AAPL"]
+
+
+def test_varia_detail_labels_routes_and_does_not_present_unattributed_rows_as_all(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    with sqlite3.connect(tmp_path / "hedge_bot.sqlite3") as connection:
+        connection.execute(
+            "CREATE TABLE trades ("
+            "id INTEGER PRIMARY KEY, host TEXT, symbol TEXT, timestamp_open TEXT, "
+            "timestamp_close TEXT, target_notional REAL, var_side TEXT, "
+            "decibel_side TEXT, basis_open_bp REAL, basis_close_bp REAL, "
+            "realized_pnl_usdc REAL, realized_cost_bp REAL, status TEXT, strategy TEXT)"
+        )
+        rows = [
+            (1, "vps1", "BTC", "2026-07-23 00:00", "2026-07-23 01:00",
+             100, "buy", "sell", 1, 0, 0.1, 1, "executed", "A"),
+            (2, "vps2", "XAU", "2026-07-23 00:00", "2026-07-23 01:00",
+             120, "sell", "buy", 1, 0, -0.1, 1, "executed", "B"),
+            (3, "all", "ETH", "2026-07-23 00:00", "2026-07-23 01:00",
+             80, "sell", "buy", 1, 0, 0, 1, "executed", None),
+        ]
+        connection.executemany(
+            "INSERT INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+    detail = console._varia_detail()
+
+    assert [row["host"] for row in detail["trades"]] == [
+        "VPS1", "VPS2", "未标记",
+    ]
+    assert detail["trades"][0]["route"] == "VPS1 · Var/Decibel"
+    assert detail["trades"][0]["side"] == "Var 买 / Decibel 卖"
+    assert detail["trades"][1]["route"] == "VPS2 · Var/Ondo"
+    assert detail["trades"][1]["side"] == "Var 卖 / Ondo 买"
+    assert detail["trades"][2]["route"] == "未标记 · 历史记录"
+    assert detail["trades"][2]["side"] == "Var 卖 / 对冲腿 买"
+    assert {row["name"] for row in detail["by_host"]} == {
+        "VPS1 · Var/Decibel",
+        "VPS2 · Var/Ondo",
+        "未标记 · 历史记录",
+    }
 
 
 def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path: Path) -> None:

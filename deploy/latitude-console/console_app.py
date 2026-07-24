@@ -1464,12 +1464,25 @@ def _varia_detail() -> Dict[str, Any]:
         rows = []
     for r in rows:
         tc = str(r.get("timestamp_close") or "")
+        raw_host = str(r.get("host") or "").strip().lower()
+        if raw_host == "vps1":
+            host_label, route_label, hedge_label = "VPS1", "VPS1 · Var/Decibel", "Decibel"
+        elif raw_host == "vps2":
+            host_label, route_label, hedge_label = "VPS2", "VPS2 · Var/Ondo", "Ondo"
+        else:
+            host_label, route_label, hedge_label = "未标记", "未标记 · 历史记录", "对冲腿"
+        side_labels = {"buy": "买", "sell": "卖"}
+        var_side = str(r.get("var_side") or "").lower()
+        hedge_side = str(r.get("decibel_side") or "").lower()
         trades.append({
-            "id": r.get("id"), "host": str(r.get("host") or "").upper(),
+            "id": r.get("id"), "host": host_label, "route": route_label,
             "symbol": r.get("symbol"), "strategy": r.get("strategy"),
             "close": tc[5:16].replace("T", " ") if len(tc) >= 16 else tc,
             "notional": _num(r.get("target_notional")),
-            "side": f"{r.get('var_side') or '?'}/{r.get('decibel_side') or '?'}",
+            "side": (
+                f"Var {side_labels.get(var_side, '?')} / "
+                f"{hedge_label} {side_labels.get(hedge_side, '?')}"
+            ),
             "basis": (f"{_num(r.get('basis_open_bp')):.1f}→{_num(r.get('basis_close_bp')):.1f}bp"
                       if _num(r.get("basis_open_bp")) is not None else "—"),
             "pnl": _num(r.get("realized_pnl_usdc")),
@@ -1480,7 +1493,10 @@ def _varia_detail() -> Dict[str, Any]:
     by_host: Dict[str, dict] = {}
     by_symbol: Dict[str, dict] = {}
     for t in trades:
-        for bucket, keyname in ((by_host, t["host"]), (by_symbol, str(t["symbol"] or "?"))):
+        for bucket, keyname in (
+            (by_host, t["route"]),
+            (by_symbol, str(t["symbol"] or "?")),
+        ):
             b = bucket.setdefault(keyname, {"trades": 0, "notional": 0.0, "pnl": 0.0, "wins": 0})
             b["trades"] += 1
             b["notional"] += t["notional"] or 0.0
@@ -1712,6 +1728,16 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     ):
         if symbol and symbol not in symbols:
             symbols.append(symbol)
+    ondo_pool = _varia_ondo_strategy_pool()
+    ondo_symbols = [
+        str(symbol).strip().upper()
+        for symbol in (ondo_pool.get("common") or [])
+        if str(symbol).strip()
+    ]
+    symbols_by_host = {
+        "vps1": list(symbols),
+        "vps2": list(dict.fromkeys(ondo_symbols)),
+    }
     jobs = _varia_recent_jobs()
     host_controls = {}
     for host in ("vps1", "vps2"):
@@ -1719,6 +1745,7 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         host_controls[host] = {
             "hedge_venue": hedge_venue,
             "hedge_label": _venue_label(hedge_venue),
+            "symbols": symbols_by_host[host],
             # The current manual quote/submit endpoint still consumes the Decibel
             # market snapshot. Keep VPS2 disabled until its Ondo-native manual
             # quote and one-click confirmation path is separately verified.
@@ -1726,7 +1753,8 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
             "reason": None if hedge_venue == "decibel" else "VPS2 Var/Ondo 手动开仓入口尚未验收",
         }
     return {
-        "symbols": symbols, "quotes": quotes, "pairs": vd.get("pairs", []),
+        "symbols": symbols, "symbols_by_host": symbols_by_host,
+        "quotes": quotes, "pairs": vd.get("pairs", []),
         "single_leg": vd.get("single_leg", []), "hosts": vd.get("hosts", {}),
         "host_controls": host_controls,
         "jobs": jobs, "active_job": _varia_active_job(),
