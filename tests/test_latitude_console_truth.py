@@ -803,6 +803,30 @@ def test_polymarket_page_is_native_and_has_complete_workspaces() -> None:
     assert "<iframe" not in page
     assert "打开完整面板" not in page
     assert "window.open('/alpha/'" not in html
+    assert "可用本金" in page
+    assert 'data-k="pmk.capital"' in page
+
+
+def test_pm_capital_summary_totals_live_collateral(monkeypatch) -> None:
+    now = time.time()
+    monkeypatch.setattr(console, "_pm_all_accounts", lambda: [1, 2])
+    monkeypatch.setattr(
+        console,
+        "_PM_COLLATERAL",
+        {
+            1: {"balance": 905.569218, "updated_at": now, "error": None},
+            2: {"balance": 1474.367951, "updated_at": now, "error": None},
+        },
+    )
+
+    result = console._pm_capital_summary()
+
+    assert result["basis"] == "available_collateral_usdc"
+    assert result["complete"] is True
+    assert result["fresh"] is True
+    assert result["known_accounts"] == 2
+    assert result["total"] == 2379.937169
+    assert result["accounts"][0]["balance"] == 905.569218
 
 
 def test_pm_detail_separates_live_orders_from_stale_engine_state(

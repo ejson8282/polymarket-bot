@@ -543,6 +543,7 @@ def _polymarket() -> Dict[str, Any]:
             status, status_cls = "运行中", "ok"
         else:
             status, status_cls = "已停止", "danger"
+        collateral = _pm_collateral_account(idx)
         accounts.append({
             "idx": idx,
             "paused": paused,
@@ -551,6 +552,9 @@ def _polymarket() -> Dict[str, Any]:
             "rewards": rewards_by_addr.get(funder.lower()),
             "status": status,
             "status_cls": status_cls,
+            "principal": collateral.get("balance"),
+            "principal_age": collateral.get("age"),
+            "principal_fresh": collateral.get("fresh", False),
             "balance": _num(state.get("balance")) if state_fresh else None,
             "balance_last_seen": _num(state.get("balance")),
             "orders": acct_orders,
@@ -593,6 +597,7 @@ def _polymarket() -> Dict[str, Any]:
         "fills_seen": fills_seen if fresh_states else None,
         "cooldown": cooldown if fresh_states else None,
         "rewards_total": rewards_total,
+        "capital": _pm_capital_summary(),
         "fill_events": pm_fill_events[-6:],
     }
 
@@ -2629,6 +2634,94 @@ def _quote_for_symbol(symbol: str) -> Optional[dict]:
 
 _PM_MARKET_NAMES: Dict[str, str] = {}
 _PM_MARKET_NAMES_REFRESHED = 0.0
+_PM_COLLATERAL: Dict[int, Dict[str, Any]] = {}
+_PM_COLLATERAL_REFRESHED = 0.0
+
+
+def _pm_collateral_account(idx: int) -> Dict[str, Any]:
+    row = _PM_COLLATERAL.get(idx)
+    if not isinstance(row, dict):
+        return {"balance": None, "age": None, "fresh": False}
+    updated_at = _num(row.get("updated_at"))
+    age = max(0, int(time.time() - updated_at)) if updated_at else None
+    return {
+        "balance": _num(row.get("balance")),
+        "age": age,
+        "fresh": bool(
+            row.get("error") is None
+            and age is not None
+            and age <= 120
+        ),
+    }
+
+
+def _pm_capital_summary() -> Dict[str, Any]:
+    accounts = _pm_all_accounts()
+    rows = [{"account": idx, **_pm_collateral_account(idx)} for idx in accounts]
+    known = [row for row in rows if row.get("balance") is not None]
+    return {
+        "basis": "available_collateral_usdc",
+        "accounts": rows,
+        "known_accounts": len(known),
+        "total_accounts": len(accounts),
+        "complete": bool(accounts) and len(known) == len(accounts),
+        "total": round(sum(float(row["balance"]) for row in known), 6)
+        if known
+        else None,
+        "fresh": bool(rows) and all(row.get("fresh") for row in rows),
+        "age": max(
+            (int(row["age"]) for row in known if row.get("age") is not None),
+            default=None,
+        ),
+    }
+
+
+def _refresh_pm_collateral() -> None:
+    """Refresh live CLOB collateral balances through the Mac mini signer.
+
+    The call derives API credentials but never signs or submits an order.
+    Results stay in memory so /api/state remains non-blocking.
+    """
+    global _PM_COLLATERAL_REFRESHED
+    if time.time() - _PM_COLLATERAL_REFRESHED < 45:
+        return
+    import sys
+
+    repo_root = str(MAKER_DIR.parents[2])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from platforms.polymarket.maker.cancel_all_cli import _build_client
+    from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+    now = time.time()
+    updated = {idx: dict(row) for idx, row in _PM_COLLATERAL.items()}
+    for idx in _pm_all_accounts():
+        previous = updated.get(idx, {})
+        try:
+            client, error = _build_client(MAKER_DIR / f"config_{idx}.json")
+            if client is None:
+                raise RuntimeError(error or "client unavailable")
+            response = client.get_balance_allowance(
+                params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            raw_balance = _num(response.get("balance"))
+            if raw_balance is None:
+                raise ValueError("balance missing")
+            updated[idx] = {
+                "balance": round(raw_balance / 1_000_000, 6),
+                "updated_at": now,
+                "last_attempt_at": now,
+                "error": None,
+            }
+        except Exception as exc:
+            updated[idx] = {
+                **previous,
+                "last_attempt_at": now,
+                "error": exc.__class__.__name__,
+            }
+    _PM_COLLATERAL.clear()
+    _PM_COLLATERAL.update(updated)
+    _PM_COLLATERAL_REFRESHED = now
 
 
 def _refresh_pm_market_names() -> None:
@@ -3374,6 +3467,11 @@ def _refresh_pm_remotes() -> None:
 def _prefetch_loop() -> None:
     """后台守护线程:每 20s 主动刷新跨机只读源到缓存,使请求路径始终命中热缓存。"""
     while True:
+        # 本金是 Polymarket 首屏核心数据，优先于较慢的跨机运营源刷新。
+        try:
+            _refresh_pm_collateral()
+        except Exception:
+            pass
         for url in _PREFETCH_URLS:
             data = _do_fetch(url, timeout=10.0)  # 放宽超时:Windows 源偶尔慢到 5-6s
             if data is None:

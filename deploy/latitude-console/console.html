@@ -1105,7 +1105,7 @@
       <div class="kpi"><div class="label">24h 成交额</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">读取中</div></div>
       <div class="kpi"><div class="label">24h 实现盈亏</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">已核验成交</div></div>
       <div class="kpi"><div class="label">累计奖励</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">账户奖励快照</div></div>
-      <div class="kpi"><div class="label">自成交拦截</div><div class="value" data-k="pmk.sibling">—</div><div class="sub">账号间防线</div></div>
+      <div class="kpi"><div class="label">可用本金</div><div class="value" data-k="pmk.capital">—</div><div class="sub num" data-k="pmk.capital_sub">读取两个账号的可用 USDC</div></div>
     </div>
 
     <div class="pm-health">
@@ -1120,7 +1120,7 @@
         <div class="panel">
           <div class="pm-panel-head"><h2>账号</h2><span class="src">一台 VPS 对应一个账号</span></div>
           <div class="pm-table-wrap"><table>
-            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>权益</th><th>挂单</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
+            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>可用本金</th><th>挂单</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
             <tbody id="pm-matrix-body"><tr><td colspan="12" class="pm-empty">读取账号状态…</td></tr></tbody>
           </table></div>
         </div>
@@ -2065,6 +2065,12 @@
     setK('pmk.vol_sub', ftKnown?ft+' 笔(24h)':'待核验');
     setK('pmk.pnl', pm.pnl_today==null?'—':pnlSpan(pm.pnl_today));
     setK('pmk.rewards', money(pm.rewards_total));
+    const capital=pm.capital||{};
+    setK('pmk.capital', capital.total==null?'—':money(capital.total));
+    const capitalParts=(capital.accounts||[]).map(a=>'账号'+a.account+' '+money(a.balance));
+    setK('pmk.capital_sub',capitalParts.length
+      ?capitalParts.join(' · ')+(capital.fresh?' · 实时':' · '+(capital.age==null?'待更新':pmAge(capital.age)))
+      :'可用本金待读取');
     const sibKnown=(pm.accounts||[]).some(a=>a.sibling_conflicts!=null);
     const sib=(pm.accounts||[]).reduce((n,a)=>n+(a.sibling_conflicts||0),0);
     setK('pmk.sibling', sibKnown?String(sib):'—');
@@ -2073,7 +2079,7 @@
         '<tr><td class="num"><input type="checkbox" class="pm-sel" data-idx="'+a.idx+'" checked></td>'+
         '<td class="num">'+a.idx+'</td><td class="num">'+esc(a.host||'—')+'</td><td class="num">'+esc(a.funder)+'</td>'+
         '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span>'+(a.age?'<div style="font-size:10px;color:var(--faint);margin-top:3px">状态 '+esc(a.age)+'</div>':'')+'</td>'+
-        '<td class="num">'+money(a.balance)+'</td><td class="num">'+(a.orders==null?'<span style="color:var(--warn)">待核验</span>':a.orders)+'</td>'+
+        '<td class="num"><b>'+money(a.principal)+'</b><div style="font-size:10px;color:'+(a.principal_fresh?'var(--ok)':'var(--faint)')+';margin-top:3px">'+(a.principal_fresh?'实时':(a.principal_age==null?'待更新':pmAge(a.principal_age)))+'</div></td><td class="num">'+(a.orders==null?'<span style="color:var(--warn)">待核验</span>':a.orders)+'</td>'+
         '<td class="num">'+(a.volume_today==null?'—':money(a.volume_today)+' · '+a.fills_today+'笔')+'</td>'+
         '<td class="num">'+(a.pnl_today==null?'—':pnlSpan(a.pnl_today))+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
