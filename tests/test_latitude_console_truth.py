@@ -791,6 +791,146 @@ def test_stale_polymarket_pid_file_is_not_treated_as_running(
     assert result["accounts"][0]["orders"] is None
 
 
+def test_polymarket_page_is_native_and_has_complete_workspaces() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+    page = html.split('<section class="page" id="page-pm">', 1)[1].split(
+        '<section class="page" id="page-pf">', 1
+    )[0]
+
+    for view in ("overview", "markets", "fills", "scan", "settings"):
+        assert f'data-pm-view="{view}"' in page
+        assert f'data-pm-view-panel="{view}"' in page
+    assert "<iframe" not in page
+    assert "打开完整面板" not in page
+    assert "window.open('/alpha/'" not in html
+
+
+def test_pm_detail_separates_live_orders_from_stale_engine_state(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    maker_dir = tmp_path / "maker"
+    data_dir.mkdir()
+    maker_dir.mkdir()
+    token = "123456789012345678901234567890"
+    secret = "must-never-reach-dashboard"
+    _write_json(
+        maker_dir / "config_1.json",
+        {
+            "account": {
+                "signer_server_url": "http://macmini/signer",
+                "signer_token": secret,
+                "private_key": secret,
+            },
+            "markets": [
+                {
+                    "token_id": token,
+                    "side": "YES",
+                    "enabled": True,
+                    "quote_size": 200,
+                    "risk": "low",
+                }
+            ],
+            "night_markets": [],
+            "strategy": {
+                "post_only": True,
+                "requote_interval_ms": 500,
+                "dual_side": {"enabled": True, "max_mid": 0.1},
+            },
+            "risk": {
+                "max_quote_shares_per_market": 200,
+                "max_notional_usdc_per_order": 510,
+            },
+            "execution": {"min_front_bid_notional_usdc": 10000},
+            "exit_strategy": {
+                "exit_delay_sec": 5,
+                "exit_timeout_sec": 300,
+                "retry_count": 2,
+            },
+        },
+    )
+    _write_json(
+        data_dir / "engine_state_1.json",
+        {
+            "markets": {
+                token: {
+                    "orders": [{"id": "old-order"}],
+                    "event_state": "ACTIVE",
+                }
+            },
+            "fills": [],
+            "pending_unwinds": [],
+            "exit_records": [],
+        },
+    )
+    _write_json(
+        data_dir / "polymarket_observer_state_1.json",
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "markets": {
+                token: {
+                    "display_name": "Fed decision",
+                    "best_bid": "0.41",
+                    "best_ask": "0.42",
+                    "mid": "0.415",
+                    "reference_plan": [{"price": "0.40", "quantity": "200"}],
+                }
+            },
+        },
+    )
+    _write_json(
+        data_dir / "polymarket_observer_status.json",
+        {
+            "last_poll_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {"accounts": 1, "markets": 1, "ready_markets": 1, "plans": 1},
+        },
+    )
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "PM_PEER_DIR", data_dir / "pm_peer")
+    monkeypatch.setattr(console, "MAKER_DIR", maker_dir)
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {})
+    monkeypatch.setattr(console, "_pid_file_alive", lambda *_: False)
+
+    result = console._pm_detail()
+
+    assert result["markets"][0]["bid"] == 0.41
+    assert result["markets"][0]["ask"] == 0.42
+    assert result["markets"][0]["orders"] is None
+    assert result["markets"][0]["orders_last_seen"] == 1
+    assert result["accounts"][0]["rules"]["post_only"] is True
+    assert result["accounts"][0]["rules"]["max_quote_shares"] == 200
+    assert result["accounts"][0]["signer_mode"] == "Mac mini"
+    assert secret not in json.dumps(result)
+
+
+def test_pm_detail_reports_orders_only_for_running_fresh_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    maker_dir = tmp_path / "maker"
+    data_dir.mkdir()
+    maker_dir.mkdir()
+    token = "987654321"
+    _write_json(
+        maker_dir / "config_1.json",
+        {"markets": [{"token_id": token, "enabled": True}], "night_markets": []},
+    )
+    _write_json(
+        data_dir / "engine_state_1.json",
+        {"markets": {token: {"orders": [{"id": "live-order"}]}}},
+    )
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "PM_PEER_DIR", data_dir / "pm_peer")
+    monkeypatch.setattr(console, "MAKER_DIR", maker_dir)
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {})
+    monkeypatch.setattr(console, "_pid_file_alive", lambda *_: True)
+
+    result = console._pm_detail()
+
+    assert result["markets"][0]["orders"] == 1
+    assert result["markets"][0]["orders_verified"] is True
+
+
 def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 

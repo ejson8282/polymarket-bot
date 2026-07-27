@@ -10,7 +10,7 @@
   :root{
     --bg:#0E1116; --panel:#151B23; --panel2:#1A222C; --line:#242E3A;
     --text:#E8EDF2; --muted:#8B98A9; --faint:#5A6676;
-    --var:#5EC8D8; --dec:#ECA13C;
+    --var:#5EC8D8; --dec:#ECA13C; --poly:#5B8DEF;
     --ok:#46B26B; --warn:#E7C547; --danger:#E5484D; --plan:#7B8CDE;
     --mono:"IBM Plex Mono","SF Mono",Menlo,Consolas,monospace;
     --sans:"IBM Plex Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
@@ -136,6 +136,34 @@
   .subnav span{font-family:var(--mono);font-size:11px;padding:4px 12px;border-radius:99px;border:1px solid var(--line);color:var(--muted);cursor:pointer}
   .subnav span.on{color:var(--text);background:var(--panel2)}
   .subnav span.embed-on{color:var(--text);background:#1E2A38;box-shadow:inset 0 -2px 0 var(--dec)}
+  .pm-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:16px;padding:18px 20px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .pm-head h1{font-size:20px;line-height:1.2;margin:0 0 5px}.pm-head p{margin:0;color:var(--muted);font-size:12px}
+  .pm-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+  .pm-subnav{border-bottom:1px solid var(--line);gap:22px;margin-top:12px;padding:0 4px}
+  .pm-subnav span{border:0;border-radius:0;padding:11px 2px 9px;background:transparent;color:var(--muted);font-family:inherit;font-size:12px}
+  .pm-subnav span.on{background:transparent;color:var(--text);box-shadow:inset 0 -2px 0 var(--poly)}
+  .pm-view{display:none}.pm-view.on{display:block}
+  .pm-overview-grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:14px}
+  .pm-overview-grid>.panel,.pm-view>.panel{min-width:0}
+  .pm-control-stack{display:grid;gap:10px}.pm-control-stack .panel{margin-top:0}
+  .pm-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .pm-panel-head h2{margin:0}.pm-panel-head .src{text-align:right;margin:0}
+  .pm-health{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:16px;background:var(--panel)}
+  .pm-health-cell{padding:13px 15px;border-left:1px solid var(--line);min-width:0}
+  .pm-health-cell:first-child{border-left:0}.pm-health-cell>span{display:block;color:var(--muted);font-size:10px;margin-bottom:5px}.pm-health-cell b{font-family:var(--mono);font-size:13px}
+  .pm-table-wrap{overflow:auto}.pm-table-wrap table{min-width:840px}
+  .pm-market-name{max-width:310px;white-space:normal;line-height:1.35}.pm-market-name small{display:block;color:var(--faint);font-family:var(--mono);font-size:9px;margin-top:3px}
+  .pm-rule-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:10px}
+  .pm-rule{padding:12px 14px;border-left:1px solid var(--line);min-width:0}.pm-rule:first-child{border-left:0}
+  .pm-rule>span{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.pm-rule b{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+  .pm-empty{padding:28px 12px;text-align:center;color:var(--faint)}
+  .pm-state-note{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;margin:8px 0 0}
+  .pm-form-grid{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:8px;margin-top:10px}
+  .pm-form-grid .opin{width:100%;box-sizing:border-box}
+  .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
+  .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
+  @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
+  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid{grid-template-columns:1fr}.pm-health-cell,.pm-rule{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child{border-top:0}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
   .banner.livewarn{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.35);color:#FF9B9E}
@@ -1046,102 +1074,176 @@
   </div>
 </section>
 
-<!-- ════════════ 页面 3 · Polymarket(账号矩阵首屏,原 5 tab 保留) ════════════ -->
+<!-- ════════════ 页面 3 · Polymarket 原生做市控制台 ════════════ -->
 <section class="page" id="page-pm">
-  <div class="banner livewarn">MAINNET · LIVE — 真实资金 · kill-switch 待命
-    <span style="flex:1"></span><span id="pm-op-msg" style="font-size:11px;font-family:var(--mono);margin-right:8px"></span><button class="btn danger" id="pm-estop-btn">EMERGENCY STOP</button>
-  </div>
-  <div class="subnav">
-    <span class="on">账号矩阵(新首屏)</span><span>Markets <em class="feat f-old">现有</em></span><span>Fills <em class="feat f-old">现有</em></span>
-    <span>Scan <em class="feat f-old">现有</em></span><span>Proxy <em class="feat f-old">现有</em></span><span>只读观察 <em class="feat f-new">新增</em></span>
-  </div>
-  <div class="kpis">
-    <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">—</div><div class="sub num" data-k="pmk.run_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">活跃挂单</div><div class="value" data-k="pmk.orders">—</div><div class="sub num" data-k="pmk.quotes">等待实时数据</div></div>
-    <div class="kpi"><div class="label">今日成交</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">等待实时数据</div></div>
-    <div class="kpi"><div class="label">今日 PnL</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">来自已核验 fills</div></div>
-    <div class="kpi"><div class="label">奖励(累计)</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">rewards_cumulative</div></div>
-    <div class="kpi"><div class="label">兄弟交叉拦截</div><div class="value" data-k="pmk.sibling">—</div><div class="sub">sibling_registry</div></div>
-  </div>
-  <div class="grid2">
+  <div class="pm-head">
     <div>
-      <div class="panel">
-        <h2>账号矩阵 <span class="feat f-new">新增首屏</span> <span class="feat f-old">暂停=撤单 为现有功能</span></h2>
-        <div class="src">source · engine_state_N.json + .engine_N.pid + .account_N.paused + rewards snapshot;状态标签沿用 app.py 现有 tag 体系(运行中/风控熔断/异常)</div>
-        <table>
-          <thead><tr><th title="勾选=纳入 Start/Stop/Reload 操作">选中</th><th>#</th><th>机器</th><th>FUNDER</th><th>状态</th><th>抵押/权益</th><th>挂单</th><th>今日成交</th><th>PnL</th><th>奖励est</th><th>哨兵</th><th>操作</th></tr></thead>
-          <tbody id="pm-matrix-body">
-            <tr><td colspan="12" style="color:var(--faint)">正在读取各账号实时状态…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="panel" id="pm-pnl-panel">
-        <h2>收益核算 <span class="feat f-new">新增</span> <span data-k="pmpnl.head" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400"></span></h2>
-        <div class="src" data-k="pmpnl.note">source · rewards_cumulative.json 每日奖励(账户-日粒度,Polymarket 不提供按市场拆分)＋ 各账户本次运行 fills 实现盈亏</div>
-        <table style="margin-top:6px">
-          <thead><tr><th>账号</th><th>近7日奖励</th><th>累计奖励</th><th>本次运行实现盈亏</th><th>净估计</th><th>最后快照</th></tr></thead>
-          <tbody id="pm-pnl-body"><tr><td colspan="6" style="color:var(--faint)">等实时数据(引擎未运行时显示历史)</td></tr></tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h2>Markets · Auto Curator <span class="feat f-old">现有</span></h2>
-        <div class="src" data-k="pm.curator">source · auto_curator_state.json + 自动扫入事件(48h);Refresh Markets / 开关+间隔 / Append·Replace 均为现有功能,保留在 Markets/Scan 二级页</div>
-        <table>
-          <thead><tr><th>MARKET</th><th>事件态</th><th>预算份额</th><th>我的档位</th><th>sentinel</th><th>奖励健康</th></tr></thead>
-          <tbody>
-            <tr><td colspan="6" style="color:var(--faint)">市场明细尚未接入本面板，请以启动预检或完整后台为准</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h2>Scan &amp; 市场配置 <span class="feat f-new">已迁移</span></h2>
-        <div class="src">scanner.py --json(同 /alpha/ Run Scan);应用选择=写 config.json + 全量同步 config_N;引擎需 Stop+Start 才读新 markets</div>
-        <div class="btnrow" style="margin-top:8px;flex-wrap:wrap;gap:6px">
-          <input id="sc-minr" class="opin" type="number" placeholder="MinDaily$" style="width:84px">
-          <input id="sc-maxr" class="opin" type="number" placeholder="MaxDaily$" style="width:84px">
-          <input id="sc-mins" class="opin" type="number" placeholder="MinSprd" style="width:76px">
-          <input id="sc-maxs" class="opin" type="number" placeholder="MaxSprd" style="width:76px">
-          <input id="sc-minv" class="opin" type="number" placeholder="MinVol$" style="width:84px">
-          <input id="sc-mind" class="opin" type="number" placeholder="MinDepth$" style="width:88px">
-          <input id="sc-top" class="opin" type="number" placeholder="TopN" style="width:60px">
-          <button class="btn" id="scan-run-btn">Run Scan</button>
-          <label style="font-size:11px;color:var(--faint)"><input type="checkbox" id="scan-ac-only" checked> 只看 A/C 区</label>
-          <span id="scan-status" class="src"></span>
+      <h1>Polymarket 做市</h1>
+      <p>账号、市场、成交退出与扫描统一管理</p>
+    </div>
+    <div class="pm-head-actions">
+      <span class="chip danger">MAINNET</span>
+      <span id="pm-engine-chip" class="chip">引擎状态读取中</span>
+      <span id="pm-observer-chip" class="chip">公共行情读取中</span>
+      <span id="pm-op-msg" class="src"></span>
+      <button class="btn danger" id="pm-estop-btn">全部撤单并停机</button>
+    </div>
+  </div>
+
+  <div class="subnav pm-subnav" id="pm-subnav" data-vd-native-nav>
+    <span class="on" data-pm-view="overview">总览</span>
+    <span data-pm-view="markets">市场</span>
+    <span data-pm-view="fills">成交与退出</span>
+    <span data-pm-view="scan">扫描</span>
+    <span data-pm-view="settings">设置</span>
+  </div>
+
+  <div class="pm-view on" data-pm-view-panel="overview">
+    <div class="kpis">
+      <div class="kpi"><div class="label">运行账号</div><div class="value" data-k="pmk.run">—</div><div class="sub num" data-k="pmk.run_sub">读取中</div></div>
+      <div class="kpi"><div class="label">当前挂单</div><div class="value" data-k="pmk.orders">—</div><div class="sub num" data-k="pmk.quotes">仅新鲜引擎状态</div></div>
+      <div class="kpi"><div class="label">24h 成交额</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">读取中</div></div>
+      <div class="kpi"><div class="label">24h 实现盈亏</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">已核验成交</div></div>
+      <div class="kpi"><div class="label">累计奖励</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">账户奖励快照</div></div>
+      <div class="kpi"><div class="label">自成交拦截</div><div class="value" data-k="pmk.sibling">—</div><div class="sub">账号间防线</div></div>
+    </div>
+
+    <div class="pm-health">
+      <div class="pm-health-cell"><span>引擎</span><b id="pm-health-engine">读取中</b></div>
+      <div class="pm-health-cell"><span>公共行情</span><b id="pm-health-observer">读取中</b></div>
+      <div class="pm-health-cell"><span>当前配置</span><b id="pm-health-config">读取中</b></div>
+      <div class="pm-health-cell"><span>待退出仓位</span><b id="pm-health-exits">读取中</b></div>
+    </div>
+
+    <div class="pm-overview-grid">
+      <div>
+        <div class="panel">
+          <div class="pm-panel-head"><h2>账号</h2><span class="src">一台 VPS 对应一个账号</span></div>
+          <div class="pm-table-wrap"><table>
+            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>权益</th><th>挂单</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
+            <tbody id="pm-matrix-body"><tr><td colspan="12" class="pm-empty">读取账号状态…</td></tr></tbody>
+          </table></div>
         </div>
-        <div id="scan-results" style="margin-top:8px;max-height:340px;overflow:auto"></div>
-        <div class="btnrow" id="scan-apply-row" style="display:none;margin-top:8px">
-          <button class="btn" id="scan-apply-btn">应用选择(日盘+夜盘)</button><span id="scan-apply-msg" class="src"></span>
+
+        <div class="panel" id="pm-pnl-panel">
+          <div class="pm-panel-head"><h2>收益</h2><span data-k="pmpnl.head" class="src"></span></div>
+          <div class="src" data-k="pmpnl.note">奖励与退出损耗按账号核算</div>
+          <div class="pm-table-wrap"><table>
+            <thead><tr><th>账号</th><th>近7日奖励</th><th>累计奖励</th><th>本次运行盈亏</th><th>净估计</th><th>最后奖励快照</th></tr></thead>
+            <tbody id="pm-pnl-body"><tr><td colspan="6" class="pm-empty">读取收益记录…</td></tr></tbody>
+          </table></div>
         </div>
+      </div>
+
+      <aside class="pm-control-stack" style="margin-top:16px">
+        <div class="panel">
+          <div class="pm-panel-head"><h2>引擎控制</h2><span class="chip" id="pm-write-chip">读取中</span></div>
+          <div id="pm-sel-hint" class="src"></div>
+          <div class="btnrow" style="margin-top:10px;flex-wrap:wrap">
+            <button class="btn ghost" id="pm-precheck-btn">启动预检</button>
+            <button class="btn primary" id="pm-start-btn">启动选中</button>
+            <button class="btn" id="pm-stop-btn">停止选中</button>
+            <button class="btn ghost" id="pm-reload-btn">重启选中</button>
+          </div>
+          <div class="src" id="pm-engine-msg" style="margin-top:8px"></div>
+          <div id="pm-precheck-out" style="margin-top:8px;font-family:var(--mono);font-size:11px;line-height:1.7"></div>
+        </div>
+        <div class="panel">
+          <div class="pm-panel-head"><h2>当前规则</h2><span class="src">账号 1</span></div>
+          <div id="pm-rule-compact" class="events"><div class="pm-empty">读取配置…</div></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="pm-view" data-pm-view-panel="markets">
+    <div class="panel">
+      <div class="pm-panel-head">
+        <div><h2>当前配置市场</h2><div class="src">实时公共盘口与当前账号配置合并展示</div></div>
+        <span id="pm-market-count" class="chip">0 个</span>
+      </div>
+      <div class="pm-state-note"><span class="pm-status-dot" id="pm-market-dot"></span><span id="pm-market-note">读取中</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>时段</th><th>市场</th><th>方向</th><th>bid / ask</th><th>参考挂价</th><th>单边上限</th><th>当前挂单</th><th>状态</th></tr></thead>
+        <tbody id="pm-markets-body"><tr><td colspan="9" class="pm-empty">读取市场…</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><h2>市场规则</h2><span class="src">随账号配置更新</span></div>
+      <div id="pm-market-rules" class="pm-rule-grid"><div class="pm-rule"><span>状态</span><b>读取中</b></div></div>
+    </div>
+  </div>
+
+  <div class="pm-view" data-pm-view-panel="fills">
+    <div class="pm-health">
+      <div class="pm-health-cell"><span>待退出</span><b id="pm-exit-pending">—</b></div>
+      <div class="pm-health-cell"><span>最近成交</span><b id="pm-fill-count">—</b></div>
+      <div class="pm-health-cell"><span>已完成退出</span><b id="pm-exit-count">—</b></div>
+      <div class="pm-health-cell"><span>退出损耗</span><b id="pm-exit-loss">—</b></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><h2>待退出仓位</h2><span class="src">成交后撤报价 → 挂 SELL → 仓位归零 → 余额稳定后恢复</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>市场</th><th>吃单价</th><th>退出价</th><th>数量</th><th>挂单</th><th>已等待</th><th>状态</th></tr></thead>
+        <tbody id="pm-unwinds-body"><tr><td colspan="8" class="pm-empty">当前没有待退出仓位</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><h2>成交记录</h2><span class="src">最近 60 条引擎记录</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>时间</th><th>市场</th><th>价格</th><th>数量</th><th>原因</th><th>后续状态</th></tr></thead>
+        <tbody id="pm-fills-body"><tr><td colspan="7" class="pm-empty">暂无成交</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><h2>退出记录</h2><span class="src">负数代表有利退出</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>时间</th><th>市场</th><th>吃单价</th><th>退出价</th><th>数量</th><th>损耗</th></tr></thead>
+        <tbody id="pm-exits-body"><tr><td colspan="7" class="pm-empty">暂无退出记录</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="pm-view" data-pm-view-panel="scan">
+    <div class="panel">
+      <div class="pm-panel-head"><div><h2>市场扫描</h2><div class="src">筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
+      <div class="pm-form-grid">
+        <input id="sc-minr" class="opin" type="number" placeholder="最低日奖励 $">
+        <input id="sc-maxr" class="opin" type="number" placeholder="最高日奖励 $">
+        <input id="sc-mins" class="opin" type="number" placeholder="最低价差">
+        <input id="sc-maxs" class="opin" type="number" placeholder="最高价差">
+        <input id="sc-minv" class="opin" type="number" placeholder="最低 24h 量 $">
+        <input id="sc-mind" class="opin" type="number" placeholder="最低盘口深度 $">
+        <input id="sc-top" class="opin" type="number" placeholder="结果数量">
+        <div class="btnrow"><button class="btn primary" id="scan-run-btn">开始扫描</button><label class="src"><input type="checkbox" id="scan-ac-only" checked> 只看 A/C 区</label></div>
+      </div>
+      <div id="scan-results" style="margin-top:12px;max-height:520px;overflow:auto"></div>
+      <div class="btnrow" id="scan-apply-row" style="display:none;margin-top:10px">
+        <button class="btn" id="scan-apply-btn">应用日盘 / 夜盘选择</button><span id="scan-apply-msg" class="src"></span>
       </div>
     </div>
-    <aside>
-      <div class="panel" style="margin-top:16px">
-        <h2>引擎控制 <span class="feat f-new">已迁移</span> <span id="pm-engine-chip" class="chip" style="margin-left:auto">—</span></h2>
-        <div class="src">一 VPS 一账号:账号1@VPS1、账号2@VPS2,各是自己机器上的 polymarket-engine.service。Start/Stop/Reload 对矩阵勾选的账号逐个在其所属机器操作;横幅 EMERGENCY STOP=撤全部单+停所有账号</div>
-        <div class="src" id="pm-sel-hint" style="margin-top:4px"></div>
-        <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="pm-precheck-btn">启动预检</button><button class="btn" id="pm-start-btn">Start 选中</button><button class="btn" id="pm-stop-btn">Stop 选中</button><button class="btn" id="pm-reload-btn">Reload 选中</button></div>
-        <div class="src" id="pm-engine-msg" style="margin-top:6px"></div>
-        <div id="pm-precheck-out" style="margin-top:6px;font-family:var(--mono);font-size:11px;line-height:1.7"></div>
-      </div>
-      <div class="panel">
-        <h2>代理(Clash) <span class="feat f-old">现有</span></h2>
-        <div class="src">source · proxy failover 计数;Run Test 保留</div>
-        <div class="proj" style="grid-template-columns:1fr;margin-top:0">
-          <div class="card"><div class="row"><span class="k">当前节点</span><span class="v">未接入实时状态</span></div>
-          <div class="row"><span class="k">failover(24h)</span><span class="v">—</span></div>
-          <div class="row"><span class="k">req 异常(1h)</span><span class="v">—</span></div></div>
-        </div>
-        <div class="src" style="margin-top:10px">代理池 <b id="proxy-count">—</b> 条 <span class="feat f-new">编辑已迁移</span>(Run Test 留在 /alpha/)</div>
-        <textarea id="proxy-input" class="opin" rows="4" placeholder="host:port 或 host:port:user:pass,一行一条" style="width:100%;margin-top:6px;box-sizing:border-box"></textarea>
-        <div class="btnrow" style="margin-top:6px"><button class="btn ghost" id="proxy-append">Append</button><button class="btn ghost" id="proxy-replace">Replace all</button><span id="proxy-msg" class="src"></span></div>
-      </div>
-      <div class="panel">
-        <h2>Fills 流 <span class="feat f-old">现有</span></h2>
-        <ul class="events">
-          <li><span class="dot d-info"></span><div><div>本面板暂无已核验的实时成交</div></div></li>
-        </ul>
-      </div>
-    </aside>
+  </div>
+
+  <div class="pm-view" data-pm-view-panel="settings">
+    <div class="panel">
+      <div class="pm-panel-head"><h2>账号规则</h2><span class="src">敏感凭据不在网页展示</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>签名</th><th>Post-only</th><th>双边</th><th>单市场上限</th><th>单笔名义上限</th><th>前排深度</th><th>冷却</th><th>退出</th></tr></thead>
+        <tbody id="pm-rules-body"><tr><td colspan="9" class="pm-empty">读取配置…</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><div><h2>代理池</h2><div class="src"><b id="proxy-count">—</b> 条 · 仅保存连接配置</div></div><span id="proxy-msg" class="src"></span></div>
+      <textarea id="proxy-input" class="opin" rows="5" placeholder="host:port 或 host:port:user:pass，每行一条" style="width:100%;box-sizing:border-box"></textarea>
+      <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="proxy-append">追加</button><button class="btn" id="proxy-replace">替换全部</button></div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><div><h2>只读观察</h2><div class="src">公共盘口与参考报价计划，不连接 signer</div></div><span id="pm-shadow-status" class="chip">读取中</span></div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>组件</th><th>状态</th><th>样本</th><th>新鲜样本</th><th>差异率</th><th>安全差异</th><th>动作差异</th><th>最近轮询</th></tr></thead>
+        <tbody id="pm-observer-body"><tr><td colspan="8" class="pm-empty">读取观察状态…</td></tr></tbody>
+      </table></div>
+    </div>
   </div>
 </section>
 
@@ -1761,6 +1863,11 @@
     document.querySelectorAll('.ops-subnav button').forEach(button=>button.classList.toggle('on',button.dataset.opsPage===p));
   }
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));
+  document.querySelectorAll('#pm-subnav [data-pm-view]').forEach(tab=>tab.addEventListener('click',()=>{
+    const view=tab.dataset.pmView;
+    document.querySelectorAll('#pm-subnav [data-pm-view]').forEach(item=>item.classList.toggle('on',item===tab));
+    document.querySelectorAll('#page-pm [data-pm-view-panel]').forEach(panel=>panel.classList.toggle('on',panel.dataset.pmViewPanel===view));
+  }));
   document.querySelectorAll('#dw-subnav span').forEach(sp=>sp.addEventListener('click',()=>{
     document.querySelectorAll('#dw-subnav span').forEach(x=>x.classList.toggle('on',x===sp));
   }));
@@ -1940,7 +2047,7 @@
           '<td class="num" style="font-size:11px;color:var(--faint)">'+esc(a.last_date||'无')+'</td></tr>';
       }).join('');
       setK('pmpnl.head','近7日奖励合计 '+money(pl.total_reward_7d||0)+' · 净估计 '+money(pl.total_net_est||0));
-      if(pl.note) setK('pmpnl.note','source · '+esc(pl.note));
+      if(pl.note) setK('pmpnl.note',esc(pl.note));
     }
     setK('pm.run', pm.running+'/'+pm.total+' 运行');
     const orderText=pm.live_orders==null?'待核验':String(pm.live_orders);
@@ -1973,15 +2080,20 @@
         '<td class="btnrow">'+(a.paused
           ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="resume">恢复</button>'
           :(String(a.status||'').startsWith('运行中')
-            ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停(撤单)</button>'
+            ?'<button class="btn ghost pm-acct-btn" data-idx="'+a.idx+'" data-act="pause">暂停并撤单</button>'
             :'<span style="color:var(--faint)">已停止</span>'))+'</td></tr>'
-      ).join('') + '<tr style="opacity:.55"><td class="num">'+(pm.accounts.length+1)+'-30</td><td colspan="9" style="color:var(--faint)">扩容位:roster 加入即出现</td></tr>';
+      ).join('');
     }
     const es=pm.engine_summary||{running:0,total:0};
     const echip=document.getElementById('pm-engine-chip');
     if(echip){
       echip.textContent = '运行 '+es.running+'/'+es.total+' 账户';
-      echip.className = 'chip ' + (es.running>0 ? 'ok' : 'danger');
+      echip.className = 'chip ' + (es.running>0 ? 'ok' : 'warn');
+    }
+    const writeChip=document.getElementById('pm-write-chip');
+    if(writeChip){
+      writeChip.textContent=window.__writesEnabled?'真实操作已启用':'只读';
+      writeChip.className='chip '+(window.__writesEnabled?'ok':'warn');
     }
     const selHint=document.getElementById('pm-sel-hint');
     if(selHint){
@@ -1992,6 +2104,158 @@
     if(pm.curator){
       const c=pm.curator;
       setK('pm.curator','source · auto_curator_state.json — '+(c.enabled?'启用':'停用')+' · 引擎内 '+c.markets+' 市场 · 累计扫入 '+(c.added_total??'—')+' / 拒绝 '+(c.rejected_total??'—')+(c.last_scan_age?' · 上次扫描 '+esc(c.last_scan_age):''));
+    }
+  }
+
+  function pmAge(seconds){
+    if(seconds===null||seconds===undefined||seconds==='')return '—';
+    const value=Number(seconds);
+    if(!Number.isFinite(value))return '—';
+    if(value<90)return Math.max(0,Math.round(value))+' 秒前';
+    if(value<5400)return Math.round(value/60)+' 分钟前';
+    return Math.round(value/3600)+' 小时前';
+  }
+  function pmPrice(value){
+    if(value===null||value===undefined||value==='')return '—';
+    const n=Number(value);
+    return Number.isFinite(n)?n.toFixed(3):'—';
+  }
+  function pmNumber(value,digits=0){
+    if(value===null||value===undefined||value==='')return '—';
+    const n=Number(value);
+    return Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
+  }
+  function bindPMDetail(detail,shadow){
+    detail=detail||{}; shadow=shadow||{};
+    const accounts=detail.accounts||[], markets=detail.markets||[];
+    const observer=detail.observer||{}, pending=detail.pending_unwinds||[];
+    const engineRunning=accounts.filter(a=>a.engine_running).length;
+    const configured=markets.filter(m=>m.enabled).length;
+    const observerReady=observer.present&&observer.age!=null&&observer.age<=45&&observer.errors===0;
+
+    const observerChip=document.getElementById('pm-observer-chip');
+    if(observerChip){
+      observerChip.textContent=observerReady?'公共行情正常':'公共行情需检查';
+      observerChip.className='chip '+(observerReady?'ok':'warn');
+    }
+    const healthEngine=document.getElementById('pm-health-engine');
+    if(healthEngine)healthEngine.innerHTML='<span class="pm-status-dot '+(engineRunning?'ok':'warn')+'"></span> '+engineRunning+' / '+accounts.length+' 运行';
+    const healthObserver=document.getElementById('pm-health-observer');
+    if(healthObserver)healthObserver.innerHTML='<span class="pm-status-dot '+(observerReady?'ok':'warn')+'"></span> '+(observer.age==null?'无快照':pmAge(observer.age));
+    const healthConfig=document.getElementById('pm-health-config');
+    if(healthConfig)healthConfig.textContent=configured+' 个市场';
+    const healthExits=document.getElementById('pm-health-exits');
+    if(healthExits)healthExits.innerHTML=pending.length?'<span class="down">'+pending.length+' 个处理中</span>':'<span class="up">0 · 无单腿</span>';
+
+    const marketCount=document.getElementById('pm-market-count');
+    if(marketCount)marketCount.textContent=configured+' 个';
+    const marketDot=document.getElementById('pm-market-dot');
+    const marketNote=document.getElementById('pm-market-note');
+    const marketHealthy=observerReady&&configured>0;
+    if(marketDot)marketDot.className='pm-status-dot '+(marketHealthy?'ok':'warn');
+    if(marketNote)marketNote.textContent=configured
+      ?('公共行情 '+(observer.age==null?'未返回时间':pmAge(observer.age))+' · 只有运行中且状态新鲜时才显示当前挂单')
+      :'当前账号没有启用市场';
+
+    const marketBody=document.getElementById('pm-markets-body');
+    if(marketBody){
+      marketBody.innerHTML=markets.length?markets.map(m=>{
+        const plan=(m.reference_plan||[]).slice(0,3).map(x=>pmPrice(x.price)+' × '+pmNumber(x.quantity,2)).join(' / ')||'—';
+        const book=pmPrice(m.bid)+' / '+pmPrice(m.ask);
+        const orders=m.orders_verified?String(m.orders):'<span style="color:var(--warn)">待核验</span>';
+        let state='已配置',stateClass='warn';
+        if(!m.enabled){state='已停用';stateClass='';}
+        else if(m.engine_running&&m.engine_state_fresh){state=m.event_state==='ACTIVE'?'报价中':m.event_state;stateClass=m.event_state==='ACTIVE'?'ok':'warn';}
+        else if(!m.engine_running){state='引擎停止';}
+        else{state='引擎状态迟滞';stateClass='danger';}
+        return '<tr><td class="num">#'+m.account+' · '+esc(m.host||'')+'</td><td>'+esc(m.session)+'</td>'+
+          '<td class="pm-market-name">'+esc(m.name)+'<small>'+esc(m.token)+' · '+esc(m.quote_source||'')+'</small></td>'+
+          '<td class="num">'+esc(m.side)+'</td><td class="num">'+book+'</td><td class="num" style="white-space:normal">'+esc(plan)+'</td>'+
+          '<td class="num">'+pmNumber(m.quote_size,2)+'</td><td class="num">'+orders+'</td>'+
+          '<td><span class="chip '+stateClass+'">'+esc(state)+'</span></td></tr>';
+      }).join(''):'<tr><td colspan="9" class="pm-empty">当前没有配置市场</td></tr>';
+    }
+
+    const first=accounts[0]||{}, rules=first.rules||{};
+    const compact=document.getElementById('pm-rule-compact');
+    if(compact){
+      const items=[
+        ['挂单方式',rules.post_only?'Post-only':'需检查',rules.post_only?'ok':'danger'],
+        ['双边做市',rules.dual_side?'YES / NO 同时挂':'关闭',rules.dual_side?'ok':'warn'],
+        ['单市场上限',pmNumber(rules.max_quote_shares,2)+' 份',''],
+        ['成交后处理','撤报价 → 退出 → 余额稳定 → 恢复','']
+      ];
+      compact.innerHTML=items.map(x=>'<div class="pm-state-note"><span class="pm-status-dot '+x[2]+'"></span><span>'+esc(x[0])+'</span><b style="margin-left:auto;text-align:right">'+esc(x[1])+'</b></div>').join('');
+    }
+    const marketRules=document.getElementById('pm-market-rules');
+    if(marketRules){
+      const items=[
+        ['Post-only',rules.post_only?'开启':'关闭'],
+        ['双边范围',rules.dual_side?'mid ≤ '+pmNumber(rules.dual_side_max_mid,3):'关闭'],
+        ['前排深度',rules.min_front_depth==null?'—':money(rules.min_front_depth)],
+        ['单笔名义上限',rules.max_notional==null?'—':money(rules.max_notional)],
+        ['重报价',rules.requote_ms==null?'—':pmNumber(rules.requote_ms)+' ms'],
+        ['奖励档位',rules.max_reward_levels==null?'—':pmNumber(rules.max_reward_levels)+' 档'],
+        ['波动观察',rules.vol_watch_sec==null?'—':pmNumber(rules.vol_watch_sec)+' 秒'],
+        ['隔离时间',rules.vol_quarantine_sec==null?'—':pmNumber(rules.vol_quarantine_sec)+' 秒']
+      ];
+      marketRules.innerHTML=items.map(x=>'<div class="pm-rule"><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>').join('');
+    }
+    const rulesBody=document.getElementById('pm-rules-body');
+    if(rulesBody){
+      rulesBody.innerHTML=accounts.length?accounts.map(a=>{
+        const r=a.rules||{};
+        const exit=[pmNumber(r.exit_delay_sec)+'s 延迟',pmNumber(r.exit_timeout_sec)+'s 超时',pmNumber(r.exit_retries)+' 次'].join(' / ');
+        return '<tr><td class="num">#'+a.account+' · '+esc(a.host||'')+'</td><td>'+esc(a.signer_mode||'—')+'</td>'+
+          '<td><span class="chip '+(r.post_only?'ok':'danger')+'">'+(r.post_only?'开启':'关闭')+'</span></td>'+
+          '<td><span class="chip '+(r.dual_side?'ok':'warn')+'">'+(r.dual_side?'开启':'关闭')+'</span></td>'+
+          '<td class="num">'+pmNumber(r.max_quote_shares,2)+' 份</td><td class="num">'+money(r.max_notional)+'</td>'+
+          '<td class="num">'+money(r.min_front_depth)+'</td><td class="num">'+pmNumber(r.cooldown_sec)+' 秒</td><td class="num">'+esc(exit)+'</td></tr>';
+      }).join(''):'<tr><td colspan="9" class="pm-empty">没有账号配置</td></tr>';
+    }
+
+    const unwindBody=document.getElementById('pm-unwinds-body');
+    if(unwindBody){
+      unwindBody.innerHTML=pending.length?pending.map(x=>'<tr><td class="num">#'+x.account+' · '+esc(x.host)+'</td><td class="num">'+esc(x.market)+'</td>'+
+        '<td class="num">'+pmPrice(x.fill_price)+'</td><td class="num">'+pmPrice(x.sell_price)+'</td><td class="num">'+pmNumber(x.size,4)+'</td>'+
+        '<td class="num">'+esc(x.order)+'</td><td class="num">'+pmAge(x.age_sec)+'</td><td><span class="chip '+(x.snapshot_fresh?'warn':'danger')+'">'+(x.snapshot_fresh?'退出中':'历史快照')+'</span></td></tr>').join('')
+        :'<tr><td colspan="8" class="pm-empty">当前没有待退出仓位</td></tr>';
+    }
+    const fills=detail.fills||[], fillBody=document.getElementById('pm-fills-body');
+    if(fillBody){
+      fillBody.innerHTML=fills.length?fills.map(x=>'<tr><td class="num">#'+x.account+' · '+esc(x.host)+'</td><td class="num">'+esc(x.t)+'</td>'+
+        '<td class="num">'+esc(x.market)+'</td><td class="num">'+pmPrice(x.price)+'</td><td class="num">'+pmNumber(x.size,4)+'</td>'+
+        '<td style="white-space:normal">'+esc(x.reason||'成交检测')+'</td><td><span class="chip '+(x.snapshot_fresh?'warn':'')+'">'+esc(x.final_state||'已记录')+(x.snapshot_fresh?'':' · 历史')+'</span></td></tr>').join('')
+        :'<tr><td colspan="7" class="pm-empty">暂无成交记录</td></tr>';
+    }
+    const exits=detail.exit_records||[], exitBody=document.getElementById('pm-exits-body');
+    if(exitBody){
+      exitBody.innerHTML=exits.length?exits.map(x=>'<tr><td class="num">#'+x.account+' · '+esc(x.host)+'</td><td class="num">'+esc(x.t)+'</td>'+
+        '<td class="num">'+esc(x.market)+'</td><td class="num">'+pmPrice(x.fill_price)+'</td><td class="num">'+pmPrice(x.sell_price)+'</td>'+
+        '<td class="num">'+pmNumber(x.size,4)+'</td><td class="num">'+(x.loss==null?'—':pnlSpan(-x.loss))+'</td></tr>').join('')
+        :'<tr><td colspan="7" class="pm-empty">暂无退出记录</td></tr>';
+    }
+    const totalExitLoss=exits.reduce((n,x)=>n+(Number(x.loss)||0),0);
+    const setText=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value;};
+    setText('pm-exit-pending',String(pending.length));
+    setText('pm-fill-count',String(fills.length));
+    setText('pm-exit-count',String(exits.length));
+    const lossEl=document.getElementById('pm-exit-loss');
+    if(lossEl)lossEl.innerHTML=totalExitLoss?'<span class="'+(totalExitLoss>0?'down':'up')+'">'+(totalExitLoss>0?'−':' +')+money(Math.abs(totalExitLoss))+'</span>':'$0.00';
+
+    const venues=(shadow.venues||[]).filter(x=>x.venue==='polymarket');
+    const observerBody=document.getElementById('pm-observer-body');
+    if(observerBody){
+      observerBody.innerHTML=venues.length?venues.map(x=>'<tr><td>'+esc(x.label)+'</td><td><span class="chip '+(x.tier==='ok'?'ok':(x.tier==='danger'?'danger':'warn'))+'">'+esc(x.status)+'</span></td>'+
+        '<td class="num">'+pmNumber(x.samples)+'</td><td class="num">'+pmNumber(x.fresh_samples)+'</td><td class="num">'+(x.difference_rate==null?'—':(Number(x.difference_rate)*100).toFixed(2)+'%')+'</td>'+
+        '<td class="num">'+pmNumber(x.safety_mismatches)+'</td><td class="num">'+pmNumber(x.action_mismatches)+'</td><td class="num">'+pmAge(x.last_poll_age)+'</td></tr>').join('')
+        :'<tr><td colspan="8" class="pm-empty">暂无长期对照样本</td></tr>';
+    }
+    const shadowStatus=document.getElementById('pm-shadow-status');
+    if(shadowStatus){
+      const row=venues[0];
+      shadowStatus.textContent=row?row.status:'等待样本';
+      shadowStatus.className='chip '+(row&&row.tier==='ok'?'ok':(row&&row.tier==='danger'?'danger':'warn'));
     }
   }
 
@@ -4085,40 +4349,7 @@
           _table(['时间','VPS','路线','SYMBOL','策略','名义','双腿方向','basis','净PnL','状态'],vdt.trades,r=>
             '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td>'+esc(r.route||'—')+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
       }
-    } else if(pid==='pm'){
-      const pmd=s.pm_detail||{};
-      if(name.indexOf('只读观察')>=0){
-        const sh=s.maker_shadow||{}, ob=sh.observer||{};
-        const tier=ob.tier==='ok'?'ok':(ob.tier==='danger'?'danger':'warn');
-        const age=ob.last_poll_age==null?'—':_fmtAge(ob.last_poll_age);
-        html+='<div class="src">公共盘口与参考报价计划；不连接 signer，不读取私有挂单，不具备下单或撤单能力。</div>'+
-          '<div class="obsstats">'+
-          '<div class="obsstat"><div class="olabel">公共行情</div><div class="oval"><span class="chip '+tier+'">'+esc(ob.status||'未知')+'</span></div></div>'+
-          '<div class="obsstat"><div class="olabel">最近轮询</div><div class="oval">'+esc(age)+'</div></div>'+
-          '<div class="obsstat"><div class="olabel">盘口</div><div class="oval">'+(ob.ready_markets??0)+' / '+(ob.markets??0)+'</div></div>'+
-          '<div class="obsstat"><div class="olabel">参考计划</div><div class="oval">'+(ob.plans??0)+' 组</div></div></div>'+
-          '<h2 style="font-size:12px">Python / Rust 长期对照</h2>'+
-          _table(['平台','状态','样本','新鲜样本','差异率','安全差异','动作差异','错误','最近轮询'],sh.venues,r=>{
-            const rate=r.difference_rate==null?'—':(Number(r.difference_rate)*100).toFixed(2)+'%';
-            const chip=r.tier==='ok'?'ok':(r.tier==='danger'?'danger':'warn');
-            const poll=r.last_poll_age==null?'—':_fmtAge(r.last_poll_age);
-            return '<tr><td>'+esc(r.label)+'</td><td><span class="chip '+chip+'">'+esc(r.status)+'</span></td><td class="num">'+r.samples+'</td><td class="num">'+r.fresh_samples+'</td><td class="num">'+rate+'</td><td class="num">'+r.safety_mismatches+'</td><td class="num">'+r.action_mismatches+'</td><td class="num">'+r.errors+'</td><td class="num">'+esc(poll)+'</td></tr>';
-          })+
-          '<h2 style="font-size:12px;margin-top:14px">Polymarket 公共盘口与参考计划</h2><div class="src">参考计划只用于比较算法，不代表已提交、待提交或可执行订单。</div>'+
-          _table(['账号','市场','bid','ask','mid','参考买价 x 数量','档位','状态'],sh.markets,r=>
-            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.name)+'</td><td class="num">'+esc(r.bid??'—')+'</td><td class="num">'+esc(r.ask??'—')+'</td><td class="num">'+esc(r.mid??'—')+'</td><td class="num" style="white-space:normal">'+esc(r.reference_plan||'无可用计划')+'</td><td class="num">'+r.plan_levels+'</td><td><span class="chip '+(r.status==='ready'?'ok':'warn')+'">'+esc(r.status==='ready'?'可观察':'无参考计划')+'</span></td></tr>');
-      } else if(name.indexOf('Fills')>=0||name.indexOf('成交')>=0){
-        html+='<div class="src">各账号成交流(engine_state fills)</div>'+
-          _table(['账号','时间','市场','方向','价格','数量','PnL'],pmd.fills,r=>
-            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.t)+'</td><td class="num">'+esc(r.market||'—')+'</td><td class="num">'+esc(r.side||'—')+'</td><td class="num">'+(r.price??'—')+'</td><td class="num">'+(r.size??'—')+'</td><td class="num">'+(r.pnl!=null?pnlSpan(r.pnl):'—')+'</td></tr>');
-      } else {
-        html+='<div class="src">各账号在做市场(engine_state markets:mid/bid/ask/挂单)</div>'+
-          _table(['账号','TOKEN','mid','bid','ask','挂单','状态'],pmd.markets,r=>
-            '<tr><td class="num">#'+r.account+'</td><td class="num">'+esc(r.token)+'</td><td class="num">'+(r.mid??'—')+'</td><td class="num">'+(r.bid??'—')+'</td><td class="num">'+(r.ask??'—')+'</td><td class="num">'+r.orders+'</td><td><span class="chip">'+esc(r.status)+'</span></td></tr>');
-      }
     }
-    if(pid==='pm') html+='<div class="src" style="margin-top:10px">需要进入 Polymarket 完整面板? '+
-      '<button class="btn ghost" style="font-size:11px" onclick="window.open(\'/alpha/\',\'_blank\')">打开完整面板</button></div>';
     box.innerHTML=html;
   }
 
@@ -4129,7 +4360,7 @@
       const pg=document.getElementById(map[k]); if(!pg||!f[k]) continue;
       let b=pg.querySelector('.fresh-badge');
       if(!b){
-        const host=pg.querySelector('.banner')||pg.querySelector('.subnav')||pg.firstElementChild;
+        const host=pg.querySelector('.pm-head')||pg.querySelector('.banner')||pg.querySelector('.subnav')||pg.firstElementChild;
         if(!host) continue;
         b=document.createElement('span'); b.className='fresh-badge'; host.insertBefore(b,host.firstChild);
       }
@@ -4157,6 +4388,7 @@
     try{bindFresh(s.freshness||{});}catch(e){}
     try{bindMasks(s);}catch(e){}
     try{bindPM(s.polymarket||{});}catch(e){}
+    try{bindPMDetail(s.pm_detail||{},s.maker_shadow||{});}catch(e){}
     try{bindVD(s.var_decibel||{});}catch(e){}
     try{bindVDAuto(s.varia_automation||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}

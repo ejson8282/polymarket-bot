@@ -29,7 +29,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, Request
@@ -2627,42 +2627,373 @@ def _quote_for_symbol(symbol: str) -> Optional[dict]:
     return next((q for q in _varia_latest_quotes() if q.get("symbol") == wanted), None)
 
 
+_PM_MARKET_NAMES: Dict[str, str] = {}
+_PM_MARKET_NAMES_REFRESHED = 0.0
+
+
+def _refresh_pm_market_names() -> None:
+    """Refresh public market labels without putting Gamma latency on /api/state."""
+    global _PM_MARKET_NAMES_REFRESHED
+    if time.time() - _PM_MARKET_NAMES_REFRESHED < 300:
+        return
+    tokens: List[str] = []
+    for idx in _pm_all_accounts():
+        config = _read_json(MAKER_DIR / f"config_{idx}.json") or {}
+        for key in ("markets", "night_markets"):
+            for market in config.get(key) or []:
+                if isinstance(market, dict) and market.get("token_id"):
+                    tokens.append(str(market["token_id"]))
+    names = dict(_PM_MARKET_NAMES)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for offset in range(0, len(tokens), 10):
+        batch = tokens[offset:offset + 10]
+        if not batch:
+            continue
+        query = urlencode([("clob_token_ids", token) for token in batch])
+        try:
+            request = urllib.request.Request(
+                f"https://gamma-api.polymarket.com/markets?{query}",
+                headers={"User-Agent": "LatitudeAlpha/1.0"},
+            )
+            with opener.open(
+                request, timeout=8
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            continue
+        for market in payload if isinstance(payload, list) else []:
+            if not isinstance(market, dict):
+                continue
+            token_ids = market.get("clobTokenIds")
+            if isinstance(token_ids, str):
+                try:
+                    token_ids = json.loads(token_ids)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    token_ids = [token_ids]
+            question = str(
+                market.get("question") or market.get("title") or market.get("name") or ""
+            ).strip()
+            if not question:
+                continue
+            for token in token_ids if isinstance(token_ids, list) else []:
+                if str(token) in batch:
+                    names[str(token)] = question[:120]
+    _PM_MARKET_NAMES.clear()
+    _PM_MARKET_NAMES.update(names)
+    _PM_MARKET_NAMES_REFRESHED = time.time()
+
+
 def _pm_detail() -> Dict[str, Any]:
-    """pm 二级页原生数据:各账号在做市场明细 + 成交流(engine_state)。"""
+    """Native Polymarket operations view.
+
+    Current configuration, public observer quotes, and engine snapshots have
+    different truth semantics. Keep them separate so a stopped engine cannot
+    make an old order look live.
+    """
+
+    def _short_token(value: Any) -> str:
+        token = str(value or "")
+        if len(token) <= 18:
+            return token or "—"
+        return f"{token[:8]}...{token[-6:]}"
+
+    def _display_time(value: Any) -> str:
+        ts = _num(value)
+        if not ts:
+            return "—"
+        return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+
+    remotes = _load_pm_remotes()
+    accounts: List[dict] = []
     markets: List[dict] = []
     fills: List[dict] = []
-    for idx in range(1, 31):
-        state = _read_json(DATA_DIR / f"engine_state_{idx}.json")
-        if state is None and idx == 1:
-            state = _read_json(DATA_DIR / "engine_state.json")
-        if not isinstance(state, dict):
-            continue
-        mk = state.get("markets") if isinstance(state.get("markets"), dict) else {}
-        for tid, m in mk.items():
-            if not isinstance(m, dict):
+    pending_unwinds: List[dict] = []
+    exit_records: List[dict] = []
+
+    for idx in _pm_all_accounts():
+        is_remote = idx in remotes
+        host = (remotes[idx].get("label") or "远程") if is_remote else "VPS1"
+        base = PM_PEER_DIR if is_remote else DATA_DIR
+        state_path = base / f"engine_state_{idx}.json"
+        state = _read_json(state_path)
+        if state is None and idx == 1 and not is_remote:
+            fallback = DATA_DIR / "engine_state.json"
+            state = _read_json(fallback)
+            if state is not None:
+                state_path = fallback
+        state = state if isinstance(state, dict) else {}
+        state_age = _mtime_age(state_path)
+        state_fresh = state_age is not None and state_age <= PM_STATE_STALE_SEC
+        if is_remote:
+            engine_running = bool(_REMOTE_STATUS.get(idx, False))
+        else:
+            engine_running = _pid_file_alive(
+                DATA_DIR / f".engine_{idx}.pid", DATA_DIR / ".engine.pid"
+            )
+        orders_verified = bool(engine_running and state_fresh)
+
+        config_path = MAKER_DIR / f"config_{idx}.json"
+        config = _read_json(config_path) or {}
+        strategy = config.get("strategy") if isinstance(config.get("strategy"), dict) else {}
+        risk = config.get("risk") if isinstance(config.get("risk"), dict) else {}
+        execution = (
+            config.get("execution") if isinstance(config.get("execution"), dict) else {}
+        )
+        exit_strategy = (
+            config.get("exit_strategy")
+            if isinstance(config.get("exit_strategy"), dict)
+            else {}
+        )
+        session = config.get("session") if isinstance(config.get("session"), dict) else {}
+        volatility = (
+            config.get("volatility")
+            if isinstance(config.get("volatility"), dict)
+            else {}
+        )
+        curator = (
+            config.get("auto_curator")
+            if isinstance(config.get("auto_curator"), dict)
+            else {}
+        )
+        dual_side = (
+            strategy.get("dual_side")
+            if isinstance(strategy.get("dual_side"), dict)
+            else {}
+        )
+
+        observer = _read_json(DATA_DIR / f"polymarket_observer_state_{idx}.json") or {}
+        observer_age = _iso_age(observer.get("ts"))
+        observer_markets = (
+            observer.get("markets")
+            if isinstance(observer.get("markets"), dict)
+            else {}
+        )
+        state_markets = (
+            state.get("markets") if isinstance(state.get("markets"), dict) else {}
+        )
+
+        configured_count = 0
+        for config_key, session_label in (("markets", "日盘"), ("night_markets", "夜盘")):
+            configured = config.get(config_key)
+            if not isinstance(configured, list):
                 continue
-            orders = m.get("orders")
-            markets.append({
-                "account": idx, "token": str(tid)[:10],
-                "mid": _num(m.get("mid")), "bid": _num(m.get("best_bid")),
-                "ask": _num(m.get("best_ask")),
-                "orders": len(orders) if isinstance(orders, list) else 0,
-                "status": m.get("status") or m.get("event_state") or "—",
-            })
-        for f in (state.get("fills") if isinstance(state.get("fills"), list) else [])[-15:]:
-            if not isinstance(f, dict):
+            for market_config in configured:
+                if not isinstance(market_config, dict) or not market_config.get("token_id"):
+                    continue
+                configured_count += 1
+                token_id = str(market_config["token_id"])
+                engine_market = state_markets.get(token_id)
+                engine_market = engine_market if isinstance(engine_market, dict) else {}
+                observed_market = observer_markets.get(token_id)
+                observed_market = observed_market if isinstance(observed_market, dict) else {}
+                reference_plan = (
+                    observed_market.get("reference_plan")
+                    if isinstance(observed_market.get("reference_plan"), list)
+                    else []
+                )
+                live = engine_market.get("orders")
+                live_count = (
+                    len(live)
+                    if isinstance(live, list)
+                    else int(_num(engine_market.get("live_order_count")) or 0)
+                )
+                display_name = str(
+                    observed_market.get("display_name")
+                    or market_config.get("question")
+                    or market_config.get("slug")
+                    or ""
+                ).strip()
+                if (
+                    not display_name
+                    or display_name.isdigit()
+                    or display_name in {token_id, _short_token(token_id)}
+                ):
+                    display_name = _PM_MARKET_NAMES.get(token_id) or _short_token(token_id)
+                bid = _num(observed_market.get("best_bid"))
+                ask = _num(observed_market.get("best_ask"))
+                mid = _num(observed_market.get("mid"))
+                quote_source = "公共盘口"
+                if bid is None and ask is None:
+                    bid = _num(engine_market.get("best_bid"))
+                    ask = _num(engine_market.get("best_ask"))
+                    mid = _num(engine_market.get("mid"))
+                    quote_source = "引擎快照" if state_fresh else "旧引擎快照"
+                markets.append({
+                    "account": idx,
+                    "host": host,
+                    "session": session_label,
+                    "token": _short_token(token_id),
+                    "name": display_name[:120],
+                    "side": str(market_config.get("side") or "YES"),
+                    "enabled": bool(market_config.get("enabled", True)),
+                    "risk": str(market_config.get("risk") or "—"),
+                    "quote_size": _num(market_config.get("quote_size")),
+                    "max_spread": _num(market_config.get("max_incentive_spread")),
+                    "bid": bid,
+                    "ask": ask,
+                    "mid": mid,
+                    "quote_source": quote_source,
+                    "observer_age": observer_age,
+                    "reference_plan": [
+                        {
+                            "price": _num(item.get("price")),
+                            "quantity": _num(item.get("quantity")),
+                        }
+                        for item in reference_plan
+                        if isinstance(item, dict)
+                    ][:12],
+                    "orders": live_count if orders_verified else None,
+                    "orders_last_seen": live_count,
+                    "orders_verified": orders_verified,
+                    "engine_running": engine_running,
+                    "event_state": str(
+                        engine_market.get("event_state")
+                        or engine_market.get("status")
+                        or ("CONFIGURED" if market_config.get("enabled", True) else "DISABLED")
+                    ),
+                    "event_reason": str(engine_market.get("event_reason") or ""),
+                    "reward_min_size": _num(engine_market.get("rewards_min_size")),
+                    "reward_lower": _num(engine_market.get("reward_lower")),
+                    "reward_upper": _num(engine_market.get("reward_upper")),
+                    "snapshot_age_ms": _num(engine_market.get("snapshot_age_ms")),
+                    "engine_state_fresh": state_fresh,
+                })
+
+        account_cfg = (
+            config.get("account") if isinstance(config.get("account"), dict) else {}
+        )
+        accounts.append({
+            "account": idx,
+            "host": host,
+            "config_present": bool(config),
+            "config_age": _mtime_age(config_path),
+            "configured_markets": configured_count,
+            "day_markets": len(config.get("markets") or []),
+            "night_markets": len(config.get("night_markets") or []),
+            "engine_running": engine_running,
+            "state_fresh": state_fresh,
+            "state_age": state_age,
+            "observer_age": observer_age,
+            "signer_mode": (
+                "Mac mini"
+                if account_cfg.get("signer_server_url")
+                else "未配置远程签名"
+            ),
+            "rules": {
+                "post_only": bool(strategy.get("post_only")),
+                "dual_side": bool(dual_side.get("enabled")),
+                "dual_side_max_mid": _num(dual_side.get("max_mid")),
+                "max_quote_shares": _num(risk.get("max_quote_shares_per_market")),
+                "max_notional": _num(risk.get("max_notional_usdc_per_order")),
+                "runtime_floor": _num(risk.get("runtime_floor_usdc")),
+                "cooldown_sec": _num(risk.get("cooldown_seconds")),
+                "start_freeze_sec": _num(risk.get("start_freeze_seconds")),
+                "min_front_depth": _num(execution.get("min_front_bid_notional_usdc")),
+                "max_reward_levels": _num(strategy.get("max_reward_levels")),
+                "requote_ms": _num(strategy.get("requote_interval_ms")),
+                "exit_delay_sec": _num(exit_strategy.get("exit_delay_sec")),
+                "exit_timeout_sec": _num(exit_strategy.get("exit_timeout_sec")),
+                "exit_retries": _num(exit_strategy.get("retry_count")),
+                "session_enabled": bool(session.get("enabled")),
+                "night_start": session.get("night_start"),
+                "night_end": session.get("night_end"),
+                "curator_enabled": bool(curator.get("enabled")),
+                "curator_interval_sec": _num(curator.get("interval_sec")),
+                "vol_watch_sec": _num(volatility.get("watch_duration_sec")),
+                "vol_quarantine_sec": _num(volatility.get("quarantine_duration_sec")),
+            },
+        })
+
+        for fill in (
+            state.get("fills") if isinstance(state.get("fills"), list) else []
+        )[-40:]:
+            if not isinstance(fill, dict):
                 continue
-            ts = _num(f.get("ts")) or 0
+            ts = _num(fill.get("ts")) or 0
             fills.append({
                 "account": idx,
-                "t": datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "—",
+                "host": host,
+                "t": _display_time(ts),
                 "epoch": ts,
-                "side": f.get("side"), "price": _num(f.get("price")),
-                "size": _num(f.get("size")), "pnl": _num(f.get("pnl")),
-                "market": str(f.get("market") or f.get("slug") or f.get("asset_id") or "")[:18],
+                "price": _num(fill.get("price")),
+                "size": _num(fill.get("size")),
+                "pnl": _num(fill.get("pnl")),
+                "market": _short_token(
+                    fill.get("token_id")
+                    or fill.get("market")
+                    or fill.get("asset_id")
+                ),
+                "reason": str(fill.get("reason") or ""),
+                "final_state": str(fill.get("final_state") or ""),
+                "snapshot_fresh": state_fresh,
             })
-    fills.sort(key=lambda x: -(x["epoch"] or 0))
-    return {"present": bool(markets or fills), "markets": markets[:40], "fills": fills[:30]}
+        for unwind in (
+            state.get("pending_unwinds")
+            if isinstance(state.get("pending_unwinds"), list)
+            else []
+        ):
+            if not isinstance(unwind, dict):
+                continue
+            placed_at = _num(unwind.get("placed_at")) or 0
+            pending_unwinds.append({
+                "account": idx,
+                "host": host,
+                "market": _short_token(unwind.get("token_id")),
+                "fill_price": _num(unwind.get("fill_price")),
+                "sell_price": _num(unwind.get("sell_price")),
+                "size": _num(unwind.get("fill_size")),
+                "order": _short_token(unwind.get("order_id")),
+                "placed_at": _display_time(placed_at),
+                "age_sec": max(0, int(time.time() - placed_at)) if placed_at else None,
+                "reason": str(unwind.get("reason") or ""),
+                "snapshot_fresh": state_fresh,
+            })
+        for record in (
+            state.get("exit_records")
+            if isinstance(state.get("exit_records"), list)
+            else []
+        )[-40:]:
+            if not isinstance(record, dict):
+                continue
+            ts = _num(record.get("ts")) or 0
+            exit_records.append({
+                "account": idx,
+                "host": host,
+                "t": _display_time(ts),
+                "epoch": ts,
+                "market": _short_token(record.get("token_id")),
+                "fill_price": _num(record.get("fill_price")),
+                "sell_price": _num(record.get("sell_price")),
+                "size": _num(record.get("size")),
+                "loss": _num(record.get("loss")),
+                "snapshot_fresh": state_fresh,
+            })
+
+    fills.sort(key=lambda item: -(item["epoch"] or 0))
+    exit_records.sort(key=lambda item: -(item["epoch"] or 0))
+    observer_status = _read_json(DATA_DIR / "polymarket_observer_status.json") or {}
+    observer_summary = (
+        observer_status.get("summary")
+        if isinstance(observer_status.get("summary"), dict)
+        else {}
+    )
+    return {
+        "present": bool(accounts or markets or fills),
+        "accounts": accounts,
+        "markets": markets,
+        "fills": fills[:60],
+        "pending_unwinds": pending_unwinds,
+        "exit_records": exit_records[:60],
+        "observer": {
+            "present": bool(observer_status),
+            "age": _iso_age(observer_status.get("last_poll_at")),
+            "accounts": int(observer_summary.get("accounts") or 0),
+            "markets": int(observer_summary.get("markets") or 0),
+            "ready_markets": int(observer_summary.get("ready_markets") or 0),
+            "plans": int(observer_summary.get("plans") or 0),
+            "errors": int(observer_summary.get("errors") or 0),
+        },
+    }
 
 
 def _maker_shadow() -> Dict[str, Any]:
@@ -3074,6 +3405,10 @@ def _prefetch_loop() -> None:
             _store_http_cache(url, data)
         _HTTP_CACHE["pm_signer_up"] = (_probe_pm_signer(), time.time())
         _HTTP_CACHE["var_signer_up"] = (_probe_var_signer(), time.time())
+        try:
+            _refresh_pm_market_names()
+        except Exception:
+            pass
         try:
             _refresh_pm_remotes()
         except Exception:
@@ -3794,7 +4129,14 @@ def _freshness(vd: Dict[str, Any], ao: Dict[str, Any]) -> Dict[str, Any]:
         out[key] = {"age": age, "tier": t, "label": lbl}
 
     pm_p = DATA_DIR / "engine_state_1.json"
-    entry("pm", _mtime_age(pm_p if pm_p.exists() else DATA_DIR / "engine_state.json"))
+    observer = _read_json(DATA_DIR / "polymarket_observer_status.json") or {}
+    pm_ages = [
+        age for age in (
+            _mtime_age(pm_p if pm_p.exists() else DATA_DIR / "engine_state.json"),
+            _iso_age(observer.get("last_poll_at")),
+        ) if age is not None
+    ]
+    entry("pm", min(pm_ages) if pm_ages else None)
     hosts = [h.get("age_sec") for h in (vd.get("hosts") or {}).values() if h.get("age_sec") is not None]
     entry("vardec", min(hosts) if hosts else None)
     # dry-run 每轮更新 state/desired_orders;execution_report 只有 executor 写,不能当心跳
