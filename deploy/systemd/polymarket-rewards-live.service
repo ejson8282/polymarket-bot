@@ -1,0 +1,20 @@
+[Unit]
+Description=Refresh Polymarket live and finalized reward cache
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.polymarket.maker.rewards_live --config-dir platforms/polymarket/maker --data-dir data
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/polymarket-bot/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=append:/home/ubuntu/polymarket-bot/data/rewards_live.log
+StandardError=append:/home/ubuntu/polymarket-bot/data/rewards_live.log

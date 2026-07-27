@@ -4944,39 +4944,6 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[engine] auto_curator spawn err: {e}")
 
-        # Rewards cumulative snapshot — spawn for any standalone engine. When
-        # multi_runner orchestrates us it presets _shared_book_cache and runs
-        # its own global snapshot loop (would race with per-engine loops). The
-        # config-name check is no longer used because the new VPS-per-account
-        # layout runs engine.py directly with config_N.json files.
-        if self._shared_book_cache is None:
-            try:
-                try:
-                    from .rewards_snapshot import rewards_snapshot_loop
-                except ImportError:
-                    from rewards_snapshot import rewards_snapshot_loop
-                # Derive account index from config filename:
-                #   config.json     → 0  (legacy single-account)
-                #   config_N.json   → N  (per-account VPS layout)
-                _stem = self._config_path.stem
-                if _stem == "config":
-                    _acc_idx = 0
-                elif _stem.startswith("config_"):
-                    try:
-                        _acc_idx = int(_stem.split("_", 1)[1])
-                    except Exception:
-                        _acc_idx = 0
-                else:
-                    _acc_idx = 0
-                _rs_data_dir = self._state_path.parent
-                tasks.append(asyncio.create_task(
-                    rewards_snapshot_loop([(_acc_idx, self._config_path)], _rs_data_dir),
-                    name="rewards_snapshot",
-                ))
-                log(f"[engine] rewards_snapshot spawned (acc={_acc_idx})")
-            except Exception as e:
-                log(f"[engine] rewards_snapshot spawn err: {e}")
-
         # Shared book fetcher — only spawn if not already set externally
         # (multi_runner.py sets self._shared_book_cache before engine.run()).
         # Batch POST /books cuts per-token REST requests ~55× and is the

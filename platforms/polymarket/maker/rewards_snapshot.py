@@ -1,14 +1,8 @@
-"""
-Cumulative daily LP-rewards snapshot subsystem.
+"""Legacy cumulative daily LP-rewards snapshot helpers.
 
-Every day at 07:50 BJT this task queries /rewards/user/total for each
-configured account using the prior BJT-calendar-date (a fully settled 24h
-window) and appends the USD total to data/rewards_cumulative.json. On
-startup it backfills any missing days between the last recorded snapshot
-and yesterday_bjt.
-
-Idempotent per (account, date): re-running on a date already recorded is
-a no-op. Safe to restart at any time.
+Polymarket reward days roll at midnight UTC (08:00 Asia/Shanghai). The
+standalone ``rewards_live`` timer owns production refreshes; this module keeps
+the authenticated client and historical backfill helpers shared with it.
 """
 
 import asyncio
@@ -16,9 +10,9 @@ import json
 import sys
 import time
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 _BJT = ZoneInfo("Asia/Shanghai")
@@ -30,13 +24,16 @@ except Exception:
         print(msg, flush=True)
 
 
-def _yesterday_bjt() -> date:
-    return (datetime.now(_BJT) - timedelta(days=1)).date()
+def _last_finalized_utc_day(now: Optional[datetime] = None) -> date:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc).date() - timedelta(days=1)
 
 
-def _next_0750_bjt_ts() -> float:
+def _next_0805_bjt_ts() -> float:
     now = datetime.now(_BJT)
-    target = now.replace(hour=7, minute=50, second=0, microsecond=0)
+    target = now.replace(hour=8, minute=5, second=0, microsecond=0)
     if now >= target:
         target = target + timedelta(days=1)
     return target.timestamp()
@@ -86,7 +83,10 @@ def _build_snapshot_client(cfg_path: Path):
 
     from py_clob_client_v2.client import ClobClient
     from py_clob_client_v2.clob_types import ApiCreds
-    from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+    try:
+        from .remote_signer import AddressStub, BuilderStub, RemoteSignerClient
+    except ImportError:
+        from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 
     host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
     chain_id = int(acc.get("chain_id", 137))
@@ -194,7 +194,7 @@ async def _run_pending_snapshots(
     configs: List[Tuple[int, Path]],
 ) -> None:
     state = _load_state(state_path)
-    yesterday = _yesterday_bjt()
+    yesterday = _last_finalized_utc_day()
     any_changed = False
     for acc_idx, cfg_path in configs:
         targets = _targets_for_account(state, acc_idx, yesterday)
@@ -212,7 +212,7 @@ async def rewards_snapshot_loop(
     configs: List[Tuple[int, Path]],
     data_dir: Path,
 ) -> None:
-    """Backfill on startup, then snapshot yesterday every day at 07:50 BJT."""
+    """Legacy loop: backfill, then snapshot the prior UTC day at 08:05 BJT."""
     state_path = data_dir / "rewards_cumulative.json"
     log(f"[rewards-snap] state file: {state_path}")
 
@@ -223,9 +223,9 @@ async def rewards_snapshot_loop(
 
     while True:
         try:
-            target_ts = _next_0750_bjt_ts()
+            target_ts = _next_0805_bjt_ts()
             sleep_sec = max(1.0, target_ts - time.time())
-            log(f"[rewards-snap] next snapshot in {sleep_sec / 3600:.2f}h (07:50 BJT)")
+            log(f"[rewards-snap] next snapshot in {sleep_sec / 3600:.2f}h (08:05 BJT)")
             await asyncio.sleep(sleep_sec)
             await _run_pending_snapshots(state_path, configs)
         except asyncio.CancelledError:

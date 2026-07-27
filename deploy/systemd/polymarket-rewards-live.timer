@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Polymarket rewards every five minutes
+
+[Timer]
+OnBootSec=45s
+OnCalendar=*-*-* *:00/5:00
+Persistent=true
+AccuracySec=15s
+Unit=polymarket-rewards-live.service
+
+[Install]
+WantedBy=timers.target

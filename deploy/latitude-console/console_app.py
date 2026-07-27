@@ -488,69 +488,133 @@ async def dewu_inventory_import(request: Request) -> JSONResponse:
 
 # ---------- Polymarket(engine_state_N 逐账号,不混算) ----------
 
-def _pm_pnl() -> Dict[str, Any]:
-    """PM 收益核算(诚实粒度=账户-日)。奖励:rewards_cumulative.json 的 daily(持久,
-    Polymarket /rewards/user/total 只到账户-日,无法按市场拆);损耗:各账户当前会话
-    fills 的实现 pnl(引擎重启即清,标"本次运行")。净=近7日奖励 − 本次运行损耗。
-    远程账号读 peer 目录。"""
-    rc = _read_json(DATA_DIR / "rewards_cumulative.json")
-    accts_rc = rc.get("accounts") if isinstance(rc, dict) and isinstance(rc.get("accounts"), dict) else {}
-    # rewards_cumulative 按账户序号存(dict 键 "0"/"1"…),按序号 join(funder 地址会随迁移变)
-    by_idx: Dict[int, dict] = {}
-    for k, a in accts_rc.items():
-        if isinstance(a, dict):
+def _pm_reward_sources() -> Dict[str, Any]:
+    """Load finalized history and the current UTC reward day by account index."""
+    cumulative = _read_json(DATA_DIR / "rewards_cumulative.json") or {}
+    live = _read_json(DATA_DIR / "rewards_live.json") or {}
+    cumulative_accounts: Dict[int, dict] = {}
+    live_accounts: Dict[int, dict] = {}
+    for key, row in (cumulative.get("accounts") or {}).items():
+        if isinstance(row, dict):
             try:
-                by_idx[int(k)] = a
+                cumulative_accounts[int(key)] = row
             except (TypeError, ValueError):
                 pass
+    for key, row in (live.get("accounts") or {}).items():
+        if isinstance(row, dict):
+            try:
+                live_accounts[int(key)] = row
+            except (TypeError, ValueError):
+                pass
+
+    account_indices = _pm_all_accounts()
+    today_values = {
+        idx: _num(live_accounts.get(idx, {}).get("today_usd"))
+        for idx in account_indices
+    }
+    cumulative_values = {
+        idx: _num(cumulative_accounts.get(idx, {}).get("cumulative_usd"))
+        for idx in account_indices
+    }
+    today_known = [value for value in today_values.values() if value is not None]
+    cumulative_known = [
+        value for value in cumulative_values.values() if value is not None
+    ]
+    age_sec = _iso_age(live.get("generated_at"))
+    successful_accounts = int(_num(live.get("successful_accounts")) or 0)
+    configured_accounts = len(account_indices)
+    return {
+        "cumulative_accounts": cumulative_accounts,
+        "live_accounts": live_accounts,
+        "today_by_idx": today_values,
+        "cumulative_by_idx": cumulative_values,
+        "total_today_usd": round(sum(today_known), 6) if today_known else None,
+        "total_cumulative_usd": (
+            round(sum(cumulative_known), 6) if cumulative_known else None
+        ),
+        "known_accounts": len(today_known),
+        "successful_accounts": successful_accounts,
+        "configured_accounts": configured_accounts,
+        "reward_date_utc": live.get("reward_date_utc"),
+        "window_label_bjt": live.get("window_label_bjt"),
+        "next_reset_at_bjt": live.get("next_reset_at_bjt"),
+        "generated_at": live.get("generated_at"),
+        "age_sec": age_sec,
+        "fresh": (
+            age_sec is not None
+            and age_sec <= 600
+            and configured_accounts > 0
+            and successful_accounts == configured_accounts
+        ),
+    }
+
+
+def _pm_pnl() -> Dict[str, Any]:
+    """PM 收益核算：今日实时奖励与已结算历史严格分开。"""
+    reward_state = _pm_reward_sources()
+    by_idx = reward_state["cumulative_accounts"]
+    live_by_idx = reward_state["live_accounts"]
+    live_day = str(reward_state.get("reward_date_utc") or "")
     remotes = _load_pm_remotes()
     rows: List[dict] = []
-    total_reward_7d = total_loss_session = 0.0
+    total_reward_today = total_reward_7d = total_cumulative = total_loss_session = 0.0
     any_reward = False
     for idx in _pm_all_accounts():
         is_remote = idx in remotes
         base = PM_PEER_DIR if is_remote else DATA_DIR
         st = _read_json(base / f"engine_state_{idx}.json") or {}
         a = by_idx.get(idx, {})
+        live_row = live_by_idx.get(idx, {})
         daily = a.get("daily") if isinstance(a.get("daily"), dict) else {}
-        days = sorted(daily.keys())[-7:]
+        days = [
+            day for day in sorted(daily.keys())
+            if not live_day or day < live_day
+        ][-7:]
         series = [{"d": d, "v": round(_num(daily.get(d)) or 0, 2)} for d in days]
         reward_7d = round(sum(x["v"] for x in series), 2)
+        reward_today = _num(live_row.get("today_usd"))
+        cumulative_usd = _num(a.get("cumulative_usd"))
         # 本次运行损耗:fills 的负 pnl 求和(绝对值),及费用(若引擎写了)
         fills = st.get("fills") if isinstance(st.get("fills"), list) else []
         realized = sum(_num(f.get("pnl")) or 0 for f in fills if f.get("pnl") is not None)
         loss_session = round(-realized, 2) if realized < 0 else 0.0
-        if series:
+        if series or reward_today is not None:
             any_reward = True
+        total_reward_today += reward_today or 0.0
         total_reward_7d += reward_7d
+        total_cumulative += cumulative_usd or 0.0
         total_loss_session += loss_session
         rows.append({
             "idx": idx, "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
-            "cumulative": _num(a.get("cumulative_usd")), "last_date": a.get("last_snapshot_date"),
+            "today": reward_today,
+            "today_status": live_row.get("status") or "unknown",
+            "cumulative": cumulative_usd, "last_date": a.get("last_snapshot_date"),
             "recent": series, "reward_7d": reward_7d,
             "realized_session": round(realized, 2), "fills_session": len(fills),
-            "net_est": round(reward_7d - loss_session, 2),
+            "net_est": round(reward_7d + (reward_today or 0.0) - loss_session, 2),
         })
     return {
         "present": any_reward or bool(rows),
         "has_reward_data": any_reward,
         "accounts": rows,
+        "total_reward_today": round(total_reward_today, 2),
         "total_reward_7d": round(total_reward_7d, 2),
+        "total_cumulative": round(total_cumulative, 2),
         "total_loss_session": round(total_loss_session, 2),
-        "total_net_est": round(total_reward_7d - total_loss_session, 2),
-        "note": "奖励=账户-日粒度(Polymarket 不提供按市场拆分);损耗=本次运行 fills 实现盈亏",
+        "total_net_est": round(
+            total_reward_today + total_reward_7d - total_loss_session, 2
+        ),
+        "reward_window": reward_state.get("window_label_bjt"),
+        "reward_age_sec": reward_state.get("age_sec"),
+        "reward_fresh": reward_state.get("fresh"),
+        "note": "今日奖励每5分钟更新，08:00切日；近7日与累计仅含已结算奖励",
     }
 
 
 def _polymarket() -> Dict[str, Any]:
-    rewards_by_addr: Dict[str, float] = {}
-    rewards = _read_json(DATA_DIR / "rewards_cumulative.json")
-    if isinstance(rewards, dict) and isinstance(rewards.get("accounts"), dict):
-        for row in rewards["accounts"].values():
-            if isinstance(row, dict) and row.get("address"):
-                v = _num(row.get("cumulative_usd"))
-                if v is not None:
-                    rewards_by_addr[str(row["address"]).lower()] = v
+    reward_state = _pm_reward_sources()
+    rewards_today_by_idx = reward_state["today_by_idx"]
+    rewards_cumulative_by_idx = reward_state["cumulative_by_idx"]
     accounts: List[dict] = []
     running = live_orders = 0
     live_order_notional = 0.0
@@ -653,7 +717,8 @@ def _polymarket() -> Dict[str, Any]:
             "paused": paused,
             "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
-            "rewards": rewards_by_addr.get(funder.lower()),
+            "rewards": rewards_today_by_idx.get(idx),
+            "rewards_cumulative": rewards_cumulative_by_idx.get(idx),
             "status": status,
             "status_cls": status_cls,
             "principal": collateral.get("balance"),
@@ -680,7 +745,7 @@ def _polymarket() -> Dict[str, Any]:
             "age_sec": state_age,
             "age": _age_text(state_age),
         })
-    rewards_total = round(sum(rewards_by_addr.values()), 2) if rewards_by_addr else None
+    rewards_total = reward_state.get("total_today_usd")
     curator = _read_json(DATA_DIR / "auto_curator_state.json")
     curator_out = None
     if isinstance(curator, dict):
@@ -717,6 +782,15 @@ def _polymarket() -> Dict[str, Any]:
         "fills_seen": fills_seen if fresh_states else None,
         "cooldown": cooldown if fresh_states else None,
         "rewards_total": rewards_total,
+        "rewards_cumulative_total": reward_state.get("total_cumulative_usd"),
+        "rewards_known_accounts": reward_state.get("known_accounts"),
+        "rewards_successful_accounts": reward_state.get("successful_accounts"),
+        "rewards_configured_accounts": reward_state.get("configured_accounts"),
+        "rewards_day_utc": reward_state.get("reward_date_utc"),
+        "rewards_window_bjt": reward_state.get("window_label_bjt"),
+        "rewards_age_sec": reward_state.get("age_sec"),
+        "rewards_fresh": reward_state.get("fresh"),
+        "rewards_next_reset_bjt": reward_state.get("next_reset_at_bjt"),
         "capital": capital,
         "fill_events": pm_fill_events[-6:],
     }

@@ -688,7 +688,7 @@
     <div class="card" onclick="go('pm')">
       <div class="head"><span class="name">Polymarket 做市</span><span class="chip" data-k="pm.run">读取中</span></div>
       <div class="row"><span class="k">活跃挂单 / 今日成交</span><span class="v" data-k="pm.orders_vol">—</span></div>
-      <div class="row"><span class="k">今日 PnL / 奖励估算</span><span class="v" data-k="pm.pnl">—</span></div>
+      <div class="row"><span class="k">今日 PnL / 今日奖励</span><span class="v" data-k="pm.pnl">—</span></div>
       <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">—</span></div>
       <div class="row"><span class="k">quotes_sent（新鲜状态）</span><span class="v" data-k="pm.quotes">—</span></div>
       <div class="row"><span class="k">只读行情 / Rust 对照</span><span class="v" data-k="shadow.home">—</span></div>
@@ -1283,7 +1283,7 @@
       <div class="kpi"><div class="label">当前挂单</div><div class="value" data-k="pmk.orders">—</div><div class="sub num" data-k="pmk.quotes">仅新鲜引擎状态</div></div>
       <div class="kpi"><div class="label">24h 成交额</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">读取中</div></div>
       <div class="kpi"><div class="label">24h 实现盈亏</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">已核验成交</div></div>
-      <div class="kpi"><div class="label">累计奖励</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">账户奖励快照</div></div>
+      <div class="kpi"><div class="label">今日奖励</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num" data-k="pmk.rewards_sub">每5分钟更新 · 08:00切日</div></div>
       <div class="kpi"><div class="label">账户本金</div><div class="value" data-k="pmk.capital">—</div><div class="sub num" data-k="pmk.capital_sub">读取两个账号的 USDC</div></div>
     </div>
 
@@ -1299,7 +1299,7 @@
         <div class="panel">
           <div class="pm-panel-head"><h2>账号</h2><span class="src">一台 VPS 对应一个账号</span></div>
           <div class="pm-table-wrap"><table>
-            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>账户本金</th><th>挂单 / 复用</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
+            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>账户本金</th><th>挂单 / 复用</th><th>24h 成交</th><th>PnL</th><th>今日奖励</th><th>拦截</th><th>操作</th></tr></thead>
             <tbody id="pm-matrix-body"><tr><td colspan="12" class="pm-empty">读取账号状态…</td></tr></tbody>
           </table></div>
         </div>
@@ -1308,8 +1308,8 @@
           <div class="pm-panel-head"><h2>收益</h2><span data-k="pmpnl.head" class="src"></span></div>
           <div class="src" data-k="pmpnl.note">奖励与退出损耗按账号核算</div>
           <div class="pm-table-wrap"><table>
-            <thead><tr><th>账号</th><th>近7日奖励</th><th>累计奖励</th><th>本次运行盈亏</th><th>净估计</th><th>最后奖励快照</th></tr></thead>
-            <tbody id="pm-pnl-body"><tr><td colspan="6" class="pm-empty">读取收益记录…</td></tr></tbody>
+            <thead><tr><th>账号</th><th>今日奖励</th><th>近7日已结算</th><th>累计已结算</th><th>本次运行盈亏</th><th>净估计</th><th>最后结算日</th></tr></thead>
+            <tbody id="pm-pnl-body"><tr><td colspan="7" class="pm-empty">读取收益记录…</td></tr></tbody>
           </table></div>
         </div>
       </div>
@@ -2261,13 +2261,14 @@
         const spark=(a.recent||[]).map(x=>'$'+x.v).join(' ')||'—';
         const net=a.net_est||0;
         return '<tr><td>账号'+a.idx+'<span style="color:var(--faint);font-size:10px"> @'+esc(a.host||'')+'</span></td>'+
+          '<td class="num">'+(a.today!=null?money(a.today):'—')+'</td>'+
           '<td class="num">'+(a.reward_7d!=null?money(a.reward_7d):'—')+'</td>'+
           '<td class="num">'+(a.cumulative!=null?money(a.cumulative):'—')+'</td>'+
           '<td class="num">'+(a.fills_session?pnlSpan(a.realized_session):'<span style="color:var(--faint)">本次0笔</span>')+'</td>'+
           '<td class="num">'+pnlSpan(net)+'</td>'+
           '<td class="num" style="font-size:11px;color:var(--faint)">'+esc(a.last_date||'无')+'</td></tr>';
       }).join('');
-      setK('pmpnl.head','近7日奖励合计 '+money(pl.total_reward_7d||0)+' · 净估计 '+money(pl.total_net_est||0));
+      setK('pmpnl.head','今日 '+money(pl.total_reward_today||0)+' · 近7日已结算 '+money(pl.total_reward_7d||0)+' · 净估计 '+money(pl.total_net_est||0));
       if(pl.note) setK('pmpnl.note',esc(pl.note));
     }
     setK('pm.run', pm.running+'/'+pm.total+' 运行');
@@ -2289,6 +2290,9 @@
     setK('pmk.vol_sub', ftKnown?ft+' 笔(24h)':'待核验');
     setK('pmk.pnl', pm.pnl_today==null?'—':pnlSpan(pm.pnl_today));
     setK('pmk.rewards', money(pm.rewards_total));
+    const rewardAge=pm.rewards_age_sec==null?'尚未更新':pmAge(pm.rewards_age_sec);
+    const rewardHealth=pm.rewards_fresh?'':(' · '+(pm.rewards_successful_accounts||0)+'/'+(pm.rewards_configured_accounts||0)+' 账号成功');
+    setK('pmk.rewards_sub',(pm.rewards_window_bjt?esc(pm.rewards_window_bjt):'08:00切日')+' · '+rewardAge+rewardHealth);
     const capital=pm.capital||{};
     setK('pmk.capital', capital.total==null?'—':money(capital.total));
     const capitalParts=(capital.accounts||[]).map(a=>'账号'+a.account+' '+money(a.balance));

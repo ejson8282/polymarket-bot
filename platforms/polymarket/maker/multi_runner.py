@@ -31,7 +31,6 @@ _MAKER_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_MAKER_DIR))
 
 from engine import PolyLPSMulti, log  # noqa: E402
-from rewards_snapshot import rewards_snapshot_loop  # noqa: E402
 from sibling_registry import SiblingOrderRegistry  # noqa: E402
 
 # NOTE: py_clob_client_v2.get_order_books posts `data=params` straight to httpx
@@ -241,10 +240,6 @@ async def multi_run(config_dir: Path) -> None:
         asyncio.create_task(
             _shared_book_fetcher(primary_engine, _all_tokens_fn, cache),
             name="shared_book_fetcher",
-        ),
-        asyncio.create_task(
-            rewards_snapshot_loop(list(config_files), data_dir),
-            name="rewards_snapshot",
         ),
     ]
 

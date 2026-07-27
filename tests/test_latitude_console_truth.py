@@ -1261,6 +1261,45 @@ def test_pm_detail_reports_orders_only_for_running_fresh_engine(
     assert result["markets"][0]["orders_verified"] is True
 
 
+def test_pm_rewards_use_account_index_and_keep_today_separate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _write_json(
+        data_dir / "rewards_cumulative.json",
+        {
+            "accounts": {
+                "0": {"cumulative_usd": 99.0},
+                "1": {"cumulative_usd": 10.0},
+                "2": {"cumulative_usd": 20.0},
+            }
+        },
+    )
+    _write_json(
+        data_dir / "rewards_live.json",
+        {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reward_date_utc": "2026-07-27",
+            "window_label_bjt": "07-27 08:00 - 07-28 08:00",
+            "successful_accounts": 2,
+            "accounts": {
+                "1": {"today_usd": 1.25, "status": "ok"},
+                "2": {"today_usd": 2.5, "status": "ok"},
+            },
+        },
+    )
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "_pm_all_accounts", lambda: [1, 2])
+
+    result = console._pm_reward_sources()
+
+    assert result["today_by_idx"] == {1: 1.25, 2: 2.5}
+    assert result["total_today_usd"] == 3.75
+    assert result["total_cumulative_usd"] == 30.0
+    assert result["fresh"] is True
+
+
 def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
@@ -1288,6 +1327,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="alertbar" style="display:none"' in html
     assert "查看全部 '+alerts.length+' 条" in html
     assert 'class="alert-more"' in html
+    assert "今日奖励" in html
+    assert "每5分钟更新 · 08:00切日" in html
+    assert 'data-k="pmk.rewards_sub"' in html
     assert "hosts[h].age_sec??999999" in html
     assert "双边权益不完整" in html
     assert "双边交易量不完整" in html
