@@ -187,6 +187,33 @@ def log(msg: str) -> None:
 _notify_cooldowns: dict[str, float] = {}
 _NOTIFY_COOLDOWN_SEC = 60  # max 1 message per event type per 60s
 _discord_webhook_url: str = ""  # set once during engine init
+_discord_important_webhook_url: str = ""
+
+
+def _read_webhook_file(path: Path) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+    return value if value.startswith("https://") else ""
+
+
+def _is_important_discord_message(message: str) -> bool:
+    text = str(message or "").lower()
+    markers = (
+        " failed",
+        "failure",
+        "失败",
+        "需手动",
+        "manual review",
+        "资金不足",
+        "balance drop",
+        "kill switch",
+        "安全超时",
+        "拒绝低价",
+        "dust remains",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _discord_embed_color(level: str) -> int:
@@ -215,7 +242,13 @@ def notify_discord(title: str, message: str, level: str = "info") -> None:
     Safe to call from anywhere — instant no-op if webhook is not configured
     or if the same event type was notified within the cooldown window.
     """
-    if not _discord_webhook_url:
+    important = level in {"warning", "danger"}
+    webhook = (
+        _discord_important_webhook_url
+        if important and _discord_important_webhook_url
+        else _discord_webhook_url
+    )
+    if not webhook:
         return
     now = time.time()
     cooldown_key = f"{title}:{level}"
@@ -225,7 +258,7 @@ def notify_discord(title: str, message: str, level: str = "info") -> None:
     _notify_cooldowns[cooldown_key] = now
     t = threading.Thread(
         target=_send_discord_webhook,
-        args=(_discord_webhook_url, title, message, level),
+        args=(webhook, title, message, level),
         daemon=True,
     )
     t.start()
@@ -552,15 +585,31 @@ class PolyLPSMulti:
         reporting = self.cfg.get("reporting", {})
         self.discord_webhook = os.getenv("POLY_DISCORD_WEBHOOK", "").strip() or str(reporting.get("discord_webhook", "")).strip()
         self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
+        default_important_file = (
+            Path(config_path).resolve().parent.parent.parent.parent
+            / "data"
+            / "discord_important_webhook.txt"
+        )
+        important_file = Path(
+            os.getenv("POLY_IMPORTANT_DISCORD_WEBHOOK_FILE", "").strip()
+            or str(reporting.get("important_discord_webhook_file", "")).strip()
+            or default_important_file
+        )
+        self.important_discord_webhook = (
+            os.getenv("POLY_IMPORTANT_DISCORD_WEBHOOK", "").strip()
+            or str(reporting.get("important_discord_webhook", "")).strip()
+            or _read_webhook_file(important_file)
+        )
         self.hourly_summary = bool(reporting.get("hourly_summary", True))
 
         # Initialise global Discord embed-notification webhook
-        global _discord_webhook_url
+        global _discord_webhook_url, _discord_important_webhook_url
         _discord_webhook_url = (
             os.getenv("POLY_DISCORD_NOTIFY_WEBHOOK", "").strip()
             or str(self.cfg.get("discord_webhook_url", "")).strip()
             or self.discord_webhook  # fall back to existing webhook
         )
+        _discord_important_webhook_url = self.important_discord_webhook
 
         self.market_cfg: Dict[str, Dict[str, Any]] = {}
         for m in self.cfg.get("markets", []):
@@ -7240,49 +7289,16 @@ class PolyLPSMulti:
         return ""
 
     def notify_discord(self, title: str, message: str, level: str = "info") -> None:
-        """Prefixed wrapper around the module-level notify_discord.
-
-        Routes fill/exit-related events (titles containing Fill/Exit/Unwind,
-        case-insensitive) to fill_discord_webhook when set, so a dedicated
-        trade-alerts Discord channel can listen to those without picking up
-        general engine status / session noise.
-        """
+        """Prefix the account label, then use the shared two-channel router."""
         full_title = f"{self._discord_prefix()}{title}"
-        is_trade_event = any(
-            kw in title.lower()
-            for kw in ("fill", "exit", "unwind")
-        )
-        fill_wh = (getattr(self, "fill_discord_webhook", "") or "").strip()
-        if is_trade_event and fill_wh:
-            try:
-                colors = {"info": 3447003, "warning": 16753920, "danger": 15158332, "success": 3066993}
-                payload = {
-                    "embeds": [{
-                        "title": full_title,
-                        "description": message[:4000],
-                        "color": colors.get(level, 10070709),
-                    }],
-                }
-                requests.post(fill_wh, json=payload, timeout=4)
-                return
-            except Exception:
-                pass  # fall through to default webhook on any error
         notify_discord(full_title, message, level)
 
     def send_discord(self, message: str) -> None:
-        if not self.discord_webhook:
-            return
-        try:
-            requests.post(
-                self.discord_webhook,
-                json={"content": f"{self._discord_prefix()}{message}"},
-                timeout=8,
-            )
-        except Exception:
-            pass
-
-    def send_fill_discord(self, message: str) -> None:
-        webhook = getattr(self, "fill_discord_webhook", "") or getattr(self, "discord_webhook", "")
+        webhook = (
+            self.important_discord_webhook
+            if _is_important_discord_message(message) and self.important_discord_webhook
+            else self.discord_webhook
+        )
         if not webhook:
             return
         try:
@@ -7293,6 +7309,9 @@ class PolyLPSMulti:
             )
         except Exception:
             pass
+
+    def send_fill_discord(self, message: str) -> None:
+        self.send_discord(message)
 
 
 async def _main_with_shutdown(_cfg):
