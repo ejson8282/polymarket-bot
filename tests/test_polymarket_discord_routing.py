@@ -1,0 +1,66 @@
+import ast
+from pathlib import Path
+
+
+def _message_classifier():
+    engine_path = (
+        Path(__file__).resolve().parents[1]
+        / "platforms"
+        / "polymarket"
+        / "maker"
+        / "engine.py"
+    )
+    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_is_important_discord_message"
+    )
+    namespace: dict[str, object] = {}
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    exec(compile(module, str(engine_path), "exec"), namespace)
+    return namespace["_is_important_discord_message"]
+
+
+def _engine_method(name: str) -> ast.FunctionDef:
+    engine_path = (
+        Path(__file__).resolve().parents[1]
+        / "platforms"
+        / "polymarket"
+        / "maker"
+        / "engine.py"
+    )
+    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
+    engine_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PolyLPSMulti"
+    )
+    return next(
+        node
+        for node in engine_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+
+
+def test_polymarket_discord_message_classification() -> None:
+    classify = _message_classifier()
+
+    assert classify("[EXIT FAILED] unable to close position")
+    assert classify("资金不足，需要人工处理")
+    assert classify("dust remains after close")
+    assert not classify("[挂单] order placed")
+    assert not classify("[成交] position opened")
+
+
+def test_polymarket_fill_messages_use_normal_router() -> None:
+    method = _engine_method("send_fill_discord")
+    names = {
+        node.attr
+        for node in ast.walk(method)
+        if isinstance(node, ast.Attribute)
+    }
+
+    assert "send_discord" in names
+    assert "fill_discord_webhook" not in names

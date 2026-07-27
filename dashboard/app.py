@@ -760,13 +760,16 @@ def _remote_systemctl(acc_id: int, action: str) -> str:
     if acc_id not in remotes:
         return f"acc{acc_id}: not remote"
     r = remotes[acc_id]
+    systemctl_args = ["sudo", "-n", "systemctl"]
+    if action in {"start", "stop"}:
+        systemctl_args.append("--no-block")
     cmd = [
         "ssh", "-i", str(r["ssh_key"]),
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=8",
         str(r["ssh_host"]),
-        f"sudo -n systemctl {action} {r['systemd_unit']}",
+        " ".join([*systemctl_args, action, str(r["systemd_unit"])]),
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -804,9 +807,13 @@ def _multi_runner_running() -> bool:
     # the badge flips to RUNNING immediately instead of waiting for engine to
     # write its first heartbeat. Cleared as soon as a real heartbeat appears.
     try:
+        _stop = st.session_state.get("_engine_stop_requested_at", 0.0)
         _just = st.session_state.get("_engine_just_started_at", 0.0)
     except Exception:
+        _stop = 0.0
         _just = 0.0
+    if _stop and (time.time() - _stop) < 45.0:
+        return False
     if _just and (time.time() - _just) < 30.0:
         return True
 
@@ -842,6 +849,7 @@ def start_multi_runner() -> str:
             # on STOPPED for the ~3-5s the engine takes to write its first
             # heartbeat after systemd start returns.
             try:
+                st.session_state.pop("_engine_stop_requested_at", None)
                 st.session_state["_engine_just_started_at"] = time.time()
             except Exception:
                 pass
@@ -855,32 +863,22 @@ def start_multi_runner() -> str:
 
 
 def stop_multi_runner() -> str:
-    # Cancel each account's open orders FIRST (the engine process is about to
-    # be killed, so it won't get a chance to clean up via its own pause/exit
-    # handlers). Do this best-effort per-account — one failure doesn't block
-    # the others or the process kill.
-    cancel_summary: list[str] = []
-    for _acc_id in _configured_account_ids():
-        _cfg_path = MAKER_DIR / f"config_{_acc_id}.json"
-        if not _cfg_path.exists():
-            continue
-        try:
-            _client, _addr, _err = _build_client_for_config(_cfg_path)
-            if _err:
-                cancel_summary.append(f"acc{_acc_id}:skip({_err[:40]})")
-                continue
-            _client.cancel_all()
-            cancel_summary.append(f"acc{_acc_id}:cancelled")
-        except Exception as _exc:
-            cancel_summary.append(f"acc{_acc_id}:fail({type(_exc).__name__})")
+    # Clear optimistic start state before doing any network work. Without this,
+    # a Stop clicked within 30 seconds of Start still rendered as RUNNING.
+    try:
+        st.session_state.pop("_engine_just_started_at", None)
+        st.session_state["_engine_stop_requested_at"] = time.time()
+    except Exception:
+        pass
 
-    # Stop the systemd unit; engine receives SIGTERM and graceful-cancels its
-    # own orders before exiting (REST cancel above is belt-and-suspenders).
-    cmd = ["sudo", "-n", "systemctl", "stop", LOCAL_ENGINE_UNIT]
+    # Ask systemd to stop immediately and return control to Streamlit. The
+    # engine's SIGTERM handler performs a graceful cancel_all with a 15-second
+    # bound, so the browser no longer appears frozen while cancellation runs.
+    cmd = ["sudo", "-n", "systemctl", "--no-block", "stop", LOCAL_ENGINE_UNIT]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         if result.returncode == 0:
-            stop_msg = f"Engine stopped via systemd ({LOCAL_ENGINE_UNIT})"
+            stop_msg = f"Engine stopping via systemd ({LOCAL_ENGINE_UNIT})"
         else:
             err = (result.stderr or result.stdout or "").strip()[:60]
             stop_msg = f"systemctl stop rc={result.returncode} {err}"
@@ -889,11 +887,25 @@ def stop_multi_runner() -> str:
     except Exception as e:
         stop_msg = f"systemctl stop: {type(e).__name__}({e})"
 
-    # Cleanup pid + heartbeat files. Removing the heartbeat is essential
-    # for the Reload pattern (stop → sleep → start) to work — otherwise
-    # _multi_runner_running()'s heartbeat-fallback still reports the engine
-    # as alive within ~10s of stop, and start_multi_runner() bails with
-    # "already running".
+    # Launch a non-blocking REST cancellation fallback. The engine normally
+    # cancels on SIGTERM; this covers an already-dead engine with stale orders
+    # without making the Stop button wait on signer/API latency.
+    cancel_cli = MAKER_DIR / "cancel_all_cli.py"
+    try:
+        cancel_log = DATA_DIR / "cancel_all.log"
+        with cancel_log.open("a", encoding="utf-8") as log_handle:
+            subprocess.Popen(
+                [sys.executable, str(cancel_cli)],
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        cancel_msg = "cancel fallback started"
+    except Exception as exc:
+        cancel_msg = f"cancel fallback failed({type(exc).__name__})"
+
+    # Cleanup pid + heartbeat files. The stop-request marker above prevents a
+    # final in-flight heartbeat from temporarily flipping the badge to RUNNING.
     for name in (".multi_runner.pid", ".engine_1.pid", ".engine_1.heartbeat",
                  ".engine.pid", ".engine.heartbeat"):
         try:
@@ -901,8 +913,7 @@ def stop_multi_runner() -> str:
         except Exception:
             pass
     _clear_runtime_caches()
-    _cancel_line = " | ".join(cancel_summary) if cancel_summary else "no accounts"
-    return f"{stop_msg}. Orders: {_cancel_line}"
+    return f"{stop_msg}. Orders: graceful cancel + {cancel_msg}"
 
 
 def emergency_cancel_all() -> str:
@@ -2431,7 +2442,7 @@ with st.sidebar:
                 nav_feature = f
 
     # default selection
-    _nav = st.session_state.get("nav_feature", "Overview/Home")
+    _nav = st.session_state.get("nav_feature", "Market Making/Polymarket")
     if _nav == "Polymarket/Market Making":
         _nav = "Market Making/Polymarket"
         st.session_state["nav_feature"] = _nav
@@ -2574,8 +2585,8 @@ def _status_bar():
                   f"${_balance_raw:,.2f}" if _show_bal else "—",
                   help="所有在跑账号 collateral USDC 总和")
     with m2:
-        st.metric(f"Order Utilization{_acc_suffix}",
-                  f"{_utilization:.1f}%" if _show_bal else "—",
+        st.metric(f"Capital Reuse{_acc_suffix}",
+                  f"{(_order_size_sum / _balance_raw):.2f}x" if _show_bal and _balance_raw > 0 else "—",
                   delta=f"${_order_size_sum:,.0f} deployed" if _show_bal else None)
     with m3:
         st.metric(f"Open Orders{_acc_suffix}",
