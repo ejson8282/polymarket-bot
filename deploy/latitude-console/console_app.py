@@ -39,6 +39,9 @@ APP_DIR = Path(__file__).resolve().parent
 CONSOLE_HTML = APP_DIR / "console.html"
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", APP_DIR.parents[1] / "data"))
 VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming-live/data"))
+AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
+SYSTEM_EVENT_LOG = DATA_DIR / "system_events.jsonl"
+SINGLE_ACCOUNT_DECISION_LOG = DATA_DIR / "single_account_decisions.jsonl"
 VARIA_CAPITAL_LEDGER = VARIA_DIR / "home_equity_principal.json"
 VARIA_RECONCILED_PNL_HISTORY = VARIA_DIR / "reconciled_pnl_history.json"
 VARIA_MANUAL_JOB_UNIT = os.getenv(
@@ -87,11 +90,6 @@ IPO_PACK_URL = os.getenv(
     "http://100.82.86.62:8080/dashboard/ipo/judgment-pack",
 )
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
-MACMINI_STATUS_SNAPSHOT_PATH = Path(
-    os.getenv("MACMINI_STATUS_SNAPSHOT_PATH", DATA_DIR / "macmini_status_last_good.json")
-)
-MACMINI_ALERT_GRACE_SECONDS = int(os.getenv("MACMINI_ALERT_GRACE_SECONDS", "600"))
-PROCESS_STARTED_AT = time.time()
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
 DEWU_INVENTORY_PATH = Path(
     os.getenv("DEWU_INVENTORY_PATH", DATA_DIR / "dewu_inventory.json")
@@ -99,6 +97,19 @@ DEWU_INVENTORY_PATH = Path(
 DEWU_EXECUTOR_URL = os.getenv(
     "DEWU_EXECUTOR_URL", "http://100.91.159.54:8621"
 ).rstrip("/")
+WORK_PLAN_PATH = Path(
+    os.getenv("LATITUDE_WORK_PLAN_PATH", DATA_DIR / "work_plan.json")
+)
+WORK_PLAN_STATUSES = ("未开始", "进行中", "已完成", "暂停")
+WORK_PLAN_DEFAULT_PROJECTS = (
+    ("P001", "Var 对冲 Farming", "维护对冲策略与运行稳定性"),
+    ("P002", "Polymarket 做市", "维护做市系统与运行状态"),
+    ("P003", "Predict.fun 做市", "维护测试网做市与风险观察"),
+    ("P004", "Single Account", "维护候选、评分与模拟结果"),
+    ("P005", "网格 Grid", "维护 shadow 网格与账户状态"),
+    ("P006", "打新 & Alpha 核算台", "维护运营、账号与核算"),
+    ("P007", "得物库存", "维护库存与上架流程"),
+)
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
 PM_STATE_STALE_SEC = int(os.getenv("PM_STATE_STALE_SEC", "300"))
@@ -113,6 +124,66 @@ def _read_json(path: Path) -> Optional[dict]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _work_plan_empty() -> dict:
+    now = datetime.now(timezone.utc).astimezone()
+    month = now.strftime("%Y-%m")
+    return {
+        "version": 1,
+        "updated_at": now.isoformat(timespec="seconds"),
+        "projects": [
+            {
+                "id": project_id,
+                "name": name,
+                "goal": goal,
+                "status": "进行中",
+                "start_month": month,
+                "target_month": "",
+                "next_step": "待补充",
+                "updated_at": now.isoformat(timespec="seconds"),
+            }
+            for project_id, name, goal in WORK_PLAN_DEFAULT_PROJECTS
+        ],
+        "months": {},
+        "inbox": [],
+    }
+
+
+def _work_plan_load() -> dict:
+    state = _read_json(WORK_PLAN_PATH)
+    if not isinstance(state, dict):
+        state = _work_plan_empty()
+        _work_plan_save(state)
+    state.setdefault("version", 1)
+    state.setdefault("updated_at", None)
+    if not isinstance(state.get("projects"), list):
+        state["projects"] = []
+    if not isinstance(state.get("months"), dict):
+        state["months"] = {}
+    if not isinstance(state.get("inbox"), list):
+        state["inbox"] = []
+    return state
+
+
+def _work_plan_save(state: dict) -> None:
+    WORK_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = WORK_PLAN_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, WORK_PLAN_PATH)
+
+
+def _work_plan_now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _work_plan_write_guard(request: Request) -> Optional[JSONResponse]:
+    if _is_cloudflare(request):
+        return JSONResponse(
+            {"ok": False, "error": "工作计划写入只允许通过 Tailscale 内网页面操作"},
+            status_code=403,
+        )
+    return None
 
 
 def _mtime_age(path: Path) -> Optional[int]:
@@ -350,6 +421,13 @@ async def dewu_listings_start(request: Request) -> JSONResponse:
             "items": items,
         },
     )
+    _audit(
+        "dewu_listings_start",
+        ok=bool(result.get("ok")) and code < 400,
+        items=len(items),
+        status_code=code,
+        source="tailnet",
+    )
     return JSONResponse(result, status_code=code)
 
 
@@ -392,6 +470,15 @@ async def dewu_inventory_import(request: Request) -> JSONResponse:
     state["exceptions"] = state["exceptions"][:200]
     state["updated_at"] = now
     _dewu_save(state)
+    _audit(
+        "dewu_inventory_import",
+        ok=True,
+        filename=filename,
+        specs=len(incoming),
+        quantity=added_quantity,
+        errors=len(errors),
+        source="tailnet",
+    )
     return JSONResponse({"ok": True, "import": record, "added_specs": added_specs,
                          "merged_specs": len(incoming) - added_specs, "errors": errors,
                          "total_specs": len(state["items"]),
@@ -466,6 +553,7 @@ def _polymarket() -> Dict[str, Any]:
                     rewards_by_addr[str(row["address"]).lower()] = v
     accounts: List[dict] = []
     running = live_orders = 0
+    live_order_notional = 0.0
     orders_unknown = False
     fresh_states = 0
     volume_today = pnl_today = 0.0
@@ -503,11 +591,26 @@ def _polymarket() -> Dict[str, Any]:
         orders_verified = bool(alive and state_fresh)
         markets = state.get("markets") if isinstance(state.get("markets"), dict) else {}
         last_seen_orders = 0
+        last_seen_notional = 0.0
         for m in markets.values():
             if isinstance(m, dict):
                 orders = m.get("live_orders") or m.get("orders")
-                last_seen_orders += len(orders) if isinstance(orders, list) else int(_num(m.get("live_order_count")) or 0)
+                if isinstance(orders, list):
+                    last_seen_orders += len(orders)
+                    for order in orders:
+                        if not isinstance(order, dict):
+                            continue
+                        price = _num(order.get("price")) or 0.0
+                        size = _num(order.get("size"))
+                        if size is None:
+                            original = _num(order.get("original_size")) or 0.0
+                            matched = _num(order.get("size_matched")) or 0.0
+                            size = max(0.0, original - matched)
+                        last_seen_notional += abs(price * size)
+                else:
+                    last_seen_orders += int(_num(m.get("live_order_count")) or 0)
         acct_orders = last_seen_orders if orders_verified else None
+        acct_order_notional = round(last_seen_notional, 2) if orders_verified else None
         fills = state.get("fills") if isinstance(state.get("fills"), list) else []
         cutoff = time.time() - 86400
         ft = ([f for f in fills if isinstance(f, dict) and (_num(f.get("ts")) or 0) >= cutoff]
@@ -528,6 +631,7 @@ def _polymarket() -> Dict[str, Any]:
             orders_unknown = True
         else:
             live_orders += acct_orders
+            live_order_notional += acct_order_notional or 0.0
         volume_today += vol
         pnl_today += pnl
         if state_fresh:
@@ -558,7 +662,14 @@ def _polymarket() -> Dict[str, Any]:
             "balance": _num(state.get("balance")) if state_fresh else None,
             "balance_last_seen": _num(state.get("balance")),
             "orders": acct_orders,
+            "order_notional": acct_order_notional,
+            "capital_reuse_multiplier": (
+                round(acct_order_notional / (_num(collateral.get("balance")) or 1), 2)
+                if acct_order_notional is not None and (_num(collateral.get("balance")) or 0) > 0
+                else None
+            ),
             "orders_last_seen": last_seen_orders,
+            "order_notional_last_seen": round(last_seen_notional, 2),
             "orders_verified": orders_verified,
             "fills_today": len(ft) if state_fresh else None,
             "volume_today": round(vol, 2) if state_fresh else None,
@@ -584,11 +695,20 @@ def _polymarket() -> Dict[str, Any]:
                                        else (int(time.time() - curator["last_scan_ts"])
                                              if _num(curator.get("last_scan_ts")) else None)),
         }
+    capital = _pm_capital_summary()
+    capital_total = _num(capital.get("total")) or 0.0
+    capital_reuse_multiplier = (
+        round(live_order_notional / capital_total, 2)
+        if not orders_unknown and capital_total > 0
+        else None
+    )
     return {
         "curator": curator_out,
         "present": bool(accounts), "accounts": accounts,
         "running": running, "total": len(accounts),
         "live_orders": None if orders_unknown else live_orders,
+        "live_order_notional": None if orders_unknown else round(live_order_notional, 2),
+        "capital_reuse_multiplier": capital_reuse_multiplier,
         "orders_unknown": orders_unknown,
         "fresh_state_count": fresh_states,
         "volume_today": round(volume_today, 2) if fresh_states else None,
@@ -597,7 +717,7 @@ def _polymarket() -> Dict[str, Any]:
         "fills_seen": fills_seen if fresh_states else None,
         "cooldown": cooldown if fresh_states else None,
         "rewards_total": rewards_total,
-        "capital": _pm_capital_summary(),
+        "capital": capital,
         "fill_events": pm_fill_events[-6:],
     }
 
@@ -812,7 +932,16 @@ def _incentive_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
     ondo_total = ondo_week = ondo_24h = 0.0
     var_total = var_week = var_24h = 0.0
     var_own = var_other = var_estimate = 0.0
+    var_eligible_loss = var_actual_refund_week = var_net_loss_week = 0.0
     current_pool = None
+    current_pool_api = None
+    current_pool_onchain = None
+    current_pool_threshold = None
+    current_pool_source = None
+    current_pool_contract = None
+    current_pool_discrepancy = None
+    current_pool_consistent = None
+    current_pool_eligible = False
     ondo_pool = None
     complete = bool(hosts)
     host_rows: Dict[str, dict] = {}
@@ -832,14 +961,56 @@ def _incentive_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
                 "own_refunds_total_usdc": round(_num(var_row.get("own_refunds_total_usdc")) or 0.0, 6),
                 "other_rewards_total_usdc": round(_num(var_row.get("other_rewards_total_usdc")) or 0.0, 6),
                 "estimated_refund_usdc": round(_num(var_row.get("estimated_refund_usdc")) or 0.0, 6),
+                "eligible_loss_usdc": round(_num(var_row.get("eligible_loss_usdc")) or 0.0, 6),
+                "actual_refund_week_usdc": round(_num(var_row.get("actual_refund_week_usdc")) or 0.0, 6),
+                "actual_refund_rate_week_pct": round(_num(var_row.get("actual_refund_rate_week_pct")) or 0.0, 4),
+                "net_loss_after_actual_refund_week_usdc": round(
+                    _num(var_row.get("net_loss_after_actual_refund_week_usdc")) or 0.0,
+                    6,
+                ),
+                "estimated_refund_rate_pct": round(_num(var_row.get("estimated_refund_rate_pct")) or 0.0, 4),
                 "estimated_hit_probability_pct": round(_num(var_row.get("estimated_hit_probability_pct")) or 0.0, 4),
                 "pool_usdc": round(_num(var_row.get("pool_usdc")) or 0.0, 2),
+                "pool_api_usdc": (
+                    round(_num(var_row.get("pool_api_usdc")), 2)
+                    if _num(var_row.get("pool_api_usdc")) is not None
+                    else None
+                ),
+                "pool_onchain_usdc": (
+                    round(_num(var_row.get("pool_onchain_usdc")), 2)
+                    if _num(var_row.get("pool_onchain_usdc")) is not None
+                    else None
+                ),
+                "pool_threshold_usdc": round(
+                    _num(var_row.get("pool_threshold_usdc")) or 5000.0,
+                    2,
+                ),
+                "pool_excess_usdc": (
+                    round(_num(var_row.get("pool_excess_usdc")), 2)
+                    if _num(var_row.get("pool_excess_usdc")) is not None
+                    else None
+                ),
+                "pool_source": var_row.get("pool_source"),
+                "pool_contract_address": var_row.get("pool_contract_address"),
+                "pool_data_consistent": var_row.get("pool_data_consistent"),
+                "pool_discrepancy_usdc": (
+                    round(_num(var_row.get("pool_discrepancy_usdc")), 2)
+                    if _num(var_row.get("pool_discrepancy_usdc")) is not None
+                    else None
+                ),
                 "pool_eligible": var_row.get("pool_eligible") is True,
                 "tier": var_row.get("tier"),
                 "odds_pct": _num(var_row.get("odds_pct")),
                 "estimate_status": var_row.get("estimate_status"),
                 "eligible_loss_count": int(_num(var_row.get("eligible_loss_count")) or 0),
                 "coverage_start": var_row.get("coverage_start"),
+                "accounting_policy": var_row.get("accounting_policy"),
+                "strategy_policy": var_row.get("strategy_policy"),
+                "weekly_ledger": (
+                    var_row.get("weekly_ledger")
+                    if isinstance(var_row.get("weekly_ledger"), list)
+                    else []
+                ),
                 "complete": var_row.get("complete") is True,
             }
             row["variational"] = observed
@@ -849,7 +1020,41 @@ def _incentive_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
             var_own += observed["own_refunds_total_usdc"]
             var_other += observed["other_rewards_total_usdc"]
             var_estimate += observed["estimated_refund_usdc"]
+            var_eligible_loss += observed["eligible_loss_usdc"]
+            var_actual_refund_week += observed["actual_refund_week_usdc"]
+            var_net_loss_week += observed["net_loss_after_actual_refund_week_usdc"]
             current_pool = max(current_pool or 0.0, observed["pool_usdc"])
+            if observed["pool_api_usdc"] is not None:
+                current_pool_api = max(current_pool_api or 0.0, observed["pool_api_usdc"])
+            if observed["pool_onchain_usdc"] is not None:
+                current_pool_onchain = max(
+                    current_pool_onchain or 0.0,
+                    observed["pool_onchain_usdc"],
+                )
+            current_pool_threshold = max(
+                current_pool_threshold or 0.0,
+                observed["pool_threshold_usdc"],
+            )
+            current_pool_eligible = current_pool_eligible or observed["pool_eligible"]
+            if observed["pool_source"] == "arbitrum_usdc_balance":
+                current_pool_source = observed["pool_source"]
+            elif current_pool_source is None:
+                current_pool_source = observed["pool_source"]
+            current_pool_contract = (
+                observed["pool_contract_address"] or current_pool_contract
+            )
+            if observed["pool_discrepancy_usdc"] is not None:
+                current_pool_discrepancy = max(
+                    current_pool_discrepancy or 0.0,
+                    observed["pool_discrepancy_usdc"],
+                )
+            if observed["pool_data_consistent"] is False:
+                current_pool_consistent = False
+            elif (
+                observed["pool_data_consistent"] is True
+                and current_pool_consistent is None
+            ):
+                current_pool_consistent = True
             if observed["complete"] is not True:
                 complete = False
         if host_state.get("hedge_venue") == "ondo":
@@ -895,7 +1100,40 @@ def _incentive_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
             "own_refunds_total_usdc": round(var_own, 6),
             "other_rewards_total_usdc": round(var_other, 6),
             "estimated_refund_usdc": round(var_estimate, 6),
+            "eligible_loss_usdc": round(var_eligible_loss, 6),
+            "actual_refund_week_usdc": round(var_actual_refund_week, 6),
+            "actual_refund_rate_week_pct": round(
+                var_actual_refund_week / var_eligible_loss * 100,
+                4,
+            ) if var_eligible_loss > 0 else 0.0,
+            "net_loss_after_actual_refund_week_usdc": round(var_net_loss_week, 6),
+            "estimated_refund_rate_pct": round(
+                var_estimate / var_eligible_loss * 100,
+                4,
+            ) if var_eligible_loss > 0 else 0.0,
+            "accounting_policy": "actual_settled_refunds_only",
+            "strategy_policy": "refund_never_changes_trade_selection_or_loss_budget",
             "pool_usdc": round(current_pool, 2) if current_pool is not None else None,
+            "pool_api_usdc": round(current_pool_api, 2) if current_pool_api is not None else None,
+            "pool_onchain_usdc": (
+                round(current_pool_onchain, 2)
+                if current_pool_onchain is not None
+                else None
+            ),
+            "pool_threshold_usdc": (
+                round(current_pool_threshold, 2)
+                if current_pool_threshold is not None
+                else 5000.0
+            ),
+            "pool_source": current_pool_source,
+            "pool_contract_address": current_pool_contract,
+            "pool_eligible": current_pool_eligible,
+            "pool_data_consistent": current_pool_consistent,
+            "pool_discrepancy_usdc": (
+                round(current_pool_discrepancy, 2)
+                if current_pool_discrepancy is not None
+                else None
+            ),
         },
         "hosts": host_rows,
     }
@@ -1019,6 +1257,9 @@ def _var_decibel() -> Dict[str, Any]:
             acceptance = state.get("ondo_acceptance")
             h["ondo_acceptance"] = acceptance if isinstance(acceptance, dict) else {"present": False}
         h["venue_reads"] = venue_reads
+        h["volume_weekly"] = None
+        h["volume_total"] = None
+        h["volume_complete"] = {"weekly": False, "total": False}
         var_syms = venue_symbols.get("variational", {})
         hedge_syms = venue_symbols.get(hedge_venue, {})
         # 只有快照新鲜且两家指定交易所读取都明确成功，才能判断空仓/对冲/单腿。
@@ -1069,20 +1310,58 @@ def _var_decibel() -> Dict[str, Any]:
                 sign = -1.0 if str(p.get("side") or "").lower() in ("short", "sell") else 1.0
                 notional = _num(p.get("notional"))
                 entry, liq = _num(p.get("entry_price")), _num(p.get("liquidation_price"))
-                size = _num(p.get("size"))
+                size = None
+                for key in ("size", "position_size", "qty"):
+                    size = _num(p.get(key))
+                    if size is not None:
+                        break
                 if (notional is None or notional == 0) and size and entry:
                     notional = abs(size) * entry  # 数据源 notional 缺失/为0时按 |size|×entry 推算
                 liq_pct = (round(abs(entry - liq) / entry * 100) if entry and liq else None)
                 return {"open": is_open, "side": str(p.get("side") or ""),
                         "notional": notional, "signed": (sign * notional) if (is_open and notional) else 0.0,
+                        "entry_price": entry,
+                        "size": abs(size) if size is not None else None,
+                        "signed_size": _signed_position_size(p) if size is not None else None,
                         "liq_pct": liq_pct}
 
             var_leg, dec_leg = _leg(v_pos, v_open), _leg(d_pos, d_open)
+            open_legs = [leg for leg in (var_leg, dec_leg) if leg["open"]]
+            prices = [
+                leg["entry_price"] for leg in open_legs
+                if leg["entry_price"] is not None and leg["entry_price"] > 0
+            ]
+            reference_price = (sum(prices) / len(prices)) if prices else None
+            sizes_complete = bool(open_legs) and all(
+                leg["signed_size"] is not None for leg in open_legs
+            )
+            if sizes_complete:
+                net_size = sum(float(leg["signed_size"]) for leg in open_legs)
+                # 两家 API 的 notional 口径可能不同。净敞口必须先轧差基础数量，
+                # 再乘同一个参考价；否则等量反向仓位也会被误报为美元敞口。
+                if abs(net_size) < 1e-12:
+                    net_exposure = 0.0
+                elif reference_price is not None:
+                    net_exposure = net_size * reference_price
+                else:
+                    net_exposure = sum(float(leg["signed"]) for leg in open_legs)
+                for leg in open_legs:
+                    leg["exposure_notional"] = (
+                        abs(float(leg["signed_size"])) * reference_price
+                        if reference_price is not None else leg["notional"]
+                    )
+            else:
+                net_size = None
+                net_exposure = sum(float(leg["signed"]) for leg in open_legs)
+                for leg in open_legs:
+                    leg["exposure_notional"] = leg["notional"]
             pairs.append({
                 "host": host, "symbol": symbol, "var": var_leg,
                 "hedge": dec_leg, "dec": dec_leg,
                 "hedge_venue": hedge_venue, "hedge_label": hedge_label,
-                "net": round(var_leg["signed"] + dec_leg["signed"], 2),
+                "net": round(net_exposure, 2),
+                "net_size": net_size,
+                "reference_price": reference_price,
                 "status": ("HEDGED" if (d_open and v_open) else
                            (f"{hedge_label.upper()} 裸腿" if d_open else "VAR 裸腿")),
             })
@@ -1090,6 +1369,7 @@ def _var_decibel() -> Dict[str, Any]:
             tv = state.get("trade_volume") if isinstance(state.get("trade_volume"), dict) else {}
             host_weekly_complete = tv.get("ok") is True
             host_total_complete = tv.get("ok") is True
+            host_weekly = host_total = 0.0
             venue_rows = tv.get("venues") if isinstance(tv.get("venues"), dict) else {}
             for venue in ("variational", hedge_venue):
                 venue_data = venue_rows.get(venue)
@@ -1098,19 +1378,27 @@ def _var_decibel() -> Dict[str, Any]:
                     t = _num(venue_data.get("total_notional_usdc"))
                     if w is not None:
                         vol_weekly += w
+                        host_weekly += w
                         vol_found = True
                     else:
                         host_weekly_complete = False
                     if t is not None:
                         vol_total += t
+                        host_total += t
                     else:
                         host_total_complete = False
                 else:
                     host_weekly_complete = host_total_complete = False
             if host_weekly_complete:
                 volume_weekly_hosts.add(host)
+                h["volume_weekly"] = round(host_weekly, 2)
             if host_total_complete:
                 volume_total_hosts.add(host)
+                h["volume_total"] = round(host_total, 2)
+            h["volume_complete"] = {
+                "weekly": host_weekly_complete,
+                "total": host_total_complete,
+            }
         hosts[host] = h
     auto = _read_json(VARIA_DIR / "auto_strategy_state.json")
     auto_ctl = None
@@ -1329,9 +1617,18 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
     complete = bool(hosts)
     rows: List[dict] = []
     missing: List[str] = []
+    host_totals: Dict[str, dict] = {}
     for host in sorted(hosts):
         host_ledger = ledger.get(host) if isinstance(ledger.get(host), dict) else {}
         hedge_venue = str(hosts.get(host, {}).get("hedge_venue") or _host_hedge_venue(host))
+        host_total = {
+            "complete": True,
+            "initial_principal": 0.0,
+            "net_cashflow": 0.0,
+            "principal_total": 0.0,
+            "current_equity": 0.0,
+            "missing": [],
+        }
         values = (
             ("variational", "equity_var", "Var"),
             (hedge_venue, "equity_hedge", _venue_label(hedge_venue)),
@@ -1345,6 +1642,8 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
             if current is None or initial is None or not isinstance(flows, list) or not reconciled:
                 complete = False
                 missing.append(f"{host.upper()} {label}")
+                host_total["complete"] = False
+                host_total["missing"].append(label)
                 continue
             flow_total = sum(
                 amount for amount in (_capital_flow_amount(flow) for flow in flows)
@@ -1354,6 +1653,10 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
             initial_total += initial
             net_cashflow += flow_total
             current_total += current
+            host_total["initial_principal"] += initial
+            host_total["net_cashflow"] += flow_total
+            host_total["principal_total"] += principal
+            host_total["current_equity"] += current
             rows.append({
                 "host": host,
                 "venue": venue,
@@ -1363,11 +1666,27 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
                 "current": round(current, 6),
                 "pnl": round(current - principal, 6),
             })
+        host_principal = host_total["principal_total"]
+        host_pnl = host_total["current_equity"] - host_principal
+        host_totals[host] = {
+            "complete": host_total["complete"],
+            "initial_principal": round(host_total["initial_principal"], 2),
+            "net_cashflow": round(host_total["net_cashflow"], 2),
+            "principal_total": round(host_principal, 2) if host_total["complete"] else None,
+            "current_equity": round(host_total["current_equity"], 2)
+            if host_total["complete"] else None,
+            "pnl": round(host_pnl, 2) if host_total["complete"] else None,
+            "pnl_pct": round(host_pnl / host_principal * 100, 2)
+            if host_total["complete"] and host_principal else None,
+            "missing": host_total["missing"],
+        }
 
     if not complete:
         return {
             "present": True, "complete": False,
-            "reason": "待对账：" + "、".join(missing), "sources": rows,
+            "reason": "待对账：" + "、".join(missing),
+            "hosts": host_totals,
+            "sources": rows,
         }
     principal_total = initial_total + net_cashflow
     return {
@@ -1380,6 +1699,7 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
         "pnl": round(current_total - principal_total, 2),
         "pnl_pct": round((current_total - principal_total) / principal_total * 100, 2)
         if principal_total else None,
+        "hosts": host_totals,
         "sources": rows,
     }
 
@@ -1507,14 +1827,29 @@ def _varia_detail() -> Dict[str, Any]:
             (by_host, t["route"]),
             (by_symbol, str(t["symbol"] or "?")),
         ):
-            b = bucket.setdefault(keyname, {"trades": 0, "notional": 0.0, "pnl": 0.0, "wins": 0})
+            b = bucket.setdefault(
+                keyname,
+                {
+                    "trades": 0,
+                    "notional": 0.0,
+                    "pnl": 0.0,
+                    "loss": 0.0,
+                    "wins": 0,
+                },
+            )
             b["trades"] += 1
             b["notional"] += t["notional"] or 0.0
             b["pnl"] += t["pnl"] or 0.0
+            b["loss"] += max(0.0, -(t["pnl"] or 0.0))
             b["wins"] += 1 if (t["pnl"] or 0) > 0 else 0
     def _agg(d):
         return [{"name": k, "trades": v["trades"], "notional": round(v["notional"], 2),
                  "pnl": round(v["pnl"], 2),
+                 "loss": round(v["loss"], 2),
+                 "cost_per_10k": round(
+                     v["loss"] / v["notional"] * 10000,
+                     2,
+                 ) if v["notional"] else 0.0,
                  "win_rate": round(v["wins"] / v["trades"] * 100) if v["trades"] else 0}
                 for k, v in sorted(d.items(), key=lambda kv: -kv[1]["notional"])]
     return {"present": bool(trades), "trades": trades,
@@ -1784,8 +2119,10 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     min_minutes = int(raw_min_minutes if raw_min_minutes is not None else 30)
     max_minutes = int(raw_max_minutes if raw_max_minutes is not None else 180)
     cap = _num(raw.get("weekly_loss_cap_usdc"))
+    volume_target = _num(raw.get("weekly_volume_target_usdc"))
     max_spread = _num(raw.get("max_auto_spread_bps"))
     ratio = _num(raw.get("major_ratio"))
+    strategy_b_rwa_ratio = _num(raw.get("strategy_b_rwa_target_volume_ratio"))
     hosts: Dict[str, dict] = {}
     for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
         configured = raw_hosts.get(host) if isinstance(raw_hosts.get(host), dict) else {}
@@ -1800,8 +2137,17 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
         "execution_frozen_reason": str(raw.get("execution_frozen_reason") or ""),
         "mode": mode,
         "weekly_loss_cap_usdc": str(cap if cap is not None else 5),
+        "weekly_volume_target_usdc": str(
+            max(0.0, volume_target if volume_target is not None else 100000)
+        ),
         "max_auto_spread_bps": str(max(0.0, max_spread if max_spread is not None else 2)),
         "major_ratio": str(min(1.0, max(0.0, ratio if ratio is not None else 0.8))),
+        "strategy_b_rwa_target_volume_ratio": str(
+            min(
+                1.0,
+                max(0.0, strategy_b_rwa_ratio if strategy_b_rwa_ratio is not None else 0.2),
+            )
+        ),
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": max(1, min_minutes),
@@ -1901,12 +2247,32 @@ def _varia_auto_runtime(host: str) -> Dict[str, Any]:
         "message": str(runtime.get("message") or "")[:180],
         "last_checked_at": runtime.get("last_checked_at"),
         "last_action_at": runtime.get("last_action_at"),
+        "last_finished_job_id": runtime.get("last_finished_job_id"),
+        "last_finished_job_status": str(runtime.get("last_finished_job_status") or ""),
+        "last_finished_job_kind": str(runtime.get("last_finished_job_kind") or ""),
+        "last_finished_job_message": str(runtime.get("last_finished_job_message") or "")[:240],
         "pressure_test": runtime.get("pressure_test") if isinstance(runtime.get("pressure_test"), dict) else {},
+        "next_open_after": runtime.get("next_open_after"),
+        "position_lifecycle": (
+            runtime.get("position_lifecycle")
+            if isinstance(runtime.get("position_lifecycle"), list)
+            else []
+        ),
+        "positions": (
+            runtime.get("positions")
+            if isinstance(runtime.get("positions"), dict)
+            else {}
+        ),
+        "weekly_volume": (
+            runtime.get("weekly_volume")
+            if isinstance(runtime.get("weekly_volume"), dict)
+            else {}
+        ),
         "next_open_plan": plan,
     }
 
 
-def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
+def _varia_strategy_symbol_config() -> Dict[str, Any]:
     """Read the worker's configured pools without importing the trading process."""
     fallback = {
         "major_symbols": ["BTC", "ETH"],
@@ -1914,6 +2280,7 @@ def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
             symbol for symbol in VARIA_MARKET_CANDIDATES
             if symbol not in {"BTC", "ETH", "HYPE"}
         ],
+        "rwa_max_spread_bps": 3.0,
     }
     path = VARIA_DIR.parent / "config.yaml"
     try:
@@ -1938,6 +2305,16 @@ def _varia_strategy_symbol_config() -> Dict[str, List[str]]:
                     symbols.append(symbol)
             if symbols:
                 result[key] = symbols
+    line = next((
+        item.strip() for item in lines
+        if item.strip().startswith("strategy_b_rwa_max_auto_spread_bps:")
+    ), "")
+    if line:
+        try:
+            value = ast.literal_eval(line.split(":", 1)[1].strip())
+            result["rwa_max_spread_bps"] = max(0.0, float(value))
+        except (SyntaxError, ValueError, TypeError):
+            pass
     return result
 
 
@@ -1960,6 +2337,8 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
     allowed: List[str] = []
     blocked: List[str] = []
     metrics: Dict[str, dict] = {}
+    block_summary: Dict[str, int] = {}
+    rwa_max_spread_bps = float(configured.get("rwa_max_spread_bps") or 3.0)
     for quote in _varia_latest_quotes():
         symbol = str(quote.get("symbol") or "").upper()
         age = quote.get("age_sec")
@@ -1998,7 +2377,17 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         # bypasses either venue's own spread limit.
         observed = [var_spread, dec_spread] + ([entry_cost] if entry_cost is not None else [])
         worst = max(observed)
-        can_trade = worst <= max_spread_bps
+        symbol_limit = rwa_max_spread_bps if symbol in VARIA_RWA_SYMBOLS else max_spread_bps
+        reasons: List[str] = []
+        if var_spread > symbol_limit:
+            reasons.append("var_spread_too_wide")
+        if dec_spread > symbol_limit:
+            reasons.append("decibel_spread_too_wide")
+        if entry_cost is not None and entry_cost > symbol_limit:
+            reasons.append("entry_cost_too_high")
+        can_trade = not reasons
+        for reason in reasons:
+            block_summary[reason] = block_summary.get(reason, 0) + 1
         recommended = {
             "var_buy": "Var 买 / Decibel 卖",
             "var_sell": "Var 卖 / Decibel 买",
@@ -2025,6 +2414,8 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
             ),
             "display_bps": round(worst, 2),
             "allowed": can_trade,
+            "block_reasons": reasons,
+            "max_spread_bps": symbol_limit,
             "age_sec": int(age),
             "recommended": recommended,
         }
@@ -2061,6 +2452,12 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
         "metrics": metrics,
         "max_spread_bps": max_spread_bps,
+        "thresholds_bps": {
+            "standard": max_spread_bps,
+            "rwa": rwa_max_spread_bps,
+        },
+        "confirmation_enabled": False,
+        "block_summary": block_summary,
     }
     ondo_pool = _varia_ondo_strategy_pool()
     route_comparison = _varia_route_comparison(decibel_pool, ondo_pool)
@@ -2073,6 +2470,11 @@ def _varia_strategy_pools(max_spread_bps: float = 2.0) -> Dict[str, Any]:
         "blocked": [symbol for symbol in all_symbols if symbol in set(blocked)],
         "metrics": metrics,
         "max_spread_bps": max_spread_bps,
+        "thresholds_bps": {
+            "standard": max_spread_bps,
+            "rwa": rwa_max_spread_bps,
+        },
+        "block_summary": block_summary,
         "venues": {"decibel": decibel_pool, "ondo": ondo_pool},
         "route_comparison": route_comparison,
         "strategy_a": {
@@ -2214,6 +2616,7 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
     pending_confirmation: List[str] = []
     unstable: List[str] = []
     quote_ready: List[str] = []
+    block_summary: Dict[str, int] = {}
     quote_block_reasons = {
         "ondo_quote_failed",
         "var_quote_incomplete",
@@ -2231,6 +2634,8 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
         eligible = bool(raw.get("eligible") is True and not stale)
         if stale and "scan_stale" not in reasons:
             reasons.append("scan_stale")
+        for reason in reasons:
+            block_summary[reason] = block_summary.get(reason, 0) + 1
         signal_confirmed = bool(raw.get("entry_signal_confirmed") is True and not stale)
         if not any(reason in quote_block_reasons for reason in reasons):
             quote_ready.append(symbol)
@@ -2287,8 +2692,10 @@ def _varia_ondo_strategy_pool() -> Dict[str, Any]:
         "confirmed": confirmed,
         "pending_confirmation": pending_confirmation,
         "unstable": unstable,
+        "confirmation_enabled": True,
         "allowed": allowed,
         "blocked": blocked,
+        "block_summary": block_summary,
         "metrics": metrics,
         "rows": rows,
         "thresholds_bps": scan.get("thresholds_bps") if isinstance(scan.get("thresholds_bps"), dict) else {},
@@ -2377,6 +2784,84 @@ def _varia_selected_start_blocks(state: dict) -> List[str]:
     return blocks
 
 
+def _varia_runtime_position_pairs(
+    runtime: dict,
+    raw_state: dict,
+    hedge_label: str,
+) -> List[dict]:
+    """Keep fresh worker-confirmed positions visible during a venue read timeout."""
+    positions = runtime.get("positions") if isinstance(runtime.get("positions"), dict) else {}
+    runtime_age = _num(runtime.get("age_sec"))
+    if not positions or runtime_age is None or runtime_age > STALE_SEC:
+        return []
+
+    exchanges = raw_state.get("exchanges") if isinstance(raw_state.get("exchanges"), dict) else {}
+
+    def _last_notional(venue: str, symbol: str) -> Optional[float]:
+        payload = exchanges.get(venue) if isinstance(exchanges.get(venue), dict) else {}
+        symbols = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else {}
+        row = symbols.get(symbol) if isinstance(symbols.get(symbol), dict) else {}
+        position = row.get("position") if isinstance(row.get("position"), dict) else {}
+        notional = _num(position.get("notional"))
+        if notional not in (None, 0):
+            return abs(notional)
+        size = _num(position.get("size"))
+        entry = _num(position.get("entry_price"))
+        return abs(size) * entry if size not in (None, 0) and entry else None
+
+    result: List[dict] = []
+    for raw_symbol, raw_position in positions.items():
+        if not isinstance(raw_position, dict):
+            continue
+        symbol = str(raw_symbol or "").upper()
+        hedge_venue = str(
+            raw_position.get("hedge_venue")
+            or ("ondo" if hedge_label == "Ondo" else "decibel")
+        ).lower()
+        var_size = _num(raw_position.get("var_size")) or 0.0
+        hedge_size = _num(
+            raw_position.get("hedge_size")
+            if raw_position.get("hedge_size") not in (None, "")
+            else raw_position.get(f"{hedge_venue}_size")
+        ) or 0.0
+        if abs(var_size) < 1e-12 and abs(hedge_size) < 1e-12:
+            continue
+        tolerance = max(1e-12, max(abs(var_size), abs(hedge_size)) * 1e-6)
+        both_open = abs(var_size) >= tolerance and abs(hedge_size) >= tolerance
+        matched = (
+            both_open
+            and var_size * hedge_size < 0
+            and abs(abs(var_size) - abs(hedge_size)) <= tolerance
+        )
+        if matched:
+            status = "HEDGED"
+        elif both_open:
+            status = "MISMATCH"
+        else:
+            status = "SINGLE_LEG"
+        notionals = [
+            value for value in (
+                _last_notional("variational", symbol),
+                _last_notional(hedge_venue, symbol),
+            )
+            if value is not None
+        ]
+        result.append({
+            "symbol": symbol,
+            "status": status,
+            "hedge_label": "Ondo" if hedge_venue == "ondo" else "Decibel",
+            "var_side": "buy" if var_size > 0 else "sell" if var_size < 0 else "",
+            "hedge_side": "buy" if hedge_size > 0 else "sell" if hedge_size < 0 else "",
+            "quantity": min(abs(var_size), abs(hedge_size)) if both_open else max(
+                abs(var_size), abs(hedge_size)
+            ),
+            "matched_notional_usdc": round(min(notionals), 2) if notionals else None,
+            "source": "runtime_last_confirmed",
+            "last_seen_at": raw_position.get("last_seen_at"),
+        })
+    return result
+
+
 def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     state = _normalize_varia_auto_state(_read_json(_varia_auto_state_file()))
     execution_frozen = state["execution_frozen"]
@@ -2384,6 +2869,8 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
     vd = vd if isinstance(vd, dict) else _var_decibel()
     budget = vd.get("budget") if isinstance(vd.get("budget"), dict) else {}
     host_budget = budget.get("hosts") if isinstance(budget.get("hosts"), dict) else {}
+    pairs = vd.get("pairs") if isinstance(vd.get("pairs"), list) else []
+    position_hosts = vd.get("hosts") if isinstance(vd.get("hosts"), dict) else {}
     raw_states = _varia_raw_states()
     hosts: Dict[str, dict] = {}
     for host in ("vps1", "vps2"):
@@ -2397,6 +2884,56 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         start_block_reason = (
             f"只读维护：{freeze_reason}" if execution_frozen else readiness["reason"]
         )
+        host_pairs: List[dict] = []
+        for pair in pairs:
+            if not isinstance(pair, dict) or str(pair.get("host") or "").lower() != host:
+                continue
+            var = pair.get("var") if isinstance(pair.get("var"), dict) else {}
+            hedge = pair.get("hedge") if isinstance(pair.get("hedge"), dict) else {}
+            var_notional = _num(var.get("exposure_notional") or var.get("notional"))
+            hedge_notional = _num(hedge.get("exposure_notional") or hedge.get("notional"))
+            matched_notional = (
+                min(abs(var_notional), abs(hedge_notional))
+                if var_notional is not None and hedge_notional is not None
+                else abs(var_notional or hedge_notional or 0.0)
+            )
+            host_pairs.append({
+                "symbol": str(pair.get("symbol") or "").upper(),
+                "status": str(pair.get("status") or ""),
+                "hedge_label": str(pair.get("hedge_label") or readiness["hedge_label"]),
+                "var_side": str(var.get("side") or ""),
+                "hedge_side": str(hedge.get("side") or ""),
+                "quantity": min(
+                    abs(_num(var.get("signed_size") or var.get("size")) or 0.0),
+                    abs(_num(hedge.get("signed_size") or hedge.get("size")) or 0.0),
+                ),
+                "matched_notional_usdc": round(matched_notional, 2),
+            })
+        position_snapshot = (
+            position_hosts.get(host)
+            if isinstance(position_hosts.get(host), dict)
+            else {}
+        )
+        positions_verified = position_snapshot.get("positions_verified")
+        if positions_verified is not True:
+            live_symbols = {str(item.get("symbol") or "").upper() for item in host_pairs}
+            host_pairs.extend(
+                item
+                for item in _varia_runtime_position_pairs(
+                    runtime,
+                    raw_states.get(host) if isinstance(raw_states.get(host), dict) else {},
+                    readiness["hedge_label"],
+                )
+                if str(item.get("symbol") or "").upper() not in live_symbols
+            )
+        fallback_visible = any(
+            item.get("source") == "runtime_last_confirmed" for item in host_pairs
+        )
+        known_notionals = [
+            _num(item.get("matched_notional_usdc"))
+            for item in host_pairs
+            if _num(item.get("matched_notional_usdc")) is not None
+        ]
         hosts[host] = {
             **configured,
             "service": service,
@@ -2416,6 +2953,22 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
             "start_block_reason": start_block_reason,
             "execution_frozen": execution_frozen,
             "acceptance": readiness["acceptance"],
+            "active_pairs": host_pairs,
+            "active_pair_count": len(host_pairs),
+            "active_notional_usdc": round(
+                sum(known_notionals),
+                2,
+            ),
+            "active_notional_known": len(known_notionals) == len(host_pairs),
+            "positions_verified": positions_verified,
+            "positions_age_sec": position_snapshot.get("age"),
+            "positions_source": (
+                "live_verified"
+                if positions_verified is True
+                else "runtime_last_confirmed"
+                if fallback_visible
+                else "unknown"
+            ),
         }
     selected = [host for host, item in state["hosts"].items() if item.get("enabled")]
     running = [host for host, item in hosts.items() if item.get("running")]
@@ -2448,6 +3001,63 @@ def _varia_automation_state(vd: Optional[dict] = None) -> Dict[str, Any]:
         "budget": budget,
         "strategy_pools": _varia_strategy_pools(float(state["max_auto_spread_bps"])),
     }
+
+
+def _runtime_position_lifecycle(runtime: dict, symbol: str) -> Optional[dict]:
+    symbol = str(symbol or "").upper()
+    rows = runtime.get("position_lifecycle")
+    if isinstance(rows, list):
+        for row in rows:
+            if (
+                isinstance(row, dict)
+                and str(row.get("symbol") or "").upper() == symbol
+            ):
+                return dict(row)
+    positions = runtime.get("positions")
+    position = positions.get(symbol) if isinstance(positions, dict) else None
+    if not isinstance(position, dict):
+        return None
+    first_seen_at = str(position.get("first_seen_at") or "")
+    target_hours = _num(position.get("target_hold_hours"))
+    first_seen_ts = _parse_ts(first_seen_at)
+    if not first_seen_at or target_hours is None or target_hours <= 0 or first_seen_ts is None:
+        return None
+    age_hours = max(0.0, (time.time() - first_seen_ts) / 3600)
+    planned_close_at = str(position.get("planned_close_at") or "")
+    if not planned_close_at:
+        planned_close_at = datetime.fromtimestamp(
+            first_seen_ts + target_hours * 3600,
+            tz=timezone.utc,
+        ).isoformat()
+    remaining_hours = max(0.0, target_hours - age_hours)
+    return {
+        "symbol": symbol,
+        "strategy_at_open": str(position.get("strategy_at_open") or ""),
+        "first_seen_at": first_seen_at,
+        "planned_close_at": planned_close_at,
+        "age_hours": round(age_hours, 2),
+        "target_hold_hours": target_hours,
+        "remaining_hours": round(remaining_hours, 2),
+        "next_action": "close_due" if remaining_hours <= 0 else "hold",
+    }
+
+
+def _attach_varia_pair_lifecycle(vd: dict, automation: dict) -> dict:
+    pairs = vd.get("pairs") if isinstance(vd.get("pairs"), list) else []
+    hosts = automation.get("hosts") if isinstance(automation.get("hosts"), dict) else {}
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        host = str(pair.get("host") or "").lower()
+        symbol = str(pair.get("symbol") or "").upper()
+        host_state = hosts.get(host) if isinstance(hosts.get(host), dict) else {}
+        runtime = host_state.get("runtime") if isinstance(host_state.get("runtime"), dict) else {}
+        lifecycle = _runtime_position_lifecycle(runtime, symbol)
+        if lifecycle:
+            lifecycle["source"] = "auto_strategy_runtime"
+            lifecycle["runtime_age_sec"] = runtime.get("age_sec")
+            pair["lifecycle"] = lifecycle
+    return vd
 
 
 def _varia_root() -> Path:
@@ -2911,6 +3521,12 @@ def _pm_detail() -> Dict[str, Any]:
                     ask = _num(engine_market.get("best_ask"))
                     mid = _num(engine_market.get("mid"))
                     quote_source = "引擎快照" if state_fresh else "旧引擎快照"
+                market_risk = str(market_config.get("risk") or "mid").lower()
+                event_budget_pct = _num(
+                    strategy.get(f"quote_balance_pct_min_{market_risk}")
+                )
+                if event_budget_pct is None:
+                    event_budget_pct = _num(strategy.get("quote_balance_pct_min"))
                 markets.append({
                     "account": idx,
                     "host": host,
@@ -2921,6 +3537,11 @@ def _pm_detail() -> Dict[str, Any]:
                     "enabled": bool(market_config.get("enabled", True)),
                     "risk": str(market_config.get("risk") or "—"),
                     "quote_size": _num(market_config.get("quote_size")),
+                    "event_budget_pct": (
+                        round(event_budget_pct * 100, 2)
+                        if event_budget_pct is not None
+                        else None
+                    ),
                     "max_spread": _num(market_config.get("max_incentive_spread")),
                     "bid": bid,
                     "ask": ask,
@@ -2976,6 +3597,9 @@ def _pm_detail() -> Dict[str, Any]:
                 "post_only": bool(strategy.get("post_only")),
                 "dual_side": bool(dual_side.get("enabled")),
                 "dual_side_max_mid": _num(dual_side.get("max_mid")),
+                "event_budget_pct": (
+                    round((_num(strategy.get("quote_balance_pct_min")) or 0) * 100, 2)
+                ),
                 "max_quote_shares": _num(risk.get("max_quote_shares_per_market")),
                 "max_notional": _num(risk.get("max_notional_usdc_per_order")),
                 "runtime_floor": _num(risk.get("runtime_floor_usdc")),
@@ -3269,22 +3893,6 @@ def _persist_account_ops_snapshot(data: dict) -> None:
         pass
 
 
-def _persist_macmini_snapshot(data: dict) -> None:
-    """Persist the last healthy exporter response across console restarts."""
-    try:
-        MACMINI_STATUS_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp = MACMINI_STATUS_SNAPSHOT_PATH.with_suffix(
-            MACMINI_STATUS_SNAPSHOT_PATH.suffix + ".tmp"
-        )
-        temp.write_text(
-            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        os.replace(temp, MACMINI_STATUS_SNAPSHOT_PATH)
-    except OSError:
-        pass
-
-
 def _account_ops_version(data: Any) -> Optional[float]:
     if not isinstance(data, dict):
         return None
@@ -3315,8 +3923,6 @@ def _store_http_cache(url: str, data: Optional[dict]) -> None:
     _HTTP_CACHE[url] = (data, time.time())
     if url == ACCOUNT_OPS_URL and isinstance(data, dict):
         _persist_account_ops_snapshot(data)
-    if url == MACMINI_STATUS_URL and isinstance(data, dict):
-        _persist_macmini_snapshot(data)
 
 
 def _merge_account_ops_cache(section: str, value: Any) -> None:
@@ -3354,12 +3960,6 @@ def _fetch_json(url: str, ttl: float = 60.0, timeout: float = 4.0) -> Optional[d
         snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
         if isinstance(snapshot, dict):
             _HTTP_CACHE[url] = (snapshot, time.time())
-            return snapshot
-    if url == MACMINI_STATUS_URL:
-        snapshot = _read_json(MACMINI_STATUS_SNAPSHOT_PATH)
-        if isinstance(snapshot, dict):
-            snapshot_age = _mtime_age(MACMINI_STATUS_SNAPSHOT_PATH) or 0
-            _HTTP_CACHE[url] = (snapshot, time.time() - snapshot_age)
             return snapshot
     data = _do_fetch(url, timeout=2.0)  # 冷启动:短超时同步一次
     _store_http_cache(url, data)
@@ -3483,17 +4083,6 @@ def _prefetch_loop() -> None:
                     snapshot = _read_json(ACCOUNT_OPS_SNAPSHOT_PATH)
                     if isinstance(snapshot, dict):
                         _HTTP_CACHE[url] = (snapshot, time.time())
-                        continue
-                if url == MACMINI_STATUS_URL:
-                    # Console 重启或 Tailnet 瞬时抖动时继续展示最后一次健康状态；
-                    # 数据自身的 ts 会决定何时真正进入超时告警。
-                    prev = _HTTP_CACHE.get(url)
-                    if prev is not None and isinstance(prev[0], dict):
-                        continue
-                    snapshot = _read_json(MACMINI_STATUS_SNAPSHOT_PATH)
-                    if isinstance(snapshot, dict):
-                        snapshot_age = _mtime_age(MACMINI_STATUS_SNAPSHOT_PATH) or 0
-                        _HTTP_CACHE[url] = (snapshot, time.time() - snapshot_age)
                         continue
                 # 单次拉取失败别急着翻成"不可达":保留 5 分钟内的上一次好值,
                 # 慢源/瞬时抖动不再造成 present=false 闪断(配合告警防抖彻底消除假警)
@@ -4113,9 +4702,7 @@ def _macmini() -> Dict[str, Any]:
     if not isinstance(d, dict):
         return {"present": False}
     services = d.get("services") if isinstance(d.get("services"), dict) else {}
-    reported_at = _num(d.get("ts"))
-    age_sec = max(0, int(time.time() - reported_at)) if reported_at else None
-    out = {"present": True, "age": _age_text(age_sec), "age_sec": age_sec}
+    out = {"present": True, "age": _age_text(max(0, int(time.time() - (_num(d.get("ts")) or 0))))}
     for label, key in (("ai.codex.var-decibel-signer", "var_signer"),
                        ("ai.codex.predictfun-api-proxy", "pf_proxy"),
                        ("ai.codex.var-decibel-chrome-health", "chrome_health"),
@@ -4144,55 +4731,369 @@ def _recorders() -> Dict[str, Any]:
             "market_db": market_db.exists(), "latest": latest}
 
 
-_SEV = {"error": "crit", "failed": "crit", "critical": "crit", "warning": "warn", "warn": "warn"}
+_SEV = {
+    "error": "warn",
+    "failed": "warn",
+    "critical": "crit",
+    "warning": "warn",
+    "warn": "warn",
+}
+_EVENT_PROJECTS = {
+    "var": ("VAR", "Var 对冲", "vardec"),
+    "pm": ("PM", "Polymarket", "pm"),
+    "pf": ("PF", "Predict.fun", "pf"),
+    "sa": ("SA", "单账号策略", "sa"),
+    "grid": ("GRID", "网格", "grid"),
+    "hk": ("HK/US", "打新 & 账户", "hk"),
+    "infra": ("INFRA", "基础设施", "overview"),
+    "dewu": ("DEWU", "得物库存", "dewu"),
+}
+
+
+def _tail_json_lines(path: Path, limit: int = 30, max_bytes: int = 2_000_000) -> List[dict]:
+    """Read recent JSONL records without loading large event files in full."""
+    try:
+        with path.open("rb") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            start = max(0, size - max_bytes)
+            fh.seek(start)
+            raw = fh.read()
+        lines = raw.decode("utf-8", errors="ignore").splitlines()
+        if start:
+            lines = lines[1:]  # the first record may be a partial JSON line
+    except Exception:
+        return []
+    rows: List[dict] = []
+    for line in lines[-limit:]:
+        try:
+            value = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def _event_time(value: Any) -> tuple[float, str]:
+    if isinstance(value, (int, float)):
+        epoch = float(value)
+    else:
+        raw = str(value or "").strip()
+        try:
+            epoch = float(raw)
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                epoch = parsed.timestamp()
+            except Exception:
+                return 0.0, raw[:16]
+    try:
+        label = datetime.fromtimestamp(epoch, timezone.utc).astimezone(
+            timezone(timedelta(hours=8))
+        ).strftime("%m-%d %H:%M")
+    except Exception:
+        label = ""
+    return epoch, label
+
+
+def _event(
+    project: str,
+    *,
+    ts: Any,
+    sev: str,
+    kind: str,
+    msg: str,
+    page: Optional[str] = None,
+    key: Optional[str] = None,
+) -> dict:
+    code, label, default_page = _EVENT_PROJECTS.get(
+        project, (project.upper(), project, "overview")
+    )
+    epoch, display = _event_time(ts)
+    text = " ".join(str(msg or "").replace("\n", " · ").split())[:260]
+    stable = key or hashlib.sha1(
+        f"{code}|{kind}|{epoch:.3f}|{text}".encode("utf-8")
+    ).hexdigest()[:20]
+    return {
+        "id": stable,
+        "project": code,
+        "project_label": label,
+        "page": page or default_page,
+        "t": display,
+        "epoch": epoch,
+        "sev": sev if sev in {"info", "warn", "crit"} else "info",
+        "kind": kind,
+        "msg": text,
+    }
+
+
+def _var_event_severity(ev: dict, text: str) -> str:
+    status = str(ev.get("status") or ev.get("kind") or "").lower()
+    lowered = f"{status} {text.lower()}"
+    # A rejected preflight or cost guard changes no position and is normal protection.
+    if any(token in lowered for token in (
+        "preflight_blocked", "cost_guard", "成本保护", "未执行",
+    )):
+        return "info"
+    if any(token in lowered for token in (
+        "single_leg", "single-leg", "裸腿", "单腿风险", "自救失败",
+    )):
+        return "crit"
+    if any(token in lowered for token in (
+        "failed", "failure", "rejected", "error", "失败", "拒绝",
+    )):
+        return "warn"
+    return _SEV.get(status, "info")
+
+
+def _audit_failed(rec: dict) -> bool:
+    if "ok" in rec:
+        return not bool(rec.get("ok"))
+
+    def _has_bad_rc(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("rc") not in (None, 0):
+                return True
+            return any(_has_bad_rc(item) for item in value.values())
+        if isinstance(value, list):
+            return any(_has_bad_rc(item) for item in value)
+        return False
+
+    return _has_bad_rc(rec)
+
+
+def _audit_event(rec: dict) -> Optional[dict]:
+    action = str(rec.get("action") or "")
+    failed = _audit_failed(rec)
+    sev = "warn" if failed else "info"
+    project = page = kind = msg = ""
+    if action == "pm_engine":
+        project, page, kind = "pm", "pm", "runtime"
+        verb = {"start": "启动", "stop": "停止", "restart": "重启"}.get(
+            str(rec.get("request_action") or ""), str(rec.get("request_action") or "操作")
+        )
+        msg = f"Polymarket 引擎{verb}{'失败' if failed else '完成'}"
+    elif action == "pm_account":
+        project, page, kind = "pm", "pm", "runtime"
+        msg = (
+            f"Polymarket 账号 #{rec.get('idx')} "
+            f"{rec.get('request_action') or '操作'}{'失败' if failed else '完成'}"
+        )
+    elif action == "pm_precheck" and failed:
+        project, page, kind = "pm", "pm", "precheck"
+        bad = [
+            str(item.get("name") or "")
+            for item in (rec.get("checks") or [])
+            if isinstance(item, dict) and not item.get("ok")
+        ]
+        msg = "Polymarket 启动检查未通过" + (f"：{'、'.join(bad[:3])}" if bad else "")
+    elif action == "pm_markets_apply":
+        project, page, kind = "pm", "pm", "config"
+        msg = f"Polymarket 市场配置已更新：日间 {rec.get('day', 0)} 个，夜间 {rec.get('night', 0)} 个"
+    elif action == "pm_proxies":
+        project, page, kind = "pm", "pm", "config"
+        msg = f"Polymarket 代理池已更新：{rec.get('mode') or '配置'}"
+    elif action == "sa_paper":
+        project, page, kind = "sa", "sa", "runtime"
+        msg = (
+            f"单账号 Paper worker {rec.get('request_action') or '操作'}"
+            f"{'失败' if failed else '完成'}"
+        )
+    elif action in {"varia_manual_open", "varia_close_all"}:
+        project, page, kind = "var", "vardec", "manual"
+        msg = (
+            f"Var 对冲{'手动开仓' if action == 'varia_manual_open' else '一键平仓'}任务"
+            f"{'提交失败' if failed else '已提交'}"
+        )
+    elif action.startswith("varia_auto_") or action == "set_auto_strategy":
+        project, page, kind = "var", "vardec", "automation"
+        labels = {
+            "varia_auto_config": "自动策略配置已保存",
+            "varia_auto_start": "自动策略已启动",
+            "varia_auto_start_failed": "自动策略启动失败并回滚",
+            "varia_auto_stop": "自动策略已停止",
+            "set_auto_strategy": "自动策略配置已更新",
+        }
+        msg = labels.get(action, "自动策略状态已更新")
+    elif action in {"ipo_import", "ipo_judgment", "ipo_research_pdf", "ipo_action"}:
+        project, page, kind = "hk", "hk", "ipo"
+        labels = {
+            "ipo_import": "港股新股池导入",
+            "ipo_judgment": "港股新股判研",
+            "ipo_research_pdf": "招股书视觉分析",
+            "ipo_action": str(rec.get("detail") or "港股打新状态更新"),
+        }
+        msg = labels[action] + ("失败" if failed else "完成")
+    elif action in {"alpha_action", "onboarding_action"}:
+        project, page, kind = "hk", "hk", "account_ops"
+        msg = (
+            ("Alpha Booster" if action == "alpha_action" else "开户与资金排期")
+            + f" {rec.get('request_action') or '更新'}"
+            + ("失败" if failed else "完成")
+        )
+    elif action == "dewu_inventory_import":
+        project, page, kind = "dewu", "dewu", "inventory"
+        msg = (
+            f"得物库存导入{'失败' if failed else '完成'}："
+            f"{int(_num(rec.get('specs')) or 0)} 个规格，"
+            f"{int(_num(rec.get('quantity')) or 0)} 件"
+        )
+    elif action == "dewu_listings_start":
+        project, page, kind = "dewu", "dewu", "listing"
+        msg = (
+            f"得物真实上架任务{'启动失败' if failed else '已启动'}："
+            f"{int(_num(rec.get('items')) or 0)} 个规格"
+        )
+    if not msg:
+        return None
+    return _event(
+        project,
+        ts=rec.get("ts"),
+        sev=sev,
+        kind=kind,
+        msg=msg,
+        page=page,
+        key=f"audit:{hashlib.sha1(json.dumps(rec, sort_keys=True, default=str).encode()).hexdigest()[:20]}",
+    )
+
+
+def _single_account_events() -> List[dict]:
+    rows: List[dict] = []
+    for snapshot in _tail_json_lines(SINGLE_ACCOUNT_DECISION_LOG, limit=12):
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        if int(_num(summary.get("actionable")) or 0) <= 0:
+            continue
+        decisions = [
+            item for item in (snapshot.get("decisions") or [])
+            if isinstance(item, dict) and str(item.get("decision") or "").lower() != "skip"
+        ]
+        if not decisions:
+            continue
+        top = max(decisions, key=lambda item: _num(item.get("score")) or 0)
+        rows.append(_event(
+            "sa",
+            ts=snapshot.get("ts"),
+            sev="info",
+            kind="signal",
+            msg=(
+                f"出现 {len(decisions)} 个可执行信号："
+                f"{top.get('symbol') or '—'} · {top.get('strategy_label') or top.get('strategy') or '策略'} "
+                f"· 评分 {_num(top.get('score')) or 0:.1f}"
+            ),
+        ))
+    return rows
+
+
+def _predictfun_events() -> List[dict]:
+    rows: List[dict] = []
+    for prefix in ("predictfun_mainnet", "predictfun"):
+        runner = _read_json(DATA_DIR / f"{prefix}_runner_state.json")
+        if not isinstance(runner, dict):
+            continue
+        if runner.get("last_error"):
+            rows.append(_event(
+                "pf",
+                ts=runner.get("last_cycle_finished_at") or runner.get("ts"),
+                sev="warn",
+                kind="runner_error",
+                msg=f"Runner 最近错误：{str(runner.get('last_error'))[:180]}",
+            ))
+        started = runner.get("started_at")
+        stopped = runner.get("stopped_at")
+        if runner.get("running") and started:
+            rows.append(_event(
+                "pf", ts=started, sev="info", kind="runtime", msg="Predict.fun runner 已启动"
+            ))
+        elif stopped:
+            rows.append(_event(
+                "pf", ts=stopped, sev="info", kind="runtime", msg="Predict.fun runner 已停止"
+            ))
+        risk = _read_json(DATA_DIR / f"{prefix}_risk_state.json")
+        if isinstance(risk, dict) and (
+            risk.get("blocked") or (risk.get("summary") or {}).get("blocked")
+        ):
+            rows.append(_event(
+                "pf",
+                ts=risk.get("ts"),
+                sev="warn",
+                kind="risk",
+                msg="Predict.fun 风控阻止了本轮执行",
+            ))
+        sim = _read_json(DATA_DIR / f"{prefix}_simulation_state.json")
+        if isinstance(sim, dict) and int(_num(sim.get("new_fills")) or 0) > 0:
+            rows.append(_event(
+                "pf",
+                ts=sim.get("ts"),
+                sev="info",
+                kind="fill",
+                msg=f"Predict.fun 模拟新增成交 {int(_num(sim.get('new_fills')) or 0)} 笔",
+            ))
+        break
+    return rows
 
 
 def _events(pm_fills: List[dict]) -> List[dict]:
-    merged: List[dict] = list(pm_fills)
-    seen = set()
+    merged: List[dict] = []
+    for item in pm_fills:
+        merged.append(_event(
+            "pm",
+            ts=item.get("epoch"),
+            sev=str(item.get("sev") or "info"),
+            kind="fill",
+            msg=str(item.get("msg") or "").replace("[PM·", "账号 ").replace("] ", " · ", 1),
+        ))
+
     sources = [VARIA_DIR / "ops_events.ndjson"]
     peer_dir = VARIA_DIR / "ops_peer_events"
     if peer_dir.exists():
         sources += sorted(peer_dir.glob("*.ndjson"))
     for path in sources:
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()[-15:]
-        except Exception:
-            continue
-        for line in lines:
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            status = str(ev.get("status") or ev.get("kind") or "").lower()
-            sev = _SEV.get(status, "crit" if ev.get("error") else "info")
-            ts = str(ev.get("finished_at") or ev.get("timestamp") or "")
-            key = (str(ev.get("host") or ""), ts, str(ev.get("kind") or ""))
-            if key in seen:
-                continue  # 本机文件与 peer 副本重叠时去重
-            seen.add(key)
-            age = _iso_age(ts)
-            # 事件时间戳为 UTC(无时区后缀),显示统一转北京时间
-            t_disp = ts[11:16] if len(ts) >= 16 else ts
-            try:
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                from datetime import timedelta as _td
+        for ev in _tail_json_lines(path, limit=40):
+            ts = ev.get("finished_at") or ev.get("timestamp") or ev.get("ts")
+            host = str(ev.get("host") or "").upper()
+            msg = str(
+                ev.get("message") or ev.get("reason_label") or ev.get("job_kind")
+                or ev.get("kind") or ""
+            )
+            merged.append(_event(
+                "var",
+                ts=ts,
+                sev=_var_event_severity(ev, msg),
+                kind=str(ev.get("kind") or ev.get("status") or "worker"),
+                msg=f"{host + ' · ' if host else ''}{msg}",
+                key=(
+                    f"var:{host}:{ts}:{ev.get('kind') or ev.get('status')}:"
+                    f"{ev.get('symbol') or ''}:"
+                    f"{hashlib.sha1(msg.encode('utf-8')).hexdigest()[:10]}"
+                ),
+            ))
 
-                t_disp = (dt.astimezone(timezone(_td(hours=8)))).strftime("%H:%M")
-            except Exception:
-                pass
-            msg = str(ev.get("message") or ev.get("reason_label") or ev.get("job_kind")
-                      or ev.get("kind") or "").replace("\n", " · ")[:150]
-            merged.append({
-                "t": t_disp,
-                "epoch": (time.time() - age) if age is not None else 0,
-                "sev": sev,
-                "msg": f"[VAR/DEC·{str(ev.get('host') or '').upper()}] {msg}",
-            })
-    merged.sort(key=lambda e: -(e.get("epoch") or 0))
-    return merged[:12]
+    for rec in _tail_json_lines(AUDIT_LOG, limit=80):
+        normalized = _audit_event(rec)
+        if normalized:
+            merged.append(normalized)
+    for rec in _tail_json_lines(SYSTEM_EVENT_LOG, limit=80):
+        project = str(rec.get("project") or "infra").lower()
+        merged.append(_event(
+            project if project in _EVENT_PROJECTS else "infra",
+            ts=rec.get("ts"),
+            sev=str(rec.get("sev") or "warn"),
+            kind=str(rec.get("kind") or "alert"),
+            msg=str(rec.get("msg") or ""),
+            page=str(rec.get("page") or "") or None,
+            key=str(rec.get("id") or "") or None,
+        ))
+    merged.extend(_single_account_events())
+    merged.extend(_predictfun_events())
+
+    deduped: Dict[str, dict] = {}
+    for item in merged:
+        if item.get("msg"):
+            deduped[str(item.get("id"))] = item
+    ordered = sorted(deduped.values(), key=lambda item: -(item.get("epoch") or 0))
+    return ordered[:24]
 
 
 IPO_IMPORT_SUCCESS_STAMP = Path(
@@ -4283,21 +5184,8 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
     imp_age = _mtime_age(IPO_IMPORT_SUCCESS_STAMP)
     if imp_age is not None and imp_age > 26 * 3600:
         alerts.append({"tag": "IPO", "msg": f"<b>每日新股导入超期</b>:{_age_text(imp_age)} 未跑(cron 每日 01:00,错过一轮即报)", "page": "hk", "sev": "warn"})
-    process_age = max(0, int(time.time() - PROCESS_STARTED_AT))
-    if not mm.get("present") and process_age >= MACMINI_ALERT_GRACE_SECONDS:
+    if not mm.get("present"):
         alerts.append({"tag": "INFRA", "msg": "<b>mac-mini 状态导出器失联</b>(:8620;影响 signer/pf-proxy 可见性)", "page": "vardec", "sev": "warn"})
-    elif (
-        mm.get("present")
-        and mm.get("age_sec") is not None
-        and mm["age_sec"] >= MACMINI_ALERT_GRACE_SECONDS
-    ):
-        alerts.append({
-            "tag": "INFRA",
-            "msg": f"<b>mac-mini 状态超过 {_age_text(mm['age_sec'])} 未更新</b>"
-                   "(:8620;影响 signer/pf-proxy 可见性)",
-            "page": "vardec",
-            "sev": "warn",
-        })
     eq = vd.get("equity_history") or {}
     auto_active = bool((vd.get("auto") or {}).get("enabled"))
     exposure_active = bool(vd.get("pairs"))
@@ -4324,6 +5212,135 @@ def _alerts(vd: Dict[str, Any], pm: Dict[str, Any], sa: Dict[str, Any],
     return alerts
 
 
+@app.get("/api/work-plan")
+def work_plan_get() -> JSONResponse:
+    return JSONResponse(_work_plan_load())
+
+
+@app.post("/api/work-plan/project")
+async def work_plan_project(payload: dict, request: Request) -> JSONResponse:
+    blocked = _work_plan_write_guard(request)
+    if blocked is not None:
+        return blocked
+    data = payload or {}
+    name = str(data.get("name") or "").strip()
+    if not name or len(name) > 80:
+        return JSONResponse({"ok": False, "error": "项目名称不能为空且不超过 80 个字"}, status_code=400)
+    status = str(data.get("status") or "进行中").strip()
+    if status not in WORK_PLAN_STATUSES:
+        return JSONResponse({"ok": False, "error": "项目状态不正确"}, status_code=400)
+    state = _work_plan_load()
+    project_id = str(data.get("id") or "").strip().upper()
+    if not project_id:
+        used = {str(item.get("id") or "") for item in state["projects"] if isinstance(item, dict)}
+        numbers = [int(item[1:]) for item in used if re.fullmatch(r"P\d+", item)]
+        project_id = f"P{max(numbers or [0]) + 1:03d}"
+    now = _work_plan_now()
+    record = {
+        "id": project_id,
+        "name": name,
+        "goal": str(data.get("goal") or "").strip()[:240],
+        "status": status,
+        "start_month": str(data.get("start_month") or "").strip()[:7],
+        "target_month": str(data.get("target_month") or "").strip()[:7],
+        "next_step": str(data.get("next_step") or "待补充").strip()[:240],
+        "updated_at": now,
+    }
+    replaced = False
+    for index, item in enumerate(state["projects"]):
+        if isinstance(item, dict) and str(item.get("id")) == project_id:
+            state["projects"][index] = record
+            replaced = True
+            break
+    if not replaced:
+        state["projects"].append(record)
+    state["updated_at"] = now
+    _work_plan_save(state)
+    return JSONResponse({"ok": True, "project": record, "state": state})
+
+
+@app.post("/api/work-plan/month")
+async def work_plan_month(payload: dict, request: Request) -> JSONResponse:
+    blocked = _work_plan_write_guard(request)
+    if blocked is not None:
+        return blocked
+    data = payload or {}
+    month = str(data.get("month") or "").strip()
+    project_id = str(data.get("project_id") or "").strip().upper()
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        return JSONResponse({"ok": False, "error": "月份格式应为 YYYY-MM"}, status_code=400)
+    state = _work_plan_load()
+    project = next((item for item in state["projects"] if item.get("id") == project_id), None)
+    if project is None:
+        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
+    month_state = state["months"].setdefault(month, {"focus": "", "review": {}, "entries": []})
+    if not isinstance(month_state.get("entries"), list):
+        month_state["entries"] = []
+    entry = {
+        "project_id": project_id,
+        "plan": str(data.get("plan") or "").strip()[:500],
+        "done": str(data.get("done") or "").strip()[:500],
+        "blockers": str(data.get("blockers") or "").strip()[:500],
+        "next_step": str(data.get("next_step") or "").strip()[:500],
+    }
+    existing = next((item for item in month_state["entries"] if item.get("project_id") == project_id), None)
+    if existing is None:
+        month_state["entries"].append(entry)
+    else:
+        existing.update(entry)
+    if data.get("focus") is not None:
+        month_state["focus"] = str(data.get("focus") or "").strip()[:500]
+    if data.get("review") is not None and isinstance(data.get("review"), dict):
+        month_state["review"] = data["review"]
+    if entry["next_step"]:
+        project["next_step"] = entry["next_step"]
+    project["updated_at"] = _work_plan_now()
+    state["updated_at"] = _work_plan_now()
+    _work_plan_save(state)
+    return JSONResponse({"ok": True, "state": state})
+
+
+@app.post("/api/work-plan/inbox")
+async def work_plan_inbox(payload: dict, request: Request) -> JSONResponse:
+    blocked = _work_plan_write_guard(request)
+    if blocked is not None:
+        return blocked
+    data = payload or {}
+    text = str(data.get("text") or "").strip()
+    if not text or len(text) > 1000:
+        return JSONResponse({"ok": False, "error": "归档内容不能为空且不超过 1000 个字"}, status_code=400)
+    state = _work_plan_load()
+    now = _work_plan_now()
+    item = {
+        "id": f"I{int(time.time() * 1000)}",
+        "text": text,
+        "source": str(data.get("source") or "Codex").strip()[:80],
+        "status": "待确认",
+        "created_at": now,
+    }
+    state["inbox"].insert(0, item)
+    state["inbox"] = state["inbox"][:100]
+    state["updated_at"] = now
+    _work_plan_save(state)
+    return JSONResponse({"ok": True, "item": item, "state": state})
+
+
+@app.post("/api/work-plan/inbox/{item_id}/resolve")
+async def work_plan_inbox_resolve(item_id: str, payload: dict, request: Request) -> JSONResponse:
+    blocked = _work_plan_write_guard(request)
+    if blocked is not None:
+        return blocked
+    state = _work_plan_load()
+    item = next((entry for entry in state["inbox"] if entry.get("id") == item_id), None)
+    if item is None:
+        return JSONResponse({"ok": False, "error": "归档条目不存在"}, status_code=404)
+    item["status"] = str((payload or {}).get("status") or "已确认")[:20]
+    item["resolved_at"] = _work_plan_now()
+    state["updated_at"] = item["resolved_at"]
+    _work_plan_save(state)
+    return JSONResponse({"ok": True, "state": state})
+
+
 @app.get("/api/state")
 def api_state() -> JSONResponse:
     pm = _polymarket()
@@ -4333,31 +5350,36 @@ def api_state() -> JSONResponse:
     pm["engine_summary"] = {"running": sum(1 for a in _accs if a.get("status") == "运行中"),
                             "total": len(_accs)}
     vd = _var_decibel()
+    varia_automation = _varia_automation_state(vd)
+    _attach_varia_pair_lifecycle(vd, varia_automation)
+    pf = _predictfun()
     sa = _single_account()
     ao = _account_ops()
+    ipo = _ipo()
     mm = _macmini()
     fresh = _freshness(vd, ao)
     grid = _grid()
+    alerts = _alerts(vd, pm, sa, ao, mm, fresh, grid)
     return JSONResponse({
         "ts": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),
         "polymarket": pm,
-        "predictfun": _predictfun(),
+        "predictfun": pf,
         "var_decibel": vd,
         "single_account": sa,
         "recorders": _recorders(),
         "account_ops": ao,
-        "ipo": _ipo(),
+        "ipo": ipo,
         "pf_intents": _pf_intents(),
         "varia_detail": _varia_detail(),
         "varia_control": _varia_control_state(vd),
-        "varia_automation": _varia_automation_state(vd),
+        "varia_automation": varia_automation,
         "pm_detail": _pm_detail(),
         "maker_shadow": _maker_shadow(),
         "macmini": mm,
         "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),
         "grid": grid,
-        "alerts": _alerts(vd, pm, sa, ao, mm, fresh, grid),
+        "alerts": alerts,
         "writes_enabled": WRITES_ENABLED,
     })
 
@@ -4367,7 +5389,6 @@ def api_state() -> JSONResponse:
 # 由 varia 既有的 state 同步机制传播到 VPS2。带备份 + 审计日志 + 范围校验。
 
 WRITES_ENABLED = os.getenv("LATITUDE_ENABLE_WRITES", "0") == "1"
-AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
 
 # pmbot 操作迁移(自 /alpha/ Streamlit,写路径一一对应 dashboard/app.py):
 REPO_ROOT = DATA_DIR.parent
@@ -4608,12 +5629,37 @@ def _cancel_account_orders(idx: int) -> Dict[str, Any]:
         return {"rc": r["rc"], "raw": r["out"], "err": r["err"]}
 
 
+def _cancel_account_orders_async(idx: int) -> Dict[str, Any]:
+    """Launch the REST cancellation fallback without blocking the dashboard."""
+    import subprocess
+    import sys as _sys
+
+    try:
+        log_path = DATA_DIR / "pm_engine_control.log"
+        with log_path.open("a", encoding="utf-8") as log_handle:
+            process = subprocess.Popen(
+                [_sys.executable, str(CANCEL_CLI), "--account", str(idx)],
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"rc": 0, "mode": "async", "pid": process.pid}
+    except Exception as exc:
+        return {
+            "rc": -1,
+            "mode": "async",
+            "err": f"{type(exc).__name__}: {str(exc)[:80]}",
+        }
+
+
 @app.post("/api/pm/engine")
 async def pm_engine(payload: dict, request: Request) -> JSONResponse:
     """按账号路由的进程控制(一 VPS 一账号):每个账号 = 对应机器上一个
     polymarket-engine.service。start/stop/reload 带 accounts=[idx…] 对选中账号逐个
     在其所属机器 systemctl(本地账号本地跑,远程账号 SSH 到对应 VPS);省略 accounts=全部。
-    stop/reload 先按账号 REST 撤单(只撤该账号)再停;省略 accounts 的 stop = EMERGENCY(停全部)。"""
+    stop 先向 systemd 发送非阻塞停止请求，引擎收到 SIGTERM 后自行撤单；同时启动
+    REST 撤单兜底。这样网页立即返回“正在停止”，不会卡在 signer/API 请求上。
+    省略 accounts 的 stop = EMERGENCY(停全部)。"""
     if not WRITES_ENABLED:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     action = str((payload or {}).get("action") or "")
@@ -4642,25 +5688,51 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
         unit = r.get("systemd_unit", "polymarket-engine.service") if is_remote else ENGINE_UNIT
         entry: Dict[str, Any] = {"host": (r.get("label") or "远程") if is_remote else "VPS1",
                                  "remote": is_remote}
-        if action in ("stop", "reload"):
-            entry["cancel"] = _cancel_account_orders(idx)
-            entry["stop"] = (_remote_ssh(r, f"sudo -n systemctl stop {unit}", timeout=25) if is_remote
-                             else _run_cmd(["sudo", "-n", "systemctl", "stop", unit], timeout=25))
-        if action == "reload":
-            time.sleep(1)
-        if action in ("start", "reload"):
-            entry["start"] = (_remote_ssh(r, f"sudo -n systemctl start {unit}", timeout=20) if is_remote
-                              else _run_cmd(["sudo", "-n", "systemctl", "start", unit], timeout=20))
+        if action == "stop":
+            entry["stop"] = (
+                _remote_ssh(r, f"sudo -n systemctl --no-block stop {unit}", timeout=12)
+                if is_remote
+                else _run_cmd(
+                    ["sudo", "-n", "systemctl", "--no-block", "stop", unit],
+                    timeout=12,
+                )
+            )
+            entry["cancel"] = _cancel_account_orders_async(idx)
+        elif action == "reload":
+            entry["restart"] = (
+                _remote_ssh(r, f"sudo -n systemctl --no-block restart {unit}", timeout=12)
+                if is_remote
+                else _run_cmd(
+                    ["sudo", "-n", "systemctl", "--no-block", "restart", unit],
+                    timeout=12,
+                )
+            )
+        else:
+            entry["start"] = (
+                _remote_ssh(r, f"sudo -n systemctl --no-block start {unit}", timeout=12)
+                if is_remote
+                else _run_cmd(
+                    ["sudo", "-n", "systemctl", "--no-block", "start", unit],
+                    timeout=12,
+                )
+            )
         per[idx] = entry
 
     ok = True
     for v in per.values():
-        for k in ("start", "stop"):
+        for k in ("start", "stop", "restart"):
             if k in v and v[k].get("rc") != 0:
                 ok = False
     _audit("pm_engine", request_action=action, targets=targets, per=per,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
-    note = "、".join(f"账号{i}@{per[i]['host']}" for i in targets) + f" 已{action}"
+    action_note = {
+        "start": "启动请求已发送",
+        "stop": "停止请求已发送，正在撤单并退出",
+        "reload": "重启请求已发送",
+    }[action]
+    note = "、".join(
+        f"账号{i}@{per[i]['host']}" for i in targets
+    ) + f"：{action_note}"
     return JSONResponse({"ok": ok, "note": note, "per": per,
                          "error": None if ok else json.dumps(per, ensure_ascii=False)[:300]})
 
@@ -5198,6 +6270,27 @@ def _cfg_token_sides(cfg: dict, key: str) -> Dict[str, str]:
             for m in (cfg.get(key) or []) if isinstance(m, dict) and m.get("token_id")}
 
 
+def _pm_scan_defaults(cfg: dict) -> dict:
+    raw = ((cfg.get("dashboard") or {}).get("scan_defaults") or {})
+
+    def _value(key: str, fallback: float) -> float:
+        value = _num(raw.get(key))
+        if key == "top" and value is None:
+            value = _num(raw.get("top_n"))
+        return value if value is not None else fallback
+
+    return {
+        "min_reward": _value("min_reward", 0),
+        "max_reward": _value("max_reward", 0),
+        "min_spread": _value("min_spread", 0),
+        "max_spread": _value("max_spread", 0),
+        "min_volume": _value("min_volume", 0),
+        "min_bid_depth": _value("min_bid_depth", 0),
+        "top": int(_value("top", 50)),
+        "sort_by": str(raw.get("sort_by") or "reward"),
+    }
+
+
 def _backup_pm_config(cfg: dict) -> str:
     backup = PM_CONFIG.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
     backup.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -5211,6 +6304,7 @@ def pm_scan_get() -> JSONResponse:
     out["config_day"] = _cfg_token_sides(cfg, "markets")
     out["config_night"] = _cfg_token_sides(cfg, "night_markets")
     out["proxy_count"] = len((cfg.get("proxy_pool") or {}).get("proxies") or [])
+    out["scan_defaults"] = _pm_scan_defaults(cfg)
     return JSONResponse(out)
 
 
@@ -5222,7 +6316,7 @@ async def pm_scan_run(payload: dict, request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "写通道未启用"}, status_code=403)
     if _SCAN_JOB.get("status") == "running":
         return JSONResponse({"ok": False, "error": "已有 scan 在跑"}, status_code=409)
-    sd = (_pm_cfg().get("dashboard") or {}).get("scan_defaults") or {}
+    sd = _pm_scan_defaults(_pm_cfg())
     p = payload or {}
 
     def _n(key: str, default: float) -> float:

@@ -1664,16 +1664,19 @@ class PolyLPSMulti:
             return size
         return price * size
 
-    def _total_reserved_collateral(
+    def _event_reserved_collateral(
         self,
+        token_id: str,
         extra_entries: Optional[list[tuple[str, Decimal]]] = None,
     ) -> Decimal:
-        """Return total reserved collateral across live BUYs and in-flight posts.
+        """Return reserved collateral for one event only.
 
-        Dual-side events share collateral across YES/NO. For those markets we
-        reserve the max outstanding shares across both sides of the same event
-        instead of double-counting both notional legs.
+        Polymarket validates BUY capacity independently for each condition, so
+        orders in other events must not consume this event's quote budget.
+        Within a dual-side event, reserve the max outstanding YES/NO shares;
+        equal-sized complementary bids cost approximately one dollar per pair.
         """
+        event_key = self._paired_budget_key(str(token_id))
         total = Decimal("0")
         paired_side_reserve: Dict[str, Dict[str, Decimal]] = {}
 
@@ -1682,6 +1685,8 @@ class PolyLPSMulti:
             if amount <= 0:
                 return
             token = str(entry_token_id or "")
+            if self._paired_budget_key(token) != event_key:
+                return
             if token and self._uses_shared_event_collateral(token):
                 key = self._paired_budget_key(token)
                 bucket = paired_side_reserve.setdefault(key, {})
@@ -1762,7 +1767,10 @@ class PolyLPSMulti:
                     continue
                 margin = self.budget_reserve_safety_margin_usdc
                 allowed = max(Decimal("0"), avail - margin)
-                projected = self._total_reserved_collateral(extra_entries=[(token_id, reserve_needed)])
+                projected = self._event_reserved_collateral(
+                    token_id,
+                    extra_entries=[(token_id, reserve_needed)],
+                )
                 if projected <= allowed:
                     self._budget_reserve_seq += 1
                     reserve_id = f"{token_id}:{self._budget_reserve_seq}"
@@ -1774,13 +1782,13 @@ class PolyLPSMulti:
                 return None
 
             avail, allowed, projected, margin = last_diag
-            reserved = self._total_reserved_collateral()
+            reserved = self._event_reserved_collateral(token_id)
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
             log(
                 f"[budget-reserve-block] slug={slug} token={token_id[:16]} label={label} "
                 f"price={price} size={size} reserve_needed={reserve_needed:.4f} "
-                f"reserved={reserved:.4f} margin={margin:.4f} avail={avail:.4f} "
+                f"event_reserved={reserved:.4f} margin={margin:.4f} avail={avail:.4f} "
                 f"allowed={allowed:.4f} projected={projected:.4f}"
             )
             raise SoftQuoteSkip(

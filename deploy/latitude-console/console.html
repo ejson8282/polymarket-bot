@@ -128,10 +128,19 @@
   .util .u-bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
   .util .u-bar i{display:block;height:100%;background:var(--ok)}
   .util.warn .u-bar i{background:var(--warn)}
-  .events li{list-style:none;display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--panel2);font-size:12.5px}
+  .events li{list-style:none;display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--panel2);font-size:12.5px}
+  .events li.event-link{cursor:pointer}
+  .events li.event-link:hover{background:rgba(255,255,255,.018)}
   .events .dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none}
   .d-info{background:var(--faint)}.d-warn{background:var(--warn)}.d-crit{background:var(--danger)}
   .events .t{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .event-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 2px}
+  .event-filter{font-family:var(--mono);font-size:10.5px;color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:5px;padding:4px 9px;cursor:pointer}
+  .event-filter.on{color:var(--text);border-color:rgba(94,200,216,.55);background:rgba(94,200,216,.08)}
+  .event-copy{min-width:0;flex:1}
+  .event-head{display:flex;align-items:center;gap:8px;min-width:0}
+  .event-project{font-family:var(--mono);font-size:9.5px;color:var(--var);border:1px solid rgba(94,200,216,.35);border-radius:4px;padding:1px 5px;white-space:nowrap}
+  .event-message{min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.45}
   .subnav{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}
   .subnav span{font-family:var(--mono);font-size:11px;padding:4px 12px;border-radius:99px;border:1px solid var(--line);color:var(--muted);cursor:pointer}
   .subnav span.on{color:var(--text);background:var(--panel2)}
@@ -160,6 +169,14 @@
   .pm-state-note{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;margin:8px 0 0}
   .pm-form-grid{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:8px;margin-top:10px}
   .pm-form-grid .opin{width:100%;box-sizing:border-box}
+  .pm-scan-field{min-width:0}
+  .pm-scan-field label{display:block;margin:0 0 5px;color:var(--faint);font:10px var(--mono)}
+  .pm-scan-field .opin{height:36px;padding:0 9px}
+  .pm-scan-actions{align-self:end;min-height:36px}
+  .pm-scan-bulk{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}
+  .pm-scan-bulk .btn{padding:5px 9px;font-size:10px}
+  .pm-scan-bulk-label{color:var(--muted);font:10px var(--mono);margin-left:5px}
+  .pm-scan-count{margin-right:auto}
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
   @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
@@ -366,6 +383,21 @@
 .vdctl-band{border-top:1px solid var(--line);padding:18px 0}
 .vdctl-band:first-of-type{border-top:0}
 .vdctl-form{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:12px}
+.plan-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:22px 0 2px}
+.plan-title{font-size:24px;font-weight:650;letter-spacing:.01em}.plan-title small{display:block;margin-top:5px;color:var(--muted);font:12px var(--mono)}
+.plan-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.plan-kpis{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:16px}.plan-kpis .kpi{min-height:98px}
+.plan-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;margin-top:14px}
+.plan-projects{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.plan-card{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px;cursor:pointer}.plan-card:hover{border-color:var(--faint)}
+.plan-card .head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}.plan-card .name{font-weight:600}.plan-card .goal{color:var(--muted);font-size:11px;margin-top:3px}
+.plan-card .row{display:flex;justify-content:space-between;gap:12px;font-size:12px;padding:6px 0;border-top:1px dashed var(--line)}.plan-card .row .k{color:var(--muted)}.plan-card .row .v{font-family:var(--mono);text-align:right;white-space:normal;overflow-wrap:anywhere}.plan-card .row .v.focus{color:var(--var)}.plan-card.empty{grid-column:1/-1;color:var(--faint);cursor:default}
+.plan-side{min-width:0}.plan-side .panel{margin-top:0;margin-bottom:14px}.plan-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.plan-panel-head h2{font-size:13px}.plan-panel-head .src{margin:0}
+.plan-timeline{border-left:1px solid var(--line);margin:0 0 0 8px;padding-left:18px}.plan-timeline-item{position:relative;padding:0 0 15px}.plan-timeline-item:last-child{padding-bottom:0}.plan-timeline-item:before{content:"";position:absolute;width:8px;height:8px;border-radius:50%;background:var(--var);left:-23px;top:5px}.plan-timeline-item.future:before{background:var(--faint)}.plan-timeline-month{color:var(--faint);font:10px var(--mono)}.plan-timeline-title{margin-top:3px;font-weight:600}.plan-timeline-note{color:var(--muted);font-size:11px;margin-top:2px}
+.plan-inbox{list-style:none}.plan-inbox li{padding:9px 0;border-bottom:1px solid var(--panel2)}.plan-inbox li:last-child{border-bottom:0}.plan-inbox b{display:block;font-size:11px;font-weight:500}.plan-inbox span{display:block;color:var(--faint);font:10px var(--mono);margin-top:3px}.plan-inbox-empty{color:var(--faint);font-size:11px;padding:7px 0}
+.plan-form{margin-top:14px}.plan-form summary{cursor:pointer;color:var(--muted);font:11px var(--mono);list-style-position:inside}.plan-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.plan-field label{display:block;color:var(--faint);font:10px var(--mono);margin-bottom:5px}.plan-field input,.plan-field select,.plan-field textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);padding:8px 9px;font:11px var(--mono);outline:none}.plan-field textarea{min-height:64px;resize:vertical}.plan-field input:focus,.plan-field select:focus,.plan-field textarea:focus{border-color:var(--var)}.plan-field.full{grid-column:1/-1}.plan-form-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}.plan-message{color:var(--faint);font:10px var(--mono)}
+@media (max-width:900px){.plan-layout{grid-template-columns:1fr}.plan-side{display:grid;grid-template-columns:1fr 1fr;gap:14px}.plan-side .panel{margin-bottom:0}}
+@media (max-width:700px){.plan-projects,.plan-side{grid-template-columns:1fr}.plan-kpis{grid-template-columns:1fr}.plan-head{align-items:flex-start;flex-direction:column}.plan-form-grid{grid-template-columns:1fr}.plan-field.full{grid-column:auto}}
 .vdctl-field{min-width:0}
 .vdctl-field label{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px;text-transform:uppercase}
 .vdctl-field select,.vdctl-field input{width:100%;height:38px;box-sizing:border-box;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12px;padding:0 10px;outline:none}
@@ -501,9 +533,17 @@
 .vd-command-actions .btn{min-width:112px}
 .vd-command-actions .btn:disabled{opacity:.38;cursor:not-allowed}
 .vdauto-message.vd-command-message{display:block;min-height:18px;margin:8px 0 0;text-align:right}
-.vd-kpis{grid-template-columns:repeat(5,minmax(0,1fr));margin-top:14px}
-.vd-kpis .kpi{min-height:106px}
+.vd-kpis{grid-template-columns:repeat(6,minmax(0,1fr));margin-top:14px}
+.vd-kpis .kpi{grid-column:span 2;min-height:106px}
+.vd-kpis .vd-kpi-split{grid-column:span 3;min-height:154px;padding:15px 17px}
 .vd-kpis .kpi .value{font-size:19px}
+.vd-kpi-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.vd-kpi-host{min-width:0;padding-right:12px}
+.vd-kpi-host+.vd-kpi-host{padding-right:0;padding-left:12px;border-left:1px solid var(--line)}
+.vd-kpi-host-title{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font:600 10px var(--mono)}
+.vd-kpi-host-title small{min-width:0;overflow:hidden;color:var(--faint);font:9px var(--mono);text-overflow:ellipsis;white-space:nowrap}
+.vd-kpi-host-value{margin-top:5px;color:var(--text);font:600 15px var(--mono)}
+.vd-kpi-host-meta{min-height:14px;margin-top:3px;color:var(--faint);font:9.5px var(--mono);white-space:nowrap}
 .vd-host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
 .vd-host-card{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
 .vd-host-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:15px 16px;border-bottom:1px solid var(--line)}
@@ -514,6 +554,30 @@
 .vd-host-controls .vdauto-check{height:38px;margin:0}
 .vd-host-controls .vdauto-field select{height:38px}
 .vd-host-strategy-note{min-height:34px;padding:8px 16px 0;color:var(--muted);font-size:11px}
+.vd-volume-goal{margin:12px 16px 0;padding:11px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)}
+.vd-volume-goal-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font:10px var(--mono);color:var(--faint)}
+.vd-volume-goal-head b{color:var(--text);font-size:12px;font-weight:650}
+.vd-volume-goal-head span:last-child{white-space:nowrap}
+.vd-volume-goal-track{height:6px;margin-top:9px;border-radius:3px;background:var(--line);overflow:hidden}
+.vd-volume-goal-track i{display:block;width:0;height:100%;border-radius:inherit;background:var(--ok);transition:width .35s ease}
+.vd-volume-goal-buckets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.vd-volume-goal-bucket{min-width:0}
+.vd-volume-goal-bucket+.vd-volume-goal-bucket{padding-left:10px;border-left:1px solid var(--line)}
+.vd-volume-goal-bucket span{display:block;color:var(--faint);font:9px var(--mono)}
+.vd-volume-goal-bucket b{display:block;margin-top:3px;color:var(--muted);font:600 10.5px var(--mono)}
+.vd-volume-goal-foot{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:var(--faint);font:9.5px var(--mono)}
+.vd-volume-goal-foot .priority{color:var(--warn)}
+.vd-host-live{margin:12px 16px 0;border:1px solid var(--line);border-radius:6px;background:var(--panel2);overflow:hidden}
+.vd-host-live-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:1px solid var(--line);font:10px var(--mono);color:var(--faint)}
+.vd-host-live-head b{color:var(--text);font-size:11px}
+.vd-host-live-list{display:grid}
+.vd-host-live-row{display:grid;grid-template-columns:minmax(70px,.55fr) minmax(145px,1.25fr) minmax(90px,.7fr);gap:8px;align-items:center;padding:8px 10px;font:10.5px var(--mono)}
+.vd-host-live-row+.vd-host-live-row{border-top:1px solid var(--line)}
+.vd-host-live-row strong{font-size:11px}.vd-host-live-row span{color:var(--muted)}.vd-host-live-row em{color:var(--ok);font-style:normal;text-align:right}
+.vd-host-live-row.bad strong,.vd-host-live-row.bad em{color:var(--danger)}
+.vd-host-live-empty{padding:12px 10px;color:var(--faint);font:10.5px var(--mono)}
+.vd-host-live-foot{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px 10px;border-top:1px solid var(--line);font:9.5px var(--mono);color:var(--faint)}
+.vd-host-live-foot span:last-child{text-align:right}.vd-host-live-foot b{color:var(--muted);font-weight:550}
 .vd-funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));margin:13px 16px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .vd-funnel-step{min-width:0;padding:10px;background:var(--panel2)}
 .vd-funnel-step+.vd-funnel-step{border-left:1px solid var(--line)}
@@ -543,8 +607,17 @@
 .vd-settings-panel .vdauto-settings{margin-top:0}
 .vd-settings-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px}
 .vd-settings-actions .vdauto-message{margin-right:auto;margin-left:0}
+.vdauto-history{margin-top:12px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+.vdauto-history summary{cursor:pointer;padding:10px 13px;color:var(--muted);font:11px var(--mono);list-style-position:inside}
+.vdauto-history .vdauto-acceptance{margin:0;border:0;border-top:1px solid var(--line);border-radius:0}
+@media (max-width:700px){.vd-host-live-row{grid-template-columns:1fr}.vd-host-live-row em{text-align:left}.vd-host-live-foot{grid-template-columns:1fr}.vd-host-live-foot span:last-child{text-align:left}}
 .vd-positions-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:14px}
 .vd-positions-grid aside .panel{height:calc(100% - 16px)}
+.vd-hold{min-width:190px;text-align:left}
+.vd-hold-main{color:var(--text);font:600 10.5px var(--mono);white-space:nowrap}
+.vd-hold-sub{margin-top:4px;color:var(--faint);font:9px var(--mono);white-space:nowrap}
+.vd-hold.due .vd-hold-main,.vd-hold.due .vd-hold-sub{color:var(--warn)}
+.vd-hold.unknown .vd-hold-main{color:var(--faint);font-weight:500}
 .vd-stats-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.72fr);gap:14px}
 .vd-stats-grid .panel{height:auto}
 .vd-stats-breakdown{margin-top:14px}
@@ -552,7 +625,8 @@
 .vd-opportunity-stack>.vdauto-pools{margin-top:14px}
 .vdauto-route-detail.vd-route-native,.vdauto-compare.vd-compare-native{margin-top:14px}
 @media (max-width:1180px){
-  .vd-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .vd-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .vd-kpis .kpi,.vd-kpis .vd-kpi-split{grid-column:auto}
   .vd-funnel{grid-template-columns:repeat(3,minmax(0,1fr))}
   .vd-funnel-step:nth-child(4){border-left:0;border-top:1px solid var(--line)}
   .vd-funnel-step:nth-child(n+5){border-top:1px solid var(--line)}
@@ -571,7 +645,7 @@
   .vd-funnel{grid-template-columns:repeat(2,minmax(0,1fr))}
   .vd-funnel-step:nth-child(odd){border-left:0}
   .vd-funnel-step:nth-child(n+3){border-top:1px solid var(--line)}
-  .vd-kpis{grid-template-columns:1fr 1fr}
+  .vd-kpis{grid-template-columns:1fr}
   .vd-home-foot{align-items:flex-start;flex-direction:column}
 }
 </style>
@@ -582,6 +656,7 @@
   <div class="brand">Latitude Alpha<small>UNIFIED CONSOLE</small></div>
   <nav id="nav">
     <a data-page="overview" class="active">总览</a>
+    <a data-page="plan">工作计划<span class="b b-ro">计划</span></a>
     <a data-page="vardec">Var 对冲<span class="b b-live">LIVE</span></a>
     <a data-page="pm">Polymarket<span class="b b-live">LIVE</span></a>
     <a data-page="pf">Predict.fun<span class="b b-test">TESTNET</span></a>
@@ -657,11 +732,64 @@
     </div>
   </div>
   <div class="panel">
-    <h2>跨系统事件流 <span class="feat f-new">新增</span></h2>
-    <div class="src">source · 各系统 worker_events / 事件 jsonl 合并,按严重级过滤</div>
+    <h2>全项目重要事件</h2>
+    <div class="src">成交、启停、配置生效、持续告警与真实失败统一汇总；成本保护未下单属于正常保护，不标为故障。</div>
+    <div class="event-toolbar" id="event-filters"></div>
     <ul class="events" id="events-list">
       <li><span class="dot d-info"></span><div><div>等待实时事件数据</div></div></li>
     </ul>
+  </div>
+</section>
+
+<!-- ════════════ 页面 · 工作计划(大类项目 + 月度记录 + Codex 待确认归档) ════════════ -->
+<section class="page" id="page-plan">
+  <div class="plan-head">
+    <div class="plan-title">工作计划<small>WORK PLAN · 大类项目 / 月度记录 / Codex 归档</small></div>
+    <div class="plan-actions"><span class="chip" id="plan-updated">读取中</span><button class="btn primary" id="plan-open-project" type="button">＋ 新增大类</button></div>
+  </div>
+  <div class="kpis plan-kpis">
+    <div class="kpi"><div class="label">进行中的大类</div><div class="value" id="plan-stat-active">—</div><div class="sub">持续维护</div></div>
+    <div class="kpi"><div class="label">本月记录</div><div class="value" id="plan-stat-month">—</div><div class="sub" id="plan-stat-month-sub">当前月份</div></div>
+    <div class="kpi"><div class="label">待确认归档</div><div class="value" id="plan-stat-inbox">—</div><div class="sub">来自 Codex 对话</div></div>
+  </div>
+
+  <div class="plan-layout">
+    <div>
+      <div class="src" style="margin-top:14px">项目大类 · 与 Latitude 现有导航保持同一视觉语言</div>
+      <div class="plan-projects" id="plan-projects"><div class="plan-card empty">读取工作计划…</div></div>
+
+      <details class="panel plan-form" id="plan-project-form">
+        <summary>新增或更新项目大类</summary>
+        <div class="plan-form-grid">
+          <div class="plan-field"><label>项目编号（更新时填写）</label><input id="plan-project-id" placeholder="例如 P008"></div>
+          <div class="plan-field"><label>项目名称 *</label><input id="plan-project-name" placeholder="例如：内容运营"></div>
+          <div class="plan-field full"><label>目标 / 结果</label><input id="plan-project-goal" placeholder="用一句话说明最终要完成什么"></div>
+          <div class="plan-field"><label>状态</label><select id="plan-project-status"><option>进行中</option><option>未开始</option><option>已完成</option><option>暂停</option></select></div>
+          <div class="plan-field"><label>开始月份</label><input id="plan-project-start" type="month"></div>
+          <div class="plan-field"><label>计划完成</label><input id="plan-project-target" type="month"></div>
+          <div class="plan-field"><label>下一步</label><input id="plan-project-next" placeholder="待补充"></div>
+        </div>
+        <div class="plan-form-actions"><span class="plan-message" id="plan-project-message">保存后会立即显示在项目大类中。</span><button class="btn primary" id="plan-project-save" type="button">保存项目</button></div>
+      </details>
+
+      <details class="panel plan-form" id="plan-month-form">
+        <summary>记录本月进展</summary>
+        <div class="plan-form-grid">
+          <div class="plan-field"><label>月份 *</label><input id="plan-month" type="month"></div>
+          <div class="plan-field"><label>项目 *</label><select id="plan-month-project"><option value="">读取项目…</option></select></div>
+          <div class="plan-field full"><label>本月计划</label><textarea id="plan-month-plan" placeholder="这个月准备推进什么"></textarea></div>
+          <div class="plan-field"><label>本月完成</label><textarea id="plan-month-done" placeholder="完成了什么"></textarea></div>
+          <div class="plan-field"><label>问题 / 阻碍</label><textarea id="plan-month-blockers" placeholder="没有可留空"></textarea></div>
+          <div class="plan-field full"><label>下月计划</label><textarea id="plan-month-next" placeholder="下个月最重要的下一步"></textarea></div>
+        </div>
+        <div class="plan-form-actions"><span class="plan-message" id="plan-month-message">同一项目同一月份再次保存会更新原记录。</span><button class="btn primary" id="plan-month-save" type="button">保存月度记录</button></div>
+      </details>
+    </div>
+
+    <aside class="plan-side">
+      <div class="panel"><div class="plan-panel-head"><h2>月度节奏</h2><span class="src">长期回看</span></div><div class="plan-timeline" id="plan-timeline"><div class="plan-inbox-empty">暂无月度记录</div></div></div>
+      <div class="panel"><div class="plan-panel-head"><h2>对话归档</h2><span class="src">建议确认</span></div><ul class="plan-inbox" id="plan-inbox"><li class="plan-inbox-empty">暂无待确认内容</li></ul></div>
+    </aside>
   </div>
 </section>
 
@@ -835,10 +963,42 @@
       </div>
 
       <div class="kpis vd-kpis">
-        <div class="kpi"><div class="label">总权益（两 VPS）</div><div class="value" data-k="vdk.equity">—</div><div class="sub" data-k="vdk.equity_sub">等待实时数据</div></div>
-        <div class="kpi"><div class="label">今日净结果</div><div class="value" data-k="vdk.loss">—</div><div class="sub num" data-k="vdk.loss_sub">交易结果 + 已到账激励</div></div>
-        <div class="kpi"><div class="label" data-k="vdk.vol_label">本周交易量</div><div class="value" data-k="vdk.vol">—</div><div class="sub num" data-k="vdk.vol_sub">等待实时数据</div></div>
-        <div class="kpi"><div class="label">本周可用预算</div><div class="value" data-k="vdk.budget">—</div><div class="sub" data-k="vdk.budget_sub">盈利增加，亏损扣减</div></div>
+        <div class="kpi vd-kpi-split">
+          <div class="label">总权益</div>
+          <div class="value" data-k="vdk.equity">—</div>
+          <div class="sub" data-k="vdk.equity_sub">等待实时数据</div>
+          <div class="vd-kpi-hosts">
+            <div class="vd-kpi-host">
+              <div class="vd-kpi-host-title"><span>VPS1</span><small>Var / Decibel</small></div>
+              <div class="vd-kpi-host-value" data-k="vdk.equity_vps1">—</div>
+              <div class="vd-kpi-host-meta" data-k="vdk.equity_vps1_sub">等待账户数据</div>
+            </div>
+            <div class="vd-kpi-host">
+              <div class="vd-kpi-host-title"><span>VPS2</span><small>Var / Ondo</small></div>
+              <div class="vd-kpi-host-value" data-k="vdk.equity_vps2">—</div>
+              <div class="vd-kpi-host-meta" data-k="vdk.equity_vps2_sub">等待账户数据</div>
+            </div>
+          </div>
+        </div>
+        <div class="kpi vd-kpi-split">
+          <div class="label">本周交易量</div>
+          <div class="value" data-k="vdk.vol">—</div>
+          <div class="sub num" data-k="vdk.vol_sub">等待实时数据</div>
+          <div class="vd-kpi-hosts">
+            <div class="vd-kpi-host">
+              <div class="vd-kpi-host-title"><span>VPS1</span><small>Var / Decibel</small></div>
+              <div class="vd-kpi-host-value" data-k="vdk.vol_vps1">—</div>
+              <div class="vd-kpi-host-meta" data-k="vdk.vol_vps1_sub">等待交易记录</div>
+            </div>
+            <div class="vd-kpi-host">
+              <div class="vd-kpi-host-title"><span>VPS2</span><small>Var / Ondo</small></div>
+              <div class="vd-kpi-host-value" data-k="vdk.vol_vps2">—</div>
+              <div class="vd-kpi-host-meta" data-k="vdk.vol_vps2_sub">等待交易记录</div>
+            </div>
+          </div>
+        </div>
+        <div class="kpi"><div class="label">投入本金</div><div class="value" data-k="vdk.principal">—</div><div class="sub num" data-k="vdk.principal_sub">初始本金 + 净充值/提现</div></div>
+        <div class="kpi"><div class="label">比本金多 / 少</div><div class="value" data-k="vdk.capital_change">—</div><div class="sub" data-k="vdk.capital_change_sub">当前总权益 − 投入本金</div></div>
         <div class="kpi"><div class="label">积分（Dec / Var）</div><div class="value" data-k="vdk.points">—</div><div class="sub" data-k="vdk.points_sub">等待实时数据</div></div>
       </div>
 
@@ -853,11 +1013,19 @@
             <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps1-strategy"><option value="A">策略 A · 高交易量</option><option value="B" disabled>策略 B · 仅 VPS2/Ondo</option></select></div>
           </div>
           <div class="vd-host-strategy-note" id="vdauto-vps1-note"></div>
+          <div class="vd-volume-goal" id="vdauto-vps1-volume">
+            <div class="vd-volume-goal-head"><b>本周单边目标</b><span>等待 worker 统计</span></div>
+            <div class="vd-volume-goal-track"><i></i></div>
+          </div>
+          <div class="vd-host-live" id="vdauto-vps1-live">
+            <div class="vd-host-live-head"><b>当前真实仓位</b><span>正在核对双边交易所</span></div>
+            <div class="vd-host-live-empty">读取中</div>
+          </div>
           <div class="vd-funnel" aria-label="VPS1 候选漏斗">
             <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps1-candidates">—</b></div>
             <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps1-common">—</b></div>
             <div class="vd-funnel-step"><span>报价新鲜</span><b id="vdauto-vps1-fresh">—</b></div>
-            <div class="vd-funnel-step"><span>稳定确认</span><b id="vdauto-vps1-confirmed">—</b></div>
+            <div class="vd-funnel-step"><span>门槛通过</span><b id="vdauto-vps1-confirmed">—</b></div>
             <div class="vd-funnel-step ready"><span>加密可做</span><b id="vdauto-vps1-crypto">—</b></div>
             <div class="vd-funnel-step ready"><span>RWA 可做</span><b id="vdauto-vps1-rwa">—</b></div>
           </div>
@@ -875,6 +1043,14 @@
             <div class="vdauto-field"><label>执行策略</label><select id="vdauto-vps2-strategy"><option value="A" disabled>策略 A · 仅 VPS1/Decibel</option><option value="B">策略 B · 高权重长持仓</option></select></div>
           </div>
           <div class="vd-host-strategy-note" id="vdauto-vps2-note"></div>
+          <div class="vd-volume-goal" id="vdauto-vps2-volume">
+            <div class="vd-volume-goal-head"><b>本周单边目标</b><span>等待 worker 统计</span></div>
+            <div class="vd-volume-goal-track"><i></i></div>
+          </div>
+          <div class="vd-host-live" id="vdauto-vps2-live">
+            <div class="vd-host-live-head"><b>当前真实仓位</b><span>正在核对双边交易所</span></div>
+            <div class="vd-host-live-empty">读取中</div>
+          </div>
           <div class="vd-funnel" aria-label="VPS2 候选漏斗">
             <div class="vd-funnel-step"><span>候选池</span><b id="vdauto-vps2-candidates">—</b></div>
             <div class="vd-funnel-step"><span>双边共同</span><b id="vdauto-vps2-common">—</b></div>
@@ -888,7 +1064,7 @@
         </article>
       </div>
       <div class="vd-home-foot">
-        <span><strong>候选漏斗：</strong>共同市场 → 新鲜双边报价 → 连续两轮稳定确认 → 点差与资金费门槛 → 可自动开仓。</span>
+        <span><strong>候选漏斗：</strong>共同市场 → 新鲜双边报价 → 各路线执行门槛 → 可自动开仓。</span>
         <span>行情、仓位和余额按 VPS 独立读取，不跨账号复用。</span>
       </div>
     </div>
@@ -902,20 +1078,20 @@
       <article class="vd-strategy-card a">
         <div class="tagline">VPS1 · VAR/DECIBEL</div>
         <h3>策略 A · 高交易量</h3>
-        <p>以主流币提供稳定交易量，穿插低点差机会币与 RWA。方向在开仓前用两边同步报价重新计算。</p>
+        <p>每周单边目标 100k：BTC/ETH 承担约 80%，其余由低点差机会币与 RWA 补足。方向在开仓前用两边同步报价重新计算。</p>
         <div class="vd-strategy-facts">
-          <div><span>主流币比例</span><b>默认 80%</b></div>
-          <div><span>持仓</span><b>30 分钟–36 小时</b></div>
+          <div><span>主流 / 其他</span><b>80k / 20k</b></div>
+          <div><span>持仓</span><b>按周进度动态</b></div>
           <div><span>路线</span><b>Var / Decibel</b></div>
         </div>
       </article>
       <article class="vd-strategy-card b">
         <div class="tagline">VPS2 · VAR/ONDO</div>
         <h3>策略 B · 高权重长持仓</h3>
-        <p>优先 RWA、低 OI 与高权重币，普通币 2 bp、RWA 3 bp；入场价差接近时再比较净资金费。</p>
+        <p>每周单边目标 100k：BTC/ETH 承担约 80k，另外 20k 留给通过成本门槛的 RWA 与美股。</p>
         <div class="vd-strategy-facts">
-          <div><span>候选重点</span><b>RWA / 机会币</b></div>
-          <div><span>持仓</span><b>24–72 小时</b></div>
+          <div><span>主流 / RWA</span><b>80k / 20k</b></div>
+          <div><span>持仓</span><b>按周进度动态</b></div>
           <div><span>路线</span><b>Var / Ondo</b></div>
         </div>
       </article>
@@ -933,13 +1109,16 @@
         <button class="btn primary" id="vdauto-save">保存配置</button>
       </div>
     </div>
-    <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
-      <div><div class="vdauto-acceptance-title">VPS2 · Ondo 正式环境验收</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
-      <div>
-        <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
-        <div class="vdauto-acceptance-detail" id="vdauto-ondo-detail"></div>
+    <details class="vdauto-history">
+      <summary>Ondo 部署验收记录（历史，不代表当前仓位）</summary>
+      <div class="vdauto-acceptance" id="vdauto-ondo-acceptance">
+        <div><div class="vdauto-acceptance-title">VPS2 · Ondo 历史验收快照</div><div class="vdauto-acceptance-sub" id="vdauto-ondo-summary">正在读取脱敏验收记录</div></div>
+        <div>
+          <div class="vdauto-checks" id="vdauto-ondo-checks"></div>
+          <div class="vdauto-acceptance-detail" id="vdauto-ondo-detail"></div>
+        </div>
       </div>
-    </div>
+    </details>
   </div>
 
   <div class="vd-native-view" data-vd-view="仓位">
@@ -951,7 +1130,7 @@
         <h2>对冲仓位</h2>
         <div class="src">source · ops_state.json + runtime 双边交易所快照</div>
         <table>
-          <thead><tr><th>交易对 / 主机</th><th>VAR · HEDGE</th><th>净敞口</th><th>清算 Var/Hedge</th><th>时长</th><th>状态</th></tr></thead>
+          <thead><tr><th>交易对 / 主机</th><th>VAR · HEDGE</th><th>净敞口</th><th>清算 Var/Hedge</th><th>持仓时长</th><th>状态</th></tr></thead>
           <tbody id="vd-pair-body">
             <tr><td colspan="6" style="color:var(--faint)">正在核对两台 VPS 的双边真实仓位…</td></tr>
           </tbody>
@@ -1029,21 +1208,21 @@
           <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
         </div>
         <div class="panel" id="vd-incentive-panel">
-          <h2>奖励与退款 <span class="feat f-new">真实到账归因</span></h2>
-          <div class="src">已到账金额已经包含在总权益与真实净结果中，这里只解释来源，不会重复相加；待结算与概率估算不计入盈亏或预算。</div>
+          <h2>奖励与退款</h2>
+          <div class="src">只显示实际到账；待结算和估算不计入。</div>
           <div class="incentive-strip">
             <div class="incentive-cell">
-              <div class="eyebrow">Ondo USDC 奖励</div>
+              <div class="eyebrow">Ondo 已到账</div>
               <div class="amount" data-k="vd.inc_ondo">—</div>
               <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
             </div>
             <div class="incentive-cell">
-              <div class="eyebrow">Var 亏损退款 / 返佣</div>
+              <div class="eyebrow">Var 实际退款</div>
               <div class="amount" data-k="vd.inc_var">—</div>
               <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
             </div>
             <div class="incentive-cell">
-              <div class="eyebrow">真实净结果归因</div>
+              <div class="eyebrow">真实净结果</div>
               <div class="amount" data-k="vd.inc_net">—</div>
               <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
             </div>
@@ -1105,7 +1284,7 @@
       <div class="kpi"><div class="label">24h 成交额</div><div class="value" data-k="pmk.vol">—</div><div class="sub num" data-k="pmk.vol_sub">读取中</div></div>
       <div class="kpi"><div class="label">24h 实现盈亏</div><div class="value" data-k="pmk.pnl">—</div><div class="sub num">已核验成交</div></div>
       <div class="kpi"><div class="label">累计奖励</div><div class="value" data-k="pmk.rewards">—</div><div class="sub num">账户奖励快照</div></div>
-      <div class="kpi"><div class="label">可用本金</div><div class="value" data-k="pmk.capital">—</div><div class="sub num" data-k="pmk.capital_sub">读取两个账号的可用 USDC</div></div>
+      <div class="kpi"><div class="label">账户本金</div><div class="value" data-k="pmk.capital">—</div><div class="sub num" data-k="pmk.capital_sub">读取两个账号的 USDC</div></div>
     </div>
 
     <div class="pm-health">
@@ -1120,7 +1299,7 @@
         <div class="panel">
           <div class="pm-panel-head"><h2>账号</h2><span class="src">一台 VPS 对应一个账号</span></div>
           <div class="pm-table-wrap"><table>
-            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>可用本金</th><th>挂单</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
+            <thead><tr><th>选择</th><th>#</th><th>主机</th><th>账户</th><th>状态</th><th>账户本金</th><th>挂单 / 复用</th><th>24h 成交</th><th>PnL</th><th>奖励</th><th>拦截</th><th>操作</th></tr></thead>
             <tbody id="pm-matrix-body"><tr><td colspan="12" class="pm-empty">读取账号状态…</td></tr></tbody>
           </table></div>
         </div>
@@ -1164,7 +1343,7 @@
       </div>
       <div class="pm-state-note"><span class="pm-status-dot" id="pm-market-dot"></span><span id="pm-market-note">读取中</span></div>
       <div class="pm-table-wrap"><table>
-        <thead><tr><th>账号</th><th>时段</th><th>市场</th><th>方向</th><th>bid / ask</th><th>参考挂价</th><th>单边上限</th><th>当前挂单</th><th>状态</th></tr></thead>
+        <thead><tr><th>账号</th><th>时段</th><th>市场</th><th>方向</th><th>bid / ask</th><th>参考挂价</th><th>事件预算</th><th>当前挂单</th><th>状态</th></tr></thead>
         <tbody id="pm-markets-body"><tr><td colspan="9" class="pm-empty">读取市场…</td></tr></tbody>
       </table></div>
     </div>
@@ -1208,14 +1387,23 @@
     <div class="panel">
       <div class="pm-panel-head"><div><h2>市场扫描</h2><div class="src">筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
       <div class="pm-form-grid">
-        <input id="sc-minr" class="opin" type="number" placeholder="最低日奖励 $">
-        <input id="sc-maxr" class="opin" type="number" placeholder="最高日奖励 $">
-        <input id="sc-mins" class="opin" type="number" placeholder="最低价差">
-        <input id="sc-maxs" class="opin" type="number" placeholder="最高价差">
-        <input id="sc-minv" class="opin" type="number" placeholder="最低 24h 量 $">
-        <input id="sc-mind" class="opin" type="number" placeholder="最低盘口深度 $">
-        <input id="sc-top" class="opin" type="number" placeholder="结果数量">
-        <div class="btnrow"><button class="btn primary" id="scan-run-btn">开始扫描</button><label class="src"><input type="checkbox" id="scan-ac-only" checked> 只看 A/C 区</label></div>
+        <div class="pm-scan-field"><label for="sc-minr">最低日奖励（美元）</label><input id="sc-minr" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-maxr">最高日奖励（美元）</label><input id="sc-maxr" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-mins">最低奖励价差</label><input id="sc-mins" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-maxs">最高奖励价差</label><input id="sc-maxs" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-minv">最低 24h 成交量（美元）</label><input id="sc-minv" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-mind">最低买盘深度（美元）</label><input id="sc-mind" class="opin" type="number"></div>
+        <div class="pm-scan-field"><label for="sc-top">扫描结果上限（个）</label><input id="sc-top" class="opin" type="number"></div>
+        <div class="btnrow pm-scan-actions"><button class="btn primary" id="scan-run-btn">开始扫描</button><button class="btn ghost" id="scan-defaults-btn">恢复默认</button><label class="src"><input type="checkbox" id="scan-ac-only" checked> 只看 A/C 区</label></div>
+      </div>
+      <div class="pm-scan-bulk" id="scan-bulk-row" style="display:none">
+        <span class="src pm-scan-count" id="scan-result-count"></span>
+        <span class="pm-scan-bulk-label">日盘</span>
+        <button class="btn ghost" id="scan-day-all">全选</button>
+        <button class="btn ghost" id="scan-day-none">全部取消</button>
+        <span class="pm-scan-bulk-label">夜盘</span>
+        <button class="btn ghost" id="scan-night-all">全选</button>
+        <button class="btn ghost" id="scan-night-none">全部取消</button>
       </div>
       <div id="scan-results" style="margin-top:12px;max-height:520px;overflow:auto"></div>
       <div class="btnrow" id="scan-apply-row" style="display:none;margin-top:10px">
@@ -1228,8 +1416,8 @@
     <div class="panel">
       <div class="pm-panel-head"><h2>账号规则</h2><span class="src">敏感凭据不在网页展示</span></div>
       <div class="pm-table-wrap"><table>
-        <thead><tr><th>账号</th><th>签名</th><th>Post-only</th><th>双边</th><th>单市场上限</th><th>单笔名义上限</th><th>前排深度</th><th>冷却</th><th>退出</th></tr></thead>
-        <tbody id="pm-rules-body"><tr><td colspan="9" class="pm-empty">读取配置…</td></tr></tbody>
+        <thead><tr><th>账号</th><th>签名</th><th>Post-only</th><th>双边</th><th>每事件预算</th><th>前排深度</th><th>冷却</th><th>退出</th></tr></thead>
+        <tbody id="pm-rules-body"><tr><td colspan="8" class="pm-empty">读取配置…</td></tr></tbody>
       </table></div>
     </div>
     <div class="panel">
@@ -1850,6 +2038,7 @@
 <script>
   const IPO_DEMO_MODE=new URLSearchParams(window.location.search).get('ipo_demo')==='1';
   window.__ipoDemoMode=IPO_DEMO_MODE;
+  let allProjectEvents=[], activeEventProject='ALL';
 
   function go(p){
     document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
@@ -2010,6 +2199,38 @@
 
   // ── 真数据绑定:每 15s 拉 /api/state。无真数据宁可显示未知，绝不保留模板样例。 ──
   function esc(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML;}
+  let workPlanState={projects:[],months:{},inbox:[]};
+  function planMonthLabel(month){const m=String(month||'').match(/^(\d{4})-(\d{2})$/);return m?m[1]+'年'+parseInt(m[2],10)+'月':(month||'—');}
+  function planCurrentMonth(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
+  function planStatusClass(status){return status==='进行中'?'ok':(status==='暂停'?'warn':'');}
+  function bindWorkPlan(state){
+    workPlanState=state||{projects:[],months:{},inbox:[]};
+    const projects=Array.isArray(workPlanState.projects)?workPlanState.projects:[];
+    const months=workPlanState.months&&typeof workPlanState.months==='object'?workPlanState.months:{};
+    const inbox=Array.isArray(workPlanState.inbox)?workPlanState.inbox.filter(x=>x.status==='待确认'):[];
+    const active=projects.filter(p=>p.status==='进行中').length;
+    const current=months[planCurrentMonth()]||{};
+    const entries=Array.isArray(current.entries)?current.entries:[];
+    const statActive=document.getElementById('plan-stat-active');if(statActive)statActive.textContent=active;
+    const statMonth=document.getElementById('plan-stat-month');if(statMonth)statMonth.textContent=entries.length;
+    const statMonthSub=document.getElementById('plan-stat-month-sub');if(statMonthSub)statMonthSub.textContent=planMonthLabel(planCurrentMonth());
+    const statInbox=document.getElementById('plan-stat-inbox');if(statInbox)statInbox.textContent=inbox.length;
+    const updated=document.getElementById('plan-updated');if(updated)updated.textContent=workPlanState.updated_at?'更新 '+String(workPlanState.updated_at).replace('T',' ').slice(0,16):'尚未更新';
+    const cards=document.getElementById('plan-projects');
+    if(cards){cards.innerHTML=projects.length?projects.map(p=>{const entry=entries.find(x=>x.project_id===p.id)||{};return '<div class="plan-card" data-plan-project="'+esc(p.id)+'"><div class="head"><span class="name">'+esc(p.name||'未命名项目')+'</span><span class="chip '+planStatusClass(p.status)+'">'+esc(p.status||'—')+'</span></div><div class="goal">'+esc(p.goal||'未填写目标')+'</div><div class="row"><span class="k">本月重点</span><span class="v focus">'+esc(entry.plan||'待补充')+'</span></div><div class="row"><span class="k">最近更新</span><span class="v">'+esc(p.updated_at?p.updated_at.replace('T',' ').slice(0,16):'—')+'</span></div><div class="row"><span class="k">下一步</span><span class="v">'+esc(entry.next_step||p.next_step||'待补充')+'</span></div></div>';}).join(''):'<div class="plan-card empty">还没有项目大类，点击右上角新增。</div>';cards.querySelectorAll('[data-plan-project]').forEach(card=>card.addEventListener('click',()=>{const select=document.getElementById('plan-month-project');if(select)select.value=card.dataset.planProject;const form=document.getElementById('plan-month-form');if(form)form.open=true;}));}
+    const select=document.getElementById('plan-month-project');if(select){const old=select.value;select.innerHTML=projects.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');if(old&&projects.some(p=>p.id===old))select.value=old;}
+    const timeline=document.getElementById('plan-timeline');if(timeline){const monthKeys=Object.keys(months).sort().reverse().slice(0,6);timeline.innerHTML=monthKeys.length?monthKeys.map((month,index)=>{const item=months[month]||{};const count=Array.isArray(item.entries)?item.entries.length:0;return '<div class="plan-timeline-item '+(index?'future':'')+'"><div class="plan-timeline-month">'+esc(planMonthLabel(month))+(index?'':' · 当前')+'</div><div class="plan-timeline-title">'+esc(item.focus||'月度进展记录')+'</div><div class="plan-timeline-note">'+count+' 个项目有记录</div></div>';}).join(''):'<div class="plan-inbox-empty">暂无月度记录</div>';}
+    const inboxBox=document.getElementById('plan-inbox');if(inboxBox){inboxBox.innerHTML=inbox.length?inbox.slice(0,8).map(item=>'<li><b>'+esc(item.text)+'</b><span>'+esc(item.source||'Codex')+' · '+esc(item.created_at||'')+' <button class="btn ghost plan-inbox-resolve" data-inbox-id="'+esc(item.id)+'" style="float:right;padding:2px 6px;font-size:10px">确认</button></span></li>').join(''):'<li class="plan-inbox-empty">暂无待确认内容</li>';inboxBox.querySelectorAll('.plan-inbox-resolve').forEach(button=>button.addEventListener('click',async()=>{button.disabled=true;await fetch('/api/work-plan/inbox/'+encodeURIComponent(button.dataset.inboxId)+'/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'已确认'})});await refreshWorkPlan();}));}
+  }
+  async function refreshWorkPlan(){const response=await fetch('/api/work-plan',{cache:'no-store'});if(!response.ok)throw new Error('work plan unavailable');bindWorkPlan(await response.json());}
+  async function saveWorkPlan(url,payload,messageId){const message=document.getElementById(messageId);if(message)message.textContent='保存中…';const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'保存失败');bindWorkPlan(data.state);if(message)message.textContent='已保存 · '+new Date().toLocaleTimeString();}
+  function setupWorkPlan(){
+    const month=document.getElementById('plan-month');if(month)month.value=planCurrentMonth();const start=document.getElementById('plan-project-start');if(start)start.value=planCurrentMonth();
+    const open=document.getElementById('plan-open-project');if(open)open.addEventListener('click',()=>{const form=document.getElementById('plan-project-form');if(form)form.open=true;});
+    const projectSave=document.getElementById('plan-project-save');if(projectSave)projectSave.addEventListener('click',async()=>{try{await saveWorkPlan('/api/work-plan/project',{id:document.getElementById('plan-project-id').value,name:document.getElementById('plan-project-name').value,goal:document.getElementById('plan-project-goal').value,status:document.getElementById('plan-project-status').value,start_month:document.getElementById('plan-project-start').value,target_month:document.getElementById('plan-project-target').value,next_step:document.getElementById('plan-project-next').value},'plan-project-message');}catch(e){const message=document.getElementById('plan-project-message');if(message)message.textContent=e.message;}});
+    const monthSave=document.getElementById('plan-month-save');if(monthSave)monthSave.addEventListener('click',async()=>{try{await saveWorkPlan('/api/work-plan/month',{month:document.getElementById('plan-month').value,project_id:document.getElementById('plan-month-project').value,plan:document.getElementById('plan-month-plan').value,done:document.getElementById('plan-month-done').value,blockers:document.getElementById('plan-month-blockers').value,next_step:document.getElementById('plan-month-next').value},'plan-month-message');}catch(e){const message=document.getElementById('plan-month-message');if(message)message.textContent=e.message;}});
+  }
+  setupWorkPlan();
   function money(v){return v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
   function setK(key, html){
     if(html===null||html===undefined) return;
@@ -2058,7 +2279,10 @@
     setK('pmk.run', pm.running+' / '+pm.total);
     setK('pmk.run_sub', 'engine_state 逐账号');
     setK('pmk.orders', orderText);
-    setK('pmk.quotes', '新鲜状态 '+(pm.quotes_sent==null?'待核验':Number(pm.quotes_sent).toLocaleString()));
+    const reuse=(pm.capital_reuse_multiplier==null?'—':Number(pm.capital_reuse_multiplier).toFixed(2)+'×');
+    setK('pmk.quotes', pm.live_order_notional==null
+      ?'挂单金额待核验'
+      :money(pm.live_order_notional)+' · 资金复用 '+reuse);
     setK('pmk.vol', money(pm.volume_today));
     const ftKnown=(pm.accounts||[]).some(a=>a.fills_today!=null);
     const ft=(pm.accounts||[]).reduce((n,a)=>n+(a.fills_today||0),0);
@@ -2079,7 +2303,7 @@
         '<tr><td class="num"><input type="checkbox" class="pm-sel" data-idx="'+a.idx+'" checked></td>'+
         '<td class="num">'+a.idx+'</td><td class="num">'+esc(a.host||'—')+'</td><td class="num">'+esc(a.funder)+'</td>'+
         '<td><span class="chip '+a.status_cls+'">'+esc(a.status)+'</span>'+(a.age?'<div style="font-size:10px;color:var(--faint);margin-top:3px">状态 '+esc(a.age)+'</div>':'')+'</td>'+
-        '<td class="num"><b>'+money(a.principal)+'</b><div style="font-size:10px;color:'+(a.principal_fresh?'var(--ok)':'var(--faint)')+';margin-top:3px">'+(a.principal_fresh?'实时':(a.principal_age==null?'待更新':pmAge(a.principal_age)))+'</div></td><td class="num">'+(a.orders==null?'<span style="color:var(--warn)">待核验</span>':a.orders)+'</td>'+
+        '<td class="num"><b>'+money(a.principal)+'</b><div style="font-size:10px;color:'+(a.principal_fresh?'var(--ok)':'var(--faint)')+';margin-top:3px">'+(a.principal_fresh?'实时':(a.principal_age==null?'待更新':pmAge(a.principal_age)))+'</div></td><td class="num">'+(a.orders==null?'<span style="color:var(--warn)">待核验</span>':a.orders+'笔<div style="font-size:10px;color:var(--faint);margin-top:3px">'+money(a.order_notional)+' · '+(a.capital_reuse_multiplier==null?'—':Number(a.capital_reuse_multiplier).toFixed(2)+'×')+'</div>')+'</td>'+
         '<td class="num">'+(a.volume_today==null?'—':money(a.volume_today)+' · '+a.fills_today+'笔')+'</td>'+
         '<td class="num">'+(a.pnl_today==null?'—':pnlSpan(a.pnl_today))+'</td><td class="num">'+(a.rewards!=null?money(a.rewards):'—')+'</td>'+
         '<td class="num">'+(a.sibling_conflicts==null?'—':a.sibling_conflicts+'('+esc(a.sibling_mode||'')+')')+'</td>'+
@@ -2166,7 +2390,7 @@
     const marketBody=document.getElementById('pm-markets-body');
     if(marketBody){
       marketBody.innerHTML=markets.length?markets.map(m=>{
-        const plan=(m.reference_plan||[]).slice(0,3).map(x=>pmPrice(x.price)+' × '+pmNumber(x.quantity,2)).join(' / ')||'—';
+        const plan=(m.reference_plan||[]).slice(0,3).map(x=>pmPrice(x.price)).join(' / ')||'—';
         const book=pmPrice(m.bid)+' / '+pmPrice(m.ask);
         const orders=m.orders_verified?String(m.orders):'<span style="color:var(--warn)">待核验</span>';
         let state='已配置',stateClass='warn';
@@ -2177,7 +2401,7 @@
         return '<tr><td class="num">#'+m.account+' · '+esc(m.host||'')+'</td><td>'+esc(m.session)+'</td>'+
           '<td class="pm-market-name">'+esc(m.name)+'<small>'+esc(m.token)+' · '+esc(m.quote_source||'')+'</small></td>'+
           '<td class="num">'+esc(m.side)+'</td><td class="num">'+book+'</td><td class="num" style="white-space:normal">'+esc(plan)+'</td>'+
-          '<td class="num">'+pmNumber(m.quote_size,2)+'</td><td class="num">'+orders+'</td>'+
+          '<td class="num">'+(m.event_budget_pct==null?'—':pmNumber(m.event_budget_pct,2)+'% 本金')+'</td><td class="num">'+orders+'</td>'+
           '<td><span class="chip '+stateClass+'">'+esc(state)+'</span></td></tr>';
       }).join(''):'<tr><td colspan="9" class="pm-empty">当前没有配置市场</td></tr>';
     }
@@ -2188,7 +2412,7 @@
       const items=[
         ['挂单方式',rules.post_only?'Post-only':'需检查',rules.post_only?'ok':'danger'],
         ['双边做市',rules.dual_side?'YES / NO 同时挂':'关闭',rules.dual_side?'ok':'warn'],
-        ['单市场上限',pmNumber(rules.max_quote_shares,2)+' 份',''],
+        ['每事件预算',pmNumber(rules.event_budget_pct,2)+'% 本金','ok'],
         ['成交后处理','撤报价 → 退出 → 余额稳定 → 恢复','']
       ];
       compact.innerHTML=items.map(x=>'<div class="pm-state-note"><span class="pm-status-dot '+x[2]+'"></span><span>'+esc(x[0])+'</span><b style="margin-left:auto;text-align:right">'+esc(x[1])+'</b></div>').join('');
@@ -2199,7 +2423,6 @@
         ['Post-only',rules.post_only?'开启':'关闭'],
         ['双边范围',rules.dual_side?'mid ≤ '+pmNumber(rules.dual_side_max_mid,3):'关闭'],
         ['前排深度',rules.min_front_depth==null?'—':money(rules.min_front_depth)],
-        ['单笔名义上限',rules.max_notional==null?'—':money(rules.max_notional)],
         ['重报价',rules.requote_ms==null?'—':pmNumber(rules.requote_ms)+' ms'],
         ['奖励档位',rules.max_reward_levels==null?'—':pmNumber(rules.max_reward_levels)+' 档'],
         ['波动观察',rules.vol_watch_sec==null?'—':pmNumber(rules.vol_watch_sec)+' 秒'],
@@ -2215,9 +2438,9 @@
         return '<tr><td class="num">#'+a.account+' · '+esc(a.host||'')+'</td><td>'+esc(a.signer_mode||'—')+'</td>'+
           '<td><span class="chip '+(r.post_only?'ok':'danger')+'">'+(r.post_only?'开启':'关闭')+'</span></td>'+
           '<td><span class="chip '+(r.dual_side?'ok':'warn')+'">'+(r.dual_side?'开启':'关闭')+'</span></td>'+
-          '<td class="num">'+pmNumber(r.max_quote_shares,2)+' 份</td><td class="num">'+money(r.max_notional)+'</td>'+
+          '<td class="num">'+pmNumber(r.event_budget_pct,2)+'% 本金</td>'+
           '<td class="num">'+money(r.min_front_depth)+'</td><td class="num">'+pmNumber(r.cooldown_sec)+' 秒</td><td class="num">'+esc(exit)+'</td></tr>';
-      }).join(''):'<tr><td colspan="9" class="pm-empty">没有账号配置</td></tr>';
+      }).join(''):'<tr><td colspan="8" class="pm-empty">没有账号配置</td></tr>';
     }
 
     const unwindBody=document.getElementById('pm-unwinds-body');
@@ -2313,6 +2536,41 @@
       :'<tr><td colspan="5">暂无成交</td></tr>';
   }
   function _vdVenueLabel(value){return ({variational:'Var',decibel:'Decibel',ondo:'Ondo'})[value]||String(value||'Hedge');}
+  function _vdHoldDuration(hours){
+    const value=Number(hours);
+    if(!Number.isFinite(value)||value<0)return '—';
+    const minutes=Math.max(0,Math.round(value*60));
+    if(minutes<1)return '不足1分钟';
+    const days=Math.floor(minutes/1440), remainder=minutes%1440;
+    const wholeHours=Math.floor(remainder/60), mins=remainder%60, parts=[];
+    if(days)parts.push(days+'天');
+    if(wholeHours)parts.push(wholeHours+'小时');
+    if(mins&&!days)parts.push(mins+'分');
+    return parts.join('')||'不足1分钟';
+  }
+  function _vdHoldTime(value){
+    const date=new Date(value||'');
+    if(!Number.isFinite(date.getTime()))return '—';
+    return new Intl.DateTimeFormat('zh-CN',{
+      timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',
+      hour:'2-digit',minute:'2-digit',hourCycle:'h23'
+    }).format(date).replaceAll('/','-');
+  }
+  function _vdHoldCell(pair){
+    const lifecycle=pair&&pair.lifecycle||{};
+    const opened=new Date(lifecycle.first_seen_at||'');
+    const target=Number(lifecycle.target_hold_hours);
+    if(!Number.isFinite(opened.getTime())||!Number.isFinite(target)||target<=0){
+      return '<td class="vd-hold unknown"><div class="vd-hold-main">时长待核对</div></td>';
+    }
+    const age=Math.max(0,(Date.now()-opened.getTime())/3600000);
+    const planned=lifecycle.planned_close_at||new Date(opened.getTime()+target*3600000).toISOString();
+    const due=lifecycle.next_action==='close_due'||age>=target;
+    return '<td class="vd-hold'+(due?' due':'')+'"><div class="vd-hold-main">已持 '
+      +esc(_vdHoldDuration(age))+' · 目标 '+esc(_vdHoldDuration(target))+'</div><div class="vd-hold-sub">'
+      +(due?'已到期，等待自动轮换':'开仓 '+esc(_vdHoldTime(opened))+' · 到期 '+esc(_vdHoldTime(planned)))
+      +'</div></td>';
+  }
   function bindVD(vd){
     const pb=document.getElementById('vd-pair-body');
     const hc=document.getElementById('vd-host-cards');
@@ -2324,8 +2582,20 @@
       setK('vd.points','—');
       setK('vdk.equity','—');
       setK('vdk.equity_sub','两台 VPS 的双边权益不可达');
+      setK('vdk.principal','—');
+      setK('vdk.principal_sub','本金账本不可达');
+      setK('vdk.capital_change','—');
+      setK('vdk.capital_change_sub','等待本金与权益完成对账');
+      ['vps1','vps2'].forEach(h=>{
+        setK('vdk.equity_'+h,'—');
+        setK('vdk.equity_'+h+'_sub','账户数据不可达');
+      });
       setK('vdk.vol','—');
       setK('vdk.vol_sub','两台 VPS 的双边交易量不可达');
+      ['vps1','vps2'].forEach(h=>{
+        setK('vdk.vol_'+h,'—');
+        setK('vdk.vol_'+h+'_sub','交易记录不可达');
+      });
       setK('vdk.points','—');
       setK('vdk.points_sub','积分来源不可达');
       if(pb) pb.innerHTML='<tr><td colspan="6" style="color:var(--faint)">交易所状态不可达，仓位未知</td></tr>';
@@ -2339,6 +2609,43 @@
       (unverified.length?'<span class="chip warn">仓位待核验 ×'+unverified.length+'</span>':'双边仓位已核验'));
     const card=document.getElementById('vd-card'); if(card) card.classList.toggle('alerted', legs.length>0||unverified.length>0);
     const capital=vd.capital||{};
+    const capitalHosts=capital.hosts||{};
+    if(capital.complete){
+      const principal=Number(capital.principal_total||0);
+      const initial=Number(capital.initial_principal||0);
+      const cashflow=Number(capital.net_cashflow||0);
+      const equity=Number(capital.current_equity||0);
+      const pnl=Number(capital.pnl||0);
+      const pct=capital.pnl_pct==null?'':Math.abs(Number(capital.pnl_pct)).toFixed(2)+'%';
+      const flowSign=cashflow>0?'+':cashflow<0?'−':'';
+      const changeLabel=pnl>0?'多 ':pnl<0?'少 ':'持平 ';
+      setK('vdk.principal',money(principal));
+      setK('vdk.principal_sub','初始 '+money(initial)+' · 净充值/提现 '+flowSign+money(Math.abs(cashflow)));
+      setK('vdk.capital_change','<span class="'+(pnl>=0?'up':'down')+'">'+changeLabel+money(Math.abs(pnl))+'</span>');
+      setK('vdk.capital_change_sub','当前总权益 '+money(equity)+(pct?' · '+pct:''));
+    } else {
+      setK('vdk.principal','—');
+      setK('vdk.principal_sub','本金账本待对账');
+      setK('vdk.capital_change','—');
+      setK('vdk.capital_change_sub','等待四账户权益与充提记录完整');
+    }
+    const setHostEquity=host=>{
+      const h=hosts[host]||{}, ch=capitalHosts[host]||{};
+      const directEquity=[h.equity_var,h.equity_hedge].every(v=>v!=null)
+        ? Number(h.equity_var)+Number(h.equity_hedge) : null;
+      const equity=ch.complete?ch.current_equity:directEquity;
+      setK('vdk.equity_'+host,equity==null?'—':money(equity));
+      if(ch.complete){
+        const pnl=Number(ch.pnl||0), up=pnl>=0;
+        const pct=ch.pnl_pct==null?'':' ('+(up?'+':'')+Number(ch.pnl_pct).toFixed(2)+'%)';
+        setK('vdk.equity_'+host+'_sub','<span class="'+(up?'up':'down')+'">'+(up?'+':'−')+money(Math.abs(pnl))+pct+'</span> · 投入 '+money(ch.principal_total));
+      } else if(equity!=null) {
+        setK('vdk.equity_'+host+'_sub','本金待对账');
+      } else {
+        setK('vdk.equity_'+host+'_sub','双边权益不完整');
+      }
+    };
+    ['vps1','vps2'].forEach(setHostEquity);
     if(vd.equity_total!=null){
       setK('vd.equity', money(vd.equity_total));
       setK('vdk.equity', money(capital.complete?capital.current_equity:vd.equity_total));
@@ -2359,9 +2666,13 @@
     setK('vd.vol_label','本周量 / 累计');
     if(vd.volume_weekly!=null||vd.volume_total!=null) setK('vd.vol', money(vd.volume_weekly)+' · '+money(vd.volume_total));
     else setK('vd.vol','—');
-    setK('vdk.vol_label','本周交易量');
     setK('vdk.vol', money(vd.volume_weekly));
     setK('vdk.vol_sub', vd.volume_weekly!=null||vd.volume_total!=null?'累计 '+money(vd.volume_total):'双边交易量不完整');
+    ['vps1','vps2'].forEach(host=>{
+      const h=hosts[host]||{};
+      setK('vdk.vol_'+host,h.volume_weekly==null?'—':money(h.volume_weekly));
+      setK('vdk.vol_'+host+'_sub',h.volume_total==null?'交易量不完整':'累计 '+money(h.volume_total));
+    });
     setK('vd.hosts', names.map(h=>{
       const x=hosts[h]; const cls=x.stale?'down':(x.single_leg?'down':'up');
       return '<span class="'+cls+'">● '+h.toUpperCase()+' '+esc(x.age||'?')+'</span>';
@@ -2409,10 +2720,11 @@
       return '<tr style="background:rgba(231,180,67,.06)"><td><b>'+esc((x.host||'').toUpperCase())+'</b></td><td colspan="4" style="color:var(--warn)">'+esc(x.reason||'数据不完整')+'，当前仓位未知'+seen+'</td><td><span class="chip warn">UNKNOWN</span></td></tr>';
     });
     if(pb && (vd.pairs||[]).length){
-      const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(Math.abs(p.var.notional||0),Math.abs((p.hedge||p.dec||{}).notional||0))));
+      const comparableNotional=leg=>Math.abs(leg.exposure_notional??leg.notional??0);
+      const maxN=Math.max(1,...vd.pairs.map(p=>Math.max(comparableNotional(p.var),comparableNotional(p.hedge||p.dec||{}))));
       const pairRows=vd.pairs.map(p=>{
         const hedge=p.hedge||p.dec||{};
-        const wl=Math.round(Math.abs(p.var.notional||0)/maxN*100), wr=Math.round(Math.abs(hedge.notional||0)/maxN*100);
+        const wl=Math.round(comparableNotional(p.var)/maxN*100), wr=Math.round(comparableNotional(hedge)/maxN*100);
         const bad=p.status!=='HEDGED';
         const lane_l=p.var.open?'<i class="bar" style="width:'+wl+'%"></i>':'';
         const lane_r=hedge.open?'<i class="'+(bad?'stub':'bar')+'" style="width:'+wr+'%"></i>':'';
@@ -2421,7 +2733,7 @@
           '<td><div class="pair"><div class="lane l">'+lane_l+'</div><div class="tick"></div><div class="lane r">'+lane_r+'</div></div></td>'+
           '<td class="num '+netCls+'">'+money(p.net)+'</td>'+
           '<td class="num">'+(p.var.liq_pct!=null?p.var.liq_pct+'%':'—')+'/'+(hedge.liq_pct!=null?hedge.liq_pct+'%':'—')+'</td>'+
-          '<td class="num">—</td><td><span class="chip '+(bad?'danger':'ok')+'">'+esc(p.status)+'</span></td></tr>';
+          _vdHoldCell(p)+'<td><span class="chip '+(bad?'danger':'ok')+'">'+esc(p.status)+'</span></td></tr>';
       });
       pb.innerHTML=pairRows.concat(unknownRows).join('');
     } else if(pb && unverified.length){
@@ -2514,19 +2826,24 @@
     const varAvailable=Object.values(hostIncentives).some(row=>row&&row.variational&&row.variational.available);
     setK('vd.inc_ondo', ondoAvailable?money(ondoInc.settled_total_usdc||0):'—');
     setK('vd.inc_ondo_sub', ondoAvailable?(
-      '本周已到账 '+money(ondoInc.settled_week_usdc||0)+
-      (ondoInc.current_week_pool_usdc!=null?' · 本周全站奖池 '+money(ondoInc.current_week_pool_usdc):'')+
-      '<br>账号待结算金额：平台结算前不公布'):'奖励历史尚未从 Ondo 账号读取');
+      '本周 '+money(ondoInc.settled_week_usdc||0)+
+      (ondoInc.current_week_pool_usdc!=null?' · 奖池 '+money(ondoInc.current_week_pool_usdc):'')):'奖励历史待读取');
     setK('vd.inc_var', varAvailable?money(varInc.settled_total_usdc||0):'—');
     const varPool=varInc.pool_usdc!=null?money(varInc.pool_usdc):'—';
+    const varPoolStatus=varInc.pool_source!=='arbitrum_usdc_balance'
+      ?'<span style="color:var(--amber);font-weight:700">链上待核验</span>'
+      :(varInc.pool_eligible
+        ?'<span style="color:var(--green);font-weight:700">已开放</span>'
+        :'<span style="color:var(--amber);font-weight:700">未开放</span>');
     setK('vd.inc_var_sub', varAvailable?(
-      '本人亏损退款 '+money(varInc.own_refunds_total_usdc||0)+' · 返佣/其他 '+money(varInc.other_rewards_total_usdc||0)+
-      '<br>当前退款池 '+varPool+' · 概率估值 '+money(varInc.estimated_refund_usdc||0)+'（不入账）'):'Var transfer history 或退款池尚未读取');
+      '合格亏损 '+money(varInc.eligible_loss_usdc||0)+
+      ' · 退款后净损 '+money(varInc.net_loss_after_actual_refund_week_usdc||0)+
+      '<br>退款池 '+varPool+' · '+varPoolStatus):'退款记录或奖池待读取');
     if(attribution.net_pnl_usdc!=null){
       setK('vd.inc_net', pnlSpan(attribution.net_pnl_usdc));
       setK('vd.inc_net_sub',
-        '其中已到账奖励/退款 '+pnlSpan(attribution.settled_incentives_usdc||0)+'<br>'+
-        (attribution.complete?'交易、资金费与手续费 '+pnlSpan(attribution.trading_funding_fees_usdc||0):'激励历史不完整，暂不计算剩余归因'));
+        (attribution.complete?'交易、资金费与手续费 '+pnlSpan(attribution.trading_funding_fees_usdc||0):'奖励历史不完整')+
+        ' · 已到账奖励/退款 '+pnlSpan(attribution.settled_incentives_usdc||0));
     } else {
       setK('vd.inc_net','—');
       setK('vd.inc_net_sub','本金或四账户权益尚未完成对账');
@@ -2534,8 +2851,10 @@
     const incentiveHostText=Object.entries(hostIncentives).map(([host,row])=>{
       const vr=(row||{}).variational||{}, od=(row||{}).ondo||{};
       const bits=[];
-      if(vr.available) bits.push('Var 已到账 '+money(vr.settled_total_usdc||0)+' / 估算 '+money(vr.estimated_refund_usdc||0));
-      if(od.available) bits.push('Ondo 已到账 '+money(od.settled_total_usdc||0));
+      if(vr.available) bits.push(
+        '净损 '+money(vr.net_loss_after_actual_refund_week_usdc||0)
+      );
+      if(!vr.available && od.available) bits.push('奖励已读取');
       return host.toUpperCase()+'：'+(bits.join(' · ')||'激励数据待读取');
     });
     setK('vd.inc_host_detail', incentiveHostText.join('　'));
@@ -3127,12 +3446,37 @@
     }
   }
 
-  function bindEventsAlerts(s){
+  function renderProjectEvents(){
     const el=document.getElementById('events-list');
-    if(el && (s.events||[]).length){
-      el.innerHTML=s.events.map(e=>
-        '<li><span class="dot d-'+(e.sev||'info')+'"></span><div><div>'+esc(e.msg)+'</div><div class="t">'+esc(e.t||'')+'</div></div></li>').join('');
-    } else if(el) el.innerHTML='<li><span class="dot d-info"></span><div><div>当前没有实时事件</div></div></li>';
+    const filters=document.getElementById('event-filters');
+    if(!el||!filters)return;
+    const known=['VAR','PM','PF','SA','GRID','HK/US','INFRA','DEWU'];
+    const labels={ALL:'全部',VAR:'Var 对冲',PM:'Polymarket',PF:'Predict.fun',SA:'单账号',GRID:'Grid','HK/US':'打新/账户',INFRA:'基础设施',DEWU:'得物'};
+    const present=new Set(allProjectEvents.map(e=>e.project).filter(Boolean));
+    const projects=['ALL',...known.filter(p=>present.has(p))];
+    if(activeEventProject!=='ALL'&&!present.has(activeEventProject))activeEventProject='ALL';
+    filters.innerHTML=projects.map(p=>'<button type="button" class="event-filter '+(p===activeEventProject?'on':'')+'" data-project="'+esc(p)+'">'+esc(labels[p]||p)+'</button>').join('');
+    filters.querySelectorAll('.event-filter').forEach(button=>button.addEventListener('click',()=>{
+      activeEventProject=button.dataset.project||'ALL';renderProjectEvents();
+    }));
+    const rows=activeEventProject==='ALL'?allProjectEvents:allProjectEvents.filter(e=>e.project===activeEventProject);
+    if(!rows.length){
+      el.innerHTML='<li><span class="dot d-info"></span><div><div>当前没有该项目的重要事件</div></div></li>';
+      return;
+    }
+    el.innerHTML=rows.map(e=>
+      '<li class="'+(e.page?'event-link':'')+'" data-page="'+esc(e.page||'')+'">'+
+      '<span class="dot d-'+(e.sev||'info')+'"></span><div class="event-copy">'+
+      '<div class="event-head"><span class="event-project">'+esc(e.project_label||e.project||'项目')+'</span>'+
+      '<span class="event-message">'+esc(e.msg)+'</span></div><div class="t">'+esc(e.t||'')+'</div></div></li>').join('');
+    el.querySelectorAll('li[data-page]').forEach(row=>row.addEventListener('click',()=>{
+      const page=row.dataset.page;if(page&&document.getElementById('page-'+page))go(page);
+    }));
+  }
+
+  function bindEventsAlerts(s){
+    allProjectEvents=s.events||[];
+    renderProjectEvents();
     const bar=document.getElementById('alertbar');
     const alerts=s.alerts||[];
     setK('pill.alerts','<span class="dot"></span>告警 '+alerts.length);
@@ -3796,12 +4140,27 @@
   (function(){
     const sbtn=document.getElementById('scan-run-btn'); if(!sbtn) return;
     const sst=document.getElementById('scan-status'), sres=document.getElementById('scan-results');
-    let scanTimer=null, scanData=null, cfgDay={}, cfgNight={};
+    let scanTimer=null, scanData=null, cfgDay={}, cfgNight={}, scanDefaults={}, defaultsFilled=false, visibleScanCount=0;
+    const defaultFields={
+      min_reward:'sc-minr', max_reward:'sc-maxr', min_spread:'sc-mins', max_spread:'sc-maxs',
+      min_volume:'sc-minv', min_bid_depth:'sc-mind', top:'sc-top'
+    };
+    function fillDefaults(force=false){
+      if(!force&&defaultsFilled) return;
+      Object.entries(defaultFields).forEach(([key,id])=>{
+        const el=document.getElementById(id);
+        if(el&&scanDefaults[key]!=null) el.value=scanDefaults[key];
+      });
+      const ac=document.getElementById('scan-ac-only'); if(ac) ac.checked=true;
+      defaultsFilled=true;
+      if(force) sst.textContent='已恢复系统默认参数';
+    }
     function fld(id){ const v=parseFloat(document.getElementById(id).value); return isNaN(v)?undefined:v; }
     async function poll(){
       try{
         const j=await (await fetch('/api/pm/scan')).json();
         cfgDay=j.config_day||{}; cfgNight=j.config_night||{};
+        scanDefaults=j.scan_defaults||{}; fillDefaults();
         const pc=document.getElementById('proxy-count'); if(pc&&j.proxy_count!=null) pc.textContent=j.proxy_count;
         if(j.status==='running'){ sst.textContent='扫描中…(60-120s)'; if(!scanTimer) scanTimer=setInterval(poll,3000); return; }
         if(scanTimer){ clearInterval(scanTimer); scanTimer=null; }
@@ -3813,6 +4172,7 @@
       if(!scanData) return;
       const acOnly=document.getElementById('scan-ac-only').checked;
       const rows=scanData.filter(m=>!acOnly||/^[AC]/.test(String(m.quadrant||'')));
+      visibleScanCount=rows.length;
       sres.innerHTML='<table><thead><tr><th>日</th><th>夜</th><th>MARKET</th><th>象限</th><th>Daily $</th><th>Risk</th><th>Vol24h</th></tr></thead><tbody>'+
         rows.map(m=>{
           const tid=String(m.token_id||''), no=String(m.paired_token_id||'');
@@ -3823,7 +4183,19 @@
             '<td class="num">$'+Math.round(m.reward||0)+'</td><td class="num">'+(m.fill_risk!=null?Number(m.fill_risk).toFixed(1):'—')+'</td>'+
             '<td class="num">$'+Math.round((m.volume24h||0)/1000)+'k</td></tr>';
         }).join('')+'</tbody></table>';
+      document.getElementById('scan-bulk-row').style.display='flex';
       document.getElementById('scan-apply-row').style.display='flex';
+      updateScanCount();
+    }
+    function updateScanCount(){
+      const day=document.querySelectorAll('.sc-day:checked').length;
+      const night=document.querySelectorAll('.sc-night:checked').length;
+      const el=document.getElementById('scan-result-count');
+      if(el) el.textContent='当前展示 '+visibleScanCount+' / 扫描得到 '+(scanData?scanData.length:0)+' · 已选 日 '+day+' / 夜 '+night;
+    }
+    function bulkSelect(selector,checked){
+      document.querySelectorAll(selector).forEach(el=>{el.checked=checked;});
+      updateScanCount();
     }
     sbtn.addEventListener('click',async()=>{
       if(window.__writesEnabled===false){ sst.innerHTML='<span class="down">写通道未启用(只读)</span>'; return; }
@@ -3838,6 +4210,15 @@
       }catch(e){ sst.innerHTML='<span class="down">请求失败</span>'; }
     });
     const acbox=document.getElementById('scan-ac-only'); if(acbox) acbox.addEventListener('change',renderTable);
+    const dbtn=document.getElementById('scan-defaults-btn'); if(dbtn) dbtn.addEventListener('click',()=>fillDefaults(true));
+    const bulkButtons={
+      'scan-day-all':['.sc-day',true], 'scan-day-none':['.sc-day',false],
+      'scan-night-all':['.sc-night',true], 'scan-night-none':['.sc-night',false]
+    };
+    Object.entries(bulkButtons).forEach(([id,args])=>{
+      const el=document.getElementById(id); if(el) el.addEventListener('click',()=>bulkSelect(args[0],args[1]));
+    });
+    sres.addEventListener('change',e=>{if(e.target.matches('.sc-day,.sc-night')) updateScanCount();});
     const ap=document.getElementById('scan-apply-btn');
     if(ap) ap.addEventListener('click',async()=>{
       const day=[...document.querySelectorAll('.sc-day:checked')].map(x=>x.dataset.tid);
@@ -3890,6 +4271,36 @@
     return (pct>0?'+':'')+pct.toFixed(digits)+'%';
   }
 
+  function _vdAutoRenderVolumeGoal(host,data,state){
+    const el=document.getElementById('vdauto-'+host+'-volume'); if(!el)return;
+    const runtime=(data||{}).runtime||{}, plan=runtime.weekly_volume||{};
+    const number=value=>value==null||value===''?null:Number(value);
+    const target=number(plan.target_notional_usdc)??number((state||{}).weekly_volume_target_usdc)??100000;
+    const actual=number(plan.actual_notional_usdc);
+    if(actual==null||!Number.isFinite(actual)){
+      el.innerHTML='<div class="vd-volume-goal-head"><b>本周单边目标 '+money(target)+'</b><span>等待 worker 统计</span></div><div class="vd-volume-goal-track"><i></i></div>';
+      return;
+    }
+    const strategy=String(plan.strategy||(data||{}).strategy||(host==='vps2'?'B':'A')).toUpperCase();
+    const major=number(plan.major_notional_usdc)||0, majorTarget=number(plan.major_target_notional_usdc)||0;
+    const secondary=strategy==='B'?(number(plan.rwa_notional_usdc)||0):((number(plan.rwa_notional_usdc)||0)+(number(plan.other_notional_usdc)||0));
+    const secondaryTarget=strategy==='B'?(number(plan.rwa_target_notional_usdc)||0):(number(plan.other_target_notional_usdc)||0);
+    const secondaryLabel=strategy==='B'?'RWA / 美股':'机会币 / RWA';
+    const remaining=Math.max(0,number(plan.remaining_notional_usdc)??target-actual);
+    const progress=target>0?Math.max(0,Math.min(100,actual/target*100)):0;
+    const priorityLabels={major:'下一单优先 BTC/ETH',rwa:'下一单优先 RWA/美股',other:'下一单优先机会币',complete:'目标已完成'};
+    const priority=priorityLabels[String(plan.bucket_priority||'')]||'按当前配额继续';
+    const count=Number(plan.trade_count||0);
+    const status=plan.target_reached===true?'已达标，本周停止新开仓':'剩余 '+money(remaining);
+    el.innerHTML='<div class="vd-volume-goal-head"><b>本周单边目标 '+money(target)+'</b><span>'+money(actual)+' · '+progress.toFixed(1)+'%</span></div>'+
+      '<div class="vd-volume-goal-track"><i style="width:'+progress.toFixed(2)+'%"></i></div>'+
+      '<div class="vd-volume-goal-buckets">'+
+        '<div class="vd-volume-goal-bucket"><span>BTC / ETH</span><b>'+money(major)+' / '+money(majorTarget)+'</b></div>'+
+        '<div class="vd-volume-goal-bucket"><span>'+secondaryLabel+'</span><b>'+money(secondary)+' / '+money(secondaryTarget)+'</b></div>'+
+      '</div>'+
+      '<div class="vd-volume-goal-foot"><span>'+count+' 笔 · '+status+'</span><span class="priority">'+priority+'</span></div>';
+  }
+
   function _vdAutoRenderNextPlan(host,data){
     const el=document.getElementById('vdauto-'+host+'-plan'); if(!el)return;
     const plan=((data||{}).runtime||{}).next_open_plan||{};
@@ -3911,9 +4322,50 @@
     el.innerHTML='<span>下一单计划</span><b class="'+(ready?'ok':'wait')+'">'+esc(pieces.join(' · '))+(ready?'':' · 只读，未下单')+'</b>';
   }
 
+  function _vdAutoRenderHostLive(host,data){
+    const el=document.getElementById('vdauto-'+host+'-live'); if(!el)return;
+    const pairs=Array.isArray((data||{}).active_pairs)?data.active_pairs:[], runtime=(data||{}).runtime||{};
+    const lifecycle=Array.isArray(runtime.position_lifecycle)?runtime.position_lifecycle:[];
+    const venue=(data||{}).hedge_label||(host==='vps2'?'Ondo':'Decibel');
+    const fallback=(data||{}).positions_source==='runtime_last_confirmed';
+    const side=value=>({buy:'买',long:'买',sell:'卖',short:'卖'})[String(value||'').toLowerCase()]||'—';
+    const lifeFor=symbol=>lifecycle.find(row=>String(row.symbol||'').toUpperCase()===String(symbol||'').toUpperCase())||{};
+    const duration=row=>{
+      const age=Number(row.age_hours), remain=Number(row.remaining_hours);
+      const ageText=Number.isFinite(age)?(age<1?Math.max(1,Math.round(age*60))+'分钟':age.toFixed(age<10?1:0)+'小时'):'时长待核对';
+      const remainText=Number.isFinite(remain)?(remain<=0?'已到期':('剩 '+(remain<1?Math.max(1,Math.round(remain*60))+'分钟':remain.toFixed(remain<10?1:0)+'小时'))):'';
+      return ageText+(remainText?' · '+remainText:'');
+    };
+    const rows=pairs.map(pair=>{
+      const life=lifeFor(pair.symbol), notional=Number(pair.matched_notional_usdc), quantity=Number(pair.quantity);
+      const legs='Var '+side(pair.var_side)+' / '+esc(pair.hedge_label||venue)+' '+side(pair.hedge_side);
+      const amount=(Number.isFinite(notional)?money(notional)+'/腿':'金额待核对')+(Number.isFinite(quantity)&&quantity>0?' · '+quantity.toLocaleString(undefined,{maximumFractionDigits:6}):'');
+      const hedged=String(pair.status||'').toUpperCase()==='HEDGED';
+      const source=pair.source==='runtime_last_confirmed'?' · 最近确认':'';
+      return '<div class="vd-host-live-row '+(hedged?'':'bad')+'"><strong>'+esc(pair.symbol||'—')+'</strong><span>'+legs+(hedged?'':' · 未配平')+source+'</span><em>'+amount+'<br>'+esc(duration(life))+'</em></div>';
+    }).join('');
+    const recentStatus=String(runtime.last_finished_job_status||'');
+    const recent=recentStatus==='succeeded'?'最近执行：开仓成功，仓位已复核'
+      :recentStatus==='partial'?'最近执行：部分成交，双腿已配平'
+      :recentStatus==='blocked'?'最近执行：预检拦截，未下单'
+      :recentStatus==='failed'?'最近执行：失败，详情见成交记录'
+      :'最近执行：暂无记录';
+    let next='下一轮：后台按计划检查';
+    if(runtime.next_open_after){
+      const waitMs=new Date(runtime.next_open_after).getTime()-Date.now();
+      next=waitMs>0?'最早再开仓：'+_fmtAge(Math.ceil(waitMs/1000))+' 后':'已到下一轮检查时间';
+    }
+    const emptyText=(data||{}).positions_verified===true?'当前无仓位':'仓位读取不完整，暂不判定空仓';
+    const notionalKnown=(data||{}).active_notional_known!==false;
+    const amountSummary=notionalKnown?' · '+money((data||{}).active_notional_usdc||0)+'/腿':' · 金额待核对';
+    el.innerHTML='<div class="vd-host-live-head"><b>'+(fallback?'当前仓位（最近确认）':'当前真实仓位')+'</b><span>'+pairs.length+' 组'+amountSummary+'</span></div>'+
+      (rows?'<div class="vd-host-live-list">'+rows+'</div>':'<div class="vd-host-live-empty">'+emptyText+'</div>')+
+      '<div class="vd-host-live-foot"><span><b>'+esc(fallback?'交易所读取波动，保留 worker 最近确认仓位':recent)+'</b></span><span>'+esc(next)+'</span></div>';
+  }
+
   function _vdAutoRenderFunnel(host,pool){
     pool=pool||{};
-    const common=Array.isArray(pool.common)?pool.common:[], fresh=Array.isArray(pool.quote_ready)?pool.quote_ready:[], allowed=Array.isArray(pool.allowed)?pool.allowed:[], confirmed=Array.isArray(pool.confirmed)?pool.confirmed:fresh, pending=Array.isArray(pool.pending_confirmation)?pool.pending_confirmation:[], unstable=Array.isArray(pool.unstable)?pool.unstable:[], categories=pool.categories||{}, metrics=pool.metrics||{};
+    const common=Array.isArray(pool.common)?pool.common:[], fresh=Array.isArray(pool.quote_ready)?pool.quote_ready:[], allowed=Array.isArray(pool.allowed)?pool.allowed:[], confirmationEnabled=pool.confirmation_enabled===true, confirmed=confirmationEnabled&&Array.isArray(pool.confirmed)?pool.confirmed:allowed, pending=Array.isArray(pool.pending_confirmation)?pool.pending_confirmation:[], unstable=Array.isArray(pool.unstable)?pool.unstable:[], categories=pool.categories||{}, metrics=pool.metrics||{}, blockers=pool.block_summary||{};
     const category=symbol=>String(categories[symbol]||(metrics[symbol]||{}).category||'crypto').toLowerCase();
     const rwa=allowed.filter(symbol=>category(symbol)==='rwa').length;
     const crypto=allowed.length-rwa;
@@ -3932,7 +4384,9 @@
       const age=pool.age_sec==null?'时间未知':_fmtAge(pool.age_sec);
       const stale=pool.stale===true?' · 扫描已过期':'';
       const confirmation=(pending.length?' · '+pending.length+' 个待二次确认':'')+(unstable.length?' · '+unstable.length+' 个报价波动过大':'');
-      note.textContent='最新扫描 '+age+' · '+allowed.length+' 个通过实时门槛'+confirmation+stale;
+      const blockerLabels={scan_stale:'扫描过期',stale_quote:'报价过期',quote_age_unknown:'报价时间未知',var_spread_too_wide:'Var 点差',decibel_spread_too_wide:'Decibel 点差',ondo_spread_too_wide:'Ondo 点差',entry_cost_too_high:'入场价差',basis_too_wide:'价格尺度',ondo_quote_failed:'Ondo 报价',var_quote_incomplete:'Var 报价',funding_unavailable:'资金费缺失',funding_rate_out_of_range:'资金费异常',funding_carry_below_minimum:'净资金费',entry_signal_unconfirmed:'待稳定确认',entry_signal_unstable:'报价波动'};
+      const blockedText=Object.entries(blockers).filter(([,count])=>Number(count)>0).sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,3).map(([reason,count])=>(blockerLabels[reason]||reason)+' '+count).join('、');
+      note.textContent='最新扫描 '+age+' · '+allowed.length+' 个通过实时门槛'+confirmation+(blockedText?' · 主要拦截：'+blockedText+'（可重叠）':'')+stale;
       note.style.color=pool.stale===true?'var(--warn)':'var(--faint)';
     }
   }
@@ -3954,10 +4408,10 @@
     const hosts=state.hosts||{}, thresholds=ondo.thresholds_bps||{};
     const standard=Number(thresholds.standard??thresholds.default??state.max_auto_spread_bps??2);
     const rwa=Number(thresholds.rwa??standard);
-    const decLimit=Number(dec.max_spread_bps??state.max_auto_spread_bps??2);
+    const decThresholds=dec.thresholds_bps||{}, decLimit=Number(decThresholds.standard??dec.max_spread_bps??state.max_auto_spread_bps??2), decRwaLimit=Number(decThresholds.rwa??decLimit);
     document.getElementById('vdauto-compare-dec-markets').textContent=(dec.total??pools.total??0)+' 候选 · '+decReady+' 报价 · '+allowed.size+' 通过扫描';
     document.getElementById('vdauto-compare-ondo-markets').textContent=(ondo.total??0)+' 共同币 · '+ondoConfirmed+' 稳定确认 · '+ondoAllowed+' 通过扫描';
-    document.getElementById('vdauto-compare-dec-spread').textContent='单边不高于 '+(Number.isFinite(decLimit)?decLimit.toFixed(1):'—')+' bp';
+    document.getElementById('vdauto-compare-dec-spread').textContent='普通币 '+(Number.isFinite(decLimit)?decLimit.toFixed(1):'—')+' bp · RWA '+(Number.isFinite(decRwaLimit)?decRwaLimit.toFixed(1):'—')+' bp';
     document.getElementById('vdauto-compare-ondo-spread').textContent='普通币 '+(Number.isFinite(standard)?standard.toFixed(1):'—')+' bp · RWA '+(Number.isFinite(rwa)?rwa.toFixed(1):'—')+' bp';
     const signed=(value,digits=2)=>{if(value==null||!Number.isFinite(Number(value)))return '—';const n=Number(value);return (n>0?'+':'')+n.toFixed(digits);};
     const routeStatus=(host,id)=>{const h=hosts[host]||{}, el=document.getElementById(id);let text='暂不可启动',cls='bad';if(h.execution_frozen){text='只读维护';cls='wait';}else if(h.running){text='自动运行中';cls='ok';}else if(h.live_ready){text='验收完成，可启动';cls='ok';}else if(h.start_blocked){text=host==='vps2'?'真实交易验收待完成':'验收待完成';cls='wait';}el.textContent=text;el.className='vdauto-compare-cell '+cls;};
@@ -3991,7 +4445,7 @@
     const summary=document.getElementById('vdauto-ondo-summary'), checks=document.getElementById('vdauto-ondo-checks'), detail=document.getElementById('vdauto-ondo-detail');
     if(!summary||!checks||!detail) return;
     if(!acceptance.present){
-      summary.textContent='尚未收到 Ondo 脱敏验收记录；VPS2 不允许启动';
+      summary.textContent='历史验收记录缺失；VPS2 启动会被安全拦截';
       checks.innerHTML='<span class="vdauto-check-pill wait">等待只读验收</span>';
       detail.innerHTML='';
       return;
@@ -3999,7 +4453,9 @@
     const readOnlyOk=ro.passed===true&&ro.mutations_sent===false;
     const equity=ro.total_equity==null?'—':money(Number(ro.total_equity));
     const flat=(Number(ro.positions_count||0)===0&&Number(ro.open_orders_count||0)===0);
-    summary.textContent=(acceptance.environment==='production'?'正式环境':'环境 '+String(acceptance.environment||'未知'))+' · 权益 '+equity+' · '+Number(ro.market_count||0)+' 个市场 · '+(flat?'空仓且无挂单':'存在仓位或挂单');
+    const snapshotAt=acceptance.generated_at||acceptance.updated_at||acceptance.checked_at||ro.generated_at||ro.updated_at;
+    const snapshotLabel=snapshotAt?new Date(snapshotAt).toLocaleString('zh-CN',{hour12:false}):'时间未记录';
+    summary.textContent='验收当时 · '+snapshotLabel+' · '+(acceptance.environment==='production'?'正式环境':'环境 '+String(acceptance.environment||'未知'))+' · 权益 '+equity+' · '+Number(ro.market_count||0)+' 个市场 · '+(flat?'当时空仓且无挂单':'当时存在仓位或挂单');
     const labels={leverage_sync:'杠杆同步',post_only_cancel:'挂单撤单',partial_fill_reconcile:'部分成交对账',reduce_only_close:'只减仓平仓',paired_micro_hedge:'微量双腿'};
     const pills=['<span class="vdauto-check-pill '+(readOnlyOk?'ok':'wait')+'">'+(readOnlyOk?'只读已通过':'只读待通过')+'</span>'];
     Object.entries(labels).forEach(([key,label])=>pills.push('<span class="vdauto-check-pill '+(mutation[key]===true?'ok':'wait')+'">'+esc(label)+' '+(mutation[key]===true?'✓':'待验收')+'</span>'));
@@ -4049,6 +4505,8 @@
       const blocked=(!h.running&&h.start_blocked)?(' · '+(h.hedge_venue==='ondo'&&pendingMutations!=null&&pendingMutations>0?pendingMutations+' 项实盘验收待完成':(h.start_block_reason||'验收未完成'))):'';
       status.textContent=(h.execution_frozen?'只读维护':(h.running?'运行中 · 策略 '+strategy+(leverage?' · '+Number(leverage).toFixed(0)+'x':''):_vdAutoServiceLabel(h.service)))+blocked+age;
       status.style.color=h.running?'var(--ok)':(h.service==='failed'?'var(--danger)':(h.start_blocked?'var(--warn)':'var(--muted)'));
+      _vdAutoRenderVolumeGoal(host,h,state);
+      _vdAutoRenderHostLive(host,h);
       _vdAutoRenderNextPlan(host,h);
     });
     const status=document.getElementById('vdauto-status'), label=_vdAutoStatusLabel(state.status);
@@ -4075,8 +4533,8 @@
     ['vps1','vps2'].forEach(host=>{
       const strategy=document.getElementById('vdauto-'+host+'-strategy').value;
       document.getElementById('vdauto-'+host+'-note').textContent=strategy==='A'
-        ?'主流币约 '+major+'% · 多数持仓 12–36 小时，少数 30 分钟–2 小时'
-        :'优先高权重、低 OI 与新币 · 持仓 24–72 小时';
+        ?'周目标中 BTC/ETH 约 '+major+'% · 持仓按目标进度动态调整'
+        :'周目标中 BTC/ETH 80% · RWA/美股 20% · 持仓按目标进度动态调整';
     });
     const services=Object.values(hosts).map(h=>h.service), selected=['vps1','vps2'].filter(h=>document.getElementById('vdauto-'+h+'-enabled').checked);
     const selectedBlocked=selected.filter(host=>(hosts[host]||{}).start_blocked);
@@ -4208,7 +4666,7 @@
     const detail=((window.__state||{}).varia_detail)||{};
     box.innerHTML='<h2>交易统计</h2><div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>'+
       '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
-      _table(['VPS / 路线','笔数','名义','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+      _table(['VPS / 路线','笔数','名义','净损耗','每万U成本','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+money(r.loss||0)+'</td><td class="num">'+money(r.cost_per_10k||0)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
       '</div><div><h2 style="font-size:12px">按交易对</h2>'+
       _table(['交易对','笔数','名义','净 PnL','胜率'],detail.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
       '</div></div>';
@@ -4346,7 +4804,7 @@
       if(name.indexOf('统计汇总')>=0){
         html+='<div class="src">按 host / symbol 聚合(近40笔成交)</div>'+
           '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
-          _table(['VPS','笔数','名义','净PnL','胜率'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+          _table(['VPS','笔数','名义','净损耗','每万U成本','净PnL','胜率'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+money(r.loss||0)+'</td><td class="num">'+money(r.cost_per_10k||0)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
           '</div><div><h2 style="font-size:12px">按 SYMBOL</h2>'+
           _table(['SYMBOL','笔数','名义','净PnL','胜率'],vdt.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
           '</div></div>';
@@ -4408,6 +4866,7 @@
     try{bindInfra(s.macmini||{});}catch(e){}
     try{bindShadow(s.maker_shadow||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
+    try{await refreshWorkPlan();}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>{
       if(el.matches('.value,.v,.sub')) el.textContent='—';
@@ -4417,7 +4876,7 @@
 
   clearTemplateSamples();
   activateIpoDemoChrome();
-  refresh(); setInterval(refresh, 15000);
+  refresh(); refreshWorkPlan().catch(()=>{}); setInterval(refresh, 15000);
 </script>
 </body>
 </html>

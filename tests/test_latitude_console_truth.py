@@ -58,11 +58,186 @@ def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "_equity_history", lambda: {"present": False})
 
 
+def _patch_event_sources(monkeypatch, data_dir: Path) -> None:
+    varia_dir = data_dir / "varia"
+    pmbot_dir = data_dir / "pmbot"
+    monkeypatch.setattr(console, "VARIA_DIR", varia_dir)
+    monkeypatch.setattr(console, "DATA_DIR", pmbot_dir)
+    monkeypatch.setattr(console, "AUDIT_LOG", pmbot_dir / "console_write_audit.jsonl")
+    monkeypatch.setattr(console, "SYSTEM_EVENT_LOG", pmbot_dir / "system_events.jsonl")
+    monkeypatch.setattr(
+        console,
+        "SINGLE_ACCOUNT_DECISION_LOG",
+        pmbot_dir / "single_account_decisions.jsonl",
+    )
+
+
 def test_parse_ts_treats_naive_recorder_timestamp_as_utc() -> None:
     expected = datetime(2026, 7, 22, 18, 34, 8, tzinfo=timezone.utc).timestamp()
 
     assert console._parse_ts("2026-07-22 18:34:08") == expected
     assert console._parse_ts("2026-07-22T18:34:08Z") == expected
+
+
+def test_event_stream_treats_cost_protection_as_information(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_event_sources(monkeypatch, tmp_path)
+    source = console.VARIA_DIR / "ops_events.ndjson"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-07-27T12:51:48Z",
+                "host": "vps1",
+                "status": "preflight_blocked",
+                "kind": "auto_open",
+                "message": "自动开仓未执行（成本保护）",
+                "error": {"reason": "spread too wide"},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = console._events([])
+
+    row = next(item for item in events if "成本保护" in item["msg"])
+    assert row["sev"] == "info"
+    assert row["project"] == "VAR"
+    assert row["page"] == "vardec"
+
+
+def test_event_stream_includes_important_audits_from_other_projects(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_event_sources(monkeypatch, tmp_path)
+    console.AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    console.AUDIT_LOG.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-07-27T12:15:43Z",
+                        "action": "pm_engine",
+                        "request_action": "start",
+                        "per": {"1": {"start": {"rc": 0}}, "2": {"start": {"rc": 1}}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-07-27T12:20:00Z",
+                        "action": "ipo_import",
+                        "ok": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-07-27T12:21:00Z",
+                        "action": "dewu_inventory_import",
+                        "ok": True,
+                        "specs": 12,
+                        "quantity": 18,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = console._events([])
+
+    pm = next(item for item in events if item["project"] == "PM")
+    hk = next(item for item in events if item["project"] == "HK/US")
+    dewu = next(item for item in events if item["project"] == "DEWU")
+    assert pm["sev"] == "warn"
+    assert "启动失败" in pm["msg"]
+    assert hk["sev"] == "info"
+    assert hk["page"] == "hk"
+    assert dewu["page"] == "dewu"
+    assert "12 个规格，18 件" in dewu["msg"]
+
+
+def test_event_stream_keeps_distinct_var_messages_with_same_timestamp(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_event_sources(monkeypatch, tmp_path)
+    source = console.VARIA_DIR / "ops_events.ndjson"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    common = {
+        "timestamp": "2026-07-27T12:51:48Z",
+        "host": "vps1",
+        "status": "preflight_blocked",
+        "kind": "auto_open",
+        "symbol": "BTC",
+    }
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps({**common, "message": "成本保护：点差过大"}, ensure_ascii=False),
+                json.dumps({**common, "message": "成本保护：预算不足"}, ensure_ascii=False),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rows = [item for item in console._events([]) if item["project"] == "VAR"]
+
+    assert len(rows) == 2
+
+
+def test_event_stream_ignores_single_account_skip_noise(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_event_sources(monkeypatch, tmp_path)
+    console.SINGLE_ACCOUNT_DECISION_LOG.parent.mkdir(parents=True, exist_ok=True)
+    console.SINGLE_ACCOUNT_DECISION_LOG.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-07-27T12:00:00Z",
+                        "summary": {"actionable": 0},
+                        "decisions": [{"decision": "skip", "reason": "waiting"}],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-07-27T12:05:00Z",
+                        "summary": {"actionable": 1},
+                        "decisions": [
+                            {
+                                "decision": "open",
+                                "symbol": "BTC",
+                                "strategy_label": "Momentum",
+                                "score": 8.2,
+                            }
+                        ],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = [item for item in console._events([]) if item["project"] == "SA"]
+
+    assert len(events) == 1
+    assert "BTC" in events[0]["msg"]
+    assert "waiting" not in events[0]["msg"]
+
+
+def test_console_event_stream_has_project_filters_and_source_labels() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'id="event-filters"' in html
+    assert "全项目重要事件" in html
+    assert "event-project" in html
+    assert "成本保护未下单属于正常保护" in html
 
 
 def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
@@ -83,48 +258,6 @@ def test_account_ops_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: P
     )
 
     assert console._fetch_json(console.ACCOUNT_OPS_URL) == payload
-
-
-def test_macmini_uses_persistent_last_good_snapshot(monkeypatch, tmp_path: Path) -> None:
-    snapshot = tmp_path / "macmini_status_last_good.json"
-    payload = {"ts": time.time() - 30, "services": {}}
-    _write_json(snapshot, payload)
-    monkeypatch.setattr(console, "MACMINI_STATUS_SNAPSHOT_PATH", snapshot)
-    console._HTTP_CACHE.pop(console.MACMINI_STATUS_URL, None)
-    monkeypatch.setattr(
-        console,
-        "_do_fetch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("disk snapshot should avoid a cold mac-mini fetch")
-        ),
-    )
-
-    assert console._fetch_json(console.MACMINI_STATUS_URL) == payload
-
-
-def test_macmini_alert_waits_for_grace_period(monkeypatch) -> None:
-    monkeypatch.setattr(console, "MACMINI_ALERT_GRACE_SECONDS", 600)
-    monkeypatch.setattr(console, "PROCESS_STARTED_AT", time.time() - 60)
-
-    startup_alerts = console._alerts(
-        {}, {}, {}, {"present": True}, {"present": False}, {}, {}
-    )
-    assert not any(item.get("tag") == "INFRA" for item in startup_alerts)
-
-    monkeypatch.setattr(console, "PROCESS_STARTED_AT", time.time() - 601)
-    missing_alerts = console._alerts(
-        {}, {}, {}, {"present": True}, {"present": False}, {}, {}
-    )
-    assert any(item.get("tag") == "INFRA" for item in missing_alerts)
-
-    stale_alerts = console._alerts(
-        {}, {}, {}, {"present": True},
-        {"present": True, "age_sec": 601}, {}, {},
-    )
-    assert any(
-        item.get("tag") == "INFRA" and "超过" in item.get("msg", "")
-        for item in stale_alerts
-    )
 
 
 def test_prefetch_refreshes_ipo_judgment_pack() -> None:
@@ -239,6 +372,40 @@ def test_console_contains_alpha_booster_workflow() -> None:
     assert "待完成 → 已完成/等发奖 → 可领取 → 已领取" in html
     assert "/api/alpha/action" in html
     assert "领取后仍需通过飞书流水确认实际奖励" in html
+
+
+def test_pm_scan_defaults_supports_top_n_and_are_visible_in_console(monkeypatch) -> None:
+    cfg = {
+        "dashboard": {
+            "scan_defaults": {
+                "min_reward": 10,
+                "max_reward": 8888,
+                "min_spread": 1,
+                "max_spread": 10,
+                "min_volume": 10000,
+                "min_bid_depth": 10000,
+                "sort_by": "reward_score",
+                "top_n": 500,
+            }
+        }
+    }
+
+    defaults = console._pm_scan_defaults(cfg)
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert defaults["top"] == 500
+    assert defaults["sort_by"] == "reward_score"
+    assert defaults["min_volume"] == 10000
+    assert 'id="scan-defaults-btn"' in html
+    assert "scanDefaults=j.scan_defaults||{}" in html
+    assert 'for="sc-minr">最低日奖励（美元）' in html
+    assert 'for="sc-top">扫描结果上限（个）' in html
+    assert 'id="scan-day-all"' in html
+    assert 'id="scan-day-none"' in html
+    assert 'id="scan-night-all"' in html
+    assert 'id="scan-night-none"' in html
+    assert "当前展示 " in html
+    assert "单笔名义上限" not in html
 
 
 def test_account_ops_exposes_onboarding_deadlines_and_capital(monkeypatch) -> None:
@@ -412,6 +579,48 @@ def test_var_decibel_only_classifies_fresh_complete_sources(monkeypatch, tmp_pat
     ]
 
 
+def test_var_decibel_net_exposure_uses_base_size_with_one_reference_price(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    decibel = _venue(ok=True)
+    decibel["symbols"]["BTC"] = {
+        "position": {
+            "side": "buy",
+            "size": "0.01316",
+            "entry_price": "64927.101064",
+            "notional": "0",
+        }
+    }
+    variational = _venue(ok=True)
+    variational["symbols"]["BTC"] = {
+        "position": {
+            "side": "sell",
+            "size": "-0.01316",
+            "entry_price": "64882.41",
+            "notional": "838.719042",
+        }
+    }
+    _write_json(
+        tmp_path / "ops_state.json",
+        _state(
+            "vps1",
+            datetime.now(timezone.utc).isoformat(),
+            decibel,
+            variational,
+        ),
+    )
+
+    pair = console._var_decibel()["pairs"][0]
+
+    assert pair["status"] == "HEDGED"
+    assert pair["net_size"] == 0
+    assert pair["net"] == 0
+    assert pair["var"]["notional"] == 838.719042
+    assert pair["hedge"]["notional"] > 854
+    assert pair["var"]["exposure_notional"] == pair["hedge"]["exposure_notional"]
+
+
 def test_var_decibel_does_not_report_single_leg_when_one_venue_failed(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -538,6 +747,10 @@ def test_var_decibel_reports_total_equity_only_when_all_sources_are_complete(
     assert result["volume_complete"] == {"weekly": True, "total": True}
     assert result["volume_weekly"] == 60.0
     assert result["volume_total"] == 600.0
+    assert result["hosts"]["vps1"]["volume_weekly"] == 20.0
+    assert result["hosts"]["vps1"]["volume_total"] == 200.0
+    assert result["hosts"]["vps2"]["volume_weekly"] == 40.0
+    assert result["hosts"]["vps2"]["volume_total"] == 400.0
 
 
 def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
@@ -577,6 +790,26 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
     assert capital["current_equity"] == 400.0
     assert capital["pnl"] == 20.0
     assert capital["pnl_pct"] == 5.26
+    assert capital["hosts"]["vps1"] == {
+        "complete": True,
+        "initial_principal": 180.0,
+        "net_cashflow": 10.0,
+        "principal_total": 190.0,
+        "current_equity": 200.0,
+        "pnl": 10.0,
+        "pnl_pct": 5.26,
+        "missing": [],
+    }
+    assert capital["hosts"]["vps2"] == {
+        "complete": True,
+        "initial_principal": 190.0,
+        "net_cashflow": 0.0,
+        "principal_total": 190.0,
+        "current_equity": 200.0,
+        "pnl": 10.0,
+        "pnl_pct": 5.26,
+        "missing": [],
+    }
 
 
 def test_settled_incentives_are_attributed_without_double_counting_equity(
@@ -599,6 +832,9 @@ def test_settled_incentives_are_attributed_without_double_counting_equity(
         "own_refunds_total_usdc": 1,
         "other_rewards_total_usdc": 0,
         "estimated_refund_usdc": 0,
+        "eligible_loss_usdc": 4,
+        "actual_refund_week_usdc": 1,
+        "net_loss_after_actual_refund_week_usdc": 3,
         "pool_usdc": 0,
         "complete": True,
     }
@@ -609,7 +845,19 @@ def test_settled_incentives_are_attributed_without_double_counting_equity(
         "own_refunds_total_usdc": 1.5,
         "other_rewards_total_usdc": 0.5,
         "estimated_refund_usdc": 0.2,
-        "pool_usdc": 6000,
+        "eligible_loss_usdc": 6,
+        "actual_refund_week_usdc": 1.5,
+        "net_loss_after_actual_refund_week_usdc": 4.5,
+        "pool_usdc": 16292.762702,
+        "pool_api_usdc": 0,
+        "pool_onchain_usdc": 16292.762702,
+        "pool_threshold_usdc": 5000,
+        "pool_excess_usdc": 11292.762702,
+        "pool_source": "arbitrum_usdc_balance",
+        "pool_contract_address": "0xc47756133753280c37b227c24782984e021c4544",
+        "pool_data_consistent": False,
+        "pool_discrepancy_usdc": 16292.762702,
+        "pool_eligible": True,
         "complete": True,
     }
     vps2["exchanges"]["ondo"]["rewards"] = {
@@ -647,6 +895,16 @@ def test_settled_incentives_are_attributed_without_double_counting_equity(
     assert result["incentives"]["settled_week_usdc"] == 7.0
     assert result["incentives"]["ondo"]["current_week_pool_usdc"] == 175000
     assert result["incentives"]["variational"]["estimated_refund_usdc"] == 0.2
+    assert result["incentives"]["variational"]["eligible_loss_usdc"] == 10
+    assert result["incentives"]["variational"]["actual_refund_week_usdc"] == 2.5
+    assert result["incentives"]["variational"]["actual_refund_rate_week_pct"] == 25
+    assert result["incentives"]["variational"]["net_loss_after_actual_refund_week_usdc"] == 7.5
+    assert result["incentives"]["variational"]["pool_usdc"] == 16292.76
+    assert result["incentives"]["variational"]["pool_onchain_usdc"] == 16292.76
+    assert result["incentives"]["variational"]["pool_api_usdc"] == 0
+    assert result["incentives"]["variational"]["pool_eligible"] is True
+    assert result["incentives"]["variational"]["pool_data_consistent"] is False
+    assert result["incentives"]["variational"]["pool_source"] == "arbitrum_usdc_balance"
     assert result["pnl_attribution"] == {
         "complete": True,
         "net_pnl_usdc": 20.0,
@@ -665,6 +923,19 @@ def test_weekly_budget_adds_profit_and_subtracts_loss(monkeypatch) -> None:
     assert result["hosts"]["vps2"]["remaining"] == 13.0
     assert result["total_remaining"] == 31.0
     assert result["basis"] == "friday_0800_settled_net_including_incentives"
+
+
+def test_varia_kpis_prioritize_principal_before_after_comparison() -> None:
+    html = (ROOT / "deploy" / "latitude-console" / "console.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<div class="label">投入本金</div>' in html
+    assert '<div class="label">比本金多 / 少</div>' in html
+    assert 'data-k="vdk.principal"' in html
+    assert 'data-k="vdk.capital_change"' in html
+    assert '<div class="label">今日净结果</div>' not in html
+    assert '<div class="label">本周可用预算</div>' not in html
 
 
 def test_vps2_decibel_to_ondo_transfer_preserves_principal_and_counts_ondo_once(
@@ -760,15 +1031,48 @@ def test_running_polymarket_engine_uses_fresh_order_count(monkeypatch, tmp_path:
     monkeypatch.setattr(console, "_load_pm_remotes", lambda: {})
     _write_json(
         tmp_path / "engine_state_1.json",
-        {"markets": {"m1": {"live_orders": [{"id": "current"}]}}, "balance": 100},
+        {
+            "markets": {
+                "m1": {
+                    "live_orders": [
+                        {"id": "current", "price": "0.60", "size": "150"},
+                    ],
+                },
+                "m2": {
+                    "live_orders": [
+                        {
+                            "id": "second",
+                            "price": "0.25",
+                            "original_size": "200",
+                            "size_matched": "40",
+                        },
+                    ],
+                },
+            },
+            "balance": 100,
+        },
     )
     (tmp_path / ".engine_1.pid").write_text(str(os.getpid()), encoding="utf-8")
+    monkeypatch.setattr(
+        console,
+        "_pm_collateral_account",
+        lambda _idx: {"balance": 100.0, "age": 0, "fresh": True},
+    )
+    monkeypatch.setattr(
+        console,
+        "_pm_capital_summary",
+        lambda: {"total": 100.0, "complete": True, "fresh": True, "accounts": []},
+    )
 
     result = console._polymarket()
 
-    assert result["live_orders"] == 1
+    assert result["live_orders"] == 2
+    assert result["live_order_notional"] == 130.0
+    assert result["capital_reuse_multiplier"] == 1.3
     assert result["orders_unknown"] is False
-    assert result["accounts"][0]["orders"] == 1
+    assert result["accounts"][0]["orders"] == 2
+    assert result["accounts"][0]["order_notional"] == 130.0
+    assert result["accounts"][0]["capital_reuse_multiplier"] == 1.3
     assert result["accounts"][0]["orders_verified"] is True
 
 
@@ -803,8 +1107,10 @@ def test_polymarket_page_is_native_and_has_complete_workspaces() -> None:
     assert "<iframe" not in page
     assert "打开完整面板" not in page
     assert "window.open('/alpha/'" not in html
-    assert "可用本金" in page
+    assert "账户本金" in page
     assert 'data-k="pmk.capital"' in page
+    assert "挂单 / 复用" in page
+    assert "资金复用" in html
 
 
 def test_pm_capital_summary_totals_live_collateral(monkeypatch) -> None:
@@ -1015,6 +1321,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-strategy"' in html
     assert 'id="vdauto-vps1-plan"' in html
     assert 'id="vdauto-vps2-plan"' in html
+    assert 'id="vdauto-vps1-live"' in html
+    assert 'id="vdauto-vps2-live"' in html
     assert 'id="vdauto-vps1-common"' in html
     assert 'id="vdauto-vps1-crypto"' in html
     assert 'id="vdauto-vps1-rwa"' in html
@@ -1023,6 +1331,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert 'id="vdauto-vps2-rwa"' in html
     assert "_vdAutoRenderFunnel('vps1',dec)" in html
     assert "_vdAutoRenderFunnel('vps2',ondo)" in html
+    assert "<span>门槛通过</span><b id=\"vdauto-vps1-confirmed\"" in html
+    assert "主要拦截：" in html
+    assert "普通币 '+(Number.isFinite(decLimit)" in html
     assert "_vdAutoRenderNextPlan(host,h)" in html
     assert "只读，未下单" in html
     assert "计划已过期，等待只读行情刷新" in html
@@ -1055,7 +1366,10 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 · Var/Ondo" in html
     assert "VPS / 路线" in html
     assert "_table(['时间','VPS','路线','SYMBOL'" in html
-    assert "Ondo 正式环境验收" in html
+    assert "Ondo 部署验收记录（历史，不代表当前仓位）" in html
+    assert "VPS2 · Ondo 历史验收快照" in html
+    assert "_vdAutoRenderHostLive(host,h)" in html
+    assert "验收当时" in html
     assert "部分成交待验收" in html
     assert "微量双腿待验收" in html
     assert "提高金额必须另行确认" in html
@@ -1065,6 +1379,13 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 · Var/Ondo 共同币" in html
     assert "当前资金费外推 24h" in html
     assert "资金费按当前费率外推 24 小时并用百分比显示" in html
+    assert ">Ondo 已到账<" in html
+    assert ">Var 实际退款<" in html
+    assert ">真实净结果<" in html
+    assert "合格亏损 " in html
+    assert "退款后净损 " in html
+    assert "概率估值 " not in html
+    assert "池地址 " not in html
     assert "不是平台点差，也不是收益预测" in html
     assert "净资金费方向不合格" in html
     assert "资金费率异常" in html
@@ -1078,6 +1399,30 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "if(selectedBlocked.length&&!msg.textContent)" not in html
     assert "window.__vdAutoRequestActive" in html
     assert "打开旧只读详情" not in html
+    assert 'id="vdauto-vps1-volume"' in html
+    assert 'id="vdauto-vps2-volume"' in html
+    assert "本周单边目标" in html
+    assert "BTC / ETH" in html
+    assert "RWA / 美股" in html
+    assert "_vdAutoRenderVolumeGoal(host,h,state)" in html
+
+
+def test_var_hedge_kpis_show_independent_vps_equity_and_volume() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    for key in (
+        "vdk.equity_vps1",
+        "vdk.equity_vps1_sub",
+        "vdk.equity_vps2",
+        "vdk.equity_vps2_sub",
+        "vdk.vol_vps1",
+        "vdk.vol_vps1_sub",
+        "vdk.vol_vps2",
+        "vdk.vol_vps2_sub",
+    ):
+        assert f'data-k="{key}"' in html
+    assert "const capitalHosts=capital.hosts||{}" in html
+    assert "h.volume_weekly==null?'—':money(h.volume_weekly)" in html
 
 
 def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
@@ -1085,8 +1430,10 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
         "enabled": True,
         "mode": "full_auto",
         "weekly_loss_cap_usdc": 0,
+        "weekly_volume_target_usdc": 100000,
         "max_auto_spread_bps": 5,
         "major_ratio": 0,
+        "strategy_b_rwa_target_volume_ratio": 0.2,
         "pressure_test": {
             "enabled": True,
             "min_open_interval_minutes": 30,
@@ -1100,8 +1447,10 @@ def test_varia_auto_state_normalizes_hosts_and_preserves_zero_budget() -> None:
 
     assert result["enabled"] is True
     assert result["weekly_loss_cap_usdc"] == "0.0"
+    assert result["weekly_volume_target_usdc"] == "100000.0"
     assert result["max_auto_spread_bps"] == "5.0"
     assert result["major_ratio"] == "0.0"
+    assert result["strategy_b_rwa_target_volume_ratio"] == "0.2"
     assert result["hosts"] == {
         "vps1": {"enabled": True, "strategy": "B"},
         "vps2": {"enabled": False, "strategy": "A"},
@@ -1147,12 +1496,118 @@ def test_varia_automation_status_requires_config_and_live_worker(
     })
     monkeypatch.setattr(console, "_varia_worker_status", lambda host: "active" if host == "vps1" else "inactive")
 
-    result = console._varia_automation_state({"budget": {"hosts": {}}})
+    result = console._varia_automation_state({
+        "budget": {"hosts": {}},
+        "hosts": {
+            "vps1": {"positions_verified": True, "age": 2},
+            "vps2": {"positions_verified": True, "age": 3},
+        },
+        "pairs": [
+            {
+                "host": "vps2",
+                "symbol": "NVDA",
+                "status": "HEDGED",
+                "hedge_label": "Ondo",
+                "var": {
+                    "side": "long",
+                    "signed_size": 2.49,
+                    "exposure_notional": 520.85,
+                },
+                "hedge": {
+                    "side": "short",
+                    "signed_size": -2.49,
+                    "exposure_notional": 520.85,
+                },
+            },
+        ],
+    })
 
     assert result["status"] == "partial"
     assert result["running_hosts"] == ["vps1"]
     assert result["hosts"]["vps1"]["running"] is True
     assert result["hosts"]["vps2"]["running"] is False
+    assert result["hosts"]["vps1"]["active_pairs"] == []
+    assert result["hosts"]["vps2"]["active_pair_count"] == 1
+    assert result["hosts"]["vps2"]["active_notional_usdc"] == 520.85
+    assert result["hosts"]["vps1"]["positions_verified"] is True
+    assert result["hosts"]["vps2"]["positions_age_sec"] == 3
+    assert result["hosts"]["vps2"]["active_pairs"][0] == {
+        "symbol": "NVDA",
+        "status": "HEDGED",
+        "hedge_label": "Ondo",
+        "var_side": "long",
+        "hedge_side": "short",
+        "quantity": 2.49,
+        "matched_notional_usdc": 520.85,
+    }
+
+
+def test_varia_automation_keeps_fresh_runtime_positions_visible_when_reads_fail(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    _write_json(tmp_path / "auto_strategy_state.json", {
+        "enabled": True,
+        "mode": "full_auto",
+        "hosts": {
+            "vps1": {"enabled": True, "strategy": "A"},
+            "vps2": {"enabled": True, "strategy": "B"},
+        },
+    })
+    monkeypatch.setattr(console, "_varia_worker_status", lambda host: "active")
+    monkeypatch.setattr(console, "_varia_auto_runtime", lambda host: {
+        "present": True,
+        "age_sec": 120,
+        "positions": {
+            "BTC": {
+                "var_size": "-0.0002",
+                "hedge_size": "0.0002",
+                "hedge_venue": "ondo",
+            },
+            "NVDA": {
+                "var_size": "2.49",
+                "hedge_size": "-2.49",
+                "hedge_venue": "ondo",
+            },
+        } if host == "vps2" else {},
+    })
+    monkeypatch.setattr(console, "_varia_raw_states", lambda: {
+        "vps1": {},
+        "vps2": {
+            "exchanges": {
+                "variational": {"ok": False},
+                "ondo": {
+                    "ok": True,
+                    "symbols": {
+                        "BTC": {"position": {"notional": "12.83"}},
+                        "NVDA": {"position": {"notional": "521.21"}},
+                    },
+                },
+            },
+        },
+    })
+
+    result = console._varia_automation_state({
+        "budget": {"hosts": {}},
+        "hosts": {
+            "vps1": {"positions_verified": True, "age": "1m 前"},
+            "vps2": {"positions_verified": False, "age": "2m 前"},
+        },
+        "pairs": [],
+    })
+
+    vps2 = result["hosts"]["vps2"]
+    assert vps2["active_pair_count"] == 2
+    assert vps2["positions_verified"] is False
+    assert vps2["positions_source"] == "runtime_last_confirmed"
+    assert vps2["active_notional_usdc"] == 534.04
+    assert vps2["active_notional_known"] is True
+    assert [pair["symbol"] for pair in vps2["active_pairs"]] == ["BTC", "NVDA"]
+    assert all(pair["status"] == "HEDGED" for pair in vps2["active_pairs"])
+    assert all(
+        pair["source"] == "runtime_last_confirmed"
+        for pair in vps2["active_pairs"]
+    )
 
 
 def test_varia_automation_state_exposes_execution_freeze_as_hard_block(
@@ -1192,6 +1647,21 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "status": "plan_ready_read_only",
         "message": "只读计划已生成",
+        "last_finished_job_id": 58,
+        "last_finished_job_status": "partial",
+        "last_finished_job_kind": "auto_open",
+        "last_finished_job_message": "部分成交，双腿已配平",
+        "next_open_after": "2026-07-25T00:00:00+00:00",
+        "position_lifecycle": [
+            {"symbol": "BTC", "age_hours": "2.5", "remaining_hours": "21.5"}
+        ],
+        "weekly_volume": {
+            "strategy": "A",
+            "target_notional_usdc": "100000",
+            "actual_notional_usdc": "25000",
+            "major_notional_usdc": "20000",
+            "other_notional_usdc": "5000",
+        },
         "next_open_plan": {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "market_scan_generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1219,6 +1689,13 @@ def test_varia_auto_runtime_exposes_worker_next_open_plan(
     assert result["next_open_plan"]["market_data_age_sec"] is not None
     assert result["next_open_plan"]["var_one_way_spread_bps"] == 2.1
     assert result["next_open_plan"]["hedge_one_way_spread_bps"] == 1.7
+    assert result["last_finished_job_id"] == 58
+    assert result["last_finished_job_status"] == "partial"
+    assert result["last_finished_job_kind"] == "auto_open"
+    assert result["last_finished_job_message"] == "部分成交，双腿已配平"
+    assert result["next_open_after"] == "2026-07-25T00:00:00+00:00"
+    assert result["position_lifecycle"][0]["remaining_hours"] == "21.5"
+    assert result["weekly_volume"]["actual_notional_usdc"] == "25000"
 
 
 def test_varia_auto_runtime_prefers_fresh_embedded_vps2_runtime(
@@ -1419,6 +1896,50 @@ def test_varia_strategy_pools_marks_wide_spread_blocked(monkeypatch) -> None:
     assert result["allowed"] == []
     assert result["blocked"] == ["SOL"]
     assert result["metrics"]["SOL"]["display_bps"] > 5
+    assert result["metrics"]["SOL"]["block_reasons"] == [
+        "var_spread_too_wide",
+        "decibel_spread_too_wide",
+        "entry_cost_too_high",
+    ]
+    assert result["venues"]["decibel"]["block_summary"] == {
+        "var_spread_too_wide": 1,
+        "decibel_spread_too_wide": 1,
+        "entry_cost_too_high": 1,
+    }
+
+
+def test_varia_strategy_pools_allow_three_bps_only_for_rwa(monkeypatch) -> None:
+    monkeypatch.setattr(console, "VARIA_MARKET_CANDIDATES", ("SOL", "XAU"))
+    monkeypatch.setattr(console, "VARIA_RWA_SYMBOLS", {"XAU"})
+    monkeypatch.setattr(console, "_varia_strategy_symbol_config", lambda: {
+        "major_symbols": [],
+        "opportunity_symbols": ["SOL", "XAU"],
+        "rwa_max_spread_bps": 3,
+    })
+    monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [
+        {
+            "symbol": symbol,
+            "age_sec": 20,
+            "var_bid": 99.975,
+            "var_ask": 100.025,
+            "decibel_bid": 99.975,
+            "decibel_ask": 100.025,
+            "costs": {"var_buy": 2.5, "var_sell": 2.5},
+        }
+        for symbol in ("SOL", "XAU")
+    ])
+
+    result = console._varia_strategy_pools(2)
+
+    assert result["allowed"] == ["XAU"]
+    assert result["blocked"] == ["SOL"]
+    assert result["metrics"]["SOL"]["max_spread_bps"] == 2
+    assert result["metrics"]["XAU"]["max_spread_bps"] == 3
+    assert result["venues"]["decibel"]["thresholds_bps"] == {
+        "standard": 2,
+        "rwa": 3,
+    }
+    assert result["venues"]["decibel"]["confirmation_enabled"] is False
 
 
 def test_varia_strategy_pools_preserve_favorable_signed_entry_difference(
@@ -1575,6 +2096,12 @@ def test_varia_ondo_strategy_pool_exposes_confirmation_and_fresh_quote_states(
     assert ondo["confirmed"] == []
     assert ondo["pending_confirmation"] == ["BTC"]
     assert ondo["unstable"] == ["XAU"]
+    assert ondo["confirmation_enabled"] is True
+    assert ondo["block_summary"] == {
+        "entry_signal_unconfirmed": 1,
+        "entry_signal_unstable": 1,
+        "stale_quote": 1,
+    }
     assert ondo["metrics"]["BTC"]["entry_signal_confirmation_count"] == 1
     assert ondo["metrics"]["BTC"]["entry_signal_confirmation_required"] == 2
 
@@ -2022,6 +2549,66 @@ def test_varia_quote_direction_uses_lower_cross_venue_entry_cost() -> None:
     assert result["costs"]["var_buy"] < result["costs"]["var_sell"]
 
 
+def test_varia_pair_lifecycle_is_attached_by_host_and_symbol() -> None:
+    vd = {
+        "pairs": [
+            {"host": "vps1", "symbol": "BTC"},
+            {"host": "vps2", "symbol": "BTC"},
+            {"host": "vps2", "symbol": "NVDA"},
+        ]
+    }
+    automation = {
+        "hosts": {
+            "vps1": {
+                "runtime": {
+                    "age_sec": 10,
+                    "position_lifecycle": [{
+                        "symbol": "BTC",
+                        "first_seen_at": "2026-07-24T11:42:52+00:00",
+                        "planned_close_at": "2026-07-24T23:42:52+00:00",
+                        "target_hold_hours": "12",
+                    }],
+                }
+            },
+            "vps2": {
+                "runtime": {
+                    "age_sec": 20,
+                    "position_lifecycle": [
+                        {
+                            "symbol": "BTC",
+                            "first_seen_at": "2026-07-24T13:00:00+00:00",
+                            "planned_close_at": "2026-07-25T13:00:00+00:00",
+                            "target_hold_hours": "24",
+                        },
+                        {
+                            "symbol": "NVDA",
+                            "first_seen_at": "2026-07-24T14:00:00+00:00",
+                            "planned_close_at": "2026-07-25T14:00:00+00:00",
+                            "target_hold_hours": "24",
+                        },
+                    ],
+                }
+            },
+        }
+    }
+
+    console._attach_varia_pair_lifecycle(vd, automation)
+
+    assert vd["pairs"][0]["lifecycle"]["target_hold_hours"] == "12"
+    assert vd["pairs"][0]["lifecycle"]["runtime_age_sec"] == 10
+    assert vd["pairs"][1]["lifecycle"]["target_hold_hours"] == "24"
+    assert vd["pairs"][2]["lifecycle"]["planned_close_at"] == "2026-07-25T14:00:00+00:00"
+
+
+def test_varia_position_table_renders_hold_duration_and_deadline() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "<th>持仓时长</th>" in html
+    assert "function _vdHoldCell(pair)" in html
+    assert "已到期，等待自动轮换" in html
+    assert "开仓 '+esc(_vdHoldTime(opened))+' · 到期 " in html
+
+
 def test_varia_control_lists_full_ranked_market_candidates(monkeypatch) -> None:
     monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [])
     monkeypatch.setattr(console, "_varia_recent_jobs", lambda: [])
@@ -2083,6 +2670,11 @@ def test_varia_detail_labels_routes_and_does_not_present_unattributed_rows_as_al
         "VPS2 · Var/Ondo",
         "未标记 · 历史记录",
     }
+    by_host = {row["name"]: row for row in detail["by_host"]}
+    assert by_host["VPS1 · Var/Decibel"]["loss"] == 0
+    assert by_host["VPS1 · Var/Decibel"]["cost_per_10k"] == 0
+    assert by_host["VPS2 · Var/Ondo"]["loss"] == 0.1
+    assert by_host["VPS2 · Var/Ondo"]["cost_per_10k"] == 8.33
 
 
 def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path: Path) -> None:
