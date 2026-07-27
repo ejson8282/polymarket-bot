@@ -587,9 +587,12 @@ class AutoCurator:
         leading to `league_matched=0` across the board.
         """
         out: List[Dict[str, Any]] = []
-        page_size = 500
+        # Gamma currently caps this endpoint at 100 rows even when a larger
+        # limit is requested. Using 500 made the first 100-row response look
+        # like the final page, so the curator silently ignored the rest.
+        page_size = 100
         offset = 0
-        max_pages = 20  # 20 * 500 = 10k markets, same ceiling as scanner.py
+        max_pages = 100  # 100 * 100 = 10k markets, same ceiling as scanner.py
         for _ in range(max_pages):
             try:
                 r = requests.get(

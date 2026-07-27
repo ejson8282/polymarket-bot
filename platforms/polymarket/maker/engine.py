@@ -249,6 +249,32 @@ def _contains_any_ci(text: str, needles: list[str]) -> bool:
     return any(str(n or "").strip().lower() in hay for n in needles if str(n or "").strip())
 
 
+def _compute_quote_target_shares(
+    *,
+    available: Decimal,
+    rewards_min: Decimal,
+    min_order_size: Decimal,
+    budget_pct: Decimal,
+    size_cap: Decimal,
+    max_quote_shares: Decimal,
+) -> tuple[Decimal, str]:
+    """Apply configured budget and risk caps to a market's target shares."""
+    pct = max(Decimal("0"), min(budget_pct, Decimal("1")))
+    cap = max(Decimal("0"), min(size_cap, Decimal("1")))
+    budget = max(Decimal("0"), available) * pct
+    if max_quote_shares > 0:
+        budget = min(budget, max_quote_shares)
+    budget *= cap
+    target = budget.to_integral_value(rounding=ROUND_DOWN)
+    required = max(rewards_min, min_order_size)
+    if target < required:
+        return Decimal("0"), (
+            f"budget_below_min|available={available}|budget={budget}|"
+            f"required={required}|pct={pct}|size_cap={cap}"
+        )
+    return target, ""
+
+
 def _ws_proxy_diag(ws_proxy: Optional[str] = None) -> str:
     sys_proxies = urllib.request.getproxies() or {}
     sys_proxy = (
@@ -495,6 +521,12 @@ class PolyLPSMulti:
         # to the default global halt — protects against cascading fills when
         # liquid balance gets thin. Set to 0 to always do global halt.
         self.runtime_floor_usdc = Decimal(str(risk.get("runtime_floor_usdc", 0)))
+        self.max_quote_shares_per_market = Decimal(
+            str(risk.get("max_quote_shares_per_market", 0))
+        )
+        self.max_notional_usdc_per_order = Decimal(
+            str(risk.get("max_notional_usdc_per_order", 0))
+        )
 
         # Cross-side sentinel: monitor opposite-token DEPTH depletion (top-N
         # ask depth shrinkage in a short window signals incoming BUY pressure;
@@ -3534,7 +3566,13 @@ class PolyLPSMulti:
 
     # # Share-based sizing for Q_min optimization
 
-    async def _compute_target_shares(self, token_id: str) -> tuple[Decimal, Decimal, str]:
+    async def _compute_target_shares(
+        self,
+        token_id: str,
+        *,
+        budget_pct: Decimal = Decimal("1"),
+        size_cap: Decimal = Decimal("1"),
+    ) -> tuple[Decimal, Decimal, str]:
         """Compute target bid/ask shares for Q_min maximization.
 
         Returns (target_bid_shares, target_ask_shares, warning).
@@ -3551,18 +3589,14 @@ class PolyLPSMulti:
         if avail is None or avail <= 0:
             return Decimal("0"), Decimal("0"), "no_balance"
 
-        # 1 share = $1 collateral for dual-side (YES_price + NO_price ≈ 1.0)
-        balance_shares = avail.to_integral_value(rounding="ROUND_FLOOR")
-
-        target = max(balance_shares, rewards_min)
-        warning = ""
-
-        if balance_shares < rewards_min:
-            # Can't meet minimum for even single-side
-            warning = f"balance_below_min|balance={avail}|min={rewards_min}"
-            # Still try single-side with whatever we have
-            target = balance_shares
-
+        target, warning = _compute_quote_target_shares(
+            available=avail,
+            rewards_min=rewards_min,
+            min_order_size=self.min_order_size,
+            budget_pct=budget_pct,
+            size_cap=size_cap,
+            max_quote_shares=self.max_quote_shares_per_market,
+        )
         return target, target, warning
 
     def _is_low_price_market(self, token_id: str) -> bool:
@@ -5769,7 +5803,11 @@ class PolyLPSMulti:
             # target_shares = max(floor(balance), rewardsMinSize)
             # Same event YES+NO share the collateral: 1 share = $1.
             min_size_needed = max(required_min_size, Decimal("0.001"))
-            target_bid, target_ask, share_warning = await self._compute_target_shares(token_id)
+            target_bid, target_ask, share_warning = await self._compute_target_shares(
+                token_id,
+                budget_pct=pct,
+                size_cap=size_cap,
+            )
             if target_bid <= 0:
                 log(f"[quote-skip] token={token_id} reason=no_target_shares warning={share_warning}")
                 return
@@ -5821,6 +5859,12 @@ class PolyLPSMulti:
                             break
                         normalized_weight = w / remaining_weight
                         leg_shares = self._floor_to_tick(remaining_shares * normalized_weight, Decimal("0.001"))
+                        if self.max_notional_usdc_per_order > 0 and p > 0:
+                            max_leg_shares = self._floor_to_tick(
+                                self.max_notional_usdc_per_order / p,
+                                Decimal("0.001"),
+                            )
+                            leg_shares = min(leg_shares, max_leg_shares)
                         notional = p * leg_shares
                         if leg_shares < required_min_size or leg_shares <= 0:
                             if idx == 0:
@@ -5848,9 +5892,17 @@ class PolyLPSMulti:
             # Fallback: single top leg at minimum size
             if not plan and top_price > 0:
                 fallback_size = max(min_size_needed, required_min_size)
+                if self.max_notional_usdc_per_order > 0:
+                    fallback_size = min(
+                        fallback_size,
+                        self._floor_to_tick(
+                            self.max_notional_usdc_per_order / top_price,
+                            Decimal("0.001"),
+                        ),
+                    )
                 fallback_notional = top_price * fallback_size
                 fallback_cost_ok = (fallback_size <= avail) if is_dual else (fallback_notional <= avail)
-                if fallback_cost_ok and fallback_size > 0:
+                if fallback_cost_ok and fallback_size >= required_min_size:
                     plan = [(top_price, fallback_size, fallback_notional)]
                     planned_legs = 1
                     degrade_reason = "single_leg_fallback"
