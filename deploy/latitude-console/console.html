@@ -2139,7 +2139,16 @@
   document.querySelectorAll('#dw-tabs button').forEach(button=>button.addEventListener('click',()=>{
     document.querySelectorAll('#dw-tabs button').forEach(x=>x.classList.toggle('on',x===button)); filterDewu();
   }));
-  let dewuItems=[], dewuJob=null, dewuExecutorReady=false;
+  let dewuItems=[], dewuJob=null, dewuExecutorReady=false, dewuSuccesses={};
+  function dewuKey(item){return String(item.sku||'').trim().toUpperCase()+'|'+String(item.size||'').trim();}
+  function dewuListed(item){return Math.min(Number(item.quantity||0),Number((dewuSuccesses[dewuKey(item)]||{}).listed_quantity||0));}
+  function renderDewuListingKpis(){
+    const listed=dewuItems.reduce((n,item)=>n+dewuListed(item),0);
+    const pending=dewuItems.reduce((n,item)=>n+Math.max(0,Number(item.quantity||0)-dewuListed(item)),0);
+    document.getElementById('dw-listed-real').innerHTML=listed+' <small>件</small>';
+    document.getElementById('dw-listed-specs-real').textContent=Object.keys(dewuSuccesses).length+' 个规格已有成功记录';
+    document.getElementById('dw-pending-real').innerHTML=pending+' <small>件</small>';
+  }
   function renderDewuRows(){
     const q=(document.getElementById('dw-search-real').value||'').trim().toLowerCase();
     const items=dewuItems.filter(x=>([x.sku,x.name,x.size,x.color].join(' ').toLowerCase().includes(q)));
@@ -2148,19 +2157,20 @@
       body.innerHTML='<tr><td colspan="7"><div class="dw-empty-state"><b>'+(dewuItems.length?'没有匹配结果':'库存为空')+'</b><span>'+(dewuItems.length?'换一个关键词试试':'点击右上角“导入 Excel”开始建立库存')+'</span></div></td></tr>';
       return;
     }
-    body.innerHTML=items.map(x=>'<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+Number(x.quantity||0)+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip info">'+esc(x.status||'待处理')+'</span></td></tr>').join('');
+    body.innerHTML=items.map(x=>{const listed=dewuListed(x), total=Number(x.quantity||0), full=listed>=total, label=full?'已上架':listed?'部分上架 '+listed+'/'+total:(x.status||'待处理'), kind=full?'ok':listed?'warn':'info'; return '<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+total+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip '+kind+'">'+esc(label)+'</span></td></tr>';}).join('');
   }
   function renderDewuListing(){
     const specs=document.getElementById('dw-listing-specs'), qty=document.getElementById('dw-listing-qty'), body=document.getElementById('dw-listing-rows');
     if(!body)return;
-    if(specs)specs.textContent=dewuItems.length;
-    if(qty)qty.textContent=dewuItems.reduce((n,x)=>n+Number(x.quantity||0),0);
+    if(specs)specs.textContent=dewuItems.filter(x=>dewuListed(x)<Number(x.quantity||0)).length;
+    if(qty)qty.textContent=dewuItems.reduce((n,x)=>n+Math.max(0,Number(x.quantity||0)-dewuListed(x)),0);
     const results=(dewuJob&&dewuJob.results)||[];
     body.innerHTML=dewuItems.length?dewuItems.map(x=>{
       const result=[...results].reverse().find(r=>r.sku===x.sku&&String(r.size)===String(x.size));
       const current=dewuJob&&dewuJob.state==='running'&&dewuJob.current&&dewuJob.current.sku===x.sku&&String(dewuJob.current.size)===String(x.size);
-      const label=current?'执行中':result?(result.ok?'已上架':'失败'):'待执行';
-      const kind=current?'warn':result?(result.ok?'ok':'danger'):'info';
+      const listed=dewuListed(x), full=listed>=Number(x.quantity||0);
+      const label=current?'执行中':full?'已上架':result?(result.ok?'已上架':'失败'):(listed?'部分上架 '+listed+'/'+Number(x.quantity||0):'待执行');
+      const kind=current?'warn':full?'ok':result?(result.ok?'ok':'danger'):(listed?'warn':'info');
       const title=result&&!result.ok?' title="'+esc(result.detail||'执行失败')+'"':'';
       return '<tr><td class="num">'+esc(x.sku)+'</td><td>'+esc(x.name||'未填写名称')+'</td><td class="num">'+esc(x.size)+'</td><td class="num">'+Number(x.quantity||0)+'</td><td>最低展示价齐平</td><td><span class="chip '+kind+'"'+title+'>'+label+'</span></td></tr>';
     }).join(''):'<tr><td colspan="6"><div class="dw-empty-state"><b>暂无上架任务</b><span>请先导入库存 Excel</span></div></td></tr>';
@@ -2171,13 +2181,13 @@
       dewuItems=s.items||[];
       document.getElementById('dw-total-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
       document.getElementById('dw-specs-real').textContent=Number(s.spec_count||0)+' 个规格';
-      document.getElementById('dw-pending-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
       document.getElementById('dw-error-real').innerHTML=Number((s.exceptions||[]).length)+' <small>项</small>';
       document.getElementById('dw-imports-real').textContent=Number((s.imports||[]).length);
       document.getElementById('dw-source-real').textContent=s.imports&&s.imports.length?s.imports[0].filename+' · 最近导入 '+new Date(s.imports[0].at).toLocaleString('zh-CN'):'尚未上传库存文件';
       document.getElementById('dw-history-count-real').textContent=Number((s.imports||[]).length);
       document.getElementById('dw-history-real').innerHTML=(s.imports||[]).length?s.imports.slice(0,8).map(x=>'<li><b>'+esc(x.filename)+'</b><span>'+new Date(x.at).toLocaleString('zh-CN')+' · '+x.specs+' 规格 / '+x.quantity+' 件</span></li>').join(''):'<li><span>还没有上传记录</span></li>';
       document.getElementById('dw-exceptions-real').textContent=(s.exceptions||[]).length?(s.exceptions||[]).slice(0,20).map(x=>'第 '+x.row+' 行 · '+(x.sku||'无 SKU')+' · '+x.reason).join('；'):'暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。';
+      renderDewuListingKpis();
       renderDewuRows();
       renderDewuListing();
     }catch(e){
@@ -2213,6 +2223,8 @@
       summary.innerHTML='<i></i>'+(s.device_connected?'Mac mini 与手机已连接':'Mac mini 在线，手机未连接');
       const ready=!!(s.can_submit&&s.workflow_calibrated&&!s.dry_run);
       dewuJob=s.job||null;
+      dewuSuccesses=Object.fromEntries((s.listing_successes||[]).map(x=>[x.key,x]));
+      renderDewuListingKpis();
       const running=dewuJob&&dewuJob.state==='running';
       dewuExecutorReady=ready&&!running;
       gate.textContent=running?('执行中 '+Number(dewuJob.completed||0)+' / '+Number(dewuJob.total||0)):ready?'可执行真实上架':(s.reason||'执行器安全门未通过');
