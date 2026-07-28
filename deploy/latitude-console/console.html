@@ -186,10 +186,17 @@
   .pm-scan-bulk .btn{padding:5px 9px;font-size:10px}
   .pm-scan-bulk-label{color:var(--muted);font:10px var(--mono);margin-left:5px}
   .pm-scan-count{margin-right:auto}
+  .pm-auto-scan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
+  .pm-auto-scan-row{border:1px solid var(--line);border-radius:7px;padding:12px 14px;min-width:0}
+  .pm-auto-scan-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .pm-auto-scan-head b{font:600 13px var(--mono)}
+  .pm-auto-scan-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+  .pm-auto-scan-meta span{color:var(--faint);font:10px var(--mono)}
+  .pm-auto-scan-meta strong{display:block;color:var(--text);font:600 12px var(--mono);margin-top:3px}
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
   @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
-  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary,.pm-auto-scan-grid{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
   .banner.livewarn{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.35);color:#FF9B9E}
@@ -1456,7 +1463,16 @@
 
   <div class="pm-view" data-pm-view-panel="scan">
     <div class="panel">
-      <div class="pm-panel-head"><div><h2>市场扫描</h2><div class="src">筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
+      <div class="pm-panel-head">
+        <div><h2>自动扫描</h2><div class="src">每台 VPS 独立扫描并自动更新自己的做市市场</div></div>
+        <span id="pm-auto-scan-summary" class="chip">读取中</span>
+      </div>
+      <div id="pm-auto-scan-grid" class="pm-auto-scan-grid">
+        <div class="pm-empty">读取 VPS1 / VPS2 自动扫描状态…</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="pm-panel-head"><div><h2>手动扫描</h2><div class="src">临时筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
       <div class="pm-form-grid">
         <div class="pm-scan-field"><label for="sc-minr">最低日奖励（美元）</label><input id="sc-minr" class="opin" type="number"></div>
         <div class="pm-scan-field"><label for="sc-maxr">最高日奖励（美元）</label><input id="sc-maxr" class="opin" type="number"></div>
@@ -2587,7 +2603,24 @@
     }
     if(pm.curator){
       const c=pm.curator;
-      setK('pm.curator','source · auto_curator_state.json — '+(c.enabled?'启用':'停用')+' · 引擎内 '+c.markets+' 市场 · 累计扫入 '+(c.added_total??'—')+' / 拒绝 '+(c.rejected_total??'—')+(c.last_scan_age?' · 上次扫描 '+esc(c.last_scan_age):''));
+      const rows=Array.isArray(c.accounts)?c.accounts:[];
+      const grid=document.getElementById('pm-auto-scan-grid');
+      const summary=document.getElementById('pm-auto-scan-summary');
+      const healthy=rows.filter(r=>r.enabled&&r.fresh&&r.engine_running).length;
+      if(summary){
+        summary.textContent=healthy+'/'+rows.length+' 正常';
+        summary.className='chip '+(rows.length&&healthy===rows.length?'ok':'warn');
+      }
+      if(grid){
+        grid.innerHTML=rows.length?rows.map(r=>{
+          const state=!r.enabled?'已关闭':(!r.engine_running?'引擎停止':(r.fresh?'运行中':'扫描迟滞'));
+          const cls=r.enabled&&r.engine_running&&r.fresh?'ok':(r.enabled?'warn':'');
+          const interval=Math.max(1,Math.round(Number(r.interval_sec||0)/60));
+          return '<div class="pm-auto-scan-row"><div class="pm-auto-scan-head"><b>账号'+r.account+' · '+esc(r.host||'—')+'</b><span class="chip '+cls+'">'+state+'</span></div>'+
+            '<div class="pm-auto-scan-meta"><span>扫描周期<strong>'+interval+' 分钟</strong></span><span>最近扫描<strong>'+esc(r.last_scan_age||'尚无记录')+'</strong></span><span>当前市场<strong>'+Number(r.markets||0)+' 个</strong></span>'+
+            '<span>本轮新增<strong>'+Number(r.last_scan_added||0)+' 个</strong></span><span>累计新增<strong>'+Number(r.added_total||0)+' 个</strong></span><span>累计过滤<strong>'+Number(r.rejected_total||0)+' 个</strong></span></div></div>';
+        }).join(''):'<div class="pm-empty">尚未发现自动扫描状态</div>';
+      }
     }
     const sponsored=pm.sponsored_guard||{};
     const sponsoredChip=document.getElementById('pm-sponsored-chip');

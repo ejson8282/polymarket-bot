@@ -1074,6 +1074,7 @@ def _polymarket() -> Dict[str, Any]:
     pm_fill_events: List[dict] = []
     sponsored_guard_accounts: List[dict] = []
     sponsored_guard_risks: List[dict] = []
+    curator_accounts: List[dict] = []
     remotes = _load_pm_remotes()
     for idx in range(1, 31):
         is_remote = idx in remotes
@@ -1097,6 +1098,64 @@ def _polymarket() -> Dict[str, Any]:
             alive = _pid_file_alive(DATA_DIR / f".engine_{idx}.pid",
                                     DATA_DIR / ".engine.pid")
             paused = (DATA_DIR / f".account_{idx}.paused").exists()
+        curator_path = (
+            PM_PEER_DIR / f"auto_curator_state_{idx}.json"
+            if is_remote
+            else DATA_DIR / "auto_curator_state.json"
+        )
+        curator_state = _read_json(curator_path) or {}
+        curator_config = _read_json(MAKER_DIR / f"config_{idx}.json") or {}
+        curator_cfg = (
+            curator_config.get("auto_curator")
+            if isinstance(curator_config.get("auto_curator"), dict)
+            else {}
+        )
+        curator_enabled = bool(
+            curator_state.get("enabled", curator_cfg.get("enabled", False))
+        )
+        curator_interval = int(
+            _num(curator_cfg.get("interval_sec")) or 1800
+        )
+        curator_last_scan = _num(curator_state.get("last_scan_ts"))
+        curator_age = (
+            max(0, int(time.time() - curator_last_scan))
+            if curator_last_scan else None
+        )
+        curator_markets = curator_state.get("markets_in_engine")
+        curator_market_count = (
+            len(curator_markets)
+            if isinstance(curator_markets, (list, dict))
+            else int(_num(curator_markets) or 0)
+        )
+        curator_fresh = bool(
+            curator_enabled
+            and curator_age is not None
+            and curator_age <= max(curator_interval * 2 + 120, 600)
+        )
+        curator_accounts.append({
+            "account": idx,
+            "host": (
+                remotes[idx].get("label") or "远程"
+                if is_remote else "VPS1"
+            ),
+            "enabled": curator_enabled,
+            "fresh": curator_fresh,
+            "engine_running": bool(alive and not paused),
+            "interval_sec": curator_interval,
+            "markets": curator_market_count,
+            "last_scan_ts": curator_last_scan,
+            "last_scan_age_sec": curator_age,
+            "last_scan_age": _age_text(curator_age),
+            "last_scan_added": int(
+                _num(curator_state.get("last_scan_added")) or 0
+            ),
+            "added_total": int(
+                _num(curator_state.get("added_total")) or 0
+            ),
+            "rejected_total": int(
+                _num(curator_state.get("rejected_total")) or 0
+            ),
+        })
         state_age = _mtime_age(state_path)
         state_fresh = state_age is not None and state_age <= PM_STATE_STALE_SEC
         fresh_states += 1 if state_fresh else 0
@@ -1264,20 +1323,18 @@ def _polymarket() -> Dict[str, Any]:
     rewards_total = reward_state.get("total_today_usd")
     rebates_total = reward_state.get("total_today_rebates_usd")
     income_total = reward_state.get("total_today_income_usd")
-    curator = _read_json(DATA_DIR / "auto_curator_state.json")
-    curator_out = None
-    if isinstance(curator, dict):
-        mie = curator.get("markets_in_engine")
-        curator_out = {
-            "enabled": bool(curator.get("enabled")),
-            "markets": (len(mie) if isinstance(mie, (list, dict)) else int(_num(mie) or 0)),
-            "added_total": curator.get("added_total"),
-            "rejected_total": curator.get("rejected_total"),
-            "last_scan_age": _age_text(_iso_age(curator.get("last_scan_ts"))
-                                       if isinstance(curator.get("last_scan_ts"), str)
-                                       else (int(time.time() - curator["last_scan_ts"])
-                                             if _num(curator.get("last_scan_ts")) else None)),
-        }
+    curator_out = {
+        "enabled": any(row["enabled"] for row in curator_accounts),
+        "fresh": bool(curator_accounts) and all(
+            (not row["enabled"]) or row["fresh"] for row in curator_accounts
+        ),
+        "accounts": curator_accounts,
+        "markets": sum(row["markets"] for row in curator_accounts),
+        "added_total": sum(row["added_total"] for row in curator_accounts),
+        "rejected_total": sum(
+            row["rejected_total"] for row in curator_accounts
+        ),
+    }
     capital = _pm_capital_summary()
     capital_total = _num(capital.get("total")) or 0.0
     capital_reuse_multiplier = (
@@ -5098,6 +5155,22 @@ def _refresh_pm_remotes() -> None:
                                capture_output=True, timeout=15)
             except Exception:
                 pass
+        curator_src = (
+            f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/auto_curator_state.json"
+        )
+        try:
+            subprocess.run(
+                [
+                    "scp", "-i", str(r.get("ssh_key", "")),
+                    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                    curator_src,
+                    str(PM_PEER_DIR / f"auto_curator_state_{idx}.json"),
+                ],
+                capture_output=True,
+                timeout=15,
+            )
+        except Exception:
+            pass
 
 
 def _prefetch_loop() -> None:

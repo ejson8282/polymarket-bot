@@ -211,6 +211,16 @@ def test_console_contains_discord_notification_settings_page() -> None:
     assert "/api/notifications/discord/test" in html
 
 
+def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'id="pm-auto-scan-grid"' in html
+    assert 'id="pm-auto-scan-summary"' in html
+    assert "<h2>自动扫描</h2>" in html
+    assert "<h2>手动扫描</h2>" in html
+    assert "last_scan_added" in html
+
+
 def test_discord_notification_update_saves_without_echoing_secret(
     monkeypatch, tmp_path: Path
 ) -> None:
