@@ -746,6 +746,14 @@
       <div class="row"><span class="k">账号 / 人员</span><span class="v" data-k="hk.counts">—</span></div>
       <div class="row"><span class="k">开户活动 / 7日内到期</span><span class="v"><span data-k="onb.active">—</span> · <span data-k="onb.total">—</span></span></div>
     </div>
+    <div class="card" onclick="go('dewu')">
+      <div class="head"><span class="name">得物库存</span><span class="chip" data-k="dewu.chip">读取中</span></div>
+      <div class="row"><span class="k">库存 / 已上架</span><span class="v" data-k="dewu.stock">—</span></div>
+      <div class="row"><span class="k">待处理 / 规格</span><span class="v" data-k="dewu.pending">—</span></div>
+      <div class="row"><span class="k">手机执行器</span><span class="v" data-k="dewu.executor">—</span></div>
+      <div class="row"><span class="k">自动改价</span><span class="v" data-k="dewu.repricing">—</span></div>
+      <div class="row"><span class="k">上次改价</span><span class="v" data-k="dewu.last">—</span></div>
+    </div>
     <div class="card">
       <div class="head"><span class="name">基础设施 · Mac mini</span><span class="chip" data-k="infra.chip">读取中</span></div>
       <div class="row"><span class="k" data-k="infra.r1_label">PM signer</span><span class="v" data-k="infra.r1">等待探测</span></div>
@@ -2139,7 +2147,16 @@
   document.querySelectorAll('#dw-tabs button').forEach(button=>button.addEventListener('click',()=>{
     document.querySelectorAll('#dw-tabs button').forEach(x=>x.classList.toggle('on',x===button)); filterDewu();
   }));
-  let dewuItems=[], dewuJob=null, dewuExecutorReady=false;
+  let dewuItems=[], dewuJob=null, dewuExecutorReady=false, dewuSuccesses={};
+  function dewuKey(item){return String(item.sku||'').trim().toUpperCase()+'|'+String(item.size||'').trim();}
+  function dewuListed(item){return Math.min(Number(item.quantity||0),Number((dewuSuccesses[dewuKey(item)]||{}).listed_quantity||0));}
+  function renderDewuListingKpis(){
+    const listed=dewuItems.reduce((n,item)=>n+dewuListed(item),0);
+    const pending=dewuItems.reduce((n,item)=>n+Math.max(0,Number(item.quantity||0)-dewuListed(item)),0);
+    document.getElementById('dw-listed-real').innerHTML=listed+' <small>件</small>';
+    document.getElementById('dw-listed-specs-real').textContent=Object.keys(dewuSuccesses).length+' 个规格已有成功记录';
+    document.getElementById('dw-pending-real').innerHTML=pending+' <small>件</small>';
+  }
   function renderDewuRows(){
     const q=(document.getElementById('dw-search-real').value||'').trim().toLowerCase();
     const items=dewuItems.filter(x=>([x.sku,x.name,x.size,x.color].join(' ').toLowerCase().includes(q)));
@@ -2148,19 +2165,20 @@
       body.innerHTML='<tr><td colspan="7"><div class="dw-empty-state"><b>'+(dewuItems.length?'没有匹配结果':'库存为空')+'</b><span>'+(dewuItems.length?'换一个关键词试试':'点击右上角“导入 Excel”开始建立库存')+'</span></div></td></tr>';
       return;
     }
-    body.innerHTML=items.map(x=>'<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+Number(x.quantity||0)+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip info">'+esc(x.status||'待处理')+'</span></td></tr>').join('');
+    body.innerHTML=items.map(x=>{const listed=dewuListed(x), total=Number(x.quantity||0), full=listed>=total, label=full?'已上架':listed?'部分上架 '+listed+'/'+total:(x.status||'待处理'), kind=full?'ok':listed?'warn':'info'; return '<tr><td class="dw-product"><b>'+esc(x.name||'未填写名称')+'</b><small>'+esc(x.sku)+'</small></td><td class="num">'+esc(x.size)+'</td><td>'+esc(x.color||'—')+'</td><td class="num">'+total+'</td><td class="dw-price dw-empty">—</td><td class="dw-price dw-empty">—</td><td><span class="chip '+kind+'">'+esc(label)+'</span></td></tr>';}).join('');
   }
   function renderDewuListing(){
     const specs=document.getElementById('dw-listing-specs'), qty=document.getElementById('dw-listing-qty'), body=document.getElementById('dw-listing-rows');
     if(!body)return;
-    if(specs)specs.textContent=dewuItems.length;
-    if(qty)qty.textContent=dewuItems.reduce((n,x)=>n+Number(x.quantity||0),0);
+    if(specs)specs.textContent=dewuItems.filter(x=>dewuListed(x)<Number(x.quantity||0)).length;
+    if(qty)qty.textContent=dewuItems.reduce((n,x)=>n+Math.max(0,Number(x.quantity||0)-dewuListed(x)),0);
     const results=(dewuJob&&dewuJob.results)||[];
     body.innerHTML=dewuItems.length?dewuItems.map(x=>{
       const result=[...results].reverse().find(r=>r.sku===x.sku&&String(r.size)===String(x.size));
       const current=dewuJob&&dewuJob.state==='running'&&dewuJob.current&&dewuJob.current.sku===x.sku&&String(dewuJob.current.size)===String(x.size);
-      const label=current?'执行中':result?(result.ok?'已上架':'失败'):'待执行';
-      const kind=current?'warn':result?(result.ok?'ok':'danger'):'info';
+      const listed=dewuListed(x), full=listed>=Number(x.quantity||0);
+      const label=current?'执行中':full?'已上架':result?(result.ok?'已上架':'失败'):(listed?'部分上架 '+listed+'/'+Number(x.quantity||0):'待执行');
+      const kind=current?'warn':full?'ok':result?(result.ok?'ok':'danger'):(listed?'warn':'info');
       const title=result&&!result.ok?' title="'+esc(result.detail||'执行失败')+'"':'';
       return '<tr><td class="num">'+esc(x.sku)+'</td><td>'+esc(x.name||'未填写名称')+'</td><td class="num">'+esc(x.size)+'</td><td class="num">'+Number(x.quantity||0)+'</td><td>最低展示价齐平</td><td><span class="chip '+kind+'"'+title+'>'+label+'</span></td></tr>';
     }).join(''):'<tr><td colspan="6"><div class="dw-empty-state"><b>暂无上架任务</b><span>请先导入库存 Excel</span></div></td></tr>';
@@ -2171,13 +2189,13 @@
       dewuItems=s.items||[];
       document.getElementById('dw-total-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
       document.getElementById('dw-specs-real').textContent=Number(s.spec_count||0)+' 个规格';
-      document.getElementById('dw-pending-real').innerHTML=Number(s.total_quantity||0)+' <small>件</small>';
       document.getElementById('dw-error-real').innerHTML=Number((s.exceptions||[]).length)+' <small>项</small>';
       document.getElementById('dw-imports-real').textContent=Number((s.imports||[]).length);
       document.getElementById('dw-source-real').textContent=s.imports&&s.imports.length?s.imports[0].filename+' · 最近导入 '+new Date(s.imports[0].at).toLocaleString('zh-CN'):'尚未上传库存文件';
       document.getElementById('dw-history-count-real').textContent=Number((s.imports||[]).length);
       document.getElementById('dw-history-real').innerHTML=(s.imports||[]).length?s.imports.slice(0,8).map(x=>'<li><b>'+esc(x.filename)+'</b><span>'+new Date(x.at).toLocaleString('zh-CN')+' · '+x.specs+' 规格 / '+x.quantity+' 件</span></li>').join(''):'<li><span>还没有上传记录</span></li>';
       document.getElementById('dw-exceptions-real').textContent=(s.exceptions||[]).length?(s.exceptions||[]).slice(0,20).map(x=>'第 '+x.row+' 行 · '+(x.sku||'无 SKU')+' · '+x.reason).join('；'):'暂无异常。Excel 中缺少 SKU、尺码或数量不合法的行会出现在这里，且不会进入库存。';
+      renderDewuListingKpis();
       renderDewuRows();
       renderDewuListing();
     }catch(e){
@@ -2213,6 +2231,8 @@
       summary.innerHTML='<i></i>'+(s.device_connected?'Mac mini 与手机已连接':'Mac mini 在线，手机未连接');
       const ready=!!(s.can_submit&&s.workflow_calibrated&&!s.dry_run);
       dewuJob=s.job||null;
+      dewuSuccesses=Object.fromEntries((s.listing_successes||[]).map(x=>[x.key,x]));
+      renderDewuListingKpis();
       const running=dewuJob&&dewuJob.state==='running';
       dewuExecutorReady=ready&&!running;
       gate.textContent=running?('执行中 '+Number(dewuJob.completed||0)+' / '+Number(dewuJob.total||0)):ready?'可执行真实上架':(s.reason||'执行器安全门未通过');
@@ -3758,6 +3778,35 @@
     document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(infraOk?'ok':'warn');});
   }
 
+  async function bindDewuOverview(){
+    const chip=document.querySelector('[data-k="dewu.chip"]');
+    try{
+      const [inventoryResponse,executorResponse]=await Promise.all([
+        fetch('/api/dewu/inventory',{cache:'no-store'}),
+        fetch('/api/dewu/executor',{cache:'no-store'})
+      ]);
+      const inventory=await inventoryResponse.json(), executor=await executorResponse.json();
+      if(!inventoryResponse.ok||!executorResponse.ok)throw new Error('读取失败');
+      const items=inventory.items||[], successes=Object.fromEntries((executor.listing_successes||[]).map(x=>[x.key,x]));
+      const itemKey=item=>String(item.sku||'').trim().toUpperCase()+'|'+String(item.size||'').trim();
+      const listed=items.reduce((total,item)=>total+Math.min(Number(item.quantity||0),Number((successes[itemKey(item)]||{}).listed_quantity||0)),0);
+      const total=items.reduce((sum,item)=>sum+Number(item.quantity||0),0), pending=Math.max(0,total-listed);
+      const online=executor.device_connected===true, reprice=executor.repricing||{}, job=executor.reprice_job||{};
+      const raw=String(reprice.state||job.state||'not_run');
+      const repriceText=raw==='finished'?'正常完成':raw==='failed'?'运行失败':raw==='running'?'运行中':'尚未运行';
+      const last=reprice.finished_at||reprice.at||reprice.started_at;
+      setK('dewu.chip',online?'手机在线':'手机未连接'); if(chip)chip.className='chip '+(online?'ok':'warn');
+      setK('dewu.stock',total+' 件 · <span class="up">'+listed+' 件</span>');
+      setK('dewu.pending',pending+' 件 · '+items.length+' 规格');
+      setK('dewu.executor',online?'<span class="up">● 手机已连接</span>':'<span class="down">● 手机未连接</span>');
+      setK('dewu.repricing',raw==='failed'?'<span class="down">运行失败</span>':esc(repriceText));
+      setK('dewu.last',last?esc(new Date(last).toLocaleString('zh-CN',{hour12:false})):'—');
+    }catch(_){
+      setK('dewu.chip','读取失败'); if(chip)chip.className='chip warn';
+      ['dewu.stock','dewu.pending','dewu.executor','dewu.repricing','dewu.last'].forEach(key=>setK(key,'—'));
+    }
+  }
+
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
 
   // pmbot 操作(已迁移自 /alpha/):引擎启停/急停、账号软暂停、SA paper worker
@@ -5056,6 +5105,7 @@
     try{bindIPO(IPO_DEMO_MODE?buildIpoDemo(s.account_ops||{}):(s.ipo||{}));}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
+    try{await bindDewuOverview();}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     try{await refreshWorkPlan();}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
