@@ -46,6 +46,17 @@ location / {
 }
 ```
 
+生产控制台必须从 VPS 内部裸仓库的 `main` 部署，不能直接把生产工作目录里残留的
+`console_app.py` 或 `console.html` 当作最新版。统一使用：
+
+```bash
+/home/ubuntu/polymarket-bot/deploy/latitude-console/deploy_from_internal_main.sh
+```
+
+脚本会从 `/home/ubuntu/repos/polymarket-bot.git` 解包两个控制台文件，在隔离目录跑完整
+真实性测试，备份现有文件，替换后只重启 `latitude-console.service`，最后核对文件哈希。
+测试失败时不会改动生产页面。
+
 Var/Decibel 的仓位、报价、开仓参数、止盈止损、开仓、一键平仓和后台任务结果均在
 统一站点内原生呈现，不使用 iframe，也不跳转旧 Streamlit 页面。旧 8503 服务可在迁移
 验收期保留为内部诊断工具，但不再是用户操作入口。
