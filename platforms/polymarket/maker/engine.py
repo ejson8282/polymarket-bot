@@ -907,6 +907,11 @@ class PolyLPSMulti:
         self._session_confirm_path: Path = Path(config_path).resolve().parent.parent.parent.parent / "data" / "session_confirm.json"
         self._session_confirm_window_start: str = str(session_cfg.get("confirm_window_start", "22:00"))
         self._session_confirm_window_end: str = str(session_cfg.get("confirm_window_end", "00:00"))
+        # Overnight safety is fail-closed by default. Day markets must not
+        # silently survive the switch when their start time cannot be verified.
+        self._session_carry_day_markets_to_night: bool = bool(
+            session_cfg.get("carry_day_markets_to_night", False)
+        )
         self._last_session: str = "unknown"  # track session transitions
         self._session_halted_no_confirm: bool = False  # True when switch was blocked due to no confirm
 
@@ -2789,9 +2794,24 @@ class PolyLPSMulti:
         if not self._session_enabled:
             return self.market_cfg
         current = self._current_session()
-        if current == "night" and self._night_market_cfg:
+        if current == "night":
             return self._night_market_cfg
         return self.market_cfg
+
+    def _should_carry_day_market_to_night(
+        self,
+        game_start_ts: Optional[float],
+        night_cutoff_ts: Optional[float],
+    ) -> bool:
+        """Only carry a day market when explicitly enabled and fully verified."""
+        if not self._session_carry_day_markets_to_night:
+            return False
+        if game_start_ts is None or night_cutoff_ts is None:
+            return False
+        try:
+            return float(game_start_ts) >= float(night_cutoff_ts)
+        except (TypeError, ValueError):
+            return False
 
     def _session_allows(self, token_id: str) -> bool:
         """Check if token_id belongs to the current session's active markets."""
@@ -2917,7 +2937,11 @@ class PolyLPSMulti:
         # Markets starting after 8am tomorrow get carried into night_market_cfg
         # with their orders intact, so reward accrual is continuous.
         # Night → Day still uses the original full-cancel path.
-        if prev == "day" and current == "night":
+        if (
+            prev == "day"
+            and current == "night"
+            and self._session_carry_day_markets_to_night
+        ):
             try:
                 try:
                     from .auto_curator import _next_bjt_8am_ts
@@ -2959,14 +2983,12 @@ class PolyLPSMulti:
                                 gs_ts = self._to_end_ts(meta_dict)
                         except Exception as _exc:
                             log(f"[session] meta fetch failed for {token_id[:14]}..: {_exc}")
-                    if gs_ts is None:
-                        # Unknown game start → default to CARRY (don't kill quoting)
-                        log(f"[session] gs_ts unknown for {token_id[:14]}.. — defaulting to CARRY")
+                    if self._should_carry_day_market_to_night(gs_ts, night_cutoff_ts):
                         carry_tokens.append((token_id, mcfg))
-                    elif gs_ts < night_cutoff_ts:
-                        cancel_tokens.append(token_id)
                     else:
-                        carry_tokens.append((token_id, mcfg))
+                        if gs_ts is None:
+                            log(f"[session] gs_ts unknown for {token_id[:14]}.. — fail-closed CANCEL")
+                        cancel_tokens.append(token_id)
 
                 log(f"[session] day→night migration: cancel={len(cancel_tokens)} carry={len(carry_tokens)} cutoff={night_cutoff_ts:.0f}")
 

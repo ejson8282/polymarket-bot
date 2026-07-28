@@ -135,6 +135,30 @@ def test_one_hundred_events_each_reuse_the_same_account_budget():
     )
 
 
+def test_night_session_does_not_fall_back_to_day_markets_when_pool_is_empty():
+    engine = object.__new__(PolyLPSMulti)
+    engine._session_enabled = True
+    engine.market_cfg = {"101": {"session": "day"}}
+    engine._night_market_cfg = {}
+    engine._current_session = lambda: "night"
+
+    assert engine._active_market_cfg() == {}
+    assert engine._session_allows("101") is False
+
+
+def test_day_market_carry_is_explicit_and_fails_closed():
+    engine = object.__new__(PolyLPSMulti)
+    cutoff = 1_000.0
+
+    engine._session_carry_day_markets_to_night = False
+    assert engine._should_carry_day_market_to_night(2_000.0, cutoff) is False
+
+    engine._session_carry_day_markets_to_night = True
+    assert engine._should_carry_day_market_to_night(None, cutoff) is False
+    assert engine._should_carry_day_market_to_night(999.0, cutoff) is False
+    assert engine._should_carry_day_market_to_night(1_000.0, cutoff) is True
+
+
 def _paired_state_engine() -> PolyLPSMulti:
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
