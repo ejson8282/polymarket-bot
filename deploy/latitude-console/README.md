@@ -105,10 +105,11 @@ sudo systemctl enable --now latitude-reconciled-equity.timer
 
 该任务只读取四源状态并写入本地报告 JSON；不启动 worker、不下单、不接触私钥。
 
-## Polymarket 奖励刷新
+## Polymarket 收益刷新
 
-Polymarket 奖励日按 UTC 日期计算，UTC 00:00 对应北京时间 08:00。生产环境由独立
-systemd timer 每五分钟读取两个账号的 `/rewards/user/total`，不依赖做市引擎是否运行：
+Polymarket 收益日按 UTC 日期计算，UTC 00:00 对应北京时间 08:00。生产环境由独立
+systemd timer 每五分钟分别读取两个账号的 `/rewards/user/total`（流动性奖励，包含
+sponsored）和 `/rebates/current`（挂单返佣），不依赖做市引擎是否运行：
 
 ```bash
 sudo install -m 0644 deploy/systemd/polymarket-rewards-live.service /etc/systemd/system/
@@ -117,9 +118,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now polymarket-rewards-live.timer
 ```
 
-`data/rewards_live.json` 只保存当前奖励日实时值；`data/rewards_cumulative.json` 只保存
-已经结束的奖励日。控制台按账号序号读取两者，不再用 signer/funder 地址猜测账号，也不会
-把历史旧账号计入当前两个账号的合计。
+`data/rewards_live.json` 只保存当前收益日实时值；`data/rewards_cumulative.json` 只保存
+已经结束的收益日。两类收益分别记账，只在展示层合计。控制台按账号序号读取两者，不再用
+signer/funder 地址猜测账号，也不会把历史旧账号计入当前两个账号的合计。
 
 ## 每日早报与打新判研
 

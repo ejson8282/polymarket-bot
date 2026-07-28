@@ -108,7 +108,7 @@ def _build_snapshot_client(cfg_path: Path):
 
 
 def _fetch_daily_reward_usd(client, sig_type: int, date_str: str) -> float:
-    """Call /rewards/user/total?date=<date_str> and return summed USD."""
+    """Return native plus sponsored LP rewards for one UTC reward day."""
     from py_clob_client_v2.headers.headers import create_level_2_headers
     from py_clob_client_v2.clob_types import RequestArgs
     from py_clob_client_v2.http_helpers.helpers import get as clob_get
@@ -116,7 +116,10 @@ def _fetch_daily_reward_usd(client, sig_type: int, date_str: str) -> float:
     host = client.host
     req = RequestArgs(method="GET", request_path="/rewards/user/total")
     headers = create_level_2_headers(client.signer, client.creds, req)
-    url = f"{host}/rewards/user/total?date={date_str}&signature_type={sig_type}"
+    url = (
+        f"{host}/rewards/user/total?date={date_str}"
+        f"&signature_type={sig_type}&sponsored=true"
+    )
     resp = clob_get(url, headers=headers)
     totals = resp if isinstance(resp, list) else []
     total_usd = 0.0

@@ -18,6 +18,7 @@ import ast
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -44,6 +45,12 @@ SYSTEM_EVENT_LOG = DATA_DIR / "system_events.jsonl"
 SINGLE_ACCOUNT_DECISION_LOG = DATA_DIR / "single_account_decisions.jsonl"
 VARIA_CAPITAL_LEDGER = VARIA_DIR / "home_equity_principal.json"
 VARIA_RECONCILED_PNL_HISTORY = VARIA_DIR / "reconciled_pnl_history.json"
+BTC_SINGLE_SIDE_REPORT_PATH = Path(
+    os.getenv(
+        "BTC_SINGLE_SIDE_REPORT_PATH",
+        VARIA_DIR / "btc_single_side_research_latest.json",
+    )
+)
 VARIA_MANUAL_JOB_UNIT = os.getenv(
     "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
 )
@@ -489,7 +496,7 @@ async def dewu_inventory_import(request: Request) -> JSONResponse:
 # ---------- Polymarket(engine_state_N 逐账号,不混算) ----------
 
 def _pm_reward_sources() -> Dict[str, Any]:
-    """Load finalized history and the current UTC reward day by account index."""
+    """Load LP rewards and maker rebates by account index."""
     cumulative = _read_json(DATA_DIR / "rewards_cumulative.json") or {}
     live = _read_json(DATA_DIR / "rewards_live.json") or {}
     cumulative_accounts: Dict[int, dict] = {}
@@ -512,28 +519,102 @@ def _pm_reward_sources() -> Dict[str, Any]:
         idx: _num(live_accounts.get(idx, {}).get("today_usd"))
         for idx in account_indices
     }
+    today_rebate_values = {
+        idx: _num(live_accounts.get(idx, {}).get("today_rebates_usd"))
+        for idx in account_indices
+    }
+    today_income_values = {
+        idx: _num(live_accounts.get(idx, {}).get("today_total_income_usd"))
+        for idx in account_indices
+    }
     cumulative_values = {
         idx: _num(cumulative_accounts.get(idx, {}).get("cumulative_usd"))
         for idx in account_indices
     }
+    cumulative_rebate_values = {
+        idx: _num(
+            cumulative_accounts.get(idx, {}).get("rebates_cumulative_usd")
+        )
+        for idx in account_indices
+    }
+    cumulative_income_values = {
+        idx: _num(
+            cumulative_accounts.get(idx, {}).get("income_cumulative_usd")
+        )
+        for idx in account_indices
+    }
     today_known = [value for value in today_values.values() if value is not None]
+    today_rebates_known = [
+        value for value in today_rebate_values.values() if value is not None
+    ]
+    today_income_known = [
+        value for value in today_income_values.values() if value is not None
+    ]
     cumulative_known = [
         value for value in cumulative_values.values() if value is not None
     ]
+    cumulative_rebates_known = [
+        value
+        for value in cumulative_rebate_values.values()
+        if value is not None
+    ]
+    cumulative_income_known = [
+        value
+        for value in cumulative_income_values.values()
+        if value is not None
+    ]
     age_sec = _iso_age(live.get("generated_at"))
-    successful_accounts = int(_num(live.get("successful_accounts")) or 0)
+    successful_reward_accounts = int(
+        _num(
+            live.get("successful_reward_accounts")
+            if live.get("successful_reward_accounts") is not None
+            else live.get("successful_accounts")
+        )
+        or 0
+    )
+    successful_rebate_accounts = int(
+        _num(live.get("successful_rebate_accounts")) or 0
+    )
     configured_accounts = len(account_indices)
     return {
         "cumulative_accounts": cumulative_accounts,
         "live_accounts": live_accounts,
         "today_by_idx": today_values,
+        "rebates_today_by_idx": today_rebate_values,
+        "income_today_by_idx": today_income_values,
         "cumulative_by_idx": cumulative_values,
+        "rebates_cumulative_by_idx": cumulative_rebate_values,
+        "income_cumulative_by_idx": cumulative_income_values,
         "total_today_usd": round(sum(today_known), 6) if today_known else None,
+        "total_today_rebates_usd": (
+            round(sum(today_rebates_known), 6)
+            if today_rebates_known else None
+        ),
+        "total_today_income_usd": (
+            round(sum(today_income_known), 6)
+            if configured_accounts
+            and len(today_income_known) == configured_accounts
+            else None
+        ),
         "total_cumulative_usd": (
             round(sum(cumulative_known), 6) if cumulative_known else None
         ),
+        "total_cumulative_rebates_usd": (
+            round(sum(cumulative_rebates_known), 6)
+            if cumulative_rebates_known else None
+        ),
+        "total_cumulative_income_usd": (
+            round(sum(cumulative_income_known), 6)
+            if configured_accounts
+            and len(cumulative_income_known) == configured_accounts
+            else None
+        ),
         "known_accounts": len(today_known),
-        "successful_accounts": successful_accounts,
+        "rebates_known_accounts": len(today_rebates_known),
+        "income_known_accounts": len(today_income_known),
+        "successful_accounts": successful_reward_accounts,
+        "successful_reward_accounts": successful_reward_accounts,
+        "successful_rebate_accounts": successful_rebate_accounts,
         "configured_accounts": configured_accounts,
         "reward_date_utc": live.get("reward_date_utc"),
         "window_label_bjt": live.get("window_label_bjt"),
@@ -544,77 +625,154 @@ def _pm_reward_sources() -> Dict[str, Any]:
             age_sec is not None
             and age_sec <= 600
             and configured_accounts > 0
-            and successful_accounts == configured_accounts
+            and successful_reward_accounts == configured_accounts
+            and successful_rebate_accounts == configured_accounts
         ),
     }
 
 
 def _pm_pnl() -> Dict[str, Any]:
-    """PM 收益核算：今日实时奖励与已结算历史严格分开。"""
+    """PM 收益核算：LP 奖励、挂单返佣和交易损耗分开。"""
     reward_state = _pm_reward_sources()
     by_idx = reward_state["cumulative_accounts"]
     live_by_idx = reward_state["live_accounts"]
     live_day = str(reward_state.get("reward_date_utc") or "")
     remotes = _load_pm_remotes()
     rows: List[dict] = []
-    total_reward_today = total_reward_7d = total_cumulative = total_loss_session = 0.0
-    any_reward = False
+    total_reward_today = total_rebate_today = total_income_today = 0.0
+    total_reward_7d = total_rebate_7d = total_income_7d = 0.0
+    total_reward_cumulative = total_rebate_cumulative = 0.0
+    total_income_cumulative = total_loss_session = 0.0
+    any_income = False
     for idx in _pm_all_accounts():
         is_remote = idx in remotes
         base = PM_PEER_DIR if is_remote else DATA_DIR
         st = _read_json(base / f"engine_state_{idx}.json") or {}
         a = by_idx.get(idx, {})
         live_row = live_by_idx.get(idx, {})
-        daily = a.get("daily") if isinstance(a.get("daily"), dict) else {}
+        reward_daily = (
+            a.get("daily") if isinstance(a.get("daily"), dict) else {}
+        )
+        rebate_daily = (
+            a.get("rebates_daily")
+            if isinstance(a.get("rebates_daily"), dict)
+            else {}
+        )
         days = [
-            day for day in sorted(daily.keys())
+            day for day in sorted(set(reward_daily) | set(rebate_daily))
             if not live_day or day < live_day
         ][-7:]
-        series = [{"d": d, "v": round(_num(daily.get(d)) or 0, 2)} for d in days]
-        reward_7d = round(sum(x["v"] for x in series), 2)
+        series = [
+            {
+                "d": day,
+                "reward": round(_num(reward_daily.get(day)) or 0, 2),
+                "rebate": round(_num(rebate_daily.get(day)) or 0, 2),
+                "total": round(
+                    (_num(reward_daily.get(day)) or 0)
+                    + (_num(rebate_daily.get(day)) or 0),
+                    2,
+                ),
+            }
+            for day in days
+        ]
+        reward_7d = round(sum(x["reward"] for x in series), 2)
+        rebate_7d = round(sum(x["rebate"] for x in series), 2)
+        income_7d = round(reward_7d + rebate_7d, 2)
         reward_today = _num(live_row.get("today_usd"))
-        cumulative_usd = _num(a.get("cumulative_usd"))
+        rebate_today = _num(live_row.get("today_rebates_usd"))
+        income_today = _num(live_row.get("today_total_income_usd"))
+        reward_cumulative = _num(a.get("cumulative_usd"))
+        rebate_cumulative = _num(a.get("rebates_cumulative_usd"))
+        income_cumulative = _num(a.get("income_cumulative_usd"))
         # 本次运行损耗:fills 的负 pnl 求和(绝对值),及费用(若引擎写了)
         fills = st.get("fills") if isinstance(st.get("fills"), list) else []
         realized = sum(_num(f.get("pnl")) or 0 for f in fills if f.get("pnl") is not None)
         loss_session = round(-realized, 2) if realized < 0 else 0.0
-        if series or reward_today is not None:
-            any_reward = True
+        if series or income_today is not None:
+            any_income = True
         total_reward_today += reward_today or 0.0
+        total_rebate_today += rebate_today or 0.0
+        total_income_today += income_today or 0.0
         total_reward_7d += reward_7d
-        total_cumulative += cumulative_usd or 0.0
+        total_rebate_7d += rebate_7d
+        total_income_7d += income_7d
+        total_reward_cumulative += reward_cumulative or 0.0
+        total_rebate_cumulative += rebate_cumulative or 0.0
+        total_income_cumulative += income_cumulative or 0.0
         total_loss_session += loss_session
+        last_dates = [
+            str(value)
+            for value in (
+                a.get("last_snapshot_date"),
+                a.get("rebates_last_snapshot_date"),
+            )
+            if value
+        ]
         rows.append({
             "idx": idx, "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
             "today": reward_today,
+            "reward_today": reward_today,
+            "rebate_today": rebate_today,
+            "income_today": income_today,
             "today_status": live_row.get("status") or "unknown",
-            "cumulative": cumulative_usd, "last_date": a.get("last_snapshot_date"),
-            "recent": series, "reward_7d": reward_7d,
+            "reward_status": live_row.get("reward_status") or "unknown",
+            "rebate_status": live_row.get("rebate_status") or "unknown",
+            "cumulative": reward_cumulative,
+            "reward_cumulative": reward_cumulative,
+            "rebate_cumulative": rebate_cumulative,
+            "income_cumulative": income_cumulative,
+            "last_date": max(last_dates) if last_dates else None,
+            "recent": series,
+            "reward_7d": reward_7d,
+            "rebate_7d": rebate_7d,
+            "income_7d": income_7d,
             "realized_session": round(realized, 2), "fills_session": len(fills),
-            "net_est": round(reward_7d + (reward_today or 0.0) - loss_session, 2),
+            "net_est": (
+                round(income_7d + income_today - loss_session, 2)
+                if income_today is not None else None
+            ),
         })
     return {
-        "present": any_reward or bool(rows),
-        "has_reward_data": any_reward,
+        "present": any_income or bool(rows),
+        "has_reward_data": any_income,
+        "has_income_data": any_income,
         "accounts": rows,
         "total_reward_today": round(total_reward_today, 2),
+        "total_rebate_today": round(total_rebate_today, 2),
+        "total_income_today": round(total_income_today, 2),
         "total_reward_7d": round(total_reward_7d, 2),
-        "total_cumulative": round(total_cumulative, 2),
+        "total_rebate_7d": round(total_rebate_7d, 2),
+        "total_income_7d": round(total_income_7d, 2),
+        "total_cumulative": round(total_reward_cumulative, 2),
+        "total_reward_cumulative": round(total_reward_cumulative, 2),
+        "total_rebate_cumulative": round(total_rebate_cumulative, 2),
+        "total_income_cumulative": round(total_income_cumulative, 2),
         "total_loss_session": round(total_loss_session, 2),
-        "total_net_est": round(
-            total_reward_today + total_reward_7d - total_loss_session, 2
+        "total_net_est": (
+            round(total_income_today + total_income_7d - total_loss_session, 2)
+            if all(row.get("income_today") is not None for row in rows)
+            else None
         ),
         "reward_window": reward_state.get("window_label_bjt"),
         "reward_age_sec": reward_state.get("age_sec"),
         "reward_fresh": reward_state.get("fresh"),
-        "note": "今日奖励每5分钟更新，08:00切日；近7日与累计仅含已结算奖励",
+        "note": (
+            "流动性奖励与挂单返佣分别记账，每5分钟更新，"
+            "北京时间08:00切日"
+        ),
     }
 
 
 def _polymarket() -> Dict[str, Any]:
     reward_state = _pm_reward_sources()
     rewards_today_by_idx = reward_state["today_by_idx"]
+    rebates_today_by_idx = reward_state["rebates_today_by_idx"]
+    income_today_by_idx = reward_state["income_today_by_idx"]
     rewards_cumulative_by_idx = reward_state["cumulative_by_idx"]
+    rebates_cumulative_by_idx = reward_state[
+        "rebates_cumulative_by_idx"
+    ]
+    income_cumulative_by_idx = reward_state["income_cumulative_by_idx"]
     accounts: List[dict] = []
     running = live_orders = 0
     live_order_notional = 0.0
@@ -782,7 +940,11 @@ def _polymarket() -> Dict[str, Any]:
             "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
             "funder": (funder[:6] + "…" + funder[-3:]) if len(funder) > 12 else (funder or f"acct{idx}"),
             "rewards": rewards_today_by_idx.get(idx),
+            "rebates": rebates_today_by_idx.get(idx),
+            "income_today": income_today_by_idx.get(idx),
             "rewards_cumulative": rewards_cumulative_by_idx.get(idx),
+            "rebates_cumulative": rebates_cumulative_by_idx.get(idx),
+            "income_cumulative": income_cumulative_by_idx.get(idx),
             "status": status,
             "status_cls": status_cls,
             "principal": collateral.get("balance"),
@@ -810,6 +972,8 @@ def _polymarket() -> Dict[str, Any]:
             "age": _age_text(state_age),
         })
     rewards_total = reward_state.get("total_today_usd")
+    rebates_total = reward_state.get("total_today_rebates_usd")
+    income_total = reward_state.get("total_today_income_usd")
     curator = _read_json(DATA_DIR / "auto_curator_state.json")
     curator_out = None
     if isinstance(curator, dict):
@@ -890,9 +1054,24 @@ def _polymarket() -> Dict[str, Any]:
         "fills_seen": fills_seen if fresh_states else None,
         "cooldown": cooldown if fresh_states else None,
         "rewards_total": rewards_total,
+        "rebates_total": rebates_total,
+        "income_total": income_total,
         "rewards_cumulative_total": reward_state.get("total_cumulative_usd"),
+        "rebates_cumulative_total": reward_state.get(
+            "total_cumulative_rebates_usd"
+        ),
+        "income_cumulative_total": reward_state.get(
+            "total_cumulative_income_usd"
+        ),
         "rewards_known_accounts": reward_state.get("known_accounts"),
+        "rebates_known_accounts": reward_state.get(
+            "rebates_known_accounts"
+        ),
+        "income_known_accounts": reward_state.get("income_known_accounts"),
         "rewards_successful_accounts": reward_state.get("successful_accounts"),
+        "rebates_successful_accounts": reward_state.get(
+            "successful_rebate_accounts"
+        ),
         "rewards_configured_accounts": reward_state.get("configured_accounts"),
         "rewards_day_utc": reward_state.get("reward_date_utc"),
         "rewards_window_bjt": reward_state.get("window_label_bjt"),
@@ -1889,6 +2068,336 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
 
 # ---------- Single Account ----------
 
+BTC_SINGLE_SIDE_LABELS = {
+    "adaptive_mean_reversion": "自适应均值回归",
+    "trend_follow": "趋势跟随",
+    "funding_carry": "Funding carry",
+    "regime_switch": "状态切换",
+}
+
+
+def _btc_single_side_num(
+    value: Any,
+    *,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    """Return a bounded finite number, never NaN/Infinity."""
+
+    if isinstance(value, bool):
+        return None
+    number = _num(value)
+    if number is None or not math.isfinite(number):
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return number
+
+
+def _btc_single_side_reference() -> Dict[str, Any]:
+    """Last reviewed diagnostic, never a paper/live performance claim."""
+
+    rows = [
+        {
+            "strategy": "adaptive_mean_reversion",
+            "label": BTC_SINGLE_SIDE_LABELS["adaptive_mean_reversion"],
+            "completed_cycles": 28,
+            "total_volume_usdc": 838.18310412,
+            "net_pnl_usdc": -0.2327047702306,
+            "break_even_rebate_bps": 2.77629994,
+            "stress_break_even_rebate_bps": 3.15416643,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "trend_follow",
+            "label": BTC_SINGLE_SIDE_LABELS["trend_follow"],
+            "completed_cycles": 28,
+            "total_volume_usdc": 838.03351854,
+            "net_pnl_usdc": -0.1485816477271,
+            "break_even_rebate_bps": 1.77297977,
+            "stress_break_even_rebate_bps": 2.15083689,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "funding_carry",
+            "label": BTC_SINGLE_SIDE_LABELS["funding_carry"],
+            "completed_cycles": 0,
+            "total_volume_usdc": 0.0,
+            "net_pnl_usdc": 0.0,
+            "break_even_rebate_bps": None,
+            "stress_break_even_rebate_bps": None,
+            "evaluable": False,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "regime_switch",
+            "label": BTC_SINGLE_SIDE_LABELS["regime_switch"],
+            "completed_cycles": 37,
+            "total_volume_usdc": 1107.36423011,
+            "net_pnl_usdc": -0.0972210542782,
+            "break_even_rebate_bps": 0.8779501056,
+            "stress_break_even_rebate_bps": 1.2543158324,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+    ]
+    return {
+        "present": True,
+        "source_kind": "reviewed_reference_snapshot",
+        "source_label": "已审阅诊断快照",
+        "updated_at": "2026-07-27",
+        "age": None,
+        "symbol": "BTC",
+        "mode": "read_only_research",
+        "execution_authorized": False,
+        "promotion_ready": False,
+        "selected_candidate_id": None,
+        "closest_to_break_even": "regime_switch",
+        "closest_to_break_even_label": BTC_SINGLE_SIDE_LABELS["regime_switch"],
+        "window_start": "2026-07-17T11:05:08.032688Z",
+        "window_end": "2026-07-27T15:03:44.259008Z",
+        "quotes_loaded": 2204,
+        "scenario": {
+            "position_sizing_mode": "fixed_notional",
+            "leverage": 1.0,
+            "target_notional_usdc": 15.0,
+            "contract_multiplier_btc": 1.0,
+            "contract_step": 0.000001,
+            "contract_verified_against_live_venue": False,
+        },
+        "strategies": rows,
+        "limitations": [
+            "当前窗口已被查看，只能叫末段诊断，不能叫 untouched holdout",
+            "旧数据缺少报价源时间戳，结果通过诊断开关复现",
+            "历史公开报价不是 firm fill，真实成交偏差尚未校准",
+            "四个策略全部未达到 paper 或 live 准入标准",
+        ],
+    }
+
+
+def _btc_single_side_report(payload: Any, *, age: Optional[int]) -> Optional[Dict[str, Any]]:
+    """Normalize only a fail-closed, explicitly non-executable report."""
+
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("mode") != "read_only_research"
+        or payload.get("symbol") != "BTC"
+        or payload.get("writes_possible") is not False
+        or payload.get("execution_authorized") is not False
+        or payload.get("promotion_ready") is not False
+    ):
+        return None
+    evaluation = payload.get("evaluation")
+    if not isinstance(evaluation, dict):
+        return None
+    raw_strategies = evaluation.get("strategies")
+    if (
+        not isinstance(raw_strategies, list)
+        or len(raw_strategies) != len(BTC_SINGLE_SIDE_LABELS)
+    ):
+        return None
+
+    rows: List[Dict[str, Any]] = []
+    for item in raw_strategies:
+        if not isinstance(item, dict):
+            return None
+        strategy = str(item.get("strategy") or "")
+        if strategy not in BTC_SINGLE_SIDE_LABELS:
+            return None
+        if any(
+            item.get(key) is not None and item.get(key) is not False
+            for key in ("execution_authorized", "promotion_ready")
+        ):
+            return None
+        diagnostic = item.get("holdout")
+        stress = item.get("holdout_spread_stress")
+        if not isinstance(diagnostic, dict) or not isinstance(stress, dict):
+            return None
+        raw_cycles = diagnostic.get("completed_cycles")
+        cycles_number = _btc_single_side_num(
+            raw_cycles,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        if (
+            cycles_number is None
+            or not cycles_number.is_integer()
+        ):
+            return None
+        cycles = int(cycles_number)
+        volume = _btc_single_side_num(
+            diagnostic.get("total_volume_usdc"),
+            minimum=0,
+            maximum=1_000_000_000_000,
+        )
+        net_pnl = _btc_single_side_num(
+            diagnostic.get("net_pnl_usdc"),
+            minimum=-1_000_000_000_000,
+            maximum=1_000_000_000_000,
+        )
+        rebate = _btc_single_side_num(
+            diagnostic.get("break_even_rebate_bps_on_actual_volume"),
+            minimum=-1_000_000,
+            maximum=1_000_000,
+        )
+        stress_rebate = _btc_single_side_num(
+            stress.get("break_even_rebate_bps_on_actual_volume"),
+            minimum=-1_000_000,
+            maximum=1_000_000,
+        )
+        if volume is None or net_pnl is None:
+            return None
+        if cycles > 0 and (rebate is None or stress_rebate is None):
+            return None
+        blockers = item.get("blockers")
+        rows.append(
+            {
+                "strategy": strategy,
+                "label": BTC_SINGLE_SIDE_LABELS[strategy],
+                "completed_cycles": cycles,
+                "total_volume_usdc": volume,
+                "net_pnl_usdc": net_pnl,
+                "break_even_rebate_bps": rebate if cycles > 0 else None,
+                "stress_break_even_rebate_bps": stress_rebate if cycles > 0 else None,
+                "evaluable": cycles > 0,
+                "promotion_ready": False,
+                "diagnostic_candidate_id": item.get("diagnostic_candidate_id"),
+                "selected_candidate_id": item.get("selected_candidate_id"),
+                "blocker_count": len(blockers) if isinstance(blockers, list) else None,
+            }
+        )
+    if (
+        len(rows) != len(BTC_SINGLE_SIDE_LABELS)
+        or {row["strategy"] for row in rows} != set(BTC_SINGLE_SIDE_LABELS)
+    ):
+        return None
+
+    evaluable = [
+        row
+        for row in rows
+        if row["evaluable"] and row["break_even_rebate_bps"] is not None
+    ]
+    closest = min(
+        evaluable,
+        key=lambda row: float(row["break_even_rebate_bps"]),
+        default=None,
+    )
+    scenario = payload.get("scenario") if isinstance(payload.get("scenario"), dict) else {}
+    contract = scenario.get("contract") if isinstance(scenario.get("contract"), dict) else {}
+    position_sizing_mode = scenario.get("position_sizing_mode")
+    contract_verified = contract.get("verified_against_live_venue")
+    quotes_loaded_number = _btc_single_side_num(
+        payload.get("quotes_loaded"),
+        minimum=0,
+        maximum=1_000_000_000,
+    )
+    leverage = _btc_single_side_num(
+        scenario.get("leverage"),
+        minimum=0.000000001,
+        maximum=1_000,
+    )
+    target_notional = _btc_single_side_num(
+        scenario.get("target_notional_usdc"),
+        minimum=0.000000001,
+        maximum=1_000_000_000_000,
+    )
+    contract_multiplier = _btc_single_side_num(
+        contract.get("multiplier_btc_per_contract"),
+        minimum=0.000000001,
+        maximum=1_000_000,
+    )
+    contract_step = _btc_single_side_num(
+        contract.get("contract_step"),
+        minimum=0.000000001,
+        maximum=1_000_000,
+    )
+    if (
+        quotes_loaded_number is None
+        or not quotes_loaded_number.is_integer()
+        or leverage is None
+        or target_notional is None
+        or contract_multiplier is None
+        or contract_step is None
+        or position_sizing_mode not in {"fixed_notional", "fixed_margin"}
+        or not isinstance(contract_verified, bool)
+    ):
+        return None
+    first_diagnostic = next(
+        (
+            item.get("holdout")
+            for item in raw_strategies
+            if isinstance(item, dict) and isinstance(item.get("holdout"), dict)
+        ),
+        {},
+    )
+    return {
+        "present": True,
+        "source_kind": "generated_report",
+        "source_label": "最新只读报告",
+        "updated_at": datetime.fromtimestamp(
+            BTC_SINGLE_SIDE_REPORT_PATH.stat().st_mtime,
+            tz=timezone.utc,
+        ).isoformat() if BTC_SINGLE_SIDE_REPORT_PATH.exists() else None,
+        "age": _age_text(age),
+        "symbol": "BTC",
+        "mode": "read_only_research",
+        "execution_authorized": False,
+        "promotion_ready": False,
+        "selected_candidate_id": None,
+        "closest_to_break_even": closest.get("strategy") if closest else None,
+        "closest_to_break_even_label": closest.get("label") if closest else None,
+        "window_start": first_diagnostic.get("started_at"),
+        "window_end": first_diagnostic.get("ended_at"),
+        "quotes_loaded": int(quotes_loaded_number),
+        "scenario": {
+            "position_sizing_mode": position_sizing_mode,
+            "leverage": leverage,
+            "target_notional_usdc": target_notional,
+            "contract_multiplier_btc": contract_multiplier,
+            "contract_step": contract_step,
+            "contract_verified_against_live_venue": contract_verified,
+        },
+        "strategies": rows,
+        "limitations": [
+            "页面中的 holdout 字段只按末段诊断展示，不声明 untouched holdout",
+            "公开历史报价不是 firm fill，不能据此授权下单",
+            "Funding carry 零周期按不可评估处理，不按零亏损通过",
+            "四个策略全部固定为 promotion_ready=false",
+        ],
+    }
+
+
+def _btc_single_side_research() -> Dict[str, Any]:
+    payload = _read_json(BTC_SINGLE_SIDE_REPORT_PATH)
+    try:
+        normalized = _btc_single_side_report(
+            payload,
+            age=_mtime_age(BTC_SINGLE_SIDE_REPORT_PATH),
+        )
+    except Exception:
+        # This is a read-only accessory panel: malformed research data must not
+        # take down the unified console or affect any execution controls.
+        normalized = None
+    return normalized or _btc_single_side_reference()
+
+
 def _sa_worker_pid() -> Optional[int]:
     """先查 systemd 单元(sa-paper-worker.service,2026-07-08 起的正规跑法——
     dashboard Popen 子进程会被 dashboard 重启连坐杀死,7/1 停摆即此因),
@@ -1918,7 +2427,8 @@ def _single_account() -> Dict[str, Any]:
     state = _read_json(DATA_DIR / "single_account_paper_state.json")
     out: Dict[str, Any] = {"present": state is not None,
                            "worker_pid": _sa_worker_pid(),
-                           "automation_draft": _read_json(DATA_DIR / "single_account_automation_draft.json")}
+                           "automation_draft": _read_json(DATA_DIR / "single_account_automation_draft.json"),
+                           "btc_single_side_research": _btc_single_side_research()}
     out["worker_running"] = out["worker_pid"] is not None
     if state:
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
@@ -2293,6 +2803,16 @@ def _varia_control_state(vd: Optional[dict] = None) -> Dict[str, Any]:
 def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     raw_hosts = raw.get("hosts") if isinstance(raw.get("hosts"), dict) else {}
+    raw_platform_leverage = (
+        raw.get("target_leverage")
+        if isinstance(raw.get("target_leverage"), dict)
+        else {}
+    )
+    raw_effective_leverage = (
+        raw.get("effective_leverage")
+        if isinstance(raw.get("effective_leverage"), dict)
+        else {}
+    )
     pressure = raw.get("pressure_test") if isinstance(raw.get("pressure_test"), dict) else {}
     mode = str(raw.get("mode") or "semi_auto")
     if mode not in {"semi_auto", "full_auto"}:
@@ -2306,6 +2826,18 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
     max_spread = _num(raw.get("max_auto_spread_bps"))
     ratio = _num(raw.get("major_ratio"))
     strategy_b_rwa_ratio = _num(raw.get("strategy_b_rwa_target_volume_ratio"))
+    platform_leverage: Dict[str, str] = {}
+    effective_leverage: Dict[str, str] = {}
+    for strategy in ("A", "B"):
+        platform = _num(raw_platform_leverage.get(strategy))
+        platform = min(40.0, max(1.0, platform if platform is not None else 12.0))
+        effective = _num(raw_effective_leverage.get(strategy))
+        effective = min(
+            platform,
+            max(1.0, effective if effective is not None else 8.0),
+        )
+        platform_leverage[strategy] = str(platform)
+        effective_leverage[strategy] = str(effective)
     hosts: Dict[str, dict] = {}
     for host, default_strategy in (("vps1", "A"), ("vps2", "B")):
         configured = raw_hosts.get(host) if isinstance(raw_hosts.get(host), dict) else {}
@@ -2331,6 +2863,8 @@ def _normalize_varia_auto_state(raw: Any) -> Dict[str, Any]:
                 max(0.0, strategy_b_rwa_ratio if strategy_b_rwa_ratio is not None else 0.2),
             )
         ),
+        "target_leverage": platform_leverage,
+        "effective_leverage": effective_leverage,
         "pressure_test": {
             "enabled": bool(pressure.get("enabled")),
             "min_open_interval_minutes": max(1, min_minutes),

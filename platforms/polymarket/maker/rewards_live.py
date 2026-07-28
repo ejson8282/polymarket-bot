@@ -1,9 +1,11 @@
-"""Refresh Polymarket liquidity rewards independently of the maker engine.
+"""Refresh Polymarket maker income independently of the maker engine.
 
 Polymarket reward days use UTC. Midnight UTC is 08:00 in Asia/Shanghai, so
 the live cache naturally rolls over at 08:00 Beijing time. Completed days are
 stored in ``rewards_cumulative.json`` while the in-progress day is kept in
 ``rewards_live.json`` and is never included in the finalized cumulative sum.
+LP rewards and maker rebates are recorded separately and combined only for
+display totals.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ import json
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 try:
@@ -35,6 +39,7 @@ except ImportError:
 
 
 _BJT = ZoneInfo("Asia/Shanghai")
+_REBATES_URL = "https://clob.polymarket.com/rebates/current"
 
 
 def _as_utc(now: Optional[datetime] = None) -> datetime:
@@ -90,6 +95,92 @@ def _missing_finalized_dates(account_state: dict, finalized_day: date) -> List[s
     return dates
 
 
+def _maker_address_for_config(
+    config_path: Path,
+    fallback_address: Optional[str] = None,
+) -> Optional[str]:
+    """Return the account's maker/funder address without exposing credentials."""
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        config = {}
+    account = config.get("account") if isinstance(config, dict) else {}
+    if not isinstance(account, dict):
+        account = {}
+    address = str(account.get("funder") or fallback_address or "").strip()
+    if (
+        len(address) != 42
+        or not address.startswith("0x")
+        or any(ch not in "0123456789abcdefABCDEF" for ch in address[2:])
+    ):
+        return None
+    return address
+
+
+def _fetch_daily_rebate_usd(maker_address: str, date_str: str) -> float:
+    """Return official maker rebates for one maker and UTC date."""
+    query = urlencode({"date": date_str, "maker_address": maker_address})
+    request = Request(
+        f"{_REBATES_URL}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "polymarket-maker-income/1.0",
+        },
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict):
+        rows = payload.get("data") or payload.get("results") or []
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        return 0.0
+    total = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            total += float(row.get("rebated_fees_usdc") or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _missing_finalized_rebate_dates(
+    account_state: dict,
+    finalized_day: date,
+) -> List[str]:
+    """Backfill rebate dates already represented in the LP reward ledger."""
+    rebate_daily = account_state.get("rebates_daily")
+    if not isinstance(rebate_daily, dict):
+        rebate_daily = {}
+    reward_daily = account_state.get("daily")
+    if not isinstance(reward_daily, dict):
+        reward_daily = {}
+
+    final_key = finalized_day.isoformat()
+    candidates: List[str] = []
+    last_value = account_state.get("rebates_last_snapshot_date")
+    if last_value:
+        try:
+            start = date.fromisoformat(str(last_value)) + timedelta(days=1)
+            if start <= finalized_day:
+                candidates.extend(_dates_between(start, finalized_day))
+        except ValueError:
+            pass
+    else:
+        for value in reward_daily:
+            try:
+                if date.fromisoformat(str(value)) <= finalized_day:
+                    candidates.append(str(value))
+            except ValueError:
+                continue
+    candidates.append(final_key)
+    # A first migration may have a long LP history. Bound the initial public
+    # endpoint backfill while retaining every already-recorded recent day.
+    return sorted(set(candidates))[-90:]
+
+
 async def refresh_rewards(
     configs: Iterable[Tuple[int, Path]],
     data_dir: Path,
@@ -97,8 +188,9 @@ async def refresh_rewards(
     now: Optional[datetime] = None,
     build_client: Callable[[Path], tuple] = _build_snapshot_client,
     fetch_daily: Callable[[Any, int, str], float] = _fetch_daily_reward_usd,
+    fetch_rebate: Callable[[str, str], float] = _fetch_daily_rebate_usd,
 ) -> dict:
-    """Fetch the in-progress day and finalize all missing completed days."""
+    """Fetch live and finalized LP rewards plus maker rebates."""
     data_dir.mkdir(parents=True, exist_ok=True)
     now_utc = _as_utc(now)
     current_day = now_utc.date()
@@ -124,7 +216,8 @@ async def refresh_rewards(
         else {}
     )
     live_accounts: Dict[str, dict] = {}
-    successful = 0
+    successful_rewards = 0
+    successful_rebates = 0
 
     for account_idx, config_path in configs:
         account_key = str(account_idx)
@@ -134,67 +227,163 @@ async def refresh_rewards(
         row = {
             "today_usd": prior.get("today_usd"),
             "previous_day_usd": prior.get("previous_day_usd"),
+            "today_rebates_usd": prior.get("today_rebates_usd"),
+            "previous_day_rebates_usd": prior.get(
+                "previous_day_rebates_usd"
+            ),
+            "today_total_income_usd": prior.get("today_total_income_usd"),
             "status": "error",
+            "reward_status": "error",
+            "rebate_status": "error",
             "updated_at": prior.get("updated_at"),
-            "error": "reward API unavailable",
+            "error": "income APIs unavailable",
         }
 
         client, address, signature_type, client_error = await asyncio.to_thread(
             build_client, config_path
         )
-        if client_error:
-            row["error"] = str(client_error).split(":", 1)[0]
-            live_accounts[account_key] = row
-            continue
+        maker_address = _maker_address_for_config(config_path, address)
 
         account_state = cumulative_accounts.get(account_key)
         if not isinstance(account_state, dict):
             account_state = {
                 "address": address,
+                "maker_address": maker_address,
                 "daily": {},
+                "rebates_daily": {},
                 "cumulative_usd": 0.0,
+                "rebates_cumulative_usd": 0.0,
+                "income_cumulative_usd": 0.0,
                 "last_snapshot_date": None,
+                "rebates_last_snapshot_date": None,
             }
             cumulative_accounts[account_key] = account_state
-        account_state["address"] = address
+        if address:
+            account_state["address"] = address
+        if maker_address:
+            account_state["maker_address"] = maker_address
         daily = account_state.get("daily")
         if not isinstance(daily, dict):
             daily = {}
             account_state["daily"] = daily
+        rebates_daily = account_state.get("rebates_daily")
+        if not isinstance(rebates_daily, dict):
+            rebates_daily = {}
+            account_state["rebates_daily"] = rebates_daily
 
-        try:
-            for day_key in _missing_finalized_dates(account_state, finalized_day):
-                amount = await asyncio.to_thread(
-                    fetch_daily, client, signature_type, day_key
-                )
-                existing = float(daily.get(day_key) or 0.0)
-                fetched = float(amount)
-                # An empty result is common for a few moments at rollover.
-                # Preserve a known non-zero value in that case, while allowing
-                # positive API corrections in either direction.
-                daily[day_key] = round(
-                    existing if fetched == 0.0 and existing > 0.0 else fetched,
-                    6,
-                )
+        reward_error: Optional[str] = None
+        rebate_error: Optional[str] = None
+        if client_error:
+            reward_error = str(client_error).split(":", 1)[0]
+        else:
+            try:
+                for day_key in _missing_finalized_dates(
+                    account_state, finalized_day
+                ):
+                    amount = await asyncio.to_thread(
+                        fetch_daily, client, signature_type, day_key
+                    )
+                    existing = float(daily.get(day_key) or 0.0)
+                    fetched = float(amount)
+                    # An empty result is common for a few moments at rollover.
+                    # Preserve a known non-zero value in that case, while
+                    # allowing positive API corrections in either direction.
+                    daily[day_key] = round(
+                        existing if fetched == 0.0 and existing > 0.0 else fetched,
+                        6,
+                    )
 
-            today_amount = await asyncio.to_thread(
-                fetch_daily, client, signature_type, current_key
-            )
-            account_state["cumulative_usd"] = round(
-                sum(float(value or 0.0) for value in daily.values()), 6
-            )
-            if daily:
-                account_state["last_snapshot_date"] = max(daily)
-            row = {
-                "today_usd": round(float(today_amount), 6),
-                "previous_day_usd": round(float(daily.get(finalized_key) or 0.0), 6),
-                "status": "ok",
-                "updated_at": generated_at,
-                "error": None,
-            }
-            successful += 1
-        except Exception as exc:
-            row["error"] = type(exc).__name__
+                today_amount = await asyncio.to_thread(
+                    fetch_daily, client, signature_type, current_key
+                )
+                row["today_usd"] = round(float(today_amount), 6)
+                row["previous_day_usd"] = round(
+                    float(daily.get(finalized_key) or 0.0), 6
+                )
+                row["reward_status"] = "ok"
+                successful_rewards += 1
+            except Exception as exc:
+                reward_error = type(exc).__name__
+
+        if maker_address:
+            try:
+                rebate_history_errors: List[str] = []
+                for day_key in _missing_finalized_rebate_dates(
+                    account_state, finalized_day
+                ):
+                    try:
+                        amount = await asyncio.to_thread(
+                            fetch_rebate, maker_address, day_key
+                        )
+                    except Exception as exc:
+                        rebate_history_errors.append(
+                            f"{day_key}:{type(exc).__name__}"
+                        )
+                        continue
+                    existing = float(rebates_daily.get(day_key) or 0.0)
+                    fetched = float(amount)
+                    rebates_daily[day_key] = round(
+                        existing if fetched == 0.0 and existing > 0.0 else fetched,
+                        6,
+                    )
+                today_rebate = await asyncio.to_thread(
+                    fetch_rebate, maker_address, current_key
+                )
+                row["today_rebates_usd"] = round(float(today_rebate), 6)
+                row["previous_day_rebates_usd"] = round(
+                    float(rebates_daily.get(finalized_key) or 0.0), 6
+                )
+                row["rebate_status"] = (
+                    "partial" if rebate_history_errors else "ok"
+                )
+                successful_rebates += 1
+                if rebate_history_errors:
+                    rebate_error = "history-incomplete"
+            except Exception as exc:
+                rebate_error = type(exc).__name__
+        else:
+            rebate_error = "maker-address-unavailable"
+
+        account_state["cumulative_usd"] = round(
+            sum(float(value or 0.0) for value in daily.values()), 6
+        )
+        account_state["rebates_cumulative_usd"] = round(
+            sum(float(value or 0.0) for value in rebates_daily.values()), 6
+        )
+        account_state["income_cumulative_usd"] = round(
+            account_state["cumulative_usd"]
+            + account_state["rebates_cumulative_usd"],
+            6,
+        )
+        if daily:
+            account_state["last_snapshot_date"] = max(daily)
+        if rebates_daily:
+            account_state["rebates_last_snapshot_date"] = max(rebates_daily)
+
+        today_values = (
+            row.get("today_usd"),
+            row.get("today_rebates_usd"),
+        )
+        row["today_total_income_usd"] = (
+            round(sum(float(value) for value in today_values), 6)
+            if all(value is not None for value in today_values)
+            else None
+        )
+        statuses = (row["reward_status"], row["rebate_status"])
+        if statuses == ("ok", "ok"):
+            row["status"] = "ok"
+        elif "ok" in statuses or "partial" in statuses:
+            row["status"] = "partial"
+        row["updated_at"] = (
+            generated_at
+            if "ok" in statuses or "partial" in statuses
+            else row["updated_at"]
+        )
+        errors = [
+            f"reward:{reward_error}" if reward_error else "",
+            f"rebate:{rebate_error}" if rebate_error else "",
+        ]
+        row["error"] = ";".join(value for value in errors if value) or None
 
         live_accounts[account_key] = row
 
@@ -209,8 +398,23 @@ async def refresh_rewards(
         for row in live_accounts.values()
         if row.get("previous_day_usd") is not None
     ]
+    known_today_rebates = [
+        float(row["today_rebates_usd"])
+        for row in live_accounts.values()
+        if row.get("today_rebates_usd") is not None
+    ]
+    known_previous_rebates = [
+        float(row["previous_day_rebates_usd"])
+        for row in live_accounts.values()
+        if row.get("previous_day_rebates_usd") is not None
+    ]
+    known_today_income = [
+        float(row["today_total_income_usd"])
+        for row in live_accounts.values()
+        if row.get("today_total_income_usd") is not None
+    ]
     live_state = {
-        "version": 1,
+        "version": 2,
         "generated_at": generated_at,
         "reward_date_utc": current_key,
         "previous_date_utc": finalized_key,
@@ -226,11 +430,27 @@ async def refresh_rewards(
         "total_previous_usd": (
             round(sum(known_previous), 6) if known_previous else None
         ),
-        "successful_accounts": successful,
+        "total_today_rebates_usd": (
+            round(sum(known_today_rebates), 6)
+            if known_today_rebates else None
+        ),
+        "total_previous_rebates_usd": (
+            round(sum(known_previous_rebates), 6)
+            if known_previous_rebates else None
+        ),
+        "total_today_income_usd": (
+            round(sum(known_today_income), 6)
+            if live_accounts
+            and len(known_today_income) == len(live_accounts)
+            else None
+        ),
+        "successful_accounts": successful_rewards,
+        "successful_reward_accounts": successful_rewards,
+        "successful_rebate_accounts": successful_rebates,
         "configured_accounts": len(live_accounts),
     }
 
-    cumulative["version"] = 2
+    cumulative["version"] = 3
     cumulative["updated_at"] = generated_at
     _save_state(cumulative_path, cumulative)
     _atomic_json(live_path, live_state)
@@ -261,7 +481,9 @@ def main() -> int:
     print(
         "[rewards-live] "
         f"date={state.get('reward_date_utc')} accounts={ok}/{total} "
-        f"today_usd={state.get('total_today_usd')}",
+        f"lp_usd={state.get('total_today_usd')} "
+        f"rebates_usd={state.get('total_today_rebates_usd')} "
+        f"income_usd={state.get('total_today_income_usd')}",
         flush=True,
     )
     return 0 if ok else 1

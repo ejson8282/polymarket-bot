@@ -1333,8 +1333,16 @@ def test_pm_rewards_use_account_index_and_keep_today_separate(
         {
             "accounts": {
                 "0": {"cumulative_usd": 99.0},
-                "1": {"cumulative_usd": 10.0},
-                "2": {"cumulative_usd": 20.0},
+                "1": {
+                    "cumulative_usd": 10.0,
+                    "rebates_cumulative_usd": 3.0,
+                    "income_cumulative_usd": 13.0,
+                },
+                "2": {
+                    "cumulative_usd": 20.0,
+                    "rebates_cumulative_usd": 4.0,
+                    "income_cumulative_usd": 24.0,
+                },
             }
         },
     )
@@ -1345,9 +1353,21 @@ def test_pm_rewards_use_account_index_and_keep_today_separate(
             "reward_date_utc": "2026-07-27",
             "window_label_bjt": "07-27 08:00 - 07-28 08:00",
             "successful_accounts": 2,
+            "successful_reward_accounts": 2,
+            "successful_rebate_accounts": 2,
             "accounts": {
-                "1": {"today_usd": 1.25, "status": "ok"},
-                "2": {"today_usd": 2.5, "status": "ok"},
+                "1": {
+                    "today_usd": 1.25,
+                    "today_rebates_usd": 0.5,
+                    "today_total_income_usd": 1.75,
+                    "status": "ok",
+                },
+                "2": {
+                    "today_usd": 2.5,
+                    "today_rebates_usd": 1.25,
+                    "today_total_income_usd": 3.75,
+                    "status": "ok",
+                },
             },
         },
     )
@@ -1357,9 +1377,78 @@ def test_pm_rewards_use_account_index_and_keep_today_separate(
     result = console._pm_reward_sources()
 
     assert result["today_by_idx"] == {1: 1.25, 2: 2.5}
+    assert result["rebates_today_by_idx"] == {1: 0.5, 2: 1.25}
+    assert result["income_today_by_idx"] == {1: 1.75, 2: 3.75}
     assert result["total_today_usd"] == 3.75
+    assert result["total_today_rebates_usd"] == 1.75
+    assert result["total_today_income_usd"] == 5.5
     assert result["total_cumulative_usd"] == 30.0
+    assert result["total_cumulative_rebates_usd"] == 7.0
+    assert result["total_cumulative_income_usd"] == 37.0
     assert result["fresh"] is True
+
+
+def test_pm_income_keeps_rewards_and_rebates_separate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _write_json(
+        data_dir / "rewards_cumulative.json",
+        {
+            "accounts": {
+                "1": {
+                    "daily": {"2026-07-26": 1.0, "2026-07-27": 2.0},
+                    "rebates_daily": {
+                        "2026-07-26": 0.5,
+                        "2026-07-27": 0.75,
+                    },
+                    "cumulative_usd": 3.0,
+                    "rebates_cumulative_usd": 1.25,
+                    "income_cumulative_usd": 4.25,
+                    "last_snapshot_date": "2026-07-27",
+                    "rebates_last_snapshot_date": "2026-07-27",
+                }
+            }
+        },
+    )
+    _write_json(
+        data_dir / "rewards_live.json",
+        {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reward_date_utc": "2026-07-28",
+            "successful_reward_accounts": 1,
+            "successful_rebate_accounts": 1,
+            "accounts": {
+                "1": {
+                    "today_usd": 0.4,
+                    "today_rebates_usd": 0.2,
+                    "today_total_income_usd": 0.6,
+                    "reward_status": "ok",
+                    "rebate_status": "ok",
+                    "status": "ok",
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "PM_PEER_DIR", data_dir / "pm_peer")
+    monkeypatch.setattr(console, "_pm_all_accounts", lambda: [1])
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {})
+
+    result = console._pm_pnl()
+    account = result["accounts"][0]
+
+    assert account["reward_today"] == 0.4
+    assert account["rebate_today"] == 0.2
+    assert account["income_today"] == 0.6
+    assert account["reward_7d"] == 3.0
+    assert account["rebate_7d"] == 1.25
+    assert account["income_7d"] == 4.25
+    assert account["income_cumulative"] == 4.25
+    assert account["net_est"] == 4.85
+    assert result["total_income_today"] == 0.6
+    assert result["total_rebate_today"] == 0.2
 
 
 def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> None:
@@ -1390,7 +1479,9 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "查看全部 '+alerts.length+' 条" in html
     assert 'class="alert-more"' in html
     assert "今日奖励" in html
-    assert "每5分钟更新 · 08:00切日" in html
+    assert "今日返佣" in html
+    assert "奖励与返佣每5分钟更新" in html
+    assert "流动性奖励、挂单返佣与交易损耗按账号核算" in html
     assert 'data-k="pmk.rewards_sub"' in html
     assert "hosts[h].age_sec??999999" in html
     assert "双边权益不完整" in html
