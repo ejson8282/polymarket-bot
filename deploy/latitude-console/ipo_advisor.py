@@ -27,7 +27,8 @@ from pathlib import Path
 
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", "/home/ubuntu/polymarket-bot/data"))
 STATE_URL = os.getenv("LATITUDE_STATE_URL", "http://127.0.0.1:8600/api/state")
-DISCORD_FILE = DATA_DIR / "discord_webhook.txt"
+DISCORD_NORMAL_FILE = DATA_DIR / "discord_normal_webhook.txt"
+DISCORD_LEGACY_FILE = DATA_DIR / "discord_webhook.txt"
 VIEWS_FILE = DATA_DIR / "ipo_boss_views.json"          # {code: [{ts, text}]}
 PACK_FILE = DATA_DIR / "ipo_judgment_pack.json"        # 第二层判研输入
 BJT = timezone(timedelta(hours=8))
@@ -43,9 +44,13 @@ def _get_state() -> dict:
         return json.load(r)
 
 
+def _discord_webhook_file() -> Path:
+    return DISCORD_NORMAL_FILE if DISCORD_NORMAL_FILE.exists() else DISCORD_LEGACY_FILE
+
+
 def _discord(text: str) -> bool:
     try:
-        url = DISCORD_FILE.read_text(encoding="utf-8").strip()
+        url = _discord_webhook_file().read_text(encoding="utf-8").strip()
         if not url.startswith("https://"):
             return False
         req = urllib.request.Request(url, data=json.dumps({"content": text[:1900]}).encode("utf-8"),

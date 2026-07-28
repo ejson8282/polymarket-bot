@@ -926,6 +926,54 @@ def test_capital_accounting_separates_reconciled_cashflows_from_pnl(
     }
 
 
+def test_capital_accounting_prefers_complete_platform_principal(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _patch_varia_dependencies(monkeypatch, tmp_path)
+    state = _state(
+        "vps2",
+        datetime.now(timezone.utc).isoformat(),
+        _venue(ok=True),
+        _venue(ok=True),
+        ondo=_venue(ok=True),
+    )
+    state["exchanges"]["ondo"]["balance"]["raw"] = {"netInvested": "95"}
+    state["exchanges"]["variational"]["loss_refunds"] = {
+        "external_cashflow_complete": True,
+        "external_net_invested_usdc": "110",
+    }
+    _write_json(tmp_path / "ops_state.json", state)
+    _write_json(
+        tmp_path / "home_equity_principal.json",
+        {
+            "vps2": {
+                "ondo": {
+                    "initial": 90,
+                    "cashflows": [],
+                    "reconciled": True,
+                },
+                "variational": {
+                    "initial": 100,
+                    "cashflows": [],
+                    "reconciled": True,
+                },
+            }
+        },
+    )
+
+    capital = console._var_decibel()["capital"]
+    sources = {row["venue"]: row for row in capital["sources"]}
+
+    assert capital["complete"] is True
+    assert capital["initial_principal"] == 190.0
+    assert capital["net_cashflow"] == 15.0
+    assert capital["principal_total"] == 205.0
+    assert capital["current_equity"] == 200.0
+    assert capital["pnl"] == -5.0
+    assert sources["variational"]["principal_source"] == "variational.transfers"
+    assert sources["ondo"]["principal_source"] == "ondo.balance.raw.netInvested"
+
+
 def test_settled_incentives_are_attributed_without_double_counting_equity(
     monkeypatch, tmp_path: Path
 ) -> None:

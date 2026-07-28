@@ -46,3 +46,21 @@ def test_legacy_standalone_push_can_be_enabled_explicitly(monkeypatch) -> None:
     module.brief()
 
     assert len(sent) == 1
+
+
+@pytest.mark.parametrize("script_name", ["ipo_advisor.py", "ipo_advisor_win.py"])
+def test_discord_prefers_normal_channel_and_falls_back_to_legacy(
+    monkeypatch, tmp_path: Path, script_name: str,
+) -> None:
+    module = _load(script_name)
+    normal = tmp_path / "discord_normal_webhook.txt"
+    legacy = tmp_path / "discord_webhook.txt"
+    legacy.write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(module, "DISCORD_NORMAL_FILE", normal)
+    monkeypatch.setattr(module, "DISCORD_LEGACY_FILE", legacy)
+
+    assert module._discord_webhook_file() == legacy
+
+    normal.write_text("normal", encoding="utf-8")
+
+    assert module._discord_webhook_file() == normal
