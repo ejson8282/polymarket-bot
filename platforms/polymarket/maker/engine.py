@@ -192,6 +192,8 @@ _notify_cooldowns: dict[str, float] = {}
 _NOTIFY_COOLDOWN_SEC = 60  # max 1 message per event type per 60s
 _discord_webhook_url: str = ""  # set once during engine init
 _discord_important_webhook_url: str = ""
+_discord_normal_webhook_file: Optional[Path] = None
+_discord_important_webhook_file: Optional[Path] = None
 
 
 def _read_webhook_file(path: Path) -> str:
@@ -246,11 +248,23 @@ def notify_discord(title: str, message: str, level: str = "info") -> None:
     Safe to call from anywhere — instant no-op if webhook is not configured
     or if the same event type was notified within the cooldown window.
     """
+    normal_file_url = (
+        _read_webhook_file(_discord_normal_webhook_file)
+        if _discord_normal_webhook_file is not None
+        else ""
+    )
+    important_file_url = (
+        _read_webhook_file(_discord_important_webhook_file)
+        if _discord_important_webhook_file is not None
+        else ""
+    )
+    normal_webhook = normal_file_url or _discord_webhook_url
+    important_webhook = important_file_url or _discord_important_webhook_url
     important = level in {"warning", "danger"}
     webhook = (
-        _discord_important_webhook_url
-        if important and _discord_important_webhook_url
-        else _discord_webhook_url
+        important_webhook
+        if important and important_webhook
+        else normal_webhook
     )
     if not webhook:
         return
@@ -587,13 +601,21 @@ class PolyLPSMulti:
         self.pre_start_stop_sec = int(risk.get("pre_start_stop_sec", 3 * 3600))
 
         reporting = self.cfg.get("reporting", {})
-        self.discord_webhook = os.getenv("POLY_DISCORD_WEBHOOK", "").strip() or str(reporting.get("discord_webhook", "")).strip()
-        self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
-        default_important_file = (
-            Path(config_path).resolve().parent.parent.parent.parent
-            / "data"
-            / "discord_important_webhook.txt"
+        default_data_dir = (
+            Path(config_path).resolve().parent.parent.parent.parent / "data"
         )
+        normal_file = Path(
+            os.getenv("POLY_NORMAL_DISCORD_WEBHOOK_FILE", "").strip()
+            or str(reporting.get("normal_discord_webhook_file", "")).strip()
+            or default_data_dir / "discord_normal_webhook.txt"
+        )
+        self.discord_webhook = (
+            os.getenv("POLY_DISCORD_WEBHOOK", "").strip()
+            or str(reporting.get("discord_webhook", "")).strip()
+            or _read_webhook_file(normal_file)
+        )
+        self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
+        default_important_file = default_data_dir / "discord_important_webhook.txt"
         important_file = Path(
             os.getenv("POLY_IMPORTANT_DISCORD_WEBHOOK_FILE", "").strip()
             or str(reporting.get("important_discord_webhook_file", "")).strip()
@@ -608,12 +630,15 @@ class PolyLPSMulti:
 
         # Initialise global Discord embed-notification webhook
         global _discord_webhook_url, _discord_important_webhook_url
+        global _discord_normal_webhook_file, _discord_important_webhook_file
         _discord_webhook_url = (
             os.getenv("POLY_DISCORD_NOTIFY_WEBHOOK", "").strip()
             or str(self.cfg.get("discord_webhook_url", "")).strip()
             or self.discord_webhook  # fall back to existing webhook
         )
         _discord_important_webhook_url = self.important_discord_webhook
+        _discord_normal_webhook_file = normal_file
+        _discord_important_webhook_file = important_file
 
         self.market_cfg: Dict[str, Dict[str, Any]] = {}
         for m in self.cfg.get("markets", []):

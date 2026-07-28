@@ -673,6 +673,23 @@
   .vd-kpis{grid-template-columns:1fr}
   .vd-home-foot{align-items:flex-start;flex-direction:column}
 }
+.notify-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:18px 0}
+.notify-head h1{font-size:24px;margin:0}.notify-head p{margin:6px 0 0;color:var(--muted);font-size:12px}
+.notify-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.notify-card{margin-top:0;min-width:0;border-top:3px solid var(--var)}
+.notify-card.important{border-top-color:var(--danger)}
+.notify-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:18px}
+.notify-card-head h2{font-size:16px;margin:0 0 5px}.notify-card-head p{color:var(--muted);font-size:11px;margin:0;line-height:1.55}
+.notify-field label{display:block;color:var(--muted);font-size:11px;margin-bottom:7px}
+.notify-field input{width:100%;height:40px;box-sizing:border-box;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font:12px var(--mono);padding:0 12px}
+.notify-field input:focus{outline:0;border-color:var(--var);box-shadow:0 0 0 2px rgba(94,200,216,.10)}
+.notify-card.important .notify-field input:focus{border-color:var(--danger);box-shadow:0 0 0 2px rgba(229,72,77,.10)}
+.notify-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.notify-actions .btn{height:34px}.notify-actions .btn.clear{margin-left:auto;color:var(--danger)}
+.notify-message{min-height:18px;margin-top:10px;color:var(--muted);font-size:11px}
+.notify-message.ok{color:var(--ok)}.notify-message.bad{color:var(--danger)}
+.notify-routing{margin-top:14px}.notify-routing td:first-child{font-weight:600}.notify-routing td:last-child{color:var(--muted)}
+@media(max-width:900px){.notify-grid{grid-template-columns:1fr}.notify-head{align-items:flex-start;flex-direction:column}}
 </style>
 </head>
 <body>
@@ -689,6 +706,7 @@
     <a data-page="grid">网格 Grid<span class="b b-shadow">SHADOW</span></a>
     <a data-page="hk">打新 & Alpha<span class="b b-ro">运营</span></a>
     <a data-page="dewu">得物库存<span class="b b-paper">EXCEL</span></a>
+    <a data-page="notifications">通知<span class="b b-live">DISCORD</span></a>
   </nav>
   <div class="status-cluster">
     <span class="pill" data-k="pill.alerts"><span class="dot"></span>告警读取中</span>
@@ -761,6 +779,12 @@
       <div class="row"><span class="k">Predict.fun proxy</span><span class="v" data-k="infra.proxy">等待状态</span></div>
       <div class="row"><span class="k">peer 状态同步</span><span class="v" data-k="infra.peer">—</span></div>
       <div class="row"><span class="k">Discord 通道</span><span class="v" data-k="infra.discord">未接入送达回执</span></div>
+    </div>
+    <div class="card" onclick="go('notifications')">
+      <div class="head"><span class="name">通知</span><span class="chip" id="notify-overview-chip">读取中</span></div>
+      <div class="row"><span class="k">普通通知</span><span class="v" id="notify-overview-normal">—</span></div>
+      <div class="row"><span class="k">重要通知</span><span class="v" id="notify-overview-important">—</span></div>
+      <div class="row"><span class="k">分流</span><span class="v">日常 / 风险</span></div>
     </div>
   </div>
   <div class="panel">
@@ -2100,6 +2124,58 @@
   </div>
 </section>
 
+<!-- ════════════ 页面 · 通知 ════════════ -->
+<section class="page" id="page-notifications">
+  <div class="notify-head">
+    <div><h1>通知</h1><p>Discord 频道配置</p></div>
+    <span class="chip" id="notify-summary">读取中</span>
+  </div>
+  <div class="notify-grid">
+    <section class="panel notify-card" data-notify-channel="normal">
+      <div class="notify-card-head">
+        <div><h2>普通通知</h2><p>每日早报、配置变更、启动与停止记录</p></div>
+        <span class="chip" id="notify-normal-status">读取中</span>
+      </div>
+      <div class="notify-field">
+        <label for="notify-normal-input">Discord Webhook 地址</label>
+        <input id="notify-normal-input" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…">
+      </div>
+      <div class="notify-actions">
+        <button class="btn primary notify-save" type="button" data-channel="normal">保存</button>
+        <button class="btn ghost notify-test" type="button" data-channel="normal">发送测试</button>
+        <button class="btn ghost clear notify-clear" type="button" data-channel="normal">清除</button>
+      </div>
+      <div class="notify-message" id="notify-normal-message"></div>
+    </section>
+    <section class="panel notify-card important" data-notify-channel="important">
+      <div class="notify-card-head">
+        <div><h2>重要通知</h2><p>风险、错误、异常、恢复与需要处理的告警</p></div>
+        <span class="chip" id="notify-important-status">读取中</span>
+      </div>
+      <div class="notify-field">
+        <label for="notify-important-input">Discord Webhook 地址</label>
+        <input id="notify-important-input" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…">
+      </div>
+      <div class="notify-actions">
+        <button class="btn primary notify-save" type="button" data-channel="important">保存</button>
+        <button class="btn ghost notify-test" type="button" data-channel="important">发送测试</button>
+        <button class="btn ghost clear notify-clear" type="button" data-channel="important">清除</button>
+      </div>
+      <div class="notify-message" id="notify-important-message"></div>
+    </section>
+  </div>
+  <section class="panel notify-routing">
+    <h2>通知分流</h2>
+    <table>
+      <thead><tr><th>频道</th><th>内容</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>普通通知</td><td>早报、日常运行记录、配置操作</td><td id="notify-route-normal">—</td></tr>
+        <tr><td>重要通知</td><td>风险、错误、异常与恢复</td><td id="notify-route-important">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
 <footer>
   标签图例:<span class="feat f-old">现有</span> 你 dashboard 里已存在的功能,位置迁移但保留 · <span class="feat f-new">新增</span> 纯呈现层新增(数据已有) · <span class="feat f-plan">规划</span> 待建模块占位。<br>
   合并架构:统一站点原生展示与控制 + 各交易执行进程隔离。Var 对冲人工任务通过现有安全队列交给一次性 worker，执行后退出；账户密钥仍留在原签名环境。任何交易引擎故障不影响其他页面。
@@ -2115,6 +2191,7 @@
     document.getElementById('page-'+p).classList.add('on');
     document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===p));
     window.scrollTo(0,0);
+    if(p==='notifications') loadNotifications();
   }
   function goOps(p){
     go(p);
@@ -2122,6 +2199,96 @@
     document.querySelectorAll('.ops-subnav button').forEach(button=>button.classList.toggle('on',button.dataset.opsPage===p));
   }
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));
+  function notificationLabel(row){
+    if(row&&row.configured)return '已配置';
+    if(row&&row.legacy_fallback)return '沿用旧地址';
+    return '未配置';
+  }
+  function bindNotifications(data){
+    const channels=(data&&data.channels)||{};
+    let configured=0;
+    ['normal','important'].forEach(channel=>{
+      const row=channels[channel]||{}, label=notificationLabel(row);
+      if(row.effective)configured+=1;
+      const status=document.getElementById('notify-'+channel+'-status');
+      if(status){status.textContent=label;status.className='chip '+(row.configured?'ok':row.legacy_fallback?'warn':'danger');}
+      const route=document.getElementById('notify-route-'+channel);
+      if(route)route.innerHTML='<span class="chip '+(row.effective?'ok':'danger')+'">'+label+'</span>';
+      const test=document.querySelector('.notify-test[data-channel="'+channel+'"]');
+      const clear=document.querySelector('.notify-clear[data-channel="'+channel+'"]');
+      const save=document.querySelector('.notify-save[data-channel="'+channel+'"]');
+      if(save)save.disabled=window.__writesEnabled===false;
+      if(test)test.disabled=!row.effective||window.__writesEnabled===false;
+      if(clear)clear.disabled=!row.configured||window.__writesEnabled===false;
+      const overview=document.getElementById('notify-overview-'+channel);
+      if(overview)overview.textContent=label;
+    });
+    const summary=document.getElementById('notify-summary');
+    if(summary){summary.textContent=configured+'/2 已连接';summary.className='chip '+(configured===2?'ok':configured?'warn':'danger');}
+    const overviewChip=document.getElementById('notify-overview-chip');
+    if(overviewChip){overviewChip.textContent=configured+'/2';overviewChip.className='chip '+(configured===2?'ok':configured?'warn':'danger');}
+    setK('infra.discord',configured===2?'普通 / 重要已连接':configured+'/2 已连接');
+  }
+  async function loadNotifications(){
+    try{
+      const response=await fetch('/api/notifications/discord',{cache:'no-store'});
+      if(!response.ok)throw new Error('通知配置不可达');
+      bindNotifications(await response.json());
+    }catch(e){
+      const summary=document.getElementById('notify-summary');
+      if(summary){summary.textContent='读取失败';summary.className='chip danger';}
+    }
+  }
+  function setNotificationMessage(channel,text,kind){
+    const box=document.getElementById('notify-'+channel+'-message');
+    if(!box)return;
+    box.textContent=text||'';
+    box.className='notify-message '+(kind||'');
+  }
+  function setNotificationBusy(channel,busy){
+    document.querySelectorAll('[data-channel="'+channel+'"]').forEach(button=>button.disabled=busy);
+  }
+  async function updateNotification(channel,action){
+    const input=document.getElementById('notify-'+channel+'-input');
+    const payload={channel:channel,action:action};
+    if(action==='save'){
+      payload.webhook=(input.value||'').trim();
+      if(!payload.webhook){setNotificationMessage(channel,'请输入 Discord Webhook 地址','bad');return;}
+    }
+    setNotificationBusy(channel,true);
+    setNotificationMessage(channel,action==='clear'?'正在清除…':'正在保存…','');
+    try{
+      const response=await fetch('/api/notifications/discord',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const result=await response.json();
+      if(!response.ok)throw new Error(result.error||'操作失败');
+      input.value='';
+      bindNotifications(result);
+      setNotificationMessage(channel,result.message||'已完成','ok');
+    }catch(e){
+      setNotificationMessage(channel,e.message||'操作失败','bad');
+    }finally{
+      setNotificationBusy(channel,false);
+      await loadNotifications();
+    }
+  }
+  async function testNotification(channel){
+    setNotificationBusy(channel,true);
+    setNotificationMessage(channel,'正在发送测试消息…','');
+    try{
+      const response=await fetch('/api/notifications/discord/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:channel})});
+      const result=await response.json();
+      if(!response.ok)throw new Error(result.message||result.error||'发送失败');
+      setNotificationMessage(channel,result.message||'测试消息已发送','ok');
+    }catch(e){
+      setNotificationMessage(channel,e.message||'发送失败','bad');
+    }finally{
+      setNotificationBusy(channel,false);
+      await loadNotifications();
+    }
+  }
+  document.querySelectorAll('.notify-save').forEach(button=>button.addEventListener('click',()=>updateNotification(button.dataset.channel,'save')));
+  document.querySelectorAll('.notify-clear').forEach(button=>button.addEventListener('click',()=>updateNotification(button.dataset.channel,'clear')));
+  document.querySelectorAll('.notify-test').forEach(button=>button.addEventListener('click',()=>testNotification(button.dataset.channel)));
   document.querySelectorAll('#pm-subnav [data-pm-view]').forEach(tab=>tab.addEventListener('click',()=>{
     const view=tab.dataset.pmView;
     document.querySelectorAll('#pm-subnav [data-pm-view]').forEach(item=>item.classList.toggle('on',item===tab));
@@ -5105,6 +5272,7 @@
     try{bindIPO(IPO_DEMO_MODE?buildIpoDemo(s.account_ops||{}):(s.ipo||{}));}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
+    try{await loadNotifications();}catch(e){}
     try{await bindDewuOverview();}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     try{await refreshWorkPlan();}catch(e){}
@@ -5117,7 +5285,7 @@
 
   clearTemplateSamples();
   activateIpoDemoChrome();
-  refresh(); refreshWorkPlan().catch(()=>{}); setInterval(refresh, 15000);
+  refresh(); refreshWorkPlan().catch(()=>{}); loadNotifications(); setInterval(refresh, 15000);
 </script>
 </body>
 </html>

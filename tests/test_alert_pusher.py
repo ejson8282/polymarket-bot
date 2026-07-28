@@ -154,6 +154,25 @@ def test_discord_channels_use_separate_files_with_legacy_fallback(
     assert pusher._discord_webhook("important") == legacy.read_text(encoding="utf-8")
 
 
+def test_discord_channel_changes_are_included_in_normal_audit_feed() -> None:
+    assert pusher._fmt_audit(
+        {
+            "action": "discord_webhook",
+            "ts": "2026-07-28T10:42:00+08:00",
+            "channel": "normal",
+            "configured": True,
+        }
+    ) == "10:42 普通通知频道已配置"
+    assert pusher._fmt_audit(
+        {
+            "action": "discord_webhook",
+            "ts": "2026-07-28T10:43:00+08:00",
+            "channel": "important",
+            "configured": False,
+        }
+    ) == "10:43 重要通知频道已清除"
+
+
 def test_alerts_route_only_to_important_discord(monkeypatch) -> None:
     discord_calls: list[tuple[str, str]] = []
     feishu_calls: list[str] = []

@@ -30,7 +30,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, Request
@@ -43,6 +43,13 @@ VARIA_DIR = Path(os.getenv("VARIA_DATA_DIR", "/home/ubuntu/varia-decibel-farming
 AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
 SYSTEM_EVENT_LOG = DATA_DIR / "system_events.jsonl"
 SINGLE_ACCOUNT_DECISION_LOG = DATA_DIR / "single_account_decisions.jsonl"
+DISCORD_LEGACY_WEBHOOK_PATH = DATA_DIR / "discord_webhook.txt"
+DISCORD_NORMAL_WEBHOOK_PATH = DATA_DIR / "discord_normal_webhook.txt"
+DISCORD_IMPORTANT_WEBHOOK_PATH = DATA_DIR / "discord_important_webhook.txt"
+DISCORD_WEBHOOK_PATHS = {
+    "normal": DISCORD_NORMAL_WEBHOOK_PATH,
+    "important": DISCORD_IMPORTANT_WEBHOOK_PATH,
+}
 VARIA_CAPITAL_LEDGER = VARIA_DIR / "home_equity_principal.json"
 VARIA_RECONCILED_PNL_HISTORY = VARIA_DIR / "reconciled_pnl_history.json"
 BTC_SINGLE_SIDE_REPORT_PATH = Path(
@@ -224,6 +231,105 @@ def _num(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _discord_webhook_value(path: Path) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return value if _valid_discord_webhook(value) else ""
+
+
+def _valid_discord_webhook(value: str) -> bool:
+    if not isinstance(value, str) or len(value) > 500:
+        return False
+    try:
+        parsed = urlparse(value.strip())
+    except ValueError:
+        return False
+    allowed_hosts = {
+        "discord.com",
+        "discordapp.com",
+        "ptb.discord.com",
+        "canary.discord.com",
+    }
+    parts = [part for part in parsed.path.split("/") if part]
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname in allowed_hosts
+        and len(parts) == 4
+        and parts[:2] == ["api", "webhooks"]
+        and bool(parts[2])
+        and bool(parts[3])
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment
+    )
+
+
+def _discord_notification_status() -> dict:
+    legacy_configured = bool(
+        _discord_webhook_value(DISCORD_LEGACY_WEBHOOK_PATH)
+    )
+    channels: Dict[str, dict] = {}
+    for channel, path in DISCORD_WEBHOOK_PATHS.items():
+        configured = bool(_discord_webhook_value(path))
+        updated_at = None
+        if configured:
+            try:
+                updated_at = datetime.fromtimestamp(
+                    path.stat().st_mtime, tz=timezone.utc
+                ).astimezone().isoformat(timespec="seconds")
+            except OSError:
+                pass
+        channels[channel] = {
+            "configured": configured,
+            "legacy_fallback": not configured and legacy_configured,
+            "effective": configured or legacy_configured,
+            "updated_at": updated_at,
+        }
+    return {"channels": channels}
+
+
+def _write_discord_webhook(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value.strip() + "\n")
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _send_discord_webhook_test(url: str, channel: str) -> tuple[bool, str]:
+    label = "普通通知" if channel == "normal" else "重要通知"
+    stamp = datetime.now(timezone.utc).astimezone().strftime("%m-%d %H:%M")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(
+            {"content": f"Latitude Alpha · {label}频道测试 · {stamp}"}
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Latitude-Console/1.0",
+        },
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=10) as response:
+            response.read()
+        return True, "测试消息已发送"
+    except urllib.error.HTTPError as exc:
+        return False, f"Discord 返回 HTTP {exc.code}"
+    except Exception:
+        return False, "发送失败，请检查 Webhook 是否有效"
 
 
 # ---------- 得物库存(Excel 为唯一入库来源) ----------
@@ -6137,6 +6243,96 @@ def _is_cloudflare(request: Request) -> bool:
     """公网 Cloudflare 入口(nginx 注 X-Dashboard-Source 头)。与 dashboard/app.py::
     _is_public_access 同一规则:配置类写降级只读,进程控制类放行(Kevin 2026-04-24)。"""
     return str(request.headers.get("X-Dashboard-Source", "")).lower() == "cloudflare"
+
+
+def _notification_write_guard(request: Request) -> Optional[JSONResponse]:
+    if not WRITES_ENABLED:
+        return JSONResponse(
+            {"ok": False, "error": "写通道未启用"}, status_code=403
+        )
+    if _is_cloudflare(request):
+        return JSONResponse(
+            {"ok": False, "error": "通知地址只允许通过 Tailscale 内网页面修改"},
+            status_code=403,
+        )
+    return None
+
+
+@app.get("/api/notifications/discord")
+def discord_notifications_get() -> JSONResponse:
+    return JSONResponse(_discord_notification_status())
+
+
+@app.post("/api/notifications/discord")
+async def discord_notifications_update(
+    payload: dict, request: Request
+) -> JSONResponse:
+    blocked = _notification_write_guard(request)
+    if blocked is not None:
+        return blocked
+    channel = str((payload or {}).get("channel") or "").strip().lower()
+    action = str((payload or {}).get("action") or "save").strip().lower()
+    path = DISCORD_WEBHOOK_PATHS.get(channel)
+    if path is None:
+        return JSONResponse(
+            {"ok": False, "error": "通知频道不正确"}, status_code=400
+        )
+    if action == "clear":
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        _audit("discord_webhook", channel=channel, configured=False)
+        return JSONResponse(
+            {"ok": True, "message": "频道已清除", **_discord_notification_status()}
+        )
+    if action != "save":
+        return JSONResponse(
+            {"ok": False, "error": "操作不正确"}, status_code=400
+        )
+    webhook = str((payload or {}).get("webhook") or "").strip()
+    if not _valid_discord_webhook(webhook):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "请输入 Discord 频道的 Webhook 地址",
+            },
+            status_code=400,
+        )
+    _write_discord_webhook(path, webhook)
+    _audit("discord_webhook", channel=channel, configured=True)
+    return JSONResponse(
+        {"ok": True, "message": "频道已保存", **_discord_notification_status()}
+    )
+
+
+@app.post("/api/notifications/discord/test")
+async def discord_notifications_test(
+    payload: dict, request: Request
+) -> JSONResponse:
+    blocked = _notification_write_guard(request)
+    if blocked is not None:
+        return blocked
+    channel = str((payload or {}).get("channel") or "").strip().lower()
+    path = DISCORD_WEBHOOK_PATHS.get(channel)
+    if path is None:
+        return JSONResponse(
+            {"ok": False, "error": "通知频道不正确"}, status_code=400
+        )
+    webhook = (
+        _discord_webhook_value(path)
+        or _discord_webhook_value(DISCORD_LEGACY_WEBHOOK_PATH)
+    )
+    if not webhook:
+        return JSONResponse(
+            {"ok": False, "error": "请先保存该频道"}, status_code=400
+        )
+    ok, message = _send_discord_webhook_test(webhook, channel)
+    _audit("discord_webhook_test", channel=channel, ok=ok)
+    return JSONResponse(
+        {"ok": ok, "message": message},
+        status_code=200 if ok else 502,
+    )
 
 
 def _run_cmd(

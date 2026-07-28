@@ -72,6 +72,120 @@ def _patch_event_sources(monkeypatch, data_dir: Path) -> None:
     )
 
 
+def _patch_discord_paths(monkeypatch, data_dir: Path) -> dict[str, Path]:
+    paths = {
+        "legacy": data_dir / "discord_webhook.txt",
+        "normal": data_dir / "discord_normal_webhook.txt",
+        "important": data_dir / "discord_important_webhook.txt",
+    }
+    monkeypatch.setattr(
+        console, "DISCORD_LEGACY_WEBHOOK_PATH", paths["legacy"]
+    )
+    monkeypatch.setattr(
+        console, "DISCORD_NORMAL_WEBHOOK_PATH", paths["normal"]
+    )
+    monkeypatch.setattr(
+        console, "DISCORD_IMPORTANT_WEBHOOK_PATH", paths["important"]
+    )
+    monkeypatch.setattr(
+        console,
+        "DISCORD_WEBHOOK_PATHS",
+        {"normal": paths["normal"], "important": paths["important"]},
+    )
+    return paths
+
+
+def test_discord_webhook_validation_is_restricted_to_discord() -> None:
+    assert console._valid_discord_webhook(
+        "https://discord.com/api/webhooks/123/token-value"
+    )
+    assert console._valid_discord_webhook(
+        "https://canary.discord.com/api/webhooks/123/token-value"
+    )
+    assert not console._valid_discord_webhook(
+        "https://example.com/api/webhooks/123/token-value"
+    )
+    assert not console._valid_discord_webhook(
+        "http://discord.com/api/webhooks/123/token-value"
+    )
+    assert not console._valid_discord_webhook(
+        "https://discord.com/channels/server/channel"
+    )
+
+
+def test_discord_status_never_returns_secret_and_files_are_private(
+    monkeypatch, tmp_path: Path
+) -> None:
+    paths = _patch_discord_paths(monkeypatch, tmp_path)
+    secret = "https://discord.com/api/webhooks/123/private-token"
+
+    console._write_discord_webhook(paths["normal"], secret)
+    status = console._discord_notification_status()
+    encoded = json.dumps(status)
+
+    assert status["channels"]["normal"]["configured"] is True
+    assert status["channels"]["important"]["configured"] is False
+    assert secret not in encoded
+    assert "private-token" not in encoded
+    assert paths["normal"].stat().st_mode & 0o777 == 0o600
+
+
+def test_discord_status_reports_legacy_fallback_without_exposing_it(
+    monkeypatch, tmp_path: Path
+) -> None:
+    paths = _patch_discord_paths(monkeypatch, tmp_path)
+    secret = "https://discord.com/api/webhooks/legacy/private-token"
+    console._write_discord_webhook(paths["legacy"], secret)
+
+    status = console._discord_notification_status()
+
+    assert status["channels"]["normal"]["legacy_fallback"] is True
+    assert status["channels"]["important"]["legacy_fallback"] is True
+    assert status["channels"]["normal"]["effective"] is True
+    assert secret not in json.dumps(status)
+
+
+def test_console_contains_discord_notification_settings_page() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert 'data-page="notifications"' in html
+    assert 'id="page-notifications"' in html
+    assert 'id="notify-normal-input" type="password"' in html
+    assert 'id="notify-important-input" type="password"' in html
+    assert "/api/notifications/discord/test" in html
+
+
+def test_discord_notification_update_saves_without_echoing_secret(
+    monkeypatch, tmp_path: Path
+) -> None:
+    paths = _patch_discord_paths(monkeypatch, tmp_path)
+    secret = "https://discord.com/api/webhooks/123/private-token"
+    audits = []
+
+    class Request:
+        headers = {}
+
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    monkeypatch.setattr(
+        console, "_audit", lambda action, **fields: audits.append((action, fields))
+    )
+    response = asyncio.run(
+        console.discord_notifications_update(
+            {"channel": "normal", "action": "save", "webhook": secret},
+            Request(),
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["channels"]["normal"]["configured"] is True
+    assert secret not in response.body.decode("utf-8")
+    assert paths["normal"].read_text(encoding="utf-8").strip() == secret
+    assert audits == [
+        ("discord_webhook", {"channel": "normal", "configured": True})
+    ]
+
+
 def test_parse_ts_treats_naive_recorder_timestamp_as_utc() -> None:
     expected = datetime(2026, 7, 22, 18, 34, 8, tzinfo=timezone.utc).timestamp()
 

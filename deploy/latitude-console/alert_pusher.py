@@ -127,6 +127,10 @@ def _fmt_audit(rec: dict) -> str:
         return f"{t} 代理池 {rec.get('mode')} {rec.get('counts')}"
     if a == "sa_draft":
         return f"{t} 保存 SA 自动化草稿"
+    if a == "discord_webhook":
+        channel = "普通通知" if rec.get("channel") == "normal" else "重要通知"
+        state = "已配置" if rec.get("configured") else "已清除"
+        return f"{t} {channel}频道{state}"
     return ""  # pm_scan / pm_precheck 等噪音跳过
 
 
