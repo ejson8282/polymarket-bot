@@ -1,11 +1,14 @@
-"""Latitude 告警/通知推送 — 双通道路由(Kevin 2026-07-08 定的规矩):
+"""Latitude 告警/通知推送。
 
-  飞书  = 急报:sev=crit 的告警(单腿、预算告急等)及其解除
-  Discord = 日常:warn 级告警及解除、控制台写操作记录、每日早报(--digest)
+  飞书 = 急报:sev=crit 的告警(单腿、预算告急等)及其解除
+  Discord 正常频道 = 每日早报、控制台写操作等日常记录
+  Discord 重要频道 = warn/crit 告警、错误、bug、风险及其解除
 
 webhook 文件(均 chmod 600,不入 git;缺文件 → 该通道静默跳过):
-  data/feishu_webhook.txt   data/discord_webhook.txt
-Discord 未配置时,warn 告警临时降级走飞书(带标注),写操作记录与早报跳过。
+  data/feishu_webhook.txt
+  data/discord_normal_webhook.txt
+  data/discord_important_webhook.txt
+兼容旧部署:data/discord_webhook.txt 仍可作为两个 Discord 通道的回退。
 
 普通模式:由 alert-pusher.timer 每 5 分钟跑一次(新告警/解除 + 写操作增量)。
 --digest:由 alert-digest.timer 每日 09:00 BJT 跑一次(状态早报)。
@@ -25,9 +28,12 @@ from pathlib import Path
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", "/home/ubuntu/polymarket-bot/data"))
 STATE_URL = os.getenv("LATITUDE_STATE_URL", "http://127.0.0.1:8600/api/state")
 FEISHU_FILE = DATA_DIR / "feishu_webhook.txt"
-DISCORD_FILE = DATA_DIR / "discord_webhook.txt"
+DISCORD_LEGACY_FILE = DATA_DIR / "discord_webhook.txt"
+DISCORD_NORMAL_FILE = DATA_DIR / "discord_normal_webhook.txt"
+DISCORD_IMPORTANT_FILE = DATA_DIR / "discord_important_webhook.txt"
 PUSH_STATE = DATA_DIR / "alert_push_state.json"
 AUDIT_LOG = DATA_DIR / "console_write_audit.jsonl"
+SYSTEM_EVENT_LOG = DATA_DIR / "system_events.jsonl"
 CONSOLE_URL = "http://100.122.255.98:8502/"
 
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -63,26 +69,28 @@ def send_feishu(text: str) -> bool:
         return False
 
 
-def send_discord(text: str) -> bool:
-    url = _webhook(DISCORD_FILE)
+def _discord_webhook(channel: str) -> str:
+    primary = DISCORD_IMPORTANT_FILE if channel == "important" else DISCORD_NORMAL_FILE
+    return _webhook(primary) or _webhook(DISCORD_LEGACY_FILE)
+
+
+def send_discord(text: str, *, channel: str = "normal") -> bool:
+    url = _discord_webhook(channel)
     if not url:
         return False
     try:
         _post(url, {"content": text[:1900]})
         return True
     except Exception as e:
-        print(f"discord push failed: {e}", file=sys.stderr)
+        print(f"discord {channel} push failed: {e}", file=sys.stderr)
         return False
 
 
 def send_routed(sev: str, text: str) -> None:
-    """crit → 飞书(严格只此一类进飞书);warn/日常 → 只走 Discord。
-    Discord 不通(未配置/失效)时 warn **不推**——dashboard 可见即可,绝不回退淹没飞书。
-    (2026-07-09 改:此前回退飞书,叠加 Discord webhook 403 失效,导致飞书被 warn 刷屏。)"""
+    """All active alerts go to Discord important; crit also goes to Feishu."""
     if sev == "crit":
         send_feishu(text)
-    else:
-        send_discord(text)  # 返回 False(webhook 缺失/403)则静默丢弃,不回退
+    send_discord(text, channel="important")
 
 
 def _plain(t: str) -> str:
@@ -122,6 +130,62 @@ def _fmt_audit(rec: dict) -> str:
     return ""  # pm_scan / pm_precheck 等噪音跳过
 
 
+def _alert_project(tag: str) -> tuple[str, str]:
+    upper = str(tag or "").upper()
+    if upper.startswith(("VAR", "DEC", "ONDO")):
+        return "var", "vardec"
+    if upper.startswith("PM"):
+        return "pm", "pm"
+    if upper.startswith(("PF", "PREDICT")):
+        return "pf", "pf"
+    if upper.startswith(("SA", "SINGLE")):
+        return "sa", "sa"
+    if upper.startswith("GRID"):
+        return "grid", "grid"
+    if upper.startswith(("HK", "IPO", "ALPHA")):
+        return "hk", "hk"
+    return "infra", "overview"
+
+
+def _legacy_alert_tag(value: dict) -> str:
+    tag = str(value.get("tag") or "").strip()
+    if tag:
+        return tag
+    text = str(value.get("text") or "")
+    match = re.match(r"^\[([^\]]+)\]", text)
+    return match.group(1) if match else ""
+
+
+def _append_system_event(
+    *,
+    fingerprint: str,
+    tag: str,
+    sev: str,
+    msg: str,
+    resolved: bool,
+    page: str = "",
+) -> None:
+    project, default_page = _alert_project(tag)
+    record = {
+        "id": f"alert:{fingerprint}:{'resolved' if resolved else 'raised'}",
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "project": project,
+        "page": page or default_page,
+        "sev": "info" if resolved else sev,
+        "kind": "alert_resolved" if resolved else "alert_raised",
+        "msg": (
+            f"{tag} 告警已解除：{_plain(msg)}"
+            if resolved else f"{tag} 持续告警：{_plain(msg)}"
+        ),
+    }
+    try:
+        SYSTEM_EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with SYSTEM_EVENT_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"system event write failed: {exc}", file=sys.stderr)
+
+
 # 防抖:告警必须持续存在 ≥ 这么久才推(kill "闪断一下自己就好"的噪音)。
 # 定时器每 5min 跑,600s = 至少熬过一整个周期还在,才算真问题。
 DEBOUNCE_SEC = 600
@@ -138,8 +202,16 @@ def run_alerts() -> None:
     current: dict = {}
     for a in alerts:
         sev = a.get("sev") or "warn"
-        text = f"[{a.get('tag', '')}]{'🔴' if sev == 'crit' else '🟡'} {_plain(a.get('msg', ''))}"
-        current[hashlib.sha1(text.encode()).hexdigest()[:16]] = {"text": text, "sev": sev}
+        tag = str(a.get("tag") or "")
+        raw_msg = _plain(a.get("msg", ""))
+        text = f"[{tag}]{'🔴' if sev == 'crit' else '🟡'} {raw_msg}"
+        current[hashlib.sha1(text.encode()).hexdigest()[:16]] = {
+            "text": text,
+            "raw_msg": raw_msg,
+            "tag": tag,
+            "page": str(a.get("page") or ""),
+            "sev": sev,
+        }
 
     # 结转状态:记 first_seen(首次出现)与 pushed(是否已推过),用于防抖 + 只对推过的报解除
     out_alerts = {}
@@ -157,16 +229,39 @@ def run_alerts() -> None:
             send_routed(sev, ("🚨" if sev == "crit" else "⚠️") + f" Latitude 新告警({stamp}):\n"
                         + "\n".join("· " + v["text"] for _, v in ripe)
                         + f"\n共 {len(current)} 条活跃 → {CONSOLE_URL}")
-            for k, _ in ripe:
+            for k, value in ripe:
                 out_alerts[k]["pushed"] = True
+                _append_system_event(
+                    fingerprint=k,
+                    tag=str(value.get("tag") or ""),
+                    sev=sev,
+                    msg=str(value.get("raw_msg") or value.get("text") or ""),
+                    resolved=False,
+                    page=str(value.get("page") or ""),
+                )
     # 解除:只对"之前真推过"的告警报解除(被防抖挡下、从没推过的,消失也不吭声)
     for sev in ("crit", "warn"):
-        gone = [v for k, v in prev.items()
-                if k not in current and v.get("pushed") and (v.get("sev") or "warn") == sev and v.get("text")]
+        gone = [
+            (key, value) for key, value in prev.items()
+            if key not in current
+            and value.get("pushed")
+            and (value.get("sev") or "warn") == sev
+            and value.get("text")
+        ]
         if gone:
             send_routed(sev, f"✅ Latitude 告警解除({stamp}):\n"
-                        + "\n".join("· " + v["text"] for v in gone)
+                        + "\n".join("· " + value["text"] for _, value in gone)
                         + (f"\n仍有 {len(current)} 条活跃" if current else "\n当前无活跃告警 🎉"))
+            for key, value in gone:
+                tag = _legacy_alert_tag(value)
+                _append_system_event(
+                    fingerprint=key,
+                    tag=tag,
+                    sev=sev,
+                    msg=str(value.get("raw_msg") or value.get("text") or ""),
+                    resolved=True,
+                    page=str(value.get("page") or ""),
+                )
 
     # 写操作增量 → Discord(日常通道;无 Discord 则跳过,审计文件本身仍是完整记录)
     offset = int(ps.get("audit_offset") or 0)
@@ -184,8 +279,11 @@ def run_alerts() -> None:
                     lines.append(msg)
             except Exception:
                 continue
-    if lines and _webhook(DISCORD_FILE):
-        send_discord("🛠 控制台写操作(" + stamp + "):\n" + "\n".join("· " + x for x in lines[-8:]))
+    if lines and _discord_webhook("normal"):
+        send_discord(
+            "🛠 控制台写操作(" + stamp + "):\n" + "\n".join("· " + x for x in lines[-8:]),
+            channel="normal",
+        )
 
     PUSH_STATE.write_text(json.dumps({"alerts": out_alerts, "audit_offset": offset},
                                      ensure_ascii=False), encoding="utf-8")
@@ -220,7 +318,7 @@ def run_digest() -> None:
         CONSOLE_URL,
     ]
     body = "\n".join(sections)
-    send_discord(body)  # 每日汇总只走 Discord;Discord 不通则不推(不淹没飞书,汇总非紧急)
+    send_discord(body, channel="normal")
 
 
 def _ipo_digest_lines(raw: object, *, limit: int = 5) -> list[str]:
@@ -298,7 +396,11 @@ def _equity_digest_line(vd: dict) -> str:
 
 
 def main() -> int:
-    if not _webhook(FEISHU_FILE) and not _webhook(DISCORD_FILE):
+    if (
+        not _webhook(FEISHU_FILE)
+        and not _discord_webhook("normal")
+        and not _discord_webhook("important")
+    ):
         return 0  # 两个通道都没配,静默
     if "--digest" in sys.argv:
         run_digest()
