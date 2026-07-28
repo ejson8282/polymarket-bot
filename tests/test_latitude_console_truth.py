@@ -910,6 +910,8 @@ def test_settled_incentives_are_attributed_without_double_counting_equity(
         "net_pnl_usdc": 20.0,
         "settled_incentives_usdc": 8.0,
         "trading_funding_fees_usdc": 12.0,
+        "principal_policy": "external_deposits_withdrawals_only",
+        "settled_incentives_policy": "included_in_equity_and_net_pnl_not_principal",
         "note": "Settled incentives are already inside equity and are not added twice.",
     }
 
@@ -3248,13 +3250,14 @@ def test_maker_shadow_escalates_safety_differences(monkeypatch, tmp_path: Path) 
     assert all(row["tier"] == "danger" for row in result["venues"])
 
 
-def test_console_contains_compact_shadow_status_and_native_observer_view() -> None:
+def test_console_hides_legacy_shadow_comparison_panel() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
-    assert 'data-k="shadow.home"' in html
-    assert "只读观察" in html
-    assert "公共盘口与参考报价计划" in html
-    assert "不连接 signer" in html
+    assert 'data-k="shadow.home"' not in html
+    assert "只读观察" not in html
+    assert "公共盘口与参考报价计划" not in html
+    assert "pm-observer-body" not in html
+    assert "pm-shadow-status" not in html
     assert "polymarket_observer_state_1.json" not in html
 
 

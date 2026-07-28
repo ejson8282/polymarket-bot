@@ -1510,6 +1510,8 @@ def _pnl_attribution(capital: Dict[str, Any], incentives: Dict[str, Any]) -> Dic
         "net_pnl_usdc": round(net_pnl, 2) if net_pnl is not None else None,
         "settled_incentives_usdc": round(settled, 2) if settled is not None else None,
         "trading_funding_fees_usdc": round(net_pnl - settled, 2) if complete else None,
+        "principal_policy": "external_deposits_withdrawals_only",
+        "settled_incentives_policy": "included_in_equity_and_net_pnl_not_principal",
         "note": "Settled incentives are already inside equity and are not added twice.",
     }
 
@@ -6091,7 +6093,6 @@ def api_state() -> JSONResponse:
         "varia_control": _varia_control_state(vd),
         "varia_automation": varia_automation,
         "pm_detail": _pm_detail(),
-        "maker_shadow": _maker_shadow(),
         "macmini": mm,
         "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),

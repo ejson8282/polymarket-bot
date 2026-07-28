@@ -716,7 +716,6 @@
       <div class="row"><span class="k">今日 PnL / 今日收益</span><span class="v" data-k="pm.pnl">—</span></div>
       <div class="row"><span class="k">kill-switch / 代理</span><span class="v" data-k="pm.ks">—</span></div>
       <div class="row"><span class="k">quotes_sent（新鲜状态）</span><span class="v" data-k="pm.quotes">—</span></div>
-      <div class="row"><span class="k">只读行情 / Rust 对照</span><span class="v" data-k="shadow.home">—</span></div>
     </div>
     <div class="card" onclick="go('pf')">
       <div class="head"><span class="name">Predict.fun 做市</span><span class="chip" data-k="pf.chip">读取中</span></div>
@@ -1236,7 +1235,7 @@
         </div>
         <div class="panel" id="vd-incentive-panel">
           <h2>奖励与退款</h2>
-          <div class="src">只显示实际到账；待结算和估算不计入。</div>
+          <div class="src">只显示实际到账；计入总权益与真实净结果，不计入投入本金，也不会重复相加。待结算和估算不计入。</div>
           <div class="incentive-strip">
             <div class="incentive-cell">
               <div class="eyebrow">Ondo 已到账</div>
@@ -1465,13 +1464,6 @@
       <div class="pm-panel-head"><div><h2>代理池</h2><div class="src"><b id="proxy-count">—</b> 条 · 仅保存连接配置</div></div><span id="proxy-msg" class="src"></span></div>
       <textarea id="proxy-input" class="opin" rows="5" placeholder="host:port 或 host:port:user:pass，每行一条" style="width:100%;box-sizing:border-box"></textarea>
       <div class="btnrow" style="margin-top:8px"><button class="btn ghost" id="proxy-append">追加</button><button class="btn" id="proxy-replace">替换全部</button></div>
-    </div>
-    <div class="panel">
-      <div class="pm-panel-head"><div><h2>只读观察</h2><div class="src">公共盘口与参考报价计划，不连接 signer</div></div><span id="pm-shadow-status" class="chip">读取中</span></div>
-      <div class="pm-table-wrap"><table>
-        <thead><tr><th>组件</th><th>状态</th><th>样本</th><th>新鲜样本</th><th>差异率</th><th>安全差异</th><th>动作差异</th><th>最近轮询</th></tr></thead>
-        <tbody id="pm-observer-body"><tr><td colspan="8" class="pm-empty">读取观察状态…</td></tr></tbody>
-      </table></div>
     </div>
   </div>
 </section>
@@ -2498,8 +2490,8 @@
     const n=Number(value);
     return Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
   }
-  function bindPMDetail(detail,shadow){
-    detail=detail||{}; shadow=shadow||{};
+  function bindPMDetail(detail){
+    detail=detail||{};
     const accounts=detail.accounts||[], markets=detail.markets||[];
     const observer=detail.observer||{}, pending=detail.pending_unwinds||[];
     const engineRunning=accounts.filter(a=>a.engine_running).length;
@@ -2615,20 +2607,6 @@
     const lossEl=document.getElementById('pm-exit-loss');
     if(lossEl)lossEl.innerHTML=totalExitLoss?'<span class="'+(totalExitLoss>0?'down':'up')+'">'+(totalExitLoss>0?'−':' +')+money(Math.abs(totalExitLoss))+'</span>':'$0.00';
 
-    const venues=(shadow.venues||[]).filter(x=>x.venue==='polymarket');
-    const observerBody=document.getElementById('pm-observer-body');
-    if(observerBody){
-      observerBody.innerHTML=venues.length?venues.map(x=>'<tr><td>'+esc(x.label)+'</td><td><span class="chip '+(x.tier==='ok'?'ok':(x.tier==='danger'?'danger':'warn'))+'">'+esc(x.status)+'</span></td>'+
-        '<td class="num">'+pmNumber(x.samples)+'</td><td class="num">'+pmNumber(x.fresh_samples)+'</td><td class="num">'+(x.difference_rate==null?'—':(Number(x.difference_rate)*100).toFixed(2)+'%')+'</td>'+
-        '<td class="num">'+pmNumber(x.safety_mismatches)+'</td><td class="num">'+pmNumber(x.action_mismatches)+'</td><td class="num">'+pmAge(x.last_poll_age)+'</td></tr>').join('')
-        :'<tr><td colspan="8" class="pm-empty">暂无长期对照样本</td></tr>';
-    }
-    const shadowStatus=document.getElementById('pm-shadow-status');
-    if(shadowStatus){
-      const row=venues[0];
-      shadowStatus.textContent=row?row.status:'等待样本';
-      shadowStatus.className='chip '+(row&&row.tier==='ok'?'ok':(row&&row.tier==='danger'?'danger':'warn'));
-    }
   }
 
   function bindGrid(g){
@@ -3778,18 +3756,6 @@
     const infraOk=reach(mm.pm_signer)&&reach(mm.var_signer)&&proxyOk;
     setK('infra.chip',infraOk?'正常':'需要核对');
     document.querySelectorAll('[data-k="infra.chip"]').forEach(c=>{c.className='chip '+(infraOk?'ok':'warn');});
-  }
-
-  function bindShadow(shadow){
-    if(!shadow||!shadow.present){
-      setK('shadow.home','<span style="color:var(--faint)">未启动</span>');
-      return;
-    }
-    const tier=shadow.overall_tier||'warn';
-    const cls=tier==='ok'?'up':(tier==='danger'?'down':'');
-    const pm=(shadow.venues||[]).find(v=>v.venue==='polymarket')||{};
-    const pf=(shadow.venues||[]).find(v=>v.venue==='predictfun')||{};
-    setK('shadow.home','<span class="'+cls+'">● '+esc(shadow.overall_label||'正在观察')+'</span> · PM '+(pm.samples??0)+' / PF '+(pf.samples??0));
   }
 
   function _fmtAge(s){return s<90? s+'s': s<5400? Math.floor(s/60)+'m': Math.floor(s/3600)+'h';}
@@ -5060,7 +5026,7 @@
     }
   }
   function bindMasks(s){
-    const nd={'page-pm':!((s.polymarket||{}).present||((s.maker_shadow||{}).observer||{}).present),
+    const nd={'page-pm':!(s.polymarket||{}).present,
               'page-vardec':!Object.keys(((s.var_decibel||{}).hosts)||{}).length,
               'page-pf':!(s.predictfun||{}).present,
               'page-sa':!(s.single_account||{}).present,
@@ -5078,7 +5044,7 @@
     try{bindFresh(s.freshness||{});}catch(e){}
     try{bindMasks(s);}catch(e){}
     try{bindPM(s.polymarket||{});}catch(e){}
-    try{bindPMDetail(s.pm_detail||{},s.maker_shadow||{});}catch(e){}
+    try{bindPMDetail(s.pm_detail||{});}catch(e){}
     try{bindVD(s.var_decibel||{});}catch(e){}
     try{bindVDAuto(s.varia_automation||{});}catch(e){}
     try{bindPF(s.predictfun||{});}catch(e){}
@@ -5090,7 +5056,6 @@
     try{bindIPO(IPO_DEMO_MODE?buildIpoDemo(s.account_ops||{}):(s.ipo||{}));}catch(e){}
     try{bindPFIntents(s.pf_intents||{});}catch(e){}
     try{bindInfra(s.macmini||{});}catch(e){}
-    try{bindShadow(s.maker_shadow||{});}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
     try{await refreshWorkPlan();}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
