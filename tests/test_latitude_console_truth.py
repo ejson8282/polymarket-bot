@@ -50,6 +50,43 @@ def _state(
     return state
 
 
+def test_remote_polymarket_pause_persists_central_desired_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    maker_dir = tmp_path / "maker"
+    data_dir.mkdir()
+    maker_dir.mkdir()
+    (maker_dir / "config_2.json").write_text("{}", encoding="utf-8")
+    remote_calls = []
+
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "MAKER_DIR", maker_dir)
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {2: {"label": "VPS2"}})
+    monkeypatch.setattr(
+        console,
+        "_remote_ssh",
+        lambda remote, command, timeout: (
+            remote_calls.append((remote, command, timeout))
+            or {"rc": 0, "out": "", "err": ""}
+        ),
+    )
+    monkeypatch.setattr(console, "_is_cloudflare", lambda request: False)
+    monkeypatch.setattr(console, "_audit", lambda *args, **kwargs: None)
+
+    paused = asyncio.run(console.pm_account({"idx": 2, "action": "pause"}, object()))
+    assert paused.status_code == 200
+    assert (data_dir / ".account_2.paused").exists()
+    assert remote_calls[-1][1].startswith("touch ")
+
+    resumed = asyncio.run(console.pm_account({"idx": 2, "action": "resume"}, object()))
+    assert resumed.status_code == 200
+    assert not (data_dir / ".account_2.paused").exists()
+    assert remote_calls[-1][1].startswith("rm -f ")
+
+
 def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", data_dir)
     monkeypatch.setattr(console, "VARIA_CAPITAL_LEDGER", data_dir / "home_equity_principal.json")

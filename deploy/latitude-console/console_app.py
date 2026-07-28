@@ -7045,12 +7045,22 @@ async def pm_account(payload: dict, request: Request) -> JSONResponse:
     if idx not in remotes and not (MAKER_DIR / f"config_{idx}.json").exists():
         return JSONResponse({"ok": False, "error": f"账号 {idx} 未配置"}, status_code=404)
     if idx in remotes:
-        # 远程账号:旗标在其所属 VPS 上,SSH touch/unlink(引擎在那台机上读它)
+        # VPS1 is the desired-state source used by rsync_state.sh. Persist the
+        # flag locally as well as applying it remotely; otherwise the 3-second
+        # sync loop immediately undoes a remote-only pause.
+        desired_flag = DATA_DIR / f".account_{idx}.paused"
+        if action == "pause":
+            desired_flag.touch(exist_ok=True)
+        else:
+            try:
+                desired_flag.unlink()
+            except FileNotFoundError:
+                pass
         r = remotes[idx]
         fpath = f"{REMOTE_REPO_DATA}/.account_{idx}.paused"
         cmd = f"touch {fpath}" if action == "pause" else f"rm -f {fpath}"
         res = _remote_ssh(r, cmd, timeout=15)
-        paused_now = action == "pause" and res.get("rc") == 0
+        paused_now = action == "pause" and desired_flag.exists()
         _audit("pm_account", idx=idx, request_action=action, remote=True, rc=res.get("rc"),
                source="cloudflare" if _is_cloudflare(request) else "tailnet")
         return JSONResponse({"ok": res.get("rc") == 0, "idx": idx, "paused": paused_now,
