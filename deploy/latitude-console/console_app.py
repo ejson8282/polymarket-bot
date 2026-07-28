@@ -2297,7 +2297,12 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
         }
         values = (
             ("variational", "equity_var", "principal_var", "Var"),
-            (hedge_venue, "equity_hedge", f"principal_{hedge_venue}", _venue_label(hedge_venue)),
+            (
+                hedge_venue,
+                "equity_hedge",
+                f"principal_{'ondo' if hedge_venue == 'ondo' else 'dec'}",
+                _venue_label(hedge_venue),
+            ),
         )
         for venue, equity_key, principal_key, label in values:
             entry = host_ledger.get(venue) if isinstance(host_ledger, dict) else None

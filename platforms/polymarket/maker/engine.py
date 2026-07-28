@@ -1045,8 +1045,20 @@ class PolyLPSMulti:
     def _event_state_name(self, token_id: str) -> str:
         return str(self._event_state_entry(token_id).get("state") or EVENT_ACTIVE)
 
-    def _event_blocks_quote(self, token_id: str) -> bool:
-        return self._event_state_name(token_id) in {
+    def _paired_token_id(self, token_id: str) -> str:
+        paired = str(self._paired_token_cache.get(token_id, "") or "").strip()
+        if paired:
+            return paired
+        try:
+            return str(
+                self._get_mcfg(token_id).get("paired_token_id", "") or ""
+            ).strip()
+        except Exception:
+            return ""
+
+    def _event_quote_block_reason(self, token_id: str) -> Optional[str]:
+        state = self._event_state_name(token_id)
+        if state in {
             EVENT_CANCELING,
             EVENT_HALTED_ON_FILL,
             EVENT_HALTED_ON_DATA,
@@ -1056,7 +1068,25 @@ class PolyLPSMulti:
             EVENT_QUARANTINE,
             EVENT_PENDING_MANUAL_EXIT,
             EVENT_EXIT_PENDING,
-        }
+        }:
+            return f"event_state={state}"
+
+        # YES and NO share one event. Once either side has inventory to unwind,
+        # do not let the other side add fresh exposure while the exit is pending.
+        paired = self._paired_token_id(token_id)
+        if paired and paired != token_id:
+            paired_state = self._event_state_name(paired)
+            if paired_state in {
+                EVENT_CANCELING,
+                EVENT_HALTED_ON_FILL,
+                EVENT_EXIT_PENDING,
+                EVENT_PENDING_MANUAL_EXIT,
+            }:
+                return f"paired_event_state={paired_state}:{paired}"
+        return None
+
+    def _event_blocks_quote(self, token_id: str) -> bool:
+        return self._event_quote_block_reason(token_id) is not None
 
     def _defense_blocks_requote(self, token_id: str) -> bool:
         return time.time() < float(self._defense_block_until.get(token_id, 0.0))
@@ -1081,10 +1111,7 @@ class PolyLPSMulti:
         reason = self._halt_requested.get(token_id)
         if reason:
             return reason
-        state = self._event_state_name(token_id)
-        if state in {EVENT_CANCELING, EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
-            return f"event_state={state}"
-        return None
+        return self._event_quote_block_reason(token_id)
 
     def _ensure_order_path_open(self, token_id: str, label: str) -> None:
         reason = self._halt_preemption_reason(token_id)
@@ -6354,6 +6381,10 @@ class PolyLPSMulti:
                     signed = SignedOrderV2(**signed)
             else:
                 signed = await asyncio.to_thread(self.client.create_order, args)
+            # State may change while remote signing is in flight. Re-check at
+            # the last possible point so an exit transition cannot leak a new
+            # maker BUY into the same YES/NO event.
+            self._ensure_order_path_open(token_id, f"submit_pre_post:{label}")
             resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
             self._invalidate_all_orders_cache()
             self._sibling_register_resp(token_id, "BUY", price, size, resp)

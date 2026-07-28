@@ -8,7 +8,13 @@ import sys
 MAKER_DIR = Path(__file__).resolve().parents[1] / "platforms" / "polymarket" / "maker"
 sys.path.insert(0, str(MAKER_DIR))
 
-from engine import PolyLPSMulti, _compute_quote_target_shares  # noqa: E402
+from engine import (  # noqa: E402
+    EVENT_ACTIVE,
+    EVENT_EXIT_PENDING,
+    EventHaltPreempted,
+    PolyLPSMulti,
+    _compute_quote_target_shares,
+)
 
 
 def test_quote_target_honors_absolute_share_cap():
@@ -127,6 +133,79 @@ def test_one_hundred_events_each_reuse_the_same_account_budget():
         engine._event_reserved_collateral(token) == Decimal("950")
         for token in event_tokens
     )
+
+
+def _paired_state_engine() -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {"paired_token_id": "101", "_dual_side_auto": True},
+    }
+    engine._night_market_cfg = {}
+    engine._paired_token_cache = {"101": "102", "102": "101"}
+    engine._event_states = {
+        "101": {"state": EVENT_ACTIVE, "reason": "init", "updated_at": 0},
+        "102": {"state": EVENT_ACTIVE, "reason": "init", "updated_at": 0},
+    }
+    engine._halt_requested = {"101": None, "102": None}
+    return engine
+
+
+def test_exit_pending_blocks_both_sides_of_the_same_event():
+    engine = _paired_state_engine()
+    engine._event_states["102"]["state"] = EVENT_EXIT_PENDING
+
+    assert engine._event_blocks_quote("102") is True
+    assert engine._event_blocks_quote("101") is True
+    assert engine._halt_preemption_reason("101").startswith(
+        "paired_event_state=EXIT_PENDING"
+    )
+
+
+def test_submit_rechecks_state_after_signing_before_posting():
+    engine = _paired_state_engine()
+    posted = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            engine._event_states["102"]["state"] = EVENT_EXIT_PENDING
+            return object()
+
+    class Client:
+        def post_order(self, *_args):
+            posted.append(True)
+            return {"orderID": "should-not-post"}
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+
+    try:
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "race-test",
+            )
+        )
+    except EventHaltPreempted:
+        pass
+    else:
+        raise AssertionError("submit should be preempted after paired exit begins")
+
+    assert posted == []
 
 
 def test_deactivate_market_disables_config_and_removes_current_runtime(tmp_path):
