@@ -2616,8 +2616,9 @@
           const state=!r.enabled?'已关闭':(!r.engine_running?'引擎停止':(r.fresh?'运行中':'扫描迟滞'));
           const cls=r.enabled&&r.engine_running&&r.fresh?'ok':(r.enabled?'warn':'');
           const interval=Math.max(1,Math.round(Number(r.interval_sec||0)/60));
+          const session=r.session==='night'?'夜盘':(r.session==='day'?'日盘':'当前');
           return '<div class="pm-auto-scan-row"><div class="pm-auto-scan-head"><b>账号'+r.account+' · '+esc(r.host||'—')+'</b><span class="chip '+cls+'">'+state+'</span></div>'+
-            '<div class="pm-auto-scan-meta"><span>扫描周期<strong>'+interval+' 分钟</strong></span><span>最近扫描<strong>'+esc(r.last_scan_age||'尚无记录')+'</strong></span><span>当前市场<strong>'+Number(r.markets||0)+' 个</strong></span>'+
+            '<div class="pm-auto-scan-meta"><span>扫描周期<strong>'+session+' · '+interval+' 分钟</strong></span><span>最近扫描<strong>'+esc(r.last_scan_age||'尚无记录')+'</strong></span><span>当前市场<strong>'+Number(r.markets||0)+' 个</strong></span>'+
             '<span>本轮新增<strong>'+Number(r.last_scan_added||0)+' 个</strong></span><span>累计新增<strong>'+Number(r.added_total||0)+' 个</strong></span><span>累计过滤<strong>'+Number(r.rejected_total||0)+' 个</strong></span></div></div>';
         }).join(''):'<div class="pm-empty">尚未发现自动扫描状态</div>';
       }

@@ -1113,8 +1113,14 @@ def _polymarket() -> Dict[str, Any]:
         curator_enabled = bool(
             curator_state.get("enabled", curator_cfg.get("enabled", False))
         )
-        curator_interval = int(
+        curator_configured_interval = int(
             _num(curator_cfg.get("interval_sec")) or 1800
+        )
+        curator_session = str(state.get("current_session") or "unknown")
+        curator_interval = (
+            30 * 60
+            if curator_session == "night"
+            else curator_configured_interval
         )
         curator_last_scan = _num(curator_state.get("last_scan_ts"))
         curator_age = (
@@ -1142,6 +1148,8 @@ def _polymarket() -> Dict[str, Any]:
             "fresh": curator_fresh,
             "engine_running": bool(alive and not paused),
             "interval_sec": curator_interval,
+            "configured_interval_sec": curator_configured_interval,
+            "session": curator_session,
             "markets": curator_market_count,
             "last_scan_ts": curator_last_scan,
             "last_scan_age_sec": curator_age,
