@@ -1,6 +1,7 @@
 # Discord notification channels
 
-Latitude uses two Discord channels so routine activity does not bury incidents.
+Latitude uses exactly two Discord channels so routine activity does not bury
+incidents. The only place allowed to configure them is Dashboard > 通知.
 
 ## Normal operations
 
@@ -12,16 +13,15 @@ Examples:
 - daily summaries and console configuration changes
 - confirmed rewards or refunds
 
-The unified console reads:
+All VPS1 projects read:
 
 ```text
 data/discord_normal_webhook.txt
 ```
 
-Var/Decibel reads `discord_normal_webhook_url` from its local notification
-settings. Polymarket uses its normal reporting webhook for fills, exits, and
-other routine events; the older dedicated fill webhook is no longer used for
-routing.
+Saving in Dashboard atomically copies the same file to VPS2. Polymarket,
+Var/Decibel, Predict.fun, Grid, Single Account, IPO and infrastructure alerts
+must use this shared route rather than keeping project-specific webhooks.
 
 ## Important incidents
 
@@ -33,20 +33,20 @@ Examples:
 - persistent service or data-source failures
 - exceptions and bugs that require attention
 
-The unified console and Polymarket read:
+All VPS1 projects read:
 
 ```text
 data/discord_important_webhook.txt
 ```
 
-Var/Decibel reads `discord_important_webhook_url` from its local notification
-settings.
+Saving in Dashboard atomically copies the same file to VPS2.
 
 Critical alerts also continue to reach Feishu. Routine spread or cost guard
 rejections stay suppressed because no order was sent and no position changed.
 
-## Compatibility and secrets
+## Secrets and retired settings
 
-`data/discord_webhook.txt` remains a fallback for an older deployment. Webhook
-URLs are secrets: keep these files and local settings at mode `0600`, never
-commit them, and never print their values in logs.
+Legacy `data/discord_webhook.txt`, Polymarket config webhook fields, environment
+webhook variables and Var/Decibel local notification settings are not valid
+routing sources. Webhook URLs are secrets: keep the two shared files at mode
+`0600`, never commit them, and never print their values in logs.

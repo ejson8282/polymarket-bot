@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -185,7 +186,7 @@ def test_discord_status_never_returns_secret_and_files_are_private(
     assert paths["normal"].stat().st_mode & 0o777 == 0o600
 
 
-def test_discord_status_reports_legacy_fallback_without_exposing_it(
+def test_discord_status_ignores_legacy_webhook(
     monkeypatch, tmp_path: Path
 ) -> None:
     paths = _patch_discord_paths(monkeypatch, tmp_path)
@@ -194,9 +195,9 @@ def test_discord_status_reports_legacy_fallback_without_exposing_it(
 
     status = console._discord_notification_status()
 
-    assert status["channels"]["normal"]["legacy_fallback"] is True
-    assert status["channels"]["important"]["legacy_fallback"] is True
-    assert status["channels"]["normal"]["effective"] is True
+    assert status["source"] == "dashboard_only"
+    assert status["channels"]["normal"]["effective"] is False
+    assert status["channels"]["important"]["effective"] is False
     assert secret not in json.dumps(status)
 
 
@@ -237,8 +238,58 @@ def test_discord_notification_update_saves_without_echoing_secret(
     assert secret not in response.body.decode("utf-8")
     assert paths["normal"].read_text(encoding="utf-8").strip() == secret
     assert audits == [
-        ("discord_webhook", {"channel": "normal", "configured": True})
+        (
+            "discord_webhook",
+            {
+                "channel": "normal",
+                "configured": True,
+                "remote_sync_ok": True,
+            },
+        )
     ]
+
+
+def test_discord_remote_sync_never_places_secret_in_commands_or_result(
+    monkeypatch, tmp_path: Path
+) -> None:
+    paths = _patch_discord_paths(monkeypatch, tmp_path)
+    secret = "https://discord.com/api/webhooks/123/private-token"
+    console._write_discord_webhook(paths["important"], secret)
+    commands = []
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        console,
+        "_load_pm_remotes",
+        lambda: {
+            2: {
+                "label": "VPS2",
+                "ssh_host": "ubuntu@100.101.50.40",
+                "ssh_key": "/tmp/test-key",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or Result(),
+    )
+    monkeypatch.setattr(
+        console,
+        "_remote_ssh",
+        lambda _remote, command, timeout=0: (
+            commands.append([command, str(timeout)]) or {"rc": 0}
+        ),
+    )
+
+    result = console._sync_discord_channel_to_remotes("important")
+    rendered = json.dumps({"result": result, "commands": commands})
+
+    assert result == {"ok": True, "synced": ["VPS2"], "failed": []}
+    assert secret not in rendered
+    assert "private-token" not in rendered
 
 
 def test_parse_ts_treats_naive_recorder_timestamp_as_utc() -> None:

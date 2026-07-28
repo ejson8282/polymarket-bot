@@ -190,8 +190,6 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 _notify_cooldowns: dict[str, float] = {}
 _NOTIFY_COOLDOWN_SEC = 60  # max 1 message per event type per 60s
-_discord_webhook_url: str = ""  # set once during engine init
-_discord_important_webhook_url: str = ""
 _discord_normal_webhook_file: Optional[Path] = None
 _discord_important_webhook_file: Optional[Path] = None
 
@@ -218,21 +216,39 @@ def _is_important_discord_message(message: str) -> bool:
         "安全超时",
         "拒绝低价",
         "dust remains",
+        "recovered",
+        "resolved",
+        "恢复",
+        "解除",
     )
     return any(marker in text for marker in markers)
+
+
+def _discord_webhook_for(channel: str) -> str:
+    path = (
+        _discord_important_webhook_file
+        if channel == "important"
+        else _discord_normal_webhook_file
+    )
+    return _read_webhook_file(path) if path is not None else ""
 
 
 def _discord_embed_color(level: str) -> int:
     return {"info": 0x2ECC71, "warning": 0xF1C40F, "danger": 0xE74C3C}.get(level, 0x95A5A6)
 
 
-def _send_discord_webhook(url: str, title: str, message: str, level: str) -> None:
+def _send_discord_webhook(url: str, title: str, message: Any, level: str) -> None:
     """Blocking HTTP POST to Discord webhook — runs in daemon thread."""
     try:
+        description = (
+            message
+            if isinstance(message, str)
+            else json.dumps(message, ensure_ascii=False, default=str)
+        )
         payload = {
             "embeds": [{
                 "title": title,
-                "description": message,
+                "description": description[:3900],
                 "color": _discord_embed_color(level),
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             }]
@@ -248,24 +264,8 @@ def notify_discord(title: str, message: str, level: str = "info") -> None:
     Safe to call from anywhere — instant no-op if webhook is not configured
     or if the same event type was notified within the cooldown window.
     """
-    normal_file_url = (
-        _read_webhook_file(_discord_normal_webhook_file)
-        if _discord_normal_webhook_file is not None
-        else ""
-    )
-    important_file_url = (
-        _read_webhook_file(_discord_important_webhook_file)
-        if _discord_important_webhook_file is not None
-        else ""
-    )
-    normal_webhook = normal_file_url or _discord_webhook_url
-    important_webhook = important_file_url or _discord_important_webhook_url
     important = level in {"warning", "danger"}
-    webhook = (
-        important_webhook
-        if important and important_webhook
-        else normal_webhook
-    )
+    webhook = _discord_webhook_for("important" if important else "normal")
     if not webhook:
         return
     now = time.time()
@@ -600,43 +600,17 @@ class PolyLPSMulti:
         # Hard pre-start stop: cancel orders this many seconds before event start (default 3h)
         self.pre_start_stop_sec = int(risk.get("pre_start_stop_sec", 3 * 3600))
 
-        reporting = self.cfg.get("reporting", {})
         default_data_dir = (
             Path(config_path).resolve().parent.parent.parent.parent / "data"
         )
-        normal_file = Path(
-            os.getenv("POLY_NORMAL_DISCORD_WEBHOOK_FILE", "").strip()
-            or str(reporting.get("normal_discord_webhook_file", "")).strip()
-            or default_data_dir / "discord_normal_webhook.txt"
-        )
-        self.discord_webhook = (
-            os.getenv("POLY_DISCORD_WEBHOOK", "").strip()
-            or str(reporting.get("discord_webhook", "")).strip()
-            or _read_webhook_file(normal_file)
-        )
-        self.fill_discord_webhook = os.getenv("POLY_FILL_DISCORD_WEBHOOK", "").strip() or str(reporting.get("fill_discord_webhook", "")).strip()
-        default_important_file = default_data_dir / "discord_important_webhook.txt"
-        important_file = Path(
-            os.getenv("POLY_IMPORTANT_DISCORD_WEBHOOK_FILE", "").strip()
-            or str(reporting.get("important_discord_webhook_file", "")).strip()
-            or default_important_file
-        )
-        self.important_discord_webhook = (
-            os.getenv("POLY_IMPORTANT_DISCORD_WEBHOOK", "").strip()
-            or str(reporting.get("important_discord_webhook", "")).strip()
-            or _read_webhook_file(important_file)
-        )
+        normal_file = default_data_dir / "discord_normal_webhook.txt"
+        important_file = default_data_dir / "discord_important_webhook.txt"
+        reporting = self.cfg.get("reporting", {})
         self.hourly_summary = bool(reporting.get("hourly_summary", True))
 
-        # Initialise global Discord embed-notification webhook
-        global _discord_webhook_url, _discord_important_webhook_url
+        # Dashboard > 通知 is the only Discord configuration source. Both files
+        # are re-read for every send so a saved change takes effect immediately.
         global _discord_normal_webhook_file, _discord_important_webhook_file
-        _discord_webhook_url = (
-            os.getenv("POLY_DISCORD_NOTIFY_WEBHOOK", "").strip()
-            or str(self.cfg.get("discord_webhook_url", "")).strip()
-            or self.discord_webhook  # fall back to existing webhook
-        )
-        _discord_important_webhook_url = self.important_discord_webhook
         _discord_normal_webhook_file = normal_file
         _discord_important_webhook_file = important_file
 
@@ -5726,21 +5700,21 @@ class PolyLPSMulti:
                                                         self._cancel_token_orders(_paired),
                                                         name=f"cross_side_cancel:{_paired}",
                                                     )
-                                                    if self.fill_discord_webhook:
-                                                        try:
-                                                            self.notify_discord(
-                                                                "🛡 cross-side sentinel triggered",
-                                                                {
-                                                                    "trigger_token": token_id,
-                                                                    "cancelled_token": _paired,
-                                                                    "reason": _reason,
-                                                                    "ask_depth_max": round(_max_ask, 0),
-                                                                    "ask_depth_current": round(_cur_ask, 0),
-                                                                    "consumed_pct": round(_pct, 3),
-                                                                },
-                                                            )
-                                                        except Exception:
-                                                            pass
+                                                    try:
+                                                        self.notify_discord(
+                                                            "🛡 cross-side sentinel triggered",
+                                                            {
+                                                                "trigger_token": token_id,
+                                                                "cancelled_token": _paired,
+                                                                "reason": _reason,
+                                                                "ask_depth_max": round(_max_ask, 0),
+                                                                "ask_depth_current": round(_cur_ask, 0),
+                                                                "consumed_pct": round(_pct, 3),
+                                                            },
+                                                            "warning",
+                                                        )
+                                                    except Exception:
+                                                        pass
                                     except Exception as _ex:
                                         log(f"[cross-side-sentinel] err: {_ex}")
                             elif event_type == "best_bid_ask":
@@ -7521,11 +7495,12 @@ class PolyLPSMulti:
         notify_discord(full_title, message, level)
 
     def send_discord(self, message: str) -> None:
-        webhook = (
-            self.important_discord_webhook
-            if _is_important_discord_message(message) and self.important_discord_webhook
-            else self.discord_webhook
+        channel = (
+            "important"
+            if _is_important_discord_message(message)
+            else "normal"
         )
+        webhook = _discord_webhook_for(channel)
         if not webhook:
             return
         try:

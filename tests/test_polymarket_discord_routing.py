@@ -83,7 +83,7 @@ def test_polymarket_fill_messages_use_normal_router() -> None:
 
 
 def test_polymarket_notifications_reload_dashboard_webhook_files() -> None:
-    function = _module_function("notify_discord")
+    function = _module_function("_discord_webhook_for")
     names = {
         node.id
         for node in ast.walk(function)
@@ -102,3 +102,31 @@ def test_polymarket_notifications_reload_dashboard_webhook_files() -> None:
     assert "_discord_important_webhook_file" in names
     assert "discord_normal_webhook.txt" in source
     assert "discord_important_webhook.txt" in source
+
+
+def test_polymarket_has_no_independent_webhook_route() -> None:
+    method = _engine_method("send_discord")
+    names = {
+        node.id
+        for node in ast.walk(method)
+        if isinstance(node, ast.Name)
+    }
+    engine_path = (
+        Path(__file__).resolve().parents[1]
+        / "platforms"
+        / "polymarket"
+        / "maker"
+        / "engine.py"
+    )
+    source = engine_path.read_text(encoding="utf-8")
+
+    assert "_discord_webhook_for" in names
+    for legacy_key in (
+        "POLY_DISCORD_WEBHOOK",
+        "POLY_FILL_DISCORD_WEBHOOK",
+        "POLY_IMPORTANT_DISCORD_WEBHOOK",
+        "discord_webhook_url",
+        'reporting.get("discord_webhook"',
+        'reporting.get("fill_discord_webhook"',
+    ):
+        assert legacy_key not in source

@@ -132,16 +132,13 @@ def test_legacy_alert_state_recovers_project_tag() -> None:
     assert pusher._legacy_alert_tag({"tag": "GRID", "text": "[OLD] text"}) == "GRID"
 
 
-def test_discord_channels_use_separate_files_with_legacy_fallback(
+def test_discord_channels_use_only_dashboard_owned_files(
     monkeypatch, tmp_path: Path
 ) -> None:
-    legacy = tmp_path / "legacy.txt"
     normal = tmp_path / "normal.txt"
     important = tmp_path / "important.txt"
-    legacy.write_text("https://discord.com/api/webhooks/legacy/token", encoding="utf-8")
     normal.write_text("https://discord.com/api/webhooks/normal/token", encoding="utf-8")
     important.write_text("https://discord.com/api/webhooks/important/token", encoding="utf-8")
-    monkeypatch.setattr(pusher, "DISCORD_LEGACY_FILE", legacy)
     monkeypatch.setattr(pusher, "DISCORD_NORMAL_FILE", normal)
     monkeypatch.setattr(pusher, "DISCORD_IMPORTANT_FILE", important)
 
@@ -150,8 +147,8 @@ def test_discord_channels_use_separate_files_with_legacy_fallback(
 
     normal.unlink()
     important.unlink()
-    assert pusher._discord_webhook("normal") == legacy.read_text(encoding="utf-8")
-    assert pusher._discord_webhook("important") == legacy.read_text(encoding="utf-8")
+    assert pusher._discord_webhook("normal") == ""
+    assert pusher._discord_webhook("important") == ""
 
 
 def test_discord_channel_changes_are_included_in_normal_audit_feed() -> None:

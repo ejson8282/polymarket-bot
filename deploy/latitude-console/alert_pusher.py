@@ -8,7 +8,6 @@ webhook 文件(均 chmod 600,不入 git;缺文件 → 该通道静默跳过):
   data/feishu_webhook.txt
   data/discord_normal_webhook.txt
   data/discord_important_webhook.txt
-兼容旧部署:data/discord_webhook.txt 仍可作为两个 Discord 通道的回退。
 
 普通模式:由 alert-pusher.timer 每 5 分钟跑一次(新告警/解除 + 写操作增量)。
 --digest:由 alert-digest.timer 每日 09:00 BJT 跑一次(状态早报)。
@@ -28,7 +27,6 @@ from pathlib import Path
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", "/home/ubuntu/polymarket-bot/data"))
 STATE_URL = os.getenv("LATITUDE_STATE_URL", "http://127.0.0.1:8600/api/state")
 FEISHU_FILE = DATA_DIR / "feishu_webhook.txt"
-DISCORD_LEGACY_FILE = DATA_DIR / "discord_webhook.txt"
 DISCORD_NORMAL_FILE = DATA_DIR / "discord_normal_webhook.txt"
 DISCORD_IMPORTANT_FILE = DATA_DIR / "discord_important_webhook.txt"
 PUSH_STATE = DATA_DIR / "alert_push_state.json"
@@ -71,7 +69,7 @@ def send_feishu(text: str) -> bool:
 
 def _discord_webhook(channel: str) -> str:
     primary = DISCORD_IMPORTANT_FILE if channel == "important" else DISCORD_NORMAL_FILE
-    return _webhook(primary) or _webhook(DISCORD_LEGACY_FILE)
+    return _webhook(primary)
 
 
 def send_discord(text: str, *, channel: str = "normal") -> bool:

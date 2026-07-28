@@ -711,6 +711,7 @@
   <div class="status-cluster">
     <span class="pill" data-k="pill.alerts"><span class="dot"></span>告警读取中</span>
     <span class="pill" data-k="pill.signer"><span class="dot"></span>SIGNER 待读取</span>
+    <span class="clock num" data-k="release">SOURCE 待确认</span>
     <span class="clock num" data-k="clock">状态读取中</span>
   </div>
 </header>
@@ -2125,7 +2126,7 @@
 <!-- ════════════ 页面 · 通知 ════════════ -->
 <section class="page" id="page-notifications">
   <div class="notify-head">
-    <div><h1>通知</h1><p>Discord 频道配置</p></div>
+    <div><h1>通知</h1><p>所有项目统一使用这两个 Discord 频道，保存后同步到 VPS1 与 VPS2</p></div>
     <span class="chip" id="notify-summary">读取中</span>
   </div>
   <div class="notify-grid">
@@ -2199,7 +2200,6 @@
   document.querySelectorAll('#nav a').forEach(a=>a.addEventListener('click',()=>go(a.dataset.page)));
   function notificationLabel(row){
     if(row&&row.configured)return '已配置';
-    if(row&&row.legacy_fallback)return '沿用旧地址';
     return '未配置';
   }
   function bindNotifications(data){
@@ -2209,7 +2209,7 @@
       const row=channels[channel]||{}, label=notificationLabel(row);
       if(row.effective)configured+=1;
       const status=document.getElementById('notify-'+channel+'-status');
-      if(status){status.textContent=label;status.className='chip '+(row.configured?'ok':row.legacy_fallback?'warn':'danger');}
+      if(status){status.textContent=label;status.className='chip '+(row.configured?'ok':'danger');}
       const route=document.getElementById('notify-route-'+channel);
       if(route)route.innerHTML='<span class="chip '+(row.effective?'ok':'danger')+'">'+label+'</span>';
       const test=document.querySelector('.notify-test[data-channel="'+channel+'"]');
@@ -2258,7 +2258,7 @@
     try{
       const response=await fetch('/api/notifications/discord',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const result=await response.json();
-      if(!response.ok)throw new Error(result.error||'操作失败');
+      if(!response.ok)throw new Error(result.error||result.message||'操作失败');
       input.value='';
       bindNotifications(result);
       setNotificationMessage(channel,result.message||'已完成','ok');
@@ -5253,6 +5253,10 @@
     let s; try{ s=await (await fetch('/api/state',{cache:'no-store'})).json(); }
     catch(e){ document.querySelectorAll('.page:not(#page-dewu)').forEach(p=>p.classList.add('nodata')); return; }
     window.__state=s;
+    const release=s.console_release||{};
+    setK('release', release.present&&release.commit
+      ?'SOURCE latitude-alpha@'+String(release.commit).slice(0,8)
+      :'SOURCE 未记录');
     setK('clock', (s.ts||'')+' · 刚刷新');
     window.__writesEnabled=!!s.writes_enabled;
     try{bindFresh(s.freshness||{});}catch(e){}

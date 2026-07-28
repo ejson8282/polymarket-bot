@@ -5,11 +5,11 @@
     成本门槛;并入老板观点(data/ipo_boss_views.json)。不做主观打/跳判断(那是第二层
     的 Claude 智能体的活)。
   - 产出 judgment_pack.json(给第二层 Claude 判研和 Latitude 09:00 统一早报使用)。
-    默认不单独推 Discord;兼容旧行为可显式设置 IPO_STANDALONE_DISCORD=1。
+    不单独推 Discord；统一早报由 Dashboard 的普通通知频道发送。
   - 零 API、零套餐消耗;第二层才唤起 Claude(消耗订阅额度)。
 
 用法:
-  python ipo_advisor.py brief          # 生成简报 + judgment_pack,默认不单独推 Discord
+  python ipo_advisor.py brief          # 生成简报 + judgment_pack
   python ipo_advisor.py add-view CODE "观点文本"   # 落一条老板观点
   python ipo_advisor.py show-pack      # 只打印 judgment_pack(第二层读它)
 
@@ -27,7 +27,6 @@ from pathlib import Path
 
 DATA_DIR = Path(os.getenv("LATITUDE_DATA_DIR", "/home/ubuntu/polymarket-bot/data"))
 STATE_URL = os.getenv("LATITUDE_STATE_URL", "http://127.0.0.1:8600/api/state")
-DISCORD_FILE = DATA_DIR / "discord_webhook.txt"
 VIEWS_FILE = DATA_DIR / "ipo_boss_views.json"          # {code: [{ts, text}]}
 PACK_FILE = DATA_DIR / "ipo_judgment_pack.json"        # 第二层判研输入
 BJT = timezone(timedelta(hours=8))
@@ -41,26 +40,6 @@ _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def _get_state() -> dict:
     with _opener.open(STATE_URL, timeout=10) as r:
         return json.load(r)
-
-
-def _discord(text: str) -> bool:
-    try:
-        url = DISCORD_FILE.read_text(encoding="utf-8").strip()
-        if not url.startswith("https://"):
-            return False
-        req = urllib.request.Request(url, data=json.dumps({"content": text[:1900]}).encode("utf-8"),
-                                     headers={"Content-Type": "application/json",
-                                              "User-Agent": "Latitude-IPO/1.0"})
-        with _opener.open(req, timeout=10) as r:
-            r.read()
-        return True
-    except Exception as e:
-        print(f"discord push failed: {e}", file=sys.stderr)
-        return False
-
-
-def _standalone_discord_enabled() -> bool:
-    return os.getenv("IPO_STANDALONE_DISCORD", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_views() -> dict:
@@ -171,8 +150,6 @@ def brief() -> None:
     stamp = datetime.now(BJT).strftime("%m-%d %H:%M")
     if not pack["stocks"]:
         text = f"📋 打新判研简报({stamp}):当前无「申购中」新股。"
-        if _standalone_discord_enabled():
-            _discord(text)
         print(text)
         return
     lines = [f"📋 打新判研简报({stamp}) · {pack['active_count']} 只申购中"]
@@ -183,8 +160,6 @@ def brief() -> None:
         lines.append(f"· {s['code']} {(s['name'] or '')[:12]} | {fee} · {lock}{vtag}")
     lines.append("（评分为导入占位值,不可信;等第二层 Claude 判研出打/跳建议）")
     text = "\n".join(lines)
-    if _standalone_discord_enabled():
-        _discord(text)
     print(text)
 
 

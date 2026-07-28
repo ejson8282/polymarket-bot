@@ -115,6 +115,12 @@ DEWU_EXECUTOR_URL = os.getenv(
 WORK_PLAN_PATH = Path(
     os.getenv("LATITUDE_WORK_PLAN_PATH", DATA_DIR / "work_plan.json")
 )
+CONSOLE_RELEASE_PATH = Path(
+    os.getenv(
+        "LATITUDE_CONSOLE_RELEASE_PATH",
+        DATA_DIR / "latitude_console_release.json",
+    )
+)
 WORK_PLAN_BACKUP_DIR = Path(
     os.getenv(
         "LATITUDE_WORK_PLAN_BACKUP_DIR",
@@ -251,6 +257,27 @@ def _work_plan_save(state: dict) -> None:
     os.replace(tmp, WORK_PLAN_PATH)
 
 
+def _console_release() -> dict:
+    payload = _read_json(CONSOLE_RELEASE_PATH)
+    if not isinstance(payload, dict):
+        return {
+            "present": False,
+            "source_repository": "ejson8282/latitude-alpha",
+            "commit": None,
+            "deployed_at": None,
+        }
+    raw_commit = str(payload.get("commit") or "").strip().lower()
+    commit = raw_commit if re.fullmatch(r"[0-9a-f]{7,40}", raw_commit) else ""
+    return {
+        "present": bool(commit),
+        "source_repository": str(
+            payload.get("source_repository") or "ejson8282/latitude-alpha"
+        )[:120],
+        "commit": commit or None,
+        "deployed_at": str(payload.get("deployed_at") or "")[:40] or None,
+    }
+
+
 def _work_plan_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -333,9 +360,6 @@ def _valid_discord_webhook(value: str) -> bool:
 
 
 def _discord_notification_status() -> dict:
-    legacy_configured = bool(
-        _discord_webhook_value(DISCORD_LEGACY_WEBHOOK_PATH)
-    )
     channels: Dict[str, dict] = {}
     for channel, path in DISCORD_WEBHOOK_PATHS.items():
         configured = bool(_discord_webhook_value(path))
@@ -349,11 +373,10 @@ def _discord_notification_status() -> dict:
                 pass
         channels[channel] = {
             "configured": configured,
-            "legacy_fallback": not configured and legacy_configured,
-            "effective": configured or legacy_configured,
+            "effective": configured,
             "updated_at": updated_at,
         }
-    return {"channels": channels}
+    return {"channels": channels, "source": "dashboard_only"}
 
 
 def _write_discord_webhook(path: Path, value: str) -> None:
@@ -394,6 +417,94 @@ def _send_discord_webhook_test(url: str, channel: str) -> tuple[bool, str]:
         return False, f"Discord 返回 HTTP {exc.code}"
     except Exception:
         return False, "发送失败，请检查 Webhook 是否有效"
+
+
+def _sync_discord_channel_to_remotes(
+    channel: str, *, clear: bool = False
+) -> dict:
+    """Mirror one Dashboard-owned channel to every configured Polymarket VPS."""
+    import subprocess
+
+    path = DISCORD_WEBHOOK_PATHS[channel]
+    remote_path = f"{REMOTE_REPO_DATA}/{path.name}"
+    synced: List[str] = []
+    failed: List[str] = []
+    for idx, remote in _load_pm_remotes().items():
+        label = str(remote.get("label") or f"VPS{idx}")
+        if clear:
+            result = _remote_ssh(
+                remote,
+                f"rm -f {shlex.quote(remote_path)}",
+                timeout=12,
+            )
+            (synced if result.get("rc") == 0 else failed).append(label)
+            continue
+
+        remote_tmp = f"{remote_path}.sync-{os.getpid()}"
+        cmd = ["scp"]
+        key = str(remote.get("ssh_key") or "").strip()
+        if key:
+            cmd.extend(["-i", key])
+        cmd.extend(
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "ConnectTimeout=8",
+                str(path),
+                f"{remote.get('ssh_host')}:{remote_tmp}",
+            ]
+        )
+        try:
+            copied = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=20
+            )
+        except Exception:
+            failed.append(label)
+            continue
+        if copied.returncode != 0:
+            failed.append(label)
+            continue
+        finalized = _remote_ssh(
+            remote,
+            " && ".join(
+                [
+                    f"mkdir -p {shlex.quote(REMOTE_REPO_DATA)}",
+                    (
+                        f"install -m 600 {shlex.quote(remote_tmp)} "
+                        f"{shlex.quote(remote_path)}"
+                    ),
+                    f"rm -f {shlex.quote(remote_tmp)}",
+                ]
+            ),
+            timeout=12,
+        )
+        (synced if finalized.get("rc") == 0 else failed).append(label)
+    return {"ok": not failed, "synced": synced, "failed": failed}
+
+
+def _retire_legacy_discord_webhooks() -> None:
+    try:
+        DISCORD_LEGACY_WEBHOOK_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    remote_path = f"{REMOTE_REPO_DATA}/{DISCORD_LEGACY_WEBHOOK_PATH.name}"
+    for remote in _load_pm_remotes().values():
+        _remote_ssh(
+            remote,
+            f"rm -f {shlex.quote(remote_path)}",
+            timeout=12,
+        )
+
+
+def _sync_all_discord_channels() -> None:
+    for channel, path in DISCORD_WEBHOOK_PATHS.items():
+        _sync_discord_channel_to_remotes(
+            channel, clear=not bool(_discord_webhook_value(path))
+        )
+    _retire_legacy_discord_webhooks()
 
 
 # ---------- 得物库存(Excel 为唯一入库来源) ----------
@@ -5028,6 +5139,11 @@ def _start_prefetch() -> None:
     import threading
 
     threading.Thread(target=_prefetch_loop, name="latitude-prefetch", daemon=True).start()
+    threading.Thread(
+        target=_sync_all_discord_channels,
+        name="latitude-discord-sync",
+        daemon=True,
+    ).start()
 
 
 def _account_ops() -> Dict[str, Any]:
@@ -6299,6 +6415,7 @@ def api_state() -> JSONResponse:
         "events": _events(pm.pop("fill_events", [])),
         "grid": grid,
         "alerts": alerts,
+        "console_release": _console_release(),
         "writes_enabled": WRITES_ENABLED,
     })
 
@@ -6368,9 +6485,26 @@ async def discord_notifications_update(
             path.unlink()
         except FileNotFoundError:
             pass
-        _audit("discord_webhook", channel=channel, configured=False)
+        remote_sync = _sync_discord_channel_to_remotes(channel, clear=True)
+        _retire_legacy_discord_webhooks()
+        _audit(
+            "discord_webhook",
+            channel=channel,
+            configured=False,
+            remote_sync_ok=remote_sync["ok"],
+        )
         return JSONResponse(
-            {"ok": True, "message": "频道已清除", **_discord_notification_status()}
+            {
+                "ok": remote_sync["ok"],
+                "message": (
+                    "频道已从 VPS1、VPS2 清除"
+                    if remote_sync["ok"]
+                    else "VPS1 已清除，VPS2 同步失败"
+                ),
+                "remote_sync": remote_sync,
+                **_discord_notification_status(),
+            },
+            status_code=200 if remote_sync["ok"] else 502,
         )
     if action != "save":
         return JSONResponse(
@@ -6386,9 +6520,26 @@ async def discord_notifications_update(
             status_code=400,
         )
     _write_discord_webhook(path, webhook)
-    _audit("discord_webhook", channel=channel, configured=True)
+    remote_sync = _sync_discord_channel_to_remotes(channel)
+    _retire_legacy_discord_webhooks()
+    _audit(
+        "discord_webhook",
+        channel=channel,
+        configured=True,
+        remote_sync_ok=remote_sync["ok"],
+    )
     return JSONResponse(
-        {"ok": True, "message": "频道已保存", **_discord_notification_status()}
+        {
+            "ok": remote_sync["ok"],
+            "message": (
+                "频道已保存，并同步到 VPS1、VPS2"
+                if remote_sync["ok"]
+                else "VPS1 已保存，VPS2 同步失败"
+            ),
+            "remote_sync": remote_sync,
+            **_discord_notification_status(),
+        },
+        status_code=200 if remote_sync["ok"] else 502,
     )
 
 
@@ -6405,10 +6556,7 @@ async def discord_notifications_test(
         return JSONResponse(
             {"ok": False, "error": "通知频道不正确"}, status_code=400
         )
-    webhook = (
-        _discord_webhook_value(path)
-        or _discord_webhook_value(DISCORD_LEGACY_WEBHOOK_PATH)
-    )
+    webhook = _discord_webhook_value(path)
     if not webhook:
         return JSONResponse(
             {"ok": False, "error": "请先保存该频道"}, status_code=400
