@@ -1689,6 +1689,12 @@ def _var_decibel() -> Dict[str, Any]:
             h[f"equity_{alias}"] = trusted_eq
             h[f"equity_{alias}_last_seen"] = eq
             h[f"ok_{alias}"] = payload.get("ok")
+            raw_balance = bal.get("raw") if isinstance(bal.get("raw"), dict) else {}
+            if venue == "ondo":
+                net_invested = _num(raw_balance.get("netInvested"))
+                if venue_ok and not h["stale"] and net_invested is not None:
+                    h["principal_ondo"] = net_invested
+                    h["principal_ondo_source"] = "ondo.balance.raw.netInvested"
             if trusted_eq is not None:
                 equity_total += eq
                 equity_found = True
@@ -1721,6 +1727,12 @@ def _var_decibel() -> Dict[str, Any]:
         h["incentives"] = {}
         if not h["stale"] and var_payload.get("ok") is True and isinstance(var_payload.get("loss_refunds"), dict):
             h["incentives"]["variational"] = var_payload["loss_refunds"]
+            var_cashflows = var_payload["loss_refunds"]
+            if var_cashflows.get("external_cashflow_complete") is True:
+                net_invested = _num(var_cashflows.get("external_net_invested_usdc"))
+                if net_invested is not None:
+                    h["principal_var"] = net_invested
+                    h["principal_var_source"] = "variational.transfers"
         if (
             hedge_venue == "ondo"
             and not h["stale"]
@@ -2109,10 +2121,15 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
             "missing": [],
         }
         values = (
-            ("variational", "equity_var", "Var"),
-            (hedge_venue, "equity_hedge", _venue_label(hedge_venue)),
+            ("variational", "equity_var", "principal_var", "Var"),
+            (
+                hedge_venue,
+                "equity_hedge",
+                f"principal_{'ondo' if hedge_venue == 'ondo' else 'dec'}",
+                _venue_label(hedge_venue),
+            ),
         )
-        for venue, equity_key, label in values:
+        for venue, equity_key, principal_key, label in values:
             entry = host_ledger.get(venue) if isinstance(host_ledger, dict) else None
             current = _num(hosts.get(host, {}).get(equity_key))
             initial = _num(entry.get("initial")) if isinstance(entry, dict) else None
@@ -2129,6 +2146,15 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
                 if amount is not None
             )
             principal = initial + flow_total
+            principal_source = "reconciled_ledger"
+            authoritative_principal = _num(hosts.get(host, {}).get(principal_key))
+            if authoritative_principal is not None:
+                principal = authoritative_principal
+                flow_total = principal - initial
+                principal_source = str(
+                    hosts.get(host, {}).get(f"{principal_key}_source")
+                    or "platform_authoritative"
+                )
             initial_total += initial
             net_cashflow += flow_total
             current_total += current
@@ -2142,6 +2168,7 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
                 "initial": round(initial, 6),
                 "cashflow": round(flow_total, 6),
                 "principal": round(principal, 6),
+                "principal_source": principal_source,
                 "current": round(current, 6),
                 "pnl": round(current - principal, 6),
             })
