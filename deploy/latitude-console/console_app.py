@@ -18,6 +18,7 @@ import ast
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -44,6 +45,12 @@ SYSTEM_EVENT_LOG = DATA_DIR / "system_events.jsonl"
 SINGLE_ACCOUNT_DECISION_LOG = DATA_DIR / "single_account_decisions.jsonl"
 VARIA_CAPITAL_LEDGER = VARIA_DIR / "home_equity_principal.json"
 VARIA_RECONCILED_PNL_HISTORY = VARIA_DIR / "reconciled_pnl_history.json"
+BTC_SINGLE_SIDE_REPORT_PATH = Path(
+    os.getenv(
+        "BTC_SINGLE_SIDE_REPORT_PATH",
+        VARIA_DIR / "btc_single_side_research_latest.json",
+    )
+)
 VARIA_MANUAL_JOB_UNIT = os.getenv(
     "VARIA_MANUAL_JOB_UNIT", "varia-decibel-manual-job.service"
 )
@@ -1780,6 +1787,336 @@ def _capital_accounting(hosts: Dict[str, dict]) -> Dict[str, Any]:
 
 # ---------- Single Account ----------
 
+BTC_SINGLE_SIDE_LABELS = {
+    "adaptive_mean_reversion": "自适应均值回归",
+    "trend_follow": "趋势跟随",
+    "funding_carry": "Funding carry",
+    "regime_switch": "状态切换",
+}
+
+
+def _btc_single_side_num(
+    value: Any,
+    *,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    """Return a bounded finite number, never NaN/Infinity."""
+
+    if isinstance(value, bool):
+        return None
+    number = _num(value)
+    if number is None or not math.isfinite(number):
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return number
+
+
+def _btc_single_side_reference() -> Dict[str, Any]:
+    """Last reviewed diagnostic, never a paper/live performance claim."""
+
+    rows = [
+        {
+            "strategy": "adaptive_mean_reversion",
+            "label": BTC_SINGLE_SIDE_LABELS["adaptive_mean_reversion"],
+            "completed_cycles": 28,
+            "total_volume_usdc": 838.18310412,
+            "net_pnl_usdc": -0.2327047702306,
+            "break_even_rebate_bps": 2.77629994,
+            "stress_break_even_rebate_bps": 3.15416643,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "trend_follow",
+            "label": BTC_SINGLE_SIDE_LABELS["trend_follow"],
+            "completed_cycles": 28,
+            "total_volume_usdc": 838.03351854,
+            "net_pnl_usdc": -0.1485816477271,
+            "break_even_rebate_bps": 1.77297977,
+            "stress_break_even_rebate_bps": 2.15083689,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "funding_carry",
+            "label": BTC_SINGLE_SIDE_LABELS["funding_carry"],
+            "completed_cycles": 0,
+            "total_volume_usdc": 0.0,
+            "net_pnl_usdc": 0.0,
+            "break_even_rebate_bps": None,
+            "stress_break_even_rebate_bps": None,
+            "evaluable": False,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+        {
+            "strategy": "regime_switch",
+            "label": BTC_SINGLE_SIDE_LABELS["regime_switch"],
+            "completed_cycles": 37,
+            "total_volume_usdc": 1107.36423011,
+            "net_pnl_usdc": -0.0972210542782,
+            "break_even_rebate_bps": 0.8779501056,
+            "stress_break_even_rebate_bps": 1.2543158324,
+            "evaluable": True,
+            "promotion_ready": False,
+            "diagnostic_candidate_id": None,
+            "selected_candidate_id": None,
+            "blocker_count": None,
+        },
+    ]
+    return {
+        "present": True,
+        "source_kind": "reviewed_reference_snapshot",
+        "source_label": "已审阅诊断快照",
+        "updated_at": "2026-07-27",
+        "age": None,
+        "symbol": "BTC",
+        "mode": "read_only_research",
+        "execution_authorized": False,
+        "promotion_ready": False,
+        "selected_candidate_id": None,
+        "closest_to_break_even": "regime_switch",
+        "closest_to_break_even_label": BTC_SINGLE_SIDE_LABELS["regime_switch"],
+        "window_start": "2026-07-17T11:05:08.032688Z",
+        "window_end": "2026-07-27T15:03:44.259008Z",
+        "quotes_loaded": 2204,
+        "scenario": {
+            "position_sizing_mode": "fixed_notional",
+            "leverage": 1.0,
+            "target_notional_usdc": 15.0,
+            "contract_multiplier_btc": 1.0,
+            "contract_step": 0.000001,
+            "contract_verified_against_live_venue": False,
+        },
+        "strategies": rows,
+        "limitations": [
+            "当前窗口已被查看，只能叫末段诊断，不能叫 untouched holdout",
+            "旧数据缺少报价源时间戳，结果通过诊断开关复现",
+            "历史公开报价不是 firm fill，真实成交偏差尚未校准",
+            "四个策略全部未达到 paper 或 live 准入标准",
+        ],
+    }
+
+
+def _btc_single_side_report(payload: Any, *, age: Optional[int]) -> Optional[Dict[str, Any]]:
+    """Normalize only a fail-closed, explicitly non-executable report."""
+
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("mode") != "read_only_research"
+        or payload.get("symbol") != "BTC"
+        or payload.get("writes_possible") is not False
+        or payload.get("execution_authorized") is not False
+        or payload.get("promotion_ready") is not False
+    ):
+        return None
+    evaluation = payload.get("evaluation")
+    if not isinstance(evaluation, dict):
+        return None
+    raw_strategies = evaluation.get("strategies")
+    if (
+        not isinstance(raw_strategies, list)
+        or len(raw_strategies) != len(BTC_SINGLE_SIDE_LABELS)
+    ):
+        return None
+
+    rows: List[Dict[str, Any]] = []
+    for item in raw_strategies:
+        if not isinstance(item, dict):
+            return None
+        strategy = str(item.get("strategy") or "")
+        if strategy not in BTC_SINGLE_SIDE_LABELS:
+            return None
+        if any(
+            item.get(key) is not None and item.get(key) is not False
+            for key in ("execution_authorized", "promotion_ready")
+        ):
+            return None
+        diagnostic = item.get("holdout")
+        stress = item.get("holdout_spread_stress")
+        if not isinstance(diagnostic, dict) or not isinstance(stress, dict):
+            return None
+        raw_cycles = diagnostic.get("completed_cycles")
+        cycles_number = _btc_single_side_num(
+            raw_cycles,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        if (
+            cycles_number is None
+            or not cycles_number.is_integer()
+        ):
+            return None
+        cycles = int(cycles_number)
+        volume = _btc_single_side_num(
+            diagnostic.get("total_volume_usdc"),
+            minimum=0,
+            maximum=1_000_000_000_000,
+        )
+        net_pnl = _btc_single_side_num(
+            diagnostic.get("net_pnl_usdc"),
+            minimum=-1_000_000_000_000,
+            maximum=1_000_000_000_000,
+        )
+        rebate = _btc_single_side_num(
+            diagnostic.get("break_even_rebate_bps_on_actual_volume"),
+            minimum=-1_000_000,
+            maximum=1_000_000,
+        )
+        stress_rebate = _btc_single_side_num(
+            stress.get("break_even_rebate_bps_on_actual_volume"),
+            minimum=-1_000_000,
+            maximum=1_000_000,
+        )
+        if volume is None or net_pnl is None:
+            return None
+        if cycles > 0 and (rebate is None or stress_rebate is None):
+            return None
+        blockers = item.get("blockers")
+        rows.append(
+            {
+                "strategy": strategy,
+                "label": BTC_SINGLE_SIDE_LABELS[strategy],
+                "completed_cycles": cycles,
+                "total_volume_usdc": volume,
+                "net_pnl_usdc": net_pnl,
+                "break_even_rebate_bps": rebate if cycles > 0 else None,
+                "stress_break_even_rebate_bps": stress_rebate if cycles > 0 else None,
+                "evaluable": cycles > 0,
+                "promotion_ready": False,
+                "diagnostic_candidate_id": item.get("diagnostic_candidate_id"),
+                "selected_candidate_id": item.get("selected_candidate_id"),
+                "blocker_count": len(blockers) if isinstance(blockers, list) else None,
+            }
+        )
+    if (
+        len(rows) != len(BTC_SINGLE_SIDE_LABELS)
+        or {row["strategy"] for row in rows} != set(BTC_SINGLE_SIDE_LABELS)
+    ):
+        return None
+
+    evaluable = [
+        row
+        for row in rows
+        if row["evaluable"] and row["break_even_rebate_bps"] is not None
+    ]
+    closest = min(
+        evaluable,
+        key=lambda row: float(row["break_even_rebate_bps"]),
+        default=None,
+    )
+    scenario = payload.get("scenario") if isinstance(payload.get("scenario"), dict) else {}
+    contract = scenario.get("contract") if isinstance(scenario.get("contract"), dict) else {}
+    position_sizing_mode = scenario.get("position_sizing_mode")
+    contract_verified = contract.get("verified_against_live_venue")
+    quotes_loaded_number = _btc_single_side_num(
+        payload.get("quotes_loaded"),
+        minimum=0,
+        maximum=1_000_000_000,
+    )
+    leverage = _btc_single_side_num(
+        scenario.get("leverage"),
+        minimum=0.000000001,
+        maximum=1_000,
+    )
+    target_notional = _btc_single_side_num(
+        scenario.get("target_notional_usdc"),
+        minimum=0.000000001,
+        maximum=1_000_000_000_000,
+    )
+    contract_multiplier = _btc_single_side_num(
+        contract.get("multiplier_btc_per_contract"),
+        minimum=0.000000001,
+        maximum=1_000_000,
+    )
+    contract_step = _btc_single_side_num(
+        contract.get("contract_step"),
+        minimum=0.000000001,
+        maximum=1_000_000,
+    )
+    if (
+        quotes_loaded_number is None
+        or not quotes_loaded_number.is_integer()
+        or leverage is None
+        or target_notional is None
+        or contract_multiplier is None
+        or contract_step is None
+        or position_sizing_mode not in {"fixed_notional", "fixed_margin"}
+        or not isinstance(contract_verified, bool)
+    ):
+        return None
+    first_diagnostic = next(
+        (
+            item.get("holdout")
+            for item in raw_strategies
+            if isinstance(item, dict) and isinstance(item.get("holdout"), dict)
+        ),
+        {},
+    )
+    return {
+        "present": True,
+        "source_kind": "generated_report",
+        "source_label": "最新只读报告",
+        "updated_at": datetime.fromtimestamp(
+            BTC_SINGLE_SIDE_REPORT_PATH.stat().st_mtime,
+            tz=timezone.utc,
+        ).isoformat() if BTC_SINGLE_SIDE_REPORT_PATH.exists() else None,
+        "age": _age_text(age),
+        "symbol": "BTC",
+        "mode": "read_only_research",
+        "execution_authorized": False,
+        "promotion_ready": False,
+        "selected_candidate_id": None,
+        "closest_to_break_even": closest.get("strategy") if closest else None,
+        "closest_to_break_even_label": closest.get("label") if closest else None,
+        "window_start": first_diagnostic.get("started_at"),
+        "window_end": first_diagnostic.get("ended_at"),
+        "quotes_loaded": int(quotes_loaded_number),
+        "scenario": {
+            "position_sizing_mode": position_sizing_mode,
+            "leverage": leverage,
+            "target_notional_usdc": target_notional,
+            "contract_multiplier_btc": contract_multiplier,
+            "contract_step": contract_step,
+            "contract_verified_against_live_venue": contract_verified,
+        },
+        "strategies": rows,
+        "limitations": [
+            "页面中的 holdout 字段只按末段诊断展示，不声明 untouched holdout",
+            "公开历史报价不是 firm fill，不能据此授权下单",
+            "Funding carry 零周期按不可评估处理，不按零亏损通过",
+            "四个策略全部固定为 promotion_ready=false",
+        ],
+    }
+
+
+def _btc_single_side_research() -> Dict[str, Any]:
+    payload = _read_json(BTC_SINGLE_SIDE_REPORT_PATH)
+    try:
+        normalized = _btc_single_side_report(
+            payload,
+            age=_mtime_age(BTC_SINGLE_SIDE_REPORT_PATH),
+        )
+    except Exception:
+        # This is a read-only accessory panel: malformed research data must not
+        # take down the unified console or affect any execution controls.
+        normalized = None
+    return normalized or _btc_single_side_reference()
+
+
 def _sa_worker_pid() -> Optional[int]:
     """先查 systemd 单元(sa-paper-worker.service,2026-07-08 起的正规跑法——
     dashboard Popen 子进程会被 dashboard 重启连坐杀死,7/1 停摆即此因),
@@ -1809,7 +2146,8 @@ def _single_account() -> Dict[str, Any]:
     state = _read_json(DATA_DIR / "single_account_paper_state.json")
     out: Dict[str, Any] = {"present": state is not None,
                            "worker_pid": _sa_worker_pid(),
-                           "automation_draft": _read_json(DATA_DIR / "single_account_automation_draft.json")}
+                           "automation_draft": _read_json(DATA_DIR / "single_account_automation_draft.json"),
+                           "btc_single_side_research": _btc_single_side_research()}
     out["worker_running"] = out["worker_pid"] is not None
     if state:
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}

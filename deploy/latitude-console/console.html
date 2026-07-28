@@ -359,7 +359,22 @@
   .flow span:first-child{border-radius:6px 0 0 6px}.flow span:last-child{border-radius:0 6px 6px 0}
   .flow span+span{border-left:0}
   .flow span.here{color:var(--text);background:#1E2A38;box-shadow:inset 0 -2px 0 var(--var)}
+  .sa-btc-panel{border-color:rgba(94,200,216,.42);background:linear-gradient(135deg,rgba(94,200,216,.045),rgba(188,140,255,.025))}
+  .sa-btc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+  .sa-btc-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sa-btc-title h2{margin:0}
+  .sa-btc-lock{font:10px var(--mono);color:var(--warn);border:1px solid rgba(231,197,71,.45);background:rgba(231,197,71,.08);border-radius:999px;padding:3px 8px}
+  .sa-btc-meta{text-align:right;font:10.5px var(--mono);color:var(--faint);line-height:1.6}
+  .sa-btc-table-wrap{overflow-x:auto;margin-top:12px}
+  .sa-btc-table{min-width:900px}
+  .sa-btc-table td{vertical-align:middle}
+  .sa-btc-table tr.closest{background:rgba(94,200,216,.045)}
+  .sa-btc-status{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font:10px var(--mono);white-space:nowrap}
+  .sa-btc-status.blocked{color:var(--danger);border-color:rgba(229,72,77,.4);background:rgba(229,72,77,.06)}
+  .sa-btc-status.unevaluable{color:var(--warn);border-color:rgba(231,197,71,.4);background:rgba(231,197,71,.06)}
+  .sa-btc-note{margin-top:12px;border-left:2px solid var(--warn);padding:8px 10px;background:rgba(231,197,71,.045);font:10.5px var(--mono);color:var(--muted);line-height:1.65}
   @media (max-width:1100px){.phases{flex-wrap:wrap}.phase{min-width:45%}}
+  @media (max-width:700px){.sa-btc-head{flex-direction:column}.sa-btc-meta{text-align:left}}
   footer{padding:20px 24px 28px;font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);margin-top:24px}
   @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.grid2{grid-template-columns:1fr}.proj{grid-template-columns:1fr}.ipo3{grid-template-columns:1fr}}
   @media (max-width:700px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpi .value,.kpi .sub{overflow-wrap:anywhere}}
@@ -368,6 +383,7 @@
 .fresh-badge.ok{color:#3fb950}.fresh-badge.warn{color:#d29922}.fresh-badge.danger{color:#f85149;border-color:#f85149}
 .page.nodata .panel{position:relative}
 .page.nodata .panel::after{content:"数据不可达 — 未验证内容已隐藏";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.94);color:#d29922;font-family:var(--mono);font-size:12px;letter-spacing:.06em;border-radius:inherit;z-index:5}
+.page.nodata #sa-btc-research::after{display:none}
 .obsstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;margin:10px 0 14px;overflow:hidden}
 .obsstat{padding:12px 14px;background:var(--panel2);min-width:0}
 .obsstat+.obsstat{border-left:1px solid var(--line)}
@@ -1492,12 +1508,41 @@
   <!-- 五阶段路线:按数据推进,不按日期推进 -->
   <div class="phases">
     <div class="phase done"><div class="n">PHASE 1</div><div class="t">模拟器完整化</div><div class="s">✓ 6/6 测试绿 · DB 建成</div></div>
-    <div class="phase now"><div class="n">PHASE 2</div><div class="t">3-5 策略 paper 版</div><div class="s">3/4 策略上线 · rwa 等数据</div></div>
+    <div class="phase now"><div class="n">PHASE 2</div><div class="t">多策略 paper / 回测</div><div class="s">旧 SA paper 3/4 · BTC 只读 4/4</div></div>
     <div class="phase"><div class="n">PHASE 3</div><div class="t">实跑 ≥2 周</div><div class="s">已运行 6 天 / 14</div></div>
     <div class="phase"><div class="n">PHASE 4</div><div class="t">tiny live</div><div class="s">0/4 策略达准入</div></div>
     <div class="phase"><div class="n">PHASE 5</div><div class="t">规则化扩资金</div><div class="s">—</div></div>
   </div>
-  <div class="gatebar">当前卡点:rwa_basis 记录器需 ≥7 天数据(已 4 天)· 本页数字为示例,展示 Phase 2 进行中应有的样子;当前真实状态 = 仅决策日志有真数据,其余面板即开发清单</div>
+  <div class="gatebar">数据边界:下方旧 SA paper 战绩仍含示例/开发清单；新增 BTC 四策略区只展示已审阅的只读诊断，并明确标注日期、成本与准入状态。</div>
+
+  <div class="panel sa-btc-panel" id="sa-btc-research" style="margin-top:12px">
+    <div class="sa-btc-head">
+      <div>
+        <div class="sa-btc-title">
+          <h2>BTC 单边四策略 · 只读回测</h2>
+          <span class="sa-btc-lock">NO PAPER / NO LIVE</span>
+        </div>
+        <div class="src">自适应均值回归 · 趋势跟随 · Funding carry · 状态切换；本区与现有对冲实盘、旧 SA paper worker 完全分开。</div>
+      </div>
+      <div class="sa-btc-meta">
+        <div id="sa-btc-source">等待报告</div>
+        <div id="sa-btc-window">—</div>
+      </div>
+    </div>
+    <div class="obsstats">
+      <div class="obsstat"><div class="olabel">整体状态</div><div class="oval down" id="sa-btc-status">未达准入</div></div>
+      <div class="obsstat"><div class="olabel">最接近盈亏平衡</div><div class="oval" id="sa-btc-closest">—</div></div>
+      <div class="obsstat"><div class="olabel">研究仓位</div><div class="oval" id="sa-btc-scenario">—</div></div>
+      <div class="obsstat"><div class="olabel">合约精度</div><div class="oval" id="sa-btc-contract">—</div></div>
+    </div>
+    <div class="sa-btc-table-wrap">
+      <table class="sa-btc-table">
+        <thead><tr><th>策略</th><th>末段周期</th><th>实际双边量</th><th>净损益</th><th>盈亏平衡返还</th><th>2×点差返还</th><th>研究候选</th><th>状态</th></tr></thead>
+        <tbody id="sa-btc-strategies"><tr><td colspan="8" class="src">等待只读报告</td></tr></tbody>
+      </table>
+    </div>
+    <div class="sa-btc-note" id="sa-btc-limitations">这些数字只用于比较策略磨损；不会触发询价、开仓、平仓或修改当前实盘。</div>
+  </div>
 
   <div class="panel" style="margin-top:12px">
     <h2>自动化草稿 <span class="feat f-new">已迁移</span> <span id="sad-msg" class="src" style="margin-left:auto;font-weight:400"></span></h2>
@@ -3424,8 +3469,77 @@
     }
   }
 
+  function bindBTCSingleSide(report){
+    report=report&&typeof report==='object'?report:{};
+    const rows=Array.isArray(report.strategies)?report.strategies:[];
+    const source=document.getElementById('sa-btc-source');
+    const windowEl=document.getElementById('sa-btc-window');
+    const status=document.getElementById('sa-btc-status');
+    const closest=document.getElementById('sa-btc-closest');
+    const scenarioEl=document.getElementById('sa-btc-scenario');
+    const contractEl=document.getElementById('sa-btc-contract');
+    const body=document.getElementById('sa-btc-strategies');
+    const notes=document.getElementById('sa-btc-limitations');
+    const number=(value,digits=2)=>{
+      const parsed=Number(value);
+      return Number.isFinite(parsed)?parsed.toLocaleString(undefined,{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';
+    };
+    const signedMoney=value=>{
+      const parsed=Number(value);
+      if(!Number.isFinite(parsed)) return '—';
+      return (parsed>0?'+':parsed<0?'−':'')+'$'+Math.abs(parsed).toLocaleString(undefined,{minimumFractionDigits:4,maximumFractionDigits:4});
+    };
+    if(source){
+      const stamp=report.updated_at?String(report.updated_at).replace('T',' ').slice(0,16):'';
+      source.textContent=(report.source_label||'只读报告')+(stamp?' · '+stamp:'')+(report.age?' · '+report.age:'');
+    }
+    if(windowEl){
+      const start=report.window_start?String(report.window_start).slice(0,10):'—';
+      const end=report.window_end?String(report.window_end).slice(0,10):'—';
+      windowEl.textContent='诊断窗口 '+start+' → '+end+(report.quotes_loaded!=null?' · '+Number(report.quotes_loaded).toLocaleString()+' 帧':'');
+    }
+    if(status){
+      const ready=rows.filter(row=>row&&row.promotion_ready===true).length;
+      status.textContent=ready+'/'+rows.length+' 达准入';
+      status.className='oval '+(ready?'up':'down');
+    }
+    if(closest) closest.textContent=report.closest_to_break_even_label||'尚无可评估策略';
+    const scenario=report.scenario&&typeof report.scenario==='object'?report.scenario:{};
+    if(scenarioEl){
+      const mode=scenario.position_sizing_mode==='fixed_margin'?'固定保证金':'固定名义';
+      scenarioEl.textContent=mode+' $'+number(scenario.target_notional_usdc,0)+' · '+number(scenario.leverage,0)+'x';
+    }
+    if(contractEl){
+      const increment=Number(scenario.contract_multiplier_btc)*Number(scenario.contract_step);
+      contractEl.textContent=Number.isFinite(increment)?number(increment,6)+' BTC'+(scenario.contract_verified_against_live_venue?' · 已核验':' · 研究假设'):'尚未核验';
+    }
+    if(body){
+      body.innerHTML=rows.length?rows.map(row=>{
+        const evaluable=row.evaluable===true;
+        const isClosest=row.strategy===report.closest_to_break_even;
+        const candidate=row.selected_candidate_id||row.diagnostic_candidate_id||'诊断快照';
+        const state=evaluable?'未准入':'不可评估';
+        const stateClass=evaluable?'blocked':'unevaluable';
+        return '<tr class="'+(isClosest?'closest':'')+'">'+
+          '<td><b>'+esc(row.label||row.strategy||'—')+'</b><div class="dt">'+esc(row.strategy||'')+(isClosest?' · 当前磨损最低':'')+'</div></td>'+
+          '<td class="num">'+(evaluable?number(row.completed_cycles,0):'0')+'</td>'+
+          '<td class="num">'+(evaluable?'$'+number(row.total_volume_usdc,2):'—')+'</td>'+
+          '<td class="num '+(Number(row.net_pnl_usdc)<0?'down':'')+'">'+(evaluable?signedMoney(row.net_pnl_usdc):'—')+'</td>'+
+          '<td class="num">'+(evaluable?number(row.break_even_rebate_bps,3)+' bps':'不可计算')+'</td>'+
+          '<td class="num">'+(evaluable?number(row.stress_break_even_rebate_bps,3)+' bps':'不可计算')+'</td>'+
+          '<td><span class="chip info">'+esc(candidate)+'</span></td>'+
+          '<td><span class="sa-btc-status '+stateClass+'">'+state+'</span></td></tr>';
+      }).join(''):'<tr><td colspan="8" class="src">没有可显示的四策略只读报告</td></tr>';
+    }
+    if(notes){
+      const limitations=Array.isArray(report.limitations)?report.limitations:[];
+      notes.textContent=(limitations.length?limitations.join(' · '):'只读研究；不授权任何下单。')+' · 当前实盘策略和持仓不会被修改。';
+    }
+  }
+
   function bindSA(sa){
     if(sa.automation_draft && window.__fillDraft) window.__fillDraft(sa.automation_draft);
+    bindBTCSingleSide(sa.btc_single_side_research||{});
     const wchip=document.querySelector('[data-k="sa.worker"]');
     if(wchip){
       wchip.textContent = sa.worker_running ? ('paper worker 运行中 · pid '+sa.worker_pid) : 'paper worker 未运行';
