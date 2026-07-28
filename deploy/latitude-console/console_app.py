@@ -22,6 +22,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import time
 import urllib.error
@@ -114,6 +115,15 @@ DEWU_EXECUTOR_URL = os.getenv(
 WORK_PLAN_PATH = Path(
     os.getenv("LATITUDE_WORK_PLAN_PATH", DATA_DIR / "work_plan.json")
 )
+WORK_PLAN_BACKUP_DIR = Path(
+    os.getenv(
+        "LATITUDE_WORK_PLAN_BACKUP_DIR",
+        WORK_PLAN_PATH.parent / "work_plan_backups",
+    )
+)
+WORK_PLAN_BACKUP_LIMIT = max(
+    1, int(os.getenv("LATITUDE_WORK_PLAN_BACKUP_LIMIT", "30"))
+)
 WORK_PLAN_STATUSES = ("未开始", "进行中", "已完成", "暂停")
 WORK_PLAN_DEFAULT_PROJECTS = (
     ("P001", "Var 对冲 Farming", "维护对冲策略与运行稳定性"),
@@ -123,6 +133,11 @@ WORK_PLAN_DEFAULT_PROJECTS = (
     ("P005", "网格 Grid", "维护 shadow 网格与账户状态"),
     ("P006", "打新 & Alpha 核算台", "维护运营、账号与核算"),
     ("P007", "得物库存", "维护库存与上架流程"),
+    (
+        "P008",
+        "统一总览与通知",
+        "统一展示各项目状态、资金结果、重要事件、告警与长期工作计划",
+    ),
 )
 
 STALE_SEC = 600  # 状态文件超过 10 分钟视为过期(展示但标注)
@@ -177,11 +192,60 @@ def _work_plan_load() -> dict:
         state["months"] = {}
     if not isinstance(state.get("inbox"), list):
         state["inbox"] = []
+    known_ids = {
+        str(project.get("id") or "")
+        for project in state["projects"]
+        if isinstance(project, dict)
+    }
+    now = _work_plan_now()
+    changed = False
+    for project_id, name, goal in WORK_PLAN_DEFAULT_PROJECTS:
+        if project_id in known_ids:
+            continue
+        state["projects"].append(
+            {
+                "id": project_id,
+                "name": name,
+                "goal": goal,
+                "status": "进行中",
+                "start_month": now[:7],
+                "target_month": "",
+                "next_step": (
+                    "完善总览信息架构、Discord 双频道和工作计划历史保护"
+                    if project_id == "P008"
+                    else "待补充"
+                ),
+                "updated_at": now,
+            }
+        )
+        changed = True
+    if changed:
+        state["updated_at"] = now
+        _work_plan_save(state)
     return state
+
+
+def _work_plan_backup_current() -> Optional[Path]:
+    current = _read_json(WORK_PLAN_PATH)
+    if not isinstance(current, dict):
+        return None
+    WORK_PLAN_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    backup = WORK_PLAN_BACKUP_DIR / f"work_plan-{stamp}.json"
+    shutil.copy2(WORK_PLAN_PATH, backup)
+    backups = sorted(
+        WORK_PLAN_BACKUP_DIR.glob("work_plan-*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale in backups[WORK_PLAN_BACKUP_LIMIT:]:
+        stale.unlink(missing_ok=True)
+    return backup
 
 
 def _work_plan_save(state: dict) -> None:
     WORK_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _work_plan_backup_current()
     tmp = WORK_PLAN_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, WORK_PLAN_PATH)

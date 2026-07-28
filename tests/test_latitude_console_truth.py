@@ -95,6 +95,61 @@ def _patch_discord_paths(monkeypatch, data_dir: Path) -> dict[str, Path]:
     return paths
 
 
+def test_work_plan_save_keeps_rotating_backup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plan_path = tmp_path / "work_plan.json"
+    backup_dir = tmp_path / "work_plan_backups"
+    original = {
+        "version": 1,
+        "updated_at": "2026-07-01T00:00:00+08:00",
+        "projects": [{"id": "custom", "name": "总览设计规划"}],
+        "months": {"2026-07": {"focus": "统一总览"}},
+        "inbox": [],
+    }
+    _write_json(plan_path, original)
+    monkeypatch.setattr(console, "WORK_PLAN_PATH", plan_path)
+    monkeypatch.setattr(console, "WORK_PLAN_BACKUP_DIR", backup_dir)
+    monkeypatch.setattr(console, "WORK_PLAN_BACKUP_LIMIT", 2)
+
+    updated = {**original, "updated_at": "2026-07-02T00:00:00+08:00"}
+    console._work_plan_save(updated)
+
+    backups = list(backup_dir.glob("work_plan-*.json"))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text(encoding="utf-8")) == original
+    assert json.loads(plan_path.read_text(encoding="utf-8")) == updated
+
+
+def test_work_plan_load_restores_missing_default_projects(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plan_path = tmp_path / "work_plan.json"
+    backup_dir = tmp_path / "work_plan_backups"
+    _write_json(
+        plan_path,
+        {
+            "version": 1,
+            "updated_at": None,
+            "projects": [],
+            "months": {},
+            "inbox": [],
+        },
+    )
+    monkeypatch.setattr(console, "WORK_PLAN_PATH", plan_path)
+    monkeypatch.setattr(console, "WORK_PLAN_BACKUP_DIR", backup_dir)
+
+    state = console._work_plan_load()
+
+    projects = {project["id"]: project for project in state["projects"]}
+    assert set(projects) == {
+        project_id for project_id, _, _ in console.WORK_PLAN_DEFAULT_PROJECTS
+    }
+    assert projects["P008"]["name"] == "统一总览与通知"
+    assert "Discord 双频道" in projects["P008"]["next_step"]
+    assert len(list(backup_dir.glob("work_plan-*.json"))) == 1
+
+
 def test_discord_webhook_validation_is_restricted_to_discord() -> None:
     assert console._valid_discord_webhook(
         "https://discord.com/api/webhooks/123/token-value"
