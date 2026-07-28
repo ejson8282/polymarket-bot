@@ -658,10 +658,13 @@ def _pm_pnl() -> Dict[str, Any]:
             if isinstance(a.get("rebates_daily"), dict)
             else {}
         )
+        reward_today = _num(live_row.get("today_usd"))
+        rebate_today = _num(live_row.get("today_rebates_usd"))
+        income_today = _num(live_row.get("today_total_income_usd"))
         days = [
             day for day in sorted(set(reward_daily) | set(rebate_daily))
             if not live_day or day < live_day
-        ][-7:]
+        ][-6:]
         series = [
             {
                 "d": day,
@@ -675,12 +678,17 @@ def _pm_pnl() -> Dict[str, Any]:
             }
             for day in days
         ]
+        if income_today is not None:
+            series.append({
+                "d": live_day or "今日",
+                "reward": round(reward_today or 0, 2),
+                "rebate": round(rebate_today or 0, 2),
+                "total": round(income_today, 2),
+                "live": True,
+            })
         reward_7d = round(sum(x["reward"] for x in series), 2)
         rebate_7d = round(sum(x["rebate"] for x in series), 2)
-        income_7d = round(reward_7d + rebate_7d, 2)
-        reward_today = _num(live_row.get("today_usd"))
-        rebate_today = _num(live_row.get("today_rebates_usd"))
-        income_today = _num(live_row.get("today_total_income_usd"))
+        income_7d = round(sum(x["total"] for x in series), 2)
         reward_cumulative = _num(a.get("cumulative_usd"))
         rebate_cumulative = _num(a.get("rebates_cumulative_usd"))
         income_cumulative = _num(a.get("income_cumulative_usd"))
@@ -728,7 +736,7 @@ def _pm_pnl() -> Dict[str, Any]:
             "income_7d": income_7d,
             "realized_session": round(realized, 2), "fills_session": len(fills),
             "net_est": (
-                round(income_7d + income_today - loss_session, 2)
+                round(income_7d - loss_session, 2)
                 if income_today is not None else None
             ),
         })
@@ -749,7 +757,7 @@ def _pm_pnl() -> Dict[str, Any]:
         "total_income_cumulative": round(total_income_cumulative, 2),
         "total_loss_session": round(total_loss_session, 2),
         "total_net_est": (
-            round(total_income_today + total_income_7d - total_loss_session, 2)
+            round(total_income_7d - total_loss_session, 2)
             if all(row.get("income_today") is not None for row in rows)
             else None
         ),
@@ -757,7 +765,8 @@ def _pm_pnl() -> Dict[str, Any]:
         "reward_age_sec": reward_state.get("age_sec"),
         "reward_fresh": reward_state.get("fresh"),
         "note": (
-            "流动性奖励与挂单返佣分别记账，每5分钟更新，"
+            "流动性奖励与挂单返佣分别记账，近7日含今日实时值，"
+            "每5分钟更新，"
             "北京时间08:00切日"
         ),
     }

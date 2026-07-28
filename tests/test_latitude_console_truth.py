@@ -1444,13 +1444,22 @@ def test_pm_income_keeps_rewards_and_rebates_separate(
     assert account["reward_today"] == 0.4
     assert account["rebate_today"] == 0.2
     assert account["income_today"] == 0.6
-    assert account["reward_7d"] == 3.0
-    assert account["rebate_7d"] == 1.25
-    assert account["income_7d"] == 4.25
+    assert account["reward_7d"] == 3.4
+    assert account["rebate_7d"] == 1.45
+    assert account["income_7d"] == 4.85
+    assert account["recent"][-1] == {
+        "d": "2026-07-28",
+        "reward": 0.4,
+        "rebate": 0.2,
+        "total": 0.6,
+        "live": True,
+    }
     assert account["income_cumulative"] == 4.25
     assert account["net_est"] == 4.85
     assert result["total_income_today"] == 0.6
     assert result["total_rebate_today"] == 0.2
+    assert result["total_income_7d"] == 4.85
+    assert result["total_net_est"] == 4.85
 
 
 def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> None:
