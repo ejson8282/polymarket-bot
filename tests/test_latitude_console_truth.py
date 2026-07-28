@@ -1095,6 +1095,64 @@ def test_stale_polymarket_pid_file_is_not_treated_as_running(
     assert result["accounts"][0]["orders"] is None
 
 
+def test_polymarket_sponsored_guard_summary_is_account_scoped(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(console, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(console, "PM_PEER_DIR", tmp_path / "pm_peer")
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {})
+    _write_json(
+        tmp_path / "engine_state_1.json",
+        {
+            "markets": {},
+            "sponsored_risk_guard": {
+                "status": "caution",
+                "counts": {
+                    "safe": 1,
+                    "caution": 1,
+                    "blocked": 0,
+                    "unknown": 0,
+                },
+                "official_ok": True,
+                "betmoar_ok": True,
+                "official_last_success_at": time.time(),
+                "betmoar_last_success_at": time.time(),
+                "markets": {
+                    "0x" + "1" * 64: {
+                        "status": "safe",
+                        "market_slug": "safe-market",
+                        "reasons": ["ok"],
+                    },
+                    "0x" + "2" * 64: {
+                        "status": "caution",
+                        "market_question": "Sponsor-heavy market?",
+                        "sponsor_ratio": 0.55,
+                        "sponsors_count": 2,
+                        "reasons": ["sponsored_share_high"],
+                    },
+                },
+            },
+        },
+    )
+    (tmp_path / ".engine_1.pid").write_text(str(os.getpid()), encoding="utf-8")
+
+    result = console._polymarket()
+    guard = result["sponsored_guard"]
+
+    assert guard["present"] is True
+    assert guard["status"] == "caution"
+    assert guard["fresh_accounts"] == 1
+    assert guard["counts"] == {
+        "safe": 1,
+        "caution": 1,
+        "blocked": 0,
+        "unknown": 0,
+    }
+    assert guard["risks"][0]["account"] == 1
+    assert guard["risks"][0]["market"] == "Sponsor-heavy market?"
+    assert guard["risks"][0]["reasons"] == ["sponsored_share_high"]
+
+
 def test_polymarket_page_is_native_and_has_complete_workspaces() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
     page = html.split('<section class="page" id="page-pm">', 1)[1].split(
@@ -1111,6 +1169,10 @@ def test_polymarket_page_is_native_and_has_complete_workspaces() -> None:
     assert 'data-k="pmk.capital"' in page
     assert "挂单 / 复用" in page
     assert "资金复用" in html
+    assert "赞助奖励风险" in page
+    assert 'id="pm-sponsored-chip"' in page
+    assert "Betmoar 提供撤资与结束预警" in page
+    assert "pmSponsorReason" in html
 
 
 def test_pm_capital_summary_totals_live_collateral(monkeypatch) -> None:

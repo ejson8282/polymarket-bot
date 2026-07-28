@@ -3675,6 +3675,133 @@ with tab_control:
     )
     st.caption("暂停(撤单)/恢复操作沿用下方 Engine Control 的现有账号控制;矩阵为只读聚合。")
 
+    @st.fragment(run_every=timedelta(seconds=30))
+    def _sponsored_guard_panel() -> None:
+        _states = load_all_engine_states()
+        _guards = [
+            (acc_id, state.get("sponsored_risk_guard") or {})
+            for acc_id, state in _states.items()
+            if isinstance(state.get("sponsored_risk_guard"), dict)
+        ]
+        st.markdown(
+            '<p class="section-title">赞助奖励风险</p>',
+            unsafe_allow_html=True,
+        )
+        if not _guards:
+            st.caption("等待引擎完成首轮 Sponsored Risk Guard 检查。")
+            return
+
+        _safe = _caution = _blocked = _unknown = 0
+        _official_ok = True
+        _betmoar_ok = True
+        _last_success = 0.0
+        _risk_rows: list[dict[str, Any]] = []
+        _reason_cn = {
+            "single_sponsor_dependency": "新市场过度依赖单一赞助",
+            "single_sponsor_concentrated": "单一赞助占比过高，已缩小挂单",
+            "sponsored_share_high": "赞助奖励占比较高，已缩小挂单",
+            "official_sponsor_removed": "官方配置中的赞助已消失",
+            "betmoar_sponsor_cancelled": "Betmoar 发现赞助已撤回",
+            "betmoar_reward_ending_soon": "赞助将在两小时内结束",
+            "betmoar_early_withdrawal": "Betmoar 发现提前撤资",
+            "official_source_stale": "官方奖励数据已过期，已缩小挂单",
+            "official_source_unavailable": "官方奖励数据暂不可用",
+        }
+
+        for _acc_id, _guard in _guards:
+            _counts = _guard.get("counts") or {}
+            _safe += int(_counts.get("safe", 0) or 0)
+            _caution += int(_counts.get("caution", 0) or 0)
+            _blocked += int(_counts.get("blocked", 0) or 0)
+            _unknown += int(_counts.get("unknown", 0) or 0)
+            _official_ok = _official_ok and bool(_guard.get("official_ok"))
+            _betmoar_ok = _betmoar_ok and bool(_guard.get("betmoar_ok"))
+            _last_success = max(
+                _last_success,
+                float(_guard.get("official_last_success_at") or 0),
+                float(_guard.get("betmoar_last_success_at") or 0),
+            )
+            for _cid, _market in (_guard.get("markets") or {}).items():
+                _status = str(_market.get("status") or "unknown")
+                if _status == "safe":
+                    continue
+                _reasons = []
+                for _reason in (_market.get("reasons") or []):
+                    _reason_text = str(_reason)
+                    if _reason_text.startswith("official_reward_drop_"):
+                        _reasons.append("官方赞助金额骤降")
+                    elif _reason_text.startswith("official_sponsor_count_"):
+                        _reasons.append("赞助人数减少")
+                    elif _reason_text.startswith("betmoar_sponsor_cancelled_"):
+                        _reasons.append("较大比例赞助已撤回")
+                    elif _reason_text.startswith("betmoar_reward_ending_soon_"):
+                        _reasons.append("较大比例赞助将在两小时内结束")
+                    elif _reason_text.startswith("betmoar_early_withdrawal_"):
+                        _reasons.append("主要赞助出现提前撤资")
+                    else:
+                        _reasons.append(_reason_cn.get(_reason_text, _reason_text))
+                _end_at = float(_market.get("reward_end_at") or 0)
+                _end_label = "—"
+                if _end_at:
+                    _end_label = datetime.fromtimestamp(
+                        _end_at,
+                        tz=_BJT,
+                    ).strftime("%m-%d %H:%M")
+                _risk_rows.append({
+                    "账号": f"{_acc_id or 1}号",
+                    "市场": (
+                        _market.get("market_question")
+                        or _market.get("market_slug")
+                        or str(_cid)[:12]
+                    ),
+                    "状态": {
+                        "blocked": "已撤单",
+                        "caution": "谨慎",
+                        "unknown": "待确认",
+                    }.get(_status, _status),
+                    "赞助占比": f"{float(_market.get('sponsor_ratio', 0) or 0):.0%}",
+                    "赞助人数": int(_market.get("sponsors_count", 0) or 0),
+                    "总奖励/日": f"${float(_market.get('total_daily_rate', 0) or 0):,.2f}",
+                    "赞助结束": _end_label,
+                    "原因": "；".join(dict.fromkeys(_reasons)) or "—",
+                })
+
+        if _blocked:
+            _status_label, _status_color = "有市场已自动撤单", "#f85149"
+        elif _caution or _unknown:
+            _status_label, _status_color = "有市场需要关注", "#d29922"
+        else:
+            _status_label, _status_color = "正常", "#3fb950"
+        _last_label = (
+            datetime.fromtimestamp(_last_success, tz=_BJT).strftime("%H:%M:%S")
+            if _last_success else "—"
+        )
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _c1.markdown(
+            f'<b style="color:{_status_color}">{_status_label}</b>',
+            unsafe_allow_html=True,
+        )
+        _c2.metric("安全 / 谨慎", f"{_safe} / {_caution}")
+        _c3.metric("已撤单 / 待确认", f"{_blocked} / {_unknown}")
+        _c4.metric(
+            "数据源",
+            f"官方{'正常' if _official_ok else '异常'} · "
+            f"Betmoar{'正常' if _betmoar_ok else '异常'}",
+            help=f"最近成功更新（北京时间）{_last_label}",
+        )
+        if _risk_rows:
+            with st.expander(f"查看 {len(_risk_rows)} 个风险市场"):
+                st.dataframe(
+                    pd.DataFrame(_risk_rows),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+        st.caption(
+            "官方 Polymarket 数据决定风控；Betmoar 只提供赞助撤回和结束时间的提前预警，不参与下单。"
+        )
+
+    _sponsored_guard_panel()
+
     st.markdown('<p class="section-title">Engine Control & Accounts</p>', unsafe_allow_html=True)
 
     _configured_ids = _configured_account_ids()

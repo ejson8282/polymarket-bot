@@ -479,6 +479,41 @@ class AutoCurator:
             self._reject(yes_token_id, f"reward=${daily_reward}<{int(REWARD_MIN_DAILY_USD)}")
             return False
 
+        # Sponsored Risk Guard admission. New markets whose rewards depend
+        # heavily on one private sponsor are not admitted; this prevents us
+        # from becoming exposed when that sponsor withdraws and competing LPs
+        # rapidly leave the book.
+        condition_id = str(
+            market.get("conditionId")
+            or market.get("condition_id")
+            or market.get("market")
+            or ""
+        ).strip().lower()
+        sponsor_assessment: Dict[str, Any] = {}
+        sponsor_getter = getattr(self.engine, "get_sponsored_risk", None)
+        if callable(sponsor_getter):
+            if not condition_id:
+                self._reject(yes_token_id, "sponsor_guard:condition_id_missing")
+                return False
+            try:
+                sponsor_assessment = await sponsor_getter(
+                    condition_id,
+                    for_admission=True,
+                )
+            except Exception as exc:
+                self._reject(
+                    yes_token_id,
+                    f"sponsor_guard:unavailable:{exc.__class__.__name__}",
+                )
+                return False
+            if sponsor_assessment.get("status") == "blocked":
+                reasons = ",".join(
+                    str(reason)
+                    for reason in (sponsor_assessment.get("reasons") or ["blocked"])
+                )
+                self._reject(yes_token_id, f"sponsor_guard:{reasons}")
+                return False
+
         # Depth check — total bid-side notional ≥ $100k (scanner.py-style).
         ok, detail = await self._check_bid_depth(yes_token_id)
         if not ok:
@@ -519,6 +554,7 @@ class AutoCurator:
                 question=question,
                 pre_start_stop_sec_override=(HIGH_RETIRE_RISK_PRE_START_STOP_SEC if is_high_retire_risk else None),
                 league_tags=league_tags,
+                condition_id=condition_id,
             )
         except Exception as e:
             log(f"[auto_curator] add_market_runtime err token={yes_token_id[:16]}: {e}")
@@ -528,9 +564,16 @@ class AutoCurator:
             leagues_str = ",".join(league_tags[:3])
             game_in_h = (game_start_ts - now) / 3600.0
             risk_flag = " high_retire_risk=1" if is_high_retire_risk else ""
+            sponsor_flag = ""
+            if sponsor_assessment:
+                sponsor_flag = (
+                    f" sponsor={sponsor_assessment.get('status', 'unknown')}"
+                    f"/{float(sponsor_assessment.get('sponsor_ratio', 0) or 0):.0%}"
+                )
             log(f"[auto_curator] ADDED session={session_label} token={yes_token_id[:16]} "
                 f"slug={slug[:40]} leagues={leagues_str} spread={spread} "
-                f"reward=${daily_reward}/d game_in={game_in_h:.1f}h depth={detail}{risk_flag}")
+                f"reward=${daily_reward}/d game_in={game_in_h:.1f}h "
+                f"depth={detail}{risk_flag}{sponsor_flag}")
         return added
 
     # ── depth check ──────────────────────────────────────────────────────────

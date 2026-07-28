@@ -160,6 +160,15 @@
   .pm-health{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:16px;background:var(--panel)}
   .pm-health-cell{padding:13px 15px;border-left:1px solid var(--line);min-width:0}
   .pm-health-cell:first-child{border-left:0}.pm-health-cell>span{display:block;color:var(--muted);font-size:10px;margin-bottom:5px}.pm-health-cell b{font-family:var(--mono);font-size:13px}
+  .pm-sponsored{margin-top:14px;padding:14px 16px}
+  .pm-sponsored-summary{display:grid;grid-template-columns:minmax(170px,1.4fr) repeat(3,minmax(110px,1fr));margin-top:10px;border-top:1px solid var(--line)}
+  .pm-sponsored-stat{min-width:0;padding:10px 12px 0;border-left:1px solid var(--line)}
+  .pm-sponsored-stat:first-child{padding-left:0;border-left:0}
+  .pm-sponsored-stat span{display:block;color:var(--faint);font:10px var(--mono);margin-bottom:4px}
+  .pm-sponsored-stat b{font:600 12px var(--mono);overflow-wrap:anywhere}
+  .pm-sponsored-risks{display:grid;gap:6px;margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
+  .pm-sponsored-risk{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:10px;align-items:center;font:10.5px var(--mono)}
+  .pm-sponsored-risk .market{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pm-sponsored-risk .reason{color:var(--muted);white-space:nowrap}
   .pm-table-wrap{overflow:auto}.pm-table-wrap table{min-width:840px}
   .pm-market-name{max-width:310px;white-space:normal;line-height:1.35}.pm-market-name small{display:block;color:var(--faint);font-family:var(--mono);font-size:9px;margin-top:3px}
   .pm-rule-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:10px}
@@ -180,7 +189,7 @@
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
   @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
-  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid{grid-template-columns:1fr}.pm-health-cell,.pm-rule{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child{border-top:0}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
   .banner.livewarn{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.35);color:#FF9B9E}
@@ -1294,6 +1303,20 @@
       <div class="pm-health-cell"><span>待退出仓位</span><b id="pm-health-exits">读取中</b></div>
     </div>
 
+    <div class="panel pm-sponsored">
+      <div class="pm-panel-head">
+        <div><h2>赞助奖励风险</h2><div class="src">官方奖励为准，Betmoar 提供撤资与结束预警</div></div>
+        <span id="pm-sponsored-chip" class="chip">等待读取</span>
+      </div>
+      <div class="pm-sponsored-summary">
+        <div class="pm-sponsored-stat"><span>当前结论</span><b id="pm-sponsored-status">等待引擎首轮检查</b></div>
+        <div class="pm-sponsored-stat"><span>安全 / 谨慎</span><b id="pm-sponsored-safe">—</b></div>
+        <div class="pm-sponsored-stat"><span>已撤单 / 待确认</span><b id="pm-sponsored-blocked">—</b></div>
+        <div class="pm-sponsored-stat"><span>数据源</span><b id="pm-sponsored-source">—</b></div>
+      </div>
+      <div id="pm-sponsored-risks" class="pm-sponsored-risks" hidden></div>
+    </div>
+
     <div class="pm-overview-grid">
       <div>
         <div class="panel">
@@ -2339,6 +2362,72 @@
       const c=pm.curator;
       setK('pm.curator','source · auto_curator_state.json — '+(c.enabled?'启用':'停用')+' · 引擎内 '+c.markets+' 市场 · 累计扫入 '+(c.added_total??'—')+' / 拒绝 '+(c.rejected_total??'—')+(c.last_scan_age?' · 上次扫描 '+esc(c.last_scan_age):''));
     }
+    const sponsored=pm.sponsored_guard||{};
+    const sponsoredChip=document.getElementById('pm-sponsored-chip');
+    const sponsoredStatus=document.getElementById('pm-sponsored-status');
+    const sponsoredSafe=document.getElementById('pm-sponsored-safe');
+    const sponsoredBlocked=document.getElementById('pm-sponsored-blocked');
+    const sponsoredSource=document.getElementById('pm-sponsored-source');
+    const sponsoredRisks=document.getElementById('pm-sponsored-risks');
+    const sponsoredCounts=sponsored.counts||{};
+    const sponsoredFresh=Number(sponsored.fresh_accounts||0);
+    let sponsoredLabel='等待引擎首轮检查', sponsoredClass='warn';
+    if(sponsored.present && sponsoredFresh===0){
+      sponsoredLabel='引擎停止，启动后自动检查';
+    }else if(sponsored.status==='blocked'){
+      sponsoredLabel='有市场已自动撤单'; sponsoredClass='danger';
+    }else if(sponsored.status==='caution'){
+      sponsoredLabel='有市场需要关注';
+    }else if(sponsored.status==='safe'){
+      sponsoredLabel='当前正常'; sponsoredClass='ok';
+    }
+    if(sponsoredChip){
+      sponsoredChip.textContent=sponsored.present
+        ?(sponsoredFresh+'/'+Number(sponsored.account_count||0)+' 账号在线检查')
+        :'待启动';
+      sponsoredChip.className='chip '+sponsoredClass;
+    }
+    if(sponsoredStatus)sponsoredStatus.textContent=sponsoredLabel;
+    if(sponsoredSafe)sponsoredSafe.textContent=sponsored.present
+      ?Number(sponsoredCounts.safe||0)+' / '+Number(sponsoredCounts.caution||0)
+      :'—';
+    if(sponsoredBlocked)sponsoredBlocked.textContent=sponsored.present
+      ?Number(sponsoredCounts.blocked||0)+' / '+Number(sponsoredCounts.unknown||0)
+      :'—';
+    if(sponsoredSource){
+      const official=sponsored.official_ok===true?'官方正常':(sponsored.official_ok===false?'官方异常':'官方待检查');
+      const betmoar=sponsored.betmoar_ok===true?'Betmoar正常':(sponsored.betmoar_ok===false?'Betmoar异常':'Betmoar待检查');
+      sponsoredSource.textContent=official+' · '+betmoar+(sponsored.age_sec==null?'':' · '+pmAge(sponsored.age_sec));
+    }
+    if(sponsoredRisks){
+      const risks=sponsoredFresh>0?(sponsored.risks||[]):[];
+      sponsoredRisks.hidden=!risks.length;
+      sponsoredRisks.innerHTML=risks.slice(0,8).map(risk=>{
+        const status=risk.status==='blocked'?'已撤单':(risk.status==='caution'?'谨慎':'待确认');
+        const statusClass=risk.status==='blocked'?'down':'';
+        const ratio=risk.sponsor_ratio==null?'—':Math.round(Number(risk.sponsor_ratio)*100)+'%';
+        const reasons=(risk.reasons||[]).map(pmSponsorReason).filter(Boolean);
+        return '<div class="pm-sponsored-risk"><span class="'+statusClass+'">账号'+esc(risk.account)+' · '+status+'</span>'+
+          '<span class="market" title="'+esc(risk.market||'')+'">'+esc(risk.market||risk.condition_id||'未知市场')+'</span>'+
+          '<span class="reason">赞助 '+ratio+' · '+esc(reasons.join('；')||'等待确认')+'</span></div>';
+      }).join('');
+    }
+  }
+
+  function pmSponsorReason(reason){
+    const value=String(reason||'');
+    if(value==='single_sponsor_dependency')return '新市场过度依赖单一赞助';
+    if(value==='single_sponsor_concentrated')return '单一赞助占比过高，已缩单';
+    if(value==='sponsored_share_high')return '赞助占比较高，已缩单';
+    if(value==='official_sponsor_removed')return '官方赞助已消失';
+    if(value.startsWith('official_reward_drop_'))return '官方奖励骤降';
+    if(value.startsWith('official_sponsor_count_'))return '赞助人数减少';
+    if(value.startsWith('betmoar_sponsor_cancelled_'))return '较大比例赞助已撤回';
+    if(value.startsWith('betmoar_reward_ending_soon_'))return '较大比例赞助即将结束';
+    if(value.startsWith('betmoar_early_withdrawal_'))return '主要赞助提前撤资';
+    if(value==='official_source_stale')return '官方数据过期，已缩单';
+    if(value==='official_source_unavailable')return '官方数据暂不可用';
+    return value;
   }
 
   function pmAge(seconds){

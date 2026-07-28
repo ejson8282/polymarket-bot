@@ -1,4 +1,6 @@
+import asyncio
 from decimal import Decimal
+import json
 from pathlib import Path
 import sys
 
@@ -125,3 +127,64 @@ def test_one_hundred_events_each_reuse_the_same_account_budget():
         engine._event_reserved_collateral(token) == Decimal("950")
         for token in event_tokens
     )
+
+
+def test_deactivate_market_disables_config_and_removes_current_runtime(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {"paired_token_id": "101", "_dual_side_auto": True},
+    }
+    engine._night_market_cfg = {}
+    engine._paired_token_cache = {"101": "102", "102": "101"}
+    engine._event_banned_until = {}
+    engine._market_skip_until = {}
+    engine.event_ban_ttl_sec = 86400
+    engine._token_slug_cache = {"101": "example-market"}
+    engine.client = type(
+        "Client",
+        (),
+        {"get_open_orders": lambda _self: []},
+    )()
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine._notify_status = lambda *_args, **_kwargs: None
+    engine._event_bus = type(
+        "EventBus",
+        (),
+        {"publish": lambda _self, *_args, **_kwargs: None},
+    )()
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({
+            "markets": [
+                {"token_id": "101", "enabled": True},
+                {"token_id": "102", "enabled": True},
+            ],
+            "night_markets": [],
+        }),
+        encoding="utf-8",
+    )
+    engine._config_path = config_path
+    removed = []
+
+    async def remove_market_runtime(token_id, reason):
+        removed.append((token_id, reason))
+        engine.market_cfg.pop("101", None)
+        engine.market_cfg.pop("102", None)
+        return True
+
+    engine.remove_market_runtime = remove_market_runtime
+
+    asyncio.run(
+        PolyLPSMulti._deactivate_market(
+            engine,
+            "101",
+            "sponsored_guard:test",
+        )
+    )
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert all(market["enabled"] is False for market in config["markets"])
+    assert removed == [("101", "deactivated:sponsored_guard:test")]
+    assert engine.market_cfg == {}

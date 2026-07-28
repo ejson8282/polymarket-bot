@@ -624,6 +624,8 @@ def _polymarket() -> Dict[str, Any]:
     quotes_sent = fills_seen = 0
     cooldown = False
     pm_fill_events: List[dict] = []
+    sponsored_guard_accounts: List[dict] = []
+    sponsored_guard_risks: List[dict] = []
     remotes = _load_pm_remotes()
     for idx in range(1, 31):
         is_remote = idx in remotes
@@ -711,6 +713,68 @@ def _polymarket() -> Dict[str, Any]:
             status, status_cls = "运行中", "ok"
         else:
             status, status_cls = "已停止", "danger"
+        sponsored_guard = (
+            state.get("sponsored_risk_guard")
+            if isinstance(state.get("sponsored_risk_guard"), dict)
+            else None
+        )
+        if sponsored_guard:
+            counts = (
+                sponsored_guard.get("counts")
+                if isinstance(sponsored_guard.get("counts"), dict)
+                else {}
+            )
+            sponsored_guard_accounts.append({
+                "account": idx,
+                "host": (remotes[idx].get("label") or "远程") if is_remote else "VPS1",
+                "status": str(sponsored_guard.get("status") or "unknown"),
+                "fresh": bool(alive and state_fresh),
+                "official_ok": bool(sponsored_guard.get("official_ok")),
+                "betmoar_ok": bool(sponsored_guard.get("betmoar_ok")),
+                "official_last_success_at": _num(
+                    sponsored_guard.get("official_last_success_at")
+                ),
+                "betmoar_last_success_at": _num(
+                    sponsored_guard.get("betmoar_last_success_at")
+                ),
+                "counts": {
+                    key: int(_num(counts.get(key)) or 0)
+                    for key in ("safe", "caution", "blocked", "unknown")
+                },
+            })
+            guard_markets = (
+                sponsored_guard.get("markets")
+                if isinstance(sponsored_guard.get("markets"), dict)
+                else {}
+            )
+            for condition_id, market in guard_markets.items():
+                if not isinstance(market, dict):
+                    continue
+                market_status = str(market.get("status") or "unknown")
+                if market_status == "safe":
+                    continue
+                sponsored_guard_risks.append({
+                    "account": idx,
+                    "host": (
+                        remotes[idx].get("label") or "远程"
+                    ) if is_remote else "VPS1",
+                    "condition_id": str(condition_id)[:14],
+                    "market": str(
+                        market.get("market_question")
+                        or market.get("market_slug")
+                        or str(condition_id)[:14]
+                    )[:120],
+                    "status": market_status,
+                    "sponsor_ratio": _num(market.get("sponsor_ratio")),
+                    "sponsors_count": int(
+                        _num(market.get("sponsors_count")) or 0
+                    ),
+                    "reward_end_at": _num(market.get("reward_end_at")),
+                    "reasons": [
+                        str(reason)[:100]
+                        for reason in (market.get("reasons") or [])
+                    ][:8],
+                })
         collateral = _pm_collateral_account(idx)
         accounts.append({
             "idx": idx,
@@ -767,6 +831,50 @@ def _polymarket() -> Dict[str, Any]:
         if not orders_unknown and capital_total > 0
         else None
     )
+    sponsored_counts = {
+        key: sum(row["counts"][key] for row in sponsored_guard_accounts)
+        for key in ("safe", "caution", "blocked", "unknown")
+    }
+    sponsored_last_success = max(
+        (
+            max(
+                row.get("official_last_success_at") or 0,
+                row.get("betmoar_last_success_at") or 0,
+            )
+            for row in sponsored_guard_accounts
+        ),
+        default=0,
+    )
+    if sponsored_counts["blocked"]:
+        sponsored_status = "blocked"
+    elif sponsored_counts["caution"] or sponsored_counts["unknown"]:
+        sponsored_status = "caution"
+    elif sponsored_guard_accounts:
+        sponsored_status = "safe"
+    else:
+        sponsored_status = "unknown"
+    sponsored_guard_summary = {
+        "present": bool(sponsored_guard_accounts),
+        "status": sponsored_status,
+        "counts": sponsored_counts,
+        "fresh_accounts": sum(
+            1 for row in sponsored_guard_accounts if row["fresh"]
+        ),
+        "account_count": len(sponsored_guard_accounts),
+        "official_ok": (
+            all(row["official_ok"] for row in sponsored_guard_accounts)
+            if sponsored_guard_accounts else None
+        ),
+        "betmoar_ok": (
+            all(row["betmoar_ok"] for row in sponsored_guard_accounts)
+            if sponsored_guard_accounts else None
+        ),
+        "age_sec": (
+            max(0, time.time() - sponsored_last_success)
+            if sponsored_last_success else None
+        ),
+        "risks": sponsored_guard_risks[:20],
+    }
     return {
         "curator": curator_out,
         "present": bool(accounts), "accounts": accounts,
@@ -792,6 +900,7 @@ def _polymarket() -> Dict[str, Any]:
         "rewards_fresh": reward_state.get("fresh"),
         "rewards_next_reset_bjt": reward_state.get("next_reset_at_bjt"),
         "capital": capital,
+        "sponsored_guard": sponsored_guard_summary,
         "fill_events": pm_fill_events[-6:],
     }
 

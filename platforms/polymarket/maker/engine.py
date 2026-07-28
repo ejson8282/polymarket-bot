@@ -31,6 +31,10 @@ from remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 from event_bus import EventBus
 from cross_side_sentinel import CrossSideSentinel
 from sibling_registry import SiblingOrderRegistry, resolve_conflict
+try:
+    from .sponsored_guard import SponsoredRiskGuard
+except ImportError:
+    from sponsored_guard import SponsoredRiskGuard
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -626,6 +630,7 @@ class PolyLPSMulti:
                 "risk": str(m.get("risk", "mid")).lower(),
                 "session": str(m.get("session", "both")).lower(),
                 "paired_token_id": str(m.get("paired_token_id", "")),
+                "condition_id": str(m.get("condition_id", "")).strip().lower(),
             }
 
         if not self.market_cfg:
@@ -787,6 +792,19 @@ class PolyLPSMulti:
         # YES/NO paired token map: {token_id: paired_token_id}
         self._paired_token_cache: Dict[str, str] = {}
         self._market_condition_ids: Dict[str, str] = {}
+        self._sponsored_guard = SponsoredRiskGuard(
+            self.cfg.get("sponsored_risk_guard")
+        )
+        self._sponsored_guard_by_token: Dict[str, Dict[str, Any]] = {}
+        self._sponsored_guard_assessments: Dict[str, Dict[str, Any]] = {}
+        self._sponsored_guard_last_action: Dict[str, Dict[str, Any]] = {}
+        self._sponsored_guard_summary: Dict[str, Any] = (
+            self._sponsored_guard.state_payload({})
+        )
+        for _tid, _mcfg in self.market_cfg.items():
+            _cid = str(_mcfg.get("condition_id") or "").strip().lower()
+            if _cid:
+                self._market_condition_ids[_tid] = _cid
 
         # aggressive fill guard (event-level offlining)
         self.fill_size_threshold = Decimal(str(risk.get("fill_size_threshold", 0.01)))
@@ -914,7 +932,10 @@ class PolyLPSMulti:
                 "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
                 "min_distance_ticks": int(m.get("min_distance_ticks", self.default_min_distance_ticks)),
                 "risk": str(m.get("risk", "mid")).lower(),
+                "condition_id": str(m.get("condition_id", "")).strip().lower(),
             }
+            if self._night_market_cfg[token_id]["condition_id"]:
+                self._market_condition_ids[token_id] = self._night_market_cfg[token_id]["condition_id"]
 
         # state writer
         self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 3))
@@ -1954,6 +1975,29 @@ class PolyLPSMulti:
             decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "cancel", "risk_grade": "BLOCK"})
             reasons.append("reward_zero")
             return decision
+        sponsored_risk = getattr(self, "_sponsored_guard_by_token", {}).get(token_id)
+        if sponsored_risk:
+            decision["sponsored_risk"] = sponsored_risk
+            sponsor_status = str(sponsored_risk.get("status") or "unknown")
+            sponsor_reasons = [
+                f"sponsor:{reason}"
+                for reason in (sponsored_risk.get("reasons") or [])
+                if reason != "ok"
+            ]
+            if sponsor_status == "blocked":
+                decision.update({
+                    "can_quote": False,
+                    "size_cap": 0.0,
+                    "top_leg_action": "cancel",
+                    "risk_grade": "BLOCK",
+                })
+                reasons.extend(sponsor_reasons or ["sponsor:blocked"])
+                return decision
+            if sponsor_status == "caution":
+                sponsor_cap = float(sponsored_risk.get("size_cap", 1.0) or 0.0)
+                decision["size_cap"] = min(float(decision["size_cap"]), sponsor_cap)
+                decision["risk_grade"] = "B" if sponsor_cap >= 0.5 else "C"
+                reasons.extend(sponsor_reasons or ["sponsor:caution"])
         probe_price = top_price if top_price is not None and top_price > 0 else max(effective_snapshot.best_bid, Decimal("0.01"))
         depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
         # Only evaluate depth-based gates when depth data is trustworthy
@@ -3932,7 +3976,10 @@ class PolyLPSMulti:
                     "game_start_ts_override": float(yes_cfg.get("game_start_ts_override", 0.0) or 0.0),
                     "pre_start_stop_sec_override": int(yes_cfg.get("pre_start_stop_sec_override", 0) or 0),
                     "league_tags": list(yes_cfg.get("league_tags") or []),
+                    "condition_id": str(yes_cfg.get("condition_id") or "").strip().lower(),
                 }
+                if pool[no_tid]["condition_id"]:
+                    self._market_condition_ids[no_tid] = pool[no_tid]["condition_id"]
                 # Initialise runtime state for the new token
                 self._ensure_runtime_token_state(no_tid, reason="dual_side_inject")
                 self._event_states[no_tid] = {"state": EVENT_ACTIVE, "reason": "dual_side_inject", "updated_at": time.time()}
@@ -3958,6 +4005,7 @@ class PolyLPSMulti:
         question: Optional[str] = None,
         pre_start_stop_sec_override: Optional[int] = None,
         league_tags: Optional[list[str]] = None,
+        condition_id: Optional[str] = None,
     ) -> bool:
         """Register a new market at runtime (no restart). Mirrors the init-time
         market_cfg schema + minimum per-token state (same 5 dicts that dual-side
@@ -3989,7 +4037,10 @@ class PolyLPSMulti:
             "game_start_ts_override": float(game_start_ts) if game_start_ts else 0.0,
             "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
             "league_tags": list(league_tags or []),
+            "condition_id": str(condition_id or "").strip().lower(),
         }
+        if target_cfg[token_id]["condition_id"]:
+            self._market_condition_ids[token_id] = target_cfg[token_id]["condition_id"]
         self._ensure_runtime_token_state(token_id, reason=f"runtime_add:{source}")
         self._event_states[token_id] = {
             "state": EVENT_ACTIVE,
@@ -4055,6 +4106,7 @@ class PolyLPSMulti:
                     "question": question or "",
                     "league": league or "",
                     "league_tags": list(league_tags or []),
+                    "condition_id": str(condition_id or "").strip().lower(),
                     "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
                     "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
                 })
@@ -4113,6 +4165,8 @@ class PolyLPSMulti:
             self._health_fail_streak.pop(tid, None)
             self._book_req_exc_streak.pop(tid, None)
             self._volatility_tracker.pop(tid, None)
+            self._market_condition_ids.pop(tid, None)
+            self._sponsored_guard_by_token.pop(tid, None)
             self._dual_side_injected.discard(tid)
             self._runtime_added_tokens.discard(tid)
 
@@ -4681,6 +4735,143 @@ class PolyLPSMulti:
         except Exception:
             return True, "api_error_skip"
 
+    async def get_sponsored_risk(
+        self,
+        condition_id: str,
+        *,
+        for_admission: bool = False,
+    ) -> Dict[str, Any]:
+        """Return the latest sponsor assessment for auto-curator admission."""
+        if not self._sponsored_guard.enabled:
+            return self._sponsored_guard.assess(
+                condition_id,
+                for_admission=for_admission,
+            )
+        await self._sponsored_guard.refresh(
+            proxies=self._http_proxies_dict,
+        )
+        return self._sponsored_guard.assess(
+            condition_id,
+            for_admission=for_admission,
+        )
+
+    async def _resolve_sponsored_condition_ids(
+        self,
+        token_ids: list[str],
+    ) -> None:
+        """Resolve missing token -> condition mappings with bounded concurrency."""
+        unresolved = [
+            tid for tid in token_ids
+            if tid not in self._market_condition_ids
+            and not self._get_mcfg(tid).get("_dual_side_auto")
+        ][:40]
+        if not unresolved:
+            return
+        semaphore = asyncio.Semaphore(8)
+
+        async def _resolve(token_id: str) -> None:
+            async with semaphore:
+                try:
+                    await self._get_market_meta(token_id)
+                except Exception:
+                    return
+
+        await asyncio.gather(*(_resolve(tid) for tid in unresolved))
+
+    async def _refresh_sponsored_guard_once(
+        self,
+        *,
+        force: bool = False,
+        resolve_missing: bool = True,
+    ) -> None:
+        guard = self._sponsored_guard
+        if not guard.enabled:
+            self._sponsored_guard_summary = guard.state_payload({})
+            return
+
+        await guard.refresh(force=force, proxies=self._http_proxies_dict)
+        token_ids = list(
+            dict.fromkeys(
+                list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())
+            )
+        )
+        if resolve_missing:
+            await self._resolve_sponsored_condition_ids(token_ids)
+
+        by_condition: Dict[str, list[str]] = {}
+        for token_id in token_ids:
+            condition_id = (
+                self._market_condition_ids.get(token_id)
+                or str(self._get_mcfg(token_id).get("condition_id") or "").strip().lower()
+            )
+            if not condition_id:
+                paired = str(
+                    self._get_mcfg(token_id).get("paired_token_id")
+                    or self._paired_token_cache.get(token_id)
+                    or ""
+                )
+                condition_id = self._market_condition_ids.get(paired, "")
+            if condition_id:
+                by_condition.setdefault(condition_id, []).extend(
+                    self._event_token_ids(token_id)
+                )
+
+        assessments: Dict[str, Dict[str, Any]] = {}
+        for condition_id, event_tokens_raw in by_condition.items():
+            event_tokens = list(dict.fromkeys(event_tokens_raw))
+            assessment = guard.assess(condition_id)
+            assessment["token_ids"] = event_tokens
+            if not assessment.get("market_slug"):
+                for token_id in event_tokens:
+                    slug = self._token_slug_cache.get(token_id, "")
+                    if slug:
+                        assessment["market_slug"] = slug
+                        break
+            assessments[condition_id] = assessment
+            for token_id in event_tokens:
+                self._sponsored_guard_by_token[token_id] = assessment
+
+            if assessment.get("status") != "blocked":
+                continue
+            root_token = event_tokens[0] if event_tokens else ""
+            prior_action = self._sponsored_guard_last_action.get(condition_id) or {}
+            prior_action_at = float(prior_action.get("at") or 0)
+            if (
+                not root_token
+                or time.time() - prior_action_at
+                < self._sponsored_guard.policy.cooldown_sec
+            ):
+                continue
+            reasons = assessment.get("reasons") or ["sponsored_risk"]
+            reason = f"sponsored_guard:{'|'.join(str(x) for x in reasons)}"
+            await self._deactivate_market(root_token, reason)
+            self._sponsored_guard_last_action[condition_id] = {
+                "action": "cancel_and_disable_event",
+                "reason": reason,
+                "at": time.time(),
+            }
+
+        self._sponsored_guard_assessments = assessments
+        summary = guard.state_payload(assessments)
+        summary["last_actions"] = dict(self._sponsored_guard_last_action)
+        self._sponsored_guard_summary = summary
+
+    async def sponsored_guard_loop(self) -> None:
+        while self._running:
+            try:
+                await self._refresh_sponsored_guard_once(
+                    force=True,
+                    resolve_missing=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(
+                    f"[sponsored-guard] refresh error "
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+            await asyncio.sleep(self._sponsored_guard.poll_interval_sec)
+
     async def _deactivate_market(self, token_id: str, reason: str) -> None:
         event_token_ids = self._event_token_ids(token_id)
         self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
@@ -4712,6 +4903,17 @@ class PolyLPSMulti:
             self._config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             log(f"[health] config disable fail token={token_id} err={e}")
+
+        # A persisted `enabled=false` only takes effect on the next process
+        # start. Remove the event from the current runtime as well so a
+        # long-lived process cannot resume it after the temporary ban expires.
+        try:
+            await self.remove_market_runtime(
+                token_id,
+                reason=f"deactivated:{reason}",
+            )
+        except Exception as e:
+            log(f"[health] runtime remove fail token={token_id} err={e}")
 
         slug = self._token_slug_cache.get(token_id, token_id[:16])
         msg = f"Health check failed: {slug}\nReason: {reason}"
@@ -4915,6 +5117,30 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[dual-side-inject] startup error: {e}")
 
+        if self._sponsored_guard.enabled:
+            try:
+                await asyncio.wait_for(
+                    self._refresh_sponsored_guard_once(
+                        force=True,
+                        resolve_missing=True,
+                    ),
+                    timeout=25,
+                )
+                _sg = self._sponsored_guard_summary
+                _counts = _sg.get("counts") or {}
+                log(
+                    "[sponsored-guard] startup "
+                    f"status={_sg.get('status')} "
+                    f"safe={_counts.get('safe', 0)} "
+                    f"caution={_counts.get('caution', 0)} "
+                    f"blocked={_counts.get('blocked', 0)}"
+                )
+            except Exception as exc:
+                log(
+                    f"[sponsored-guard] startup degraded "
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+
         tasks = [
             asyncio.create_task(self.book_loop(), name="book_loop"),
             asyncio.create_task(self._ws_market_watch(), name="market_ws_watch"),
@@ -4926,6 +5152,13 @@ class PolyLPSMulti:
             asyncio.create_task(self.start_guard_sweep_loop(), name="start_guard_sweep_loop"),
             asyncio.create_task(self.heartbeat_loop(), name="heartbeat_loop"),
         ]
+        if self._sponsored_guard.enabled:
+            tasks.append(
+                asyncio.create_task(
+                    self.sponsored_guard_loop(),
+                    name="sponsored_guard_loop",
+                )
+            )
         if self.hourly_summary:
             tasks.append(asyncio.create_task(self.summary_loop(), name="summary_loop"))
 
@@ -7086,6 +7319,7 @@ class PolyLPSMulti:
                         "q_min": q_details.get("q_min", 0),
                         "rewards_min_size": q_details.get("rewards_min_size", 0),
                         "has_dual_side": q_details.get("has_dual_side", False),
+                        "sponsored_risk": self._sponsored_guard_by_token.get(tid),
                     }
 
                 # Prune curator_events_log entries older than TTL
@@ -7133,6 +7367,7 @@ class PolyLPSMulti:
                     "pending_unwinds": list(self._pending_unwinds),
                     "exit_records": list(self._exit_records[-100:]),
                     "night_markets_count": len(self._night_market_cfg),
+                    "sponsored_risk_guard": self._sponsored_guard_summary,
                     "curator_events": curator_events_out,
                     # Legacy key — kept for dashboards that haven't been refreshed.
                     "night_events": [e for e in curator_events_out if e.get("session") == "night"],
