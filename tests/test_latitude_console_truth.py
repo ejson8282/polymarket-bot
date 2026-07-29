@@ -87,6 +87,23 @@ def test_remote_polymarket_pause_persists_central_desired_flag(
     assert remote_calls[-1][1].startswith("rm -f ")
 
 
+def test_fresh_remote_engine_state_overrides_stale_pause_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_path = tmp_path / "engine_state_2.json"
+    pause_path = tmp_path / ".account_2.paused"
+    _write_json(state_path, {"paused": False})
+    pause_path.touch()
+    monkeypatch.setattr(console, "PM_STATE_STALE_SEC", 60)
+
+    assert console._pm_remote_paused(
+        {"paused": False},
+        state_path,
+        pause_path,
+    ) is False
+
+
 def test_polymarket_start_clears_pause_and_wakes_engines(
     tmp_path: Path,
     monkeypatch,

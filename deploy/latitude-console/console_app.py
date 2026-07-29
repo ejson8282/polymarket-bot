@@ -317,6 +317,18 @@ def _iso_age(value: Any) -> Optional[int]:
         return None
 
 
+def _pm_remote_paused(state: dict, state_path: Path, flag_path: Path) -> bool:
+    """Prefer a fresh engine truth value over a stale copied pause marker."""
+    state_age = _mtime_age(state_path)
+    if (
+        state_age is not None
+        and state_age <= PM_STATE_STALE_SEC
+        and isinstance(state.get("paused"), bool)
+    ):
+        return bool(state["paused"])
+    return flag_path.exists()
+
+
 def _num(value: Any) -> Optional[float]:
     try:
         return float(value)
@@ -1093,7 +1105,11 @@ def _polymarket() -> Dict[str, Any]:
                 continue
         if is_remote:
             alive = _REMOTE_STATUS.get(idx, False)
-            paused = (PM_PEER_DIR / f".account_{idx}.paused").exists()
+            paused = _pm_remote_paused(
+                state,
+                state_path,
+                PM_PEER_DIR / f".account_{idx}.paused",
+            )
         else:
             alive = _pid_file_alive(DATA_DIR / f".engine_{idx}.pid",
                                     DATA_DIR / ".engine.pid")
@@ -5163,6 +5179,15 @@ def _refresh_pm_remotes() -> None:
                                capture_output=True, timeout=15)
             except Exception:
                 pass
+        peer_state = _read_json(PM_PEER_DIR / f"engine_state_{idx}.json") or {}
+        peer_pause = PM_PEER_DIR / f".account_{idx}.paused"
+        if peer_state.get("paused") is False:
+            try:
+                peer_pause.unlink()
+            except FileNotFoundError:
+                pass
+        elif peer_state.get("paused") is True:
+            peer_pause.touch(exist_ok=True)
         curator_src = (
             f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/auto_curator_state.json"
         )
