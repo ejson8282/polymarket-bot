@@ -1555,7 +1555,7 @@
       <div class="pm-panel-head">
         <div>
           <h2>小额验证队列</h2>
-          <div class="src">只生成计划，不下单；连续稳定且风险不高后才进入</div>
+          <div class="src">只生成计划，不下单；测试本金仅用于验证，不是正式资金上限</div>
         </div>
         <span id="pm-verification-summary" class="chip">等待稳定样本</span>
       </div>
@@ -1575,7 +1575,7 @@
         <span id="pm-opportunity-summary" class="chip">等待首次扫描</span>
       </div>
       <div class="pm-table-wrap"><table>
-        <thead><tr><th>账号</th><th>市场</th><th>类型</th><th>日奖励</th><th>验证本金</th><th>预计占比</th><th>实际占比</th><th>预计/实际日毛收益</th><th>稳定性</th><th>风险</th><th>观察结论</th></tr></thead>
+        <thead><tr><th>账号</th><th>市场</th><th>类型</th><th>日奖励</th><th>测试本金</th><th>预计占比</th><th>实际占比</th><th>预计/实际日毛收益</th><th>稳定性</th><th>风险</th><th>观察结论</th></tr></thead>
         <tbody id="pm-opportunity-body"><tr><td colspan="11" class="pm-empty">首次全市场奖励观察完成后显示</td></tr></tbody>
       </table></div>
     </div>
@@ -2817,7 +2817,7 @@
             :'<a>'+title+'</a>';
           return '<div class="pm-verify-card">'+market+
             '<div class="src">账号'+Number(row.account||0)+' · '+esc(row.host||'—')+' · '+Number(row.observation_samples||0)+'轮稳定样本</div>'+
-            '<div class="pm-verify-meta"><span>建议本金<b>'+money(row.probe_capital_usd)+'</b></span>'+
+            '<div class="pm-verify-meta"><span>测试本金<b>'+money(row.probe_capital_usd)+'</b></span>'+
             '<span>风险调整效率<b>'+Number(row.risk_adjusted_daily_roi_pct||0).toFixed(2)+'%/日</b></span>'+
             '<span>预计份额<b>'+Number(row.estimated_reward_share_pct||0).toFixed(2)+'%</b></span></div></div>';
         }).join(''):'<div class="pm-empty">至少连续观察约 1 小时后生成第一批验证建议</div>';
@@ -2828,7 +2828,7 @@
         estimated_majority_share:'预计可取得较高份额',
         estimated_meaningful_share:'预计份额有意义',
         estimated_crowded:'竞争较多',
-        minimum_size_raises_capital:'最低份数提高验证本金',
+        minimum_size_raises_capital:'最低份数提高测试本金',
         high_fill_risk:'吃单风险较高',
         medium_fill_risk:'吃单风险中等'
       };

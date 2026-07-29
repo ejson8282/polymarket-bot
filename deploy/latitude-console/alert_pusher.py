@@ -246,7 +246,7 @@ def _notify_pm_verification_candidates(
             question = question[:51] + "..."
         lines.append(
             f"· 账号{int(row.get('account') or 0)} {question}"
-            f"｜建议本金 ${float(row.get('probe_capital_usd') or 0):,.2f}"
+            f"｜测试本金 ${float(row.get('probe_capital_usd') or 0):,.2f}"
             f"｜风险调整效率 {float(row.get('risk_adjusted_daily_roi_pct') or 0):.2f}%/日"
         )
     sent = send_discord(

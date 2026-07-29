@@ -307,6 +307,29 @@ def test_submit_rechecks_state_after_signing_before_posting():
     assert posted == []
 
 
+def test_latency_record_includes_cancel_clear_timing():
+    engine = object.__new__(PolyLPSMulti)
+    engine._latency_marks = {
+        "101": {
+            "t_detect": 100.00,
+            "t_decision": 100.01,
+            "t_send": 100.02,
+            "t_cancel_ack": 100.12,
+            "t_orders_cleared": 100.15,
+        }
+    }
+    engine._latency_records = []
+
+    engine._emit_latency_record("101", "volatility_watch")
+
+    record = engine._latency_records[0]
+    assert record["cancel_ack_ms"] == 100.0
+    assert record["detect_to_cancel_ack_ms"] == 120.0
+    assert record["cancel_ack_to_cleared_ms"] == 30.0
+    assert record["send_to_cleared_ms"] == 130.0
+    assert record["detect_to_cleared_ms"] == 150.0
+
+
 def test_deactivate_market_disables_config_and_removes_current_runtime(tmp_path):
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {

@@ -1317,6 +1317,11 @@ class PolyLPSMulti:
             "send_to_accept_ms": delta("t_send", "t_exchange_accept"),
             "fill_to_halt_ms": delta("t_fill_seen", "t_halt_entered"),
             "halt_to_cleared_ms": delta("t_halt_entered", "t_orders_cleared"),
+            "cancel_ack_ms": delta("t_send", "t_cancel_ack"),
+            "detect_to_cancel_ack_ms": delta("t_detect", "t_cancel_ack"),
+            "cancel_ack_to_cleared_ms": delta("t_cancel_ack", "t_orders_cleared"),
+            "send_to_cleared_ms": delta("t_send", "t_orders_cleared"),
+            "detect_to_cleared_ms": delta("t_detect", "t_orders_cleared"),
         }
         if extra:
             record.update(extra)
@@ -2150,6 +2155,9 @@ class PolyLPSMulti:
 
     async def _enter_watch(self, token_id: str, reason: str) -> None:
         """Enter WATCH state: cancel all orders, start observation timer. After 2 WATCH entries, forbid the event."""
+        self._latency_flow_reset(token_id)
+        self._mark_latency(token_id, "t_detect")
+        self._mark_latency(token_id, "t_decision")
         tracker = self._vol_tracker(token_id)
         tracker["watch_count"] = int(tracker.get("watch_count", 0)) + 1
         tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
@@ -2160,6 +2168,13 @@ class PolyLPSMulti:
             ids = [self._order_id(o) for o in live]
             if ids:
                 await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
+            else:
+                self._mark_latency(token_id, "t_orders_cleared")
+            self._emit_latency_record(
+                token_id,
+                "volatility_forbid",
+                {"reason": reason, "orders_targeted": len(ids)},
+            )
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             self.send_discord(
@@ -2172,10 +2187,20 @@ class PolyLPSMulti:
         ids = [self._order_id(o) for o in live]
         if ids:
             await self._cancel_order_ids(token_id, ids, f"watch:{reason}")
+        else:
+            self._mark_latency(token_id, "t_orders_cleared")
+        self._emit_latency_record(
+            token_id,
+            "volatility_watch",
+            {"reason": reason, "orders_targeted": len(ids)},
+        )
         log(f"[watch] token={token_id} entered WATCH reason={reason} duration={self._vol_watch_duration_sec}s")
 
     async def _enter_quarantine(self, token_id: str, reason: str) -> None:
         """Enter QUARANTINE state: cancel all orders, longer cooldown."""
+        self._latency_flow_reset(token_id)
+        self._mark_latency(token_id, "t_detect")
+        self._mark_latency(token_id, "t_decision")
         tracker = self._vol_tracker(token_id)
         tracker["quarantine_enter_ts"] = time.time()
         tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
@@ -2184,6 +2209,13 @@ class PolyLPSMulti:
         ids = [self._order_id(o) for o in live]
         if ids:
             await self._cancel_order_ids(token_id, ids, f"quarantine:{reason}")
+        else:
+            self._mark_latency(token_id, "t_orders_cleared")
+        self._emit_latency_record(
+            token_id,
+            "volatility_quarantine",
+            {"reason": reason, "orders_targeted": len(ids)},
+        )
         log(f"[quarantine] token={token_id} entered QUARANTINE reason={reason} duration={self._vol_quarantine_duration_sec}s")
         self._notify_risk("Event quarantined", token=token_id, reason=reason)
 
