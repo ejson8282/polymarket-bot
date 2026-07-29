@@ -56,6 +56,32 @@ def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     assert candidate["market_type"] == "always_on"
 
 
+def test_candidate_url_uses_parent_event_and_market_slugs() -> None:
+    market = _market(slug="will-rates-change-in-2026-outcome")
+    market["events"] = [{"slug": "will-rates-change-in-2026"}]
+
+    candidate = observe_reward_markets(
+        [market],
+        lambda _token: _book(),
+    )["candidates"][0]
+
+    assert candidate["event_slug"] == "will-rates-change-in-2026"
+    assert candidate["market_url"] == (
+        "https://polymarket.com/event/will-rates-change-in-2026/"
+        "will-rates-change-in-2026-outcome"
+    )
+
+
+def test_candidate_without_parent_event_does_not_publish_broken_url() -> None:
+    candidate = observe_reward_markets(
+        [_market()],
+        lambda _token: _book(),
+    )["candidates"][0]
+
+    assert candidate["event_slug"] == ""
+    assert candidate["market_url"] == ""
+
+
 def test_low_competition_market_estimates_better_share_and_return() -> None:
     low = observe_reward_markets(
         [_market()],

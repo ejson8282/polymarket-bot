@@ -2889,7 +2889,7 @@
           : '等待首次扫描';
       }
       if(opportunityBody){
-        opportunityBody.innerHTML=opportunities.length?opportunities.slice(0,60).map(row=>{
+        opportunityBody.innerHTML=opportunities.length?opportunities.map(row=>{
           const phase=pmPhase(row);
           const phaseView=pmPhaseView(row);
           const estGross=row.actual_daily_gross_usd==null?row.estimated_daily_gross_usd:row.actual_daily_gross_usd;

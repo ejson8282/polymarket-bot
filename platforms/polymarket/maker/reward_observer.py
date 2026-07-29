@@ -130,6 +130,37 @@ def _is_sports_market(market: Dict[str, Any]) -> bool:
     return has_start and bool(_SPORTS_SLUG_DATE_RE.search(slug))
 
 
+def _event_slug(market: Dict[str, Any]) -> str:
+    for key in ("eventSlug", "event_slug"):
+        value = str(market.get(key) or "").strip()
+        if value:
+            return value
+    events = market.get("events")
+    if isinstance(events, str):
+        try:
+            events = json.loads(events)
+        except Exception:
+            events = []
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            value = str(event.get("slug") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _market_url(market: Dict[str, Any]) -> str:
+    market_slug = str(market.get("slug") or "").strip()
+    event_slug = _event_slug(market)
+    if event_slug and market_slug:
+        return f"https://polymarket.com/event/{event_slug}/{market_slug}"
+    if event_slug:
+        return f"https://polymarket.com/event/{event_slug}"
+    return ""
+
+
 def _book_levels(book: Optional[Dict[str, Any]], side: str) -> List[Tuple[Decimal, Decimal]]:
     if not isinstance(book, dict):
         return []
@@ -298,10 +329,8 @@ def _observe_candidate(
         ),
         "question": str(market.get("question") or market.get("title") or ""),
         "slug": str(market.get("slug") or ""),
-        "market_url": (
-            f"https://polymarket.com/event/{market.get('slug')}"
-            if market.get("slug") else ""
-        ),
+        "event_slug": _event_slug(market),
+        "market_url": _market_url(market),
         "token_id": rough["token_ids"][0],
         "paired_token_id": rough["token_ids"][1],
         "market_type": "sports" if _is_sports_market(market) else "always_on",

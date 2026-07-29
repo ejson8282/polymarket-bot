@@ -381,6 +381,90 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert "filterPMScanRows" in html
     assert "吃单风险" in html
     assert "越低越好" in html
+    assert "opportunities.slice(0,60)" not in html
+
+
+def test_polymarket_opportunity_links_share_verified_parent_event(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    local = tmp_path / "data"
+    peer = tmp_path / "peer"
+    maker = tmp_path / "maker"
+    local.mkdir()
+    peer.mkdir()
+    maker.mkdir()
+    for idx in (1, 2):
+        _write_json(
+            (peer if idx == 2 else local) / f"engine_state_{idx}.json",
+            {"markets": {}},
+        )
+        _write_json(maker / f"config_{idx}.json", {})
+    condition_id = "0xshared"
+    market_slug = "specific-market-outcome"
+    shared = {
+        "condition_id": condition_id,
+        "slug": market_slug,
+        "question": "Shared market",
+        "daily_reward_usd": 10,
+    }
+    _write_json(
+        local / "reward_observer_state.json",
+        {
+            "generated_at": time.time(),
+            "candidates": [
+                {
+                    **shared,
+                    "event_slug": "parent-event",
+                    "market_url": (
+                        "https://polymarket.com/event/parent-event/"
+                        "specific-market-outcome"
+                    ),
+                }
+            ],
+        },
+    )
+    _write_json(
+        peer / "reward_observer_state_2.json",
+        {
+            "generated_at": time.time(),
+            "candidates": [
+                {
+                    **shared,
+                    "market_url": (
+                        "https://polymarket.com/event/specific-market-outcome"
+                    ),
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(console, "DATA_DIR", local)
+    monkeypatch.setattr(console, "PM_PEER_DIR", peer)
+    monkeypatch.setattr(console, "MAKER_DIR", maker)
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {2: {"label": "VPS2"}})
+    monkeypatch.setattr(console, "_pm_reward_sources", lambda: {
+        "live_accounts": {},
+        "today_by_idx": {},
+        "rebates_today_by_idx": {},
+        "income_today_by_idx": {},
+        "cumulative_by_idx": {},
+        "rebates_cumulative_by_idx": {},
+        "income_cumulative_by_idx": {},
+        "total_today_usd": 0,
+        "total_today_rebates_usd": 0,
+        "total_today_income_usd": 0,
+        "total_cumulative_usd": 0,
+    })
+    monkeypatch.setattr(console, "_pm_capital_summary", lambda: {"total": 0})
+    monkeypatch.setattr(console, "_pm_collateral_account", lambda _idx: {})
+
+    rows = console._polymarket()["curator"]["opportunities"]
+
+    assert len(rows) == 2
+    assert {
+        row["market_url"] for row in rows
+    } == {
+        "https://polymarket.com/event/parent-event/specific-market-outcome"
+    }
 
 
 def test_polymarket_markets_page_has_phase_and_account_filters() -> None:

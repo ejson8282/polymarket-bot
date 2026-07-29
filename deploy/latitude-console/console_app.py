@@ -1424,6 +1424,31 @@ def _polymarket() -> Dict[str, Any]:
     rewards_total = reward_state.get("total_today_usd")
     rebates_total = reward_state.get("total_today_rebates_usd")
     income_total = reward_state.get("total_today_income_usd")
+    event_slug_by_condition: Dict[str, str] = {}
+    for row in curator_opportunities:
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        event_slug = str(row.get("event_slug") or "").strip()
+        if condition_id and event_slug:
+            event_slug_by_condition[condition_id] = event_slug
+    for row in curator_opportunities:
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        market_slug = str(row.get("slug") or "").strip()
+        event_slug = (
+            str(row.get("event_slug") or "").strip()
+            or event_slug_by_condition.get(condition_id, "")
+        )
+        if event_slug and market_slug:
+            row["event_slug"] = event_slug
+            row["market_url"] = (
+                f"https://polymarket.com/event/{event_slug}/{market_slug}"
+            )
+        elif event_slug:
+            row["event_slug"] = event_slug
+            row["market_url"] = f"https://polymarket.com/event/{event_slug}"
+        else:
+            # A market slug is not an event slug. Hiding an unverified link is
+            # preferable to sending the operator to Polymarket's 404 page.
+            row["market_url"] = ""
     curator_out = {
         "enabled": any(row["enabled"] for row in curator_accounts),
         "fresh": bool(curator_accounts) and all(
