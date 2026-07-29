@@ -25,6 +25,8 @@ DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
+HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+HISTORY_SAMPLES_PER_MARKET = 288
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
@@ -449,6 +451,150 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
     }
 
 
+def _float_values(samples: List[Dict[str, Any]], key: str) -> List[float]:
+    values: List[float] = []
+    for sample in samples:
+        try:
+            values.append(float(sample[key]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return values
+
+
+def _stability_fields(
+    samples: List[Dict[str, Any]],
+    now_ts: float,
+) -> Dict[str, Any]:
+    if not samples:
+        return {
+            "observation_samples": 0,
+            "observation_span_sec": 0,
+            "stability_score": 0,
+            "estimated_share_range_pp": None,
+            "verification_status": "collecting",
+        }
+    first_ts = float(samples[0].get("ts") or now_ts)
+    span = max(0, int(now_ts - first_ts))
+    shares = _float_values(samples, "share")
+    risks = _float_values(samples, "risk")
+    share_range = max(shares) - min(shares) if shares else 100.0
+    risk_range = max(risks) - min(risks) if risks else 100.0
+    consistency = max(
+        0.0,
+        100.0 - min(70.0, share_range * 2.0) - min(20.0, risk_range * 0.5),
+    )
+    sample_coverage = min(1.0, len(samples) / 12.0)
+    time_coverage = min(1.0, span / 3300.0)
+    score = round(consistency * (0.4 + 0.6 * min(sample_coverage, time_coverage)))
+
+    latest_risk = risks[-1] if risks else 100.0
+    if len(samples) < 3:
+        status = "collecting"
+    elif len(samples) < 12 or span < 3300:
+        status = "warming"
+    elif latest_risk >= 65:
+        status = "risk_high"
+    elif share_range > 20:
+        status = "unstable"
+    elif span >= 12 * 60 * 60:
+        status = "confirmed"
+    else:
+        status = "stable"
+    return {
+        "observation_samples": len(samples),
+        "observation_span_sec": span,
+        "stability_score": int(score),
+        "estimated_share_range_pp": round(share_range, 2),
+        "verification_status": status,
+    }
+
+
+def _apply_observation_history(
+    data_dir: Path,
+    state: Dict[str, Any],
+    now_ts: float,
+) -> None:
+    history_path = data_dir / "reward_observer_history.json"
+    try:
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+    except Exception:
+        history = {}
+    markets = history.get("markets") if isinstance(history, dict) else {}
+    if not isinstance(markets, dict):
+        markets = {}
+
+    cutoff = now_ts - HISTORY_RETENTION_SECONDS
+    for condition_id, row in list(markets.items()):
+        if not isinstance(row, dict):
+            markets.pop(condition_id, None)
+            continue
+        samples = row.get("samples")
+        if not isinstance(samples, list):
+            markets.pop(condition_id, None)
+            continue
+        fresh: List[Dict[str, Any]] = []
+        for sample in samples:
+            if not isinstance(sample, dict):
+                continue
+            try:
+                sample_ts = float(sample.get("ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if sample_ts >= cutoff:
+                fresh.append(sample)
+        if fresh:
+            row["samples"] = fresh[-HISTORY_SAMPLES_PER_MARKET:]
+        else:
+            markets.pop(condition_id, None)
+
+    for candidate in state.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        condition_id = str(candidate.get("condition_id") or "").strip().lower()
+        if not condition_id:
+            continue
+        row = markets.setdefault(
+            condition_id,
+            {
+                "question": candidate.get("question"),
+                "slug": candidate.get("slug"),
+                "samples": [],
+            },
+        )
+        samples = row.get("samples")
+        if not isinstance(samples, list):
+            samples = []
+        samples.append(
+            {
+                "ts": now_ts,
+                "share": candidate.get("estimated_reward_share_pct"),
+                "gross_roi": candidate.get("estimated_gross_daily_roi_pct"),
+                "risk": candidate.get("fill_risk"),
+                "capital": candidate.get("probe_capital_usd"),
+                "yes_quote": candidate.get("yes_quote"),
+                "no_quote": candidate.get("no_quote"),
+            }
+        )
+        samples = samples[-HISTORY_SAMPLES_PER_MARKET:]
+        row["samples"] = samples
+        row["last_seen_at"] = now_ts
+        candidate.update(_stability_fields(samples, now_ts))
+
+    history_payload = {
+        "version": 1,
+        "updated_at": now_ts,
+        "retention_seconds": HISTORY_RETENTION_SECONDS,
+        "samples_per_market": HISTORY_SAMPLES_PER_MARKET,
+        "markets": markets,
+    }
+    tmp = history_path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(history_payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    tmp.replace(history_path)
+
+
 def refresh_observer_state(
     data_dir: Path,
     *,
@@ -458,6 +604,7 @@ def refresh_observer_state(
 ) -> Dict[str, Any]:
     """Refresh the standalone read-only state used by the dashboard."""
 
+    data_dir.mkdir(parents=True, exist_ok=True)
     settings = _observer_settings(config_dir)
     started = time.time()
     markets = fetch_markets()
@@ -467,10 +614,12 @@ def refresh_observer_state(
         candidate_limit=int(settings["candidate_limit"]),
         probe_budget_usdc=settings["probe_budget_usdc"],
     )
+    generated_at = time.time()
+    _apply_observation_history(data_dir, state, generated_at)
     state.update(
         {
             "status": "ready",
-            "generated_at": time.time(),
+            "generated_at": generated_at,
             "elapsed_sec": round(time.time() - started, 2),
             "markets_seen": len(markets),
             "source": "public_gamma_and_clob",

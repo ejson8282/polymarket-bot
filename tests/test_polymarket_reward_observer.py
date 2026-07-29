@@ -2,6 +2,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+from platforms.polymarket.maker import reward_observer
 from platforms.polymarket.maker.reward_observer import (
     observe_reward_markets,
     refresh_observer_state,
@@ -114,3 +115,28 @@ def test_standalone_refresh_writes_read_only_dashboard_state(
     assert saved["mode"] == "observe_only"
     assert saved["source"] == "public_gamma_and_clob"
     assert saved["candidates"][0]["actual_reward_share_pct"] is None
+    assert saved["candidates"][0]["verification_status"] == "collecting"
+
+
+def test_candidate_requires_repeated_stable_samples_before_verification(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
+
+    state = {}
+    for _ in range(12):
+        state = refresh_observer_state(
+            tmp_path,
+            fetch_markets=lambda: [_market(reward="25")],
+            fetch_book=lambda _token: _book(),
+        )
+        now[0] += 300
+
+    candidate = state["candidates"][0]
+    assert candidate["observation_samples"] == 12
+    assert candidate["observation_span_sec"] == 3300
+    assert candidate["estimated_share_range_pp"] == 0
+    assert candidate["stability_score"] == 100
+    assert candidate["verification_status"] == "stable"

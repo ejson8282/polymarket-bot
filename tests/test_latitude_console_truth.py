@@ -371,6 +371,8 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert "<h2>手动扫描</h2>" in html
     assert "estimated_reward_share_pct" in html
     assert "actual_reward_share_pct" in html
+    assert "verification_status" in html
+    assert "短期稳定" in html
 
 
 def test_discord_notification_update_saves_without_echoing_secret(
