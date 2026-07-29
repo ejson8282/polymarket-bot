@@ -6951,6 +6951,20 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
                 )
             )
         else:
+            safety_hold = DATA_DIR / f".account_{idx}.safety_hold.json"
+            if safety_hold.exists():
+                try:
+                    hold_data = json.loads(safety_hold.read_text(encoding="utf-8"))
+                except Exception:
+                    hold_data = {}
+                reason = str(hold_data.get("reason") or "存在未退出库存")
+                entry["start"] = {
+                    "rc": 2,
+                    "out": "",
+                    "err": f"安全暂停：{reason}；减仓完成后才能恢复",
+                }
+                per[idx] = entry
+                continue
             # "Start" means resume quoting, not merely ensure systemd is
             # active. Clear the persisted pause intent first, then wake a
             # process that may have been SIGSTOP-frozen during a safety hold.

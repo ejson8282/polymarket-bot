@@ -139,6 +139,46 @@ def test_polymarket_start_clears_pause_and_wakes_engines(
     assert "systemctl kill --signal=CONT" in remote_command
 
 
+def test_polymarket_start_refuses_account_with_safety_hold(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".account_2.paused").touch()
+    _write_json(
+        data_dir / ".account_2.safety_hold.json",
+        {"reason": "仍持有 150 份待减仓库存"},
+    )
+    remote_calls = []
+
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "_pm_all_accounts", lambda: [2])
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {2: {"label": "VPS2"}})
+    monkeypatch.setattr(
+        console,
+        "_remote_ssh",
+        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(console, "_is_cloudflare", lambda request: False)
+    monkeypatch.setattr(console, "_audit", lambda *args, **kwargs: None)
+
+    response = asyncio.run(
+        console.pm_engine(
+            {"action": "start", "confirm": True, "accounts": [2]},
+            object(),
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["ok"] is False
+    assert "安全暂停" in payload["per"]["2"]["start"]["err"]
+    assert (data_dir / ".account_2.paused").exists()
+    assert remote_calls == []
+
+
 def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", data_dir)
     monkeypatch.setattr(console, "VARIA_CAPITAL_LEDGER", data_dir / "home_equity_principal.json")
