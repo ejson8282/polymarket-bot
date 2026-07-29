@@ -3489,10 +3489,16 @@ class PolyLPSMulti:
                         if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
                             asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
                         try:
-                            await asyncio.to_thread(self.client.cancel_all)
-                            self._sibling_registry.clear_funder(self._funder_lc)
-                            log(f"[guard-loop] market-ws down {market_ws_age:.0f}s > {self._market_ws_down_cancel_sec:.0f}s — cancelled all orders")
-                            self._notify_attention("Market WS down", age_sec=f"{market_ws_age:.0f}", action="cancelled all orders")
+                            await self._cancel_all_except_exit()
+                            log(
+                                f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
+                                f"{self._market_ws_down_cancel_sec:.0f}s — cancelled quotes, preserved SELL exits"
+                            )
+                            self._notify_attention(
+                                "Market WS down",
+                                age_sec=f"{market_ws_age:.0f}",
+                                action="cancelled quotes; preserved SELL exits",
+                            )
                             for tid in self.market_cfg:
                                 self._last_plan_sig[tid] = ""
                                 self.last_quote_ts[tid] = 0.0
@@ -6494,30 +6500,26 @@ class PolyLPSMulti:
         return True
 
     async def _cancel_all_except_exit(self) -> bool:
-        """Cancel all live orders EXCEPT active exit SELL orders.
+        """Cancel all live quote orders while preserving every SELL order.
+
+        The strategy quotes with BUY orders on YES/NO tokens, so any live SELL
+        is risk-reducing inventory disposal. Preserve SELLs even when the
+        in-memory exit registry was lost after restart or manual recovery.
         Returns True if all non-exit orders were successfully canceled.
         """
-        protected_ids = set(self._active_exit_orders.values())
-        if not protected_ids:
-            # No exit orders to protect — use fast cancel_all then verify
-            await asyncio.to_thread(self.client.cancel_all)
-            # Clear cache for all managed tokens
-            self._market_live_orders.clear()
-            self._sibling_registry.clear_funder(self._funder_lc)  # 施工包04:与清缓存同点
-            remaining = await asyncio.to_thread(self.client.get_open_orders)
-            live_remaining = [
-                o for o in (remaining if isinstance(remaining, list) else [])
-                if str(o.get("status", "")).lower() in ("live", "open", "active")
-            ]
-            if live_remaining:
-                log(f"[cancel_all_except_exit] fast cancel_all done but {len(live_remaining)} orders still live")
-                return False
-            return True
-
-        # Selective cancel: skip protected exit SELL orders
         orders = await asyncio.to_thread(self.client.get_open_orders)
         if not isinstance(orders, list):
             return False
+        protected_ids = {
+            str(order_id) for order_id in self._active_exit_orders.values() if order_id
+        }
+        protected_ids.update(
+            str(o.get("id") or o.get("orderID") or "")
+            for o in orders
+            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            and str(o.get("side", "")).upper() == "SELL"
+            and (o.get("id") or o.get("orderID"))
+        )
         for o in orders:
             oid = str(o.get("id") or o.get("orderID") or "")
             status = str(o.get("status", "")).lower()
@@ -7226,9 +7228,32 @@ class PolyLPSMulti:
                         continue
 
                     if oid and oid not in live_ids:
-                        # Order no longer open — filled or externally cancelled; consider done
-                        log(f"[unwind] completed token={token_id} order_id={oid} age={age:.0f}s")
-                        self._resume_halted_markets("unwind_completed")
+                        # Missing order is not proof of a fill: it may have
+                        # been externally canceled or removed by a guard.
+                        # Only position==0 above is authoritative completion.
+                        if not uw.get("missing_order_alerted"):
+                            uw["missing_order_alerted"] = True
+                            uw["missing_order_detected_at"] = now
+                            log(
+                                f"[unwind] order missing but position={position}; "
+                                f"keeping halt token={token_id} order_id={oid}"
+                            )
+                            if position > 0:
+                                self._set_event_state(
+                                    token_id,
+                                    EVENT_PENDING_MANUAL_EXIT,
+                                    "exit_order_missing_with_inventory",
+                                )
+                            self._notify_status(
+                                "Message",
+                                text=(
+                                    "[UNWIND ALERT] Exit order is no longer open, "
+                                    f"but position={position}. Keep account halted and replace exit. "
+                                    f"token={token_id} order_id={oid}"
+                                ),
+                            )
+                        self._active_exit_orders.pop(token_id, None)
+                        still_pending.append(uw)
                         continue
 
                     if age > self._unwind_max_age_sec:

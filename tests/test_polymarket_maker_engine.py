@@ -11,6 +11,7 @@ sys.path.insert(0, str(MAKER_DIR))
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_EXIT_PENDING,
+    EVENT_PENDING_MANUAL_EXIT,
     EventHaltPreempted,
     PolyLPSMulti,
     _compute_quote_target_shares,
@@ -157,6 +158,80 @@ def test_day_market_carry_is_explicit_and_fails_closed():
     assert engine._should_carry_day_market_to_night(None, cutoff) is False
     assert engine._should_carry_day_market_to_night(999.0, cutoff) is False
     assert engine._should_carry_day_market_to_night(1_000.0, cutoff) is True
+
+
+def test_cancel_quotes_preserves_unregistered_sell_exit():
+    engine = object.__new__(PolyLPSMulti)
+    orders = [
+        {"id": "buy-1", "status": "live", "side": "BUY"},
+        {"id": "sell-exit", "status": "live", "side": "SELL"},
+    ]
+    canceled = []
+
+    class Client:
+        def get_open_orders(self):
+            return [o for o in orders if o["id"] not in canceled]
+
+        def cancel(self, order_id):
+            canceled.append(order_id)
+
+    class Registry:
+        def clear_funder(self, *_args, **_kwargs):
+            return None
+
+    engine.client = Client()
+    engine._active_exit_orders = {}
+    engine._market_live_orders = {}
+    engine._sibling_registry = Registry()
+    engine._funder_lc = "account"
+
+    assert asyncio.run(engine._cancel_all_except_exit()) is True
+    assert canceled == ["buy-1"]
+    assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
+
+
+def test_missing_exit_order_with_inventory_stays_pending():
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._unwind_check_interval_sec = 0
+    engine._unwind_max_age_sec = 14_400
+    engine._active_exit_orders = {"101": "exit-1"}
+    engine._pending_unwinds = [
+        {
+            "token_id": "101",
+            "fill_price": 0.5,
+            "fill_size": 150,
+            "order_id": "exit-1",
+            "placed_at": 1,
+            "reason": "test",
+        }
+    ]
+    states = []
+    notifications = []
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    async def position(_token_id):
+        engine._running = False
+        return 150.0
+
+    engine.client = Client()
+    engine._get_token_position = position
+    engine._set_event_state = lambda *args: states.append(args)
+    engine._notify_status = lambda *args, **kwargs: notifications.append((args, kwargs))
+    engine._resume_halted_markets = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("inventory must not resume")
+    )
+
+    asyncio.run(engine.unwind_tracking_loop())
+
+    assert len(engine._pending_unwinds) == 1
+    assert engine._pending_unwinds[0]["missing_order_alerted"] is True
+    assert "101" not in engine._active_exit_orders
+    assert states[-1][1] == EVENT_PENDING_MANUAL_EXIT
+    assert notifications
 
 
 def _paired_state_engine() -> PolyLPSMulti:
