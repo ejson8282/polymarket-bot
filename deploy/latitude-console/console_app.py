@@ -6951,25 +6951,45 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
                 )
             )
         else:
-            entry["start"] = (
-                _remote_ssh(r, f"sudo -n systemctl --no-block start {unit}", timeout=12)
-                if is_remote
-                else _run_cmd(
+            # "Start" means resume quoting, not merely ensure systemd is
+            # active. Clear the persisted pause intent first, then wake a
+            # process that may have been SIGSTOP-frozen during a safety hold.
+            desired_flag = DATA_DIR / f".account_{idx}.paused"
+            try:
+                desired_flag.unlink()
+            except FileNotFoundError:
+                pass
+            if is_remote:
+                fpath = f"{REMOTE_REPO_DATA}/.account_{idx}.paused"
+                entry["start"] = _remote_ssh(
+                    r,
+                    (
+                        f"rm -f {fpath}; "
+                        f"sudo -n systemctl --no-block start {unit}; "
+                        f"sudo -n systemctl kill --signal=CONT {unit}"
+                    ),
+                    timeout=12,
+                )
+            else:
+                entry["start"] = _run_cmd(
                     ["sudo", "-n", "systemctl", "--no-block", "start", unit],
                     timeout=12,
                 )
-            )
+                entry["resume"] = _run_cmd(
+                    ["sudo", "-n", "systemctl", "kill", "--signal=CONT", unit],
+                    timeout=12,
+                )
         per[idx] = entry
 
     ok = True
     for v in per.values():
-        for k in ("start", "stop", "restart"):
+        for k in ("start", "stop", "restart", "resume"):
             if k in v and v[k].get("rc") != 0:
                 ok = False
     _audit("pm_engine", request_action=action, targets=targets, per=per,
            source="cloudflare" if _is_cloudflare(request) else "tailnet")
     action_note = {
-        "start": "启动请求已发送",
+        "start": "暂停已解除，启动请求已发送",
         "stop": "停止请求已发送，正在撤单并退出",
         "reload": "重启请求已发送",
     }[action]

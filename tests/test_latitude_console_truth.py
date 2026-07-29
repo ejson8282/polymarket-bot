@@ -87,6 +87,58 @@ def test_remote_polymarket_pause_persists_central_desired_flag(
     assert remote_calls[-1][1].startswith("rm -f ")
 
 
+def test_polymarket_start_clears_pause_and_wakes_engines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".account_1.paused").touch()
+    (data_dir / ".account_2.paused").touch()
+    local_calls = []
+    remote_calls = []
+
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "_pm_all_accounts", lambda: [1, 2])
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {2: {"label": "VPS2"}})
+    monkeypatch.setattr(
+        console,
+        "_run_cmd",
+        lambda command, timeout: (
+            local_calls.append((command, timeout))
+            or {"rc": 0, "out": "", "err": ""}
+        ),
+    )
+    monkeypatch.setattr(
+        console,
+        "_remote_ssh",
+        lambda remote, command, timeout: (
+            remote_calls.append((remote, command, timeout))
+            or {"rc": 0, "out": "", "err": ""}
+        ),
+    )
+    monkeypatch.setattr(console, "_is_cloudflare", lambda request: False)
+    monkeypatch.setattr(console, "_audit", lambda *args, **kwargs: None)
+
+    response = asyncio.run(
+        console.pm_engine(
+            {"action": "start", "confirm": True, "accounts": [1, 2]},
+            object(),
+        )
+    )
+
+    assert response.status_code == 200
+    assert not (data_dir / ".account_1.paused").exists()
+    assert not (data_dir / ".account_2.paused").exists()
+    assert any("start" in command for command, _ in local_calls)
+    assert any("kill" in command and "--signal=CONT" in command for command, _ in local_calls)
+    remote_command = remote_calls[-1][1]
+    assert remote_command.startswith("rm -f ")
+    assert "systemctl --no-block start" in remote_command
+    assert "systemctl kill --signal=CONT" in remote_command
+
+
 def _patch_varia_dependencies(monkeypatch, data_dir: Path) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", data_dir)
     monkeypatch.setattr(console, "VARIA_CAPITAL_LEDGER", data_dir / "home_equity_principal.json")
