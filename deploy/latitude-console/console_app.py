@@ -7007,9 +7007,18 @@ async def pm_engine(payload: dict, request: Request) -> JSONResponse:
         "stop": "停止请求已发送，正在撤单并退出",
         "reload": "重启请求已发送",
     }[action]
-    note = "、".join(
-        f"账号{i}@{per[i]['host']}" for i in targets
-    ) + f"：{action_note}"
+    target_note = "、".join(f"账号{i}@{per[i]['host']}" for i in targets)
+    if action == "start" and not ok:
+        blocked_reasons = [
+            str(per[i].get("start", {}).get("err") or "")
+            for i in targets
+            if per[i].get("start", {}).get("rc") != 0
+        ]
+        note = f"{target_note}：启动未执行；" + "；".join(
+            reason for reason in blocked_reasons if reason
+        )
+    else:
+        note = f"{target_note}：{action_note}"
     return JSONResponse({"ok": ok, "note": note, "per": per,
                          "error": None if ok else json.dumps(per, ensure_ascii=False)[:300]})
 

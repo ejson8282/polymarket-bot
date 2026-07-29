@@ -174,6 +174,7 @@ def test_polymarket_start_refuses_account_with_safety_hold(
 
     assert response.status_code == 200
     assert payload["ok"] is False
+    assert "启动未执行" in payload["note"]
     assert "安全暂停" in payload["per"]["2"]["start"]["err"]
     assert (data_dir / ".account_2.paused").exists()
     assert remote_calls == []
