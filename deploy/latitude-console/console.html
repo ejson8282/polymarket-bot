@@ -1614,6 +1614,12 @@
           <option value="low">仅低风险</option>
           <option value="low-medium">低与中风险</option>
         </select>
+        <select id="pm-scan-status-filter" class="pm-filter-select" aria-label="筛选确认状态">
+          <option value="all">全部状态</option>
+          <option value="confirm">可以确认</option>
+          <option value="observe">继续观察</option>
+          <option value="live">进行中观察</option>
+        </select>
       </div>
       <span id="pm-opportunity-summary" class="src">等待首次扫描</span>
     </div>
@@ -2485,6 +2491,7 @@
   }));
   document.getElementById('pm-market-account-filter').addEventListener('change',filterPMMarketRows);
   document.getElementById('pm-scan-risk-filter').addEventListener('change',filterPMScanRows);
+  document.getElementById('pm-scan-status-filter').addEventListener('change',filterPMScanRows);
   document.querySelectorAll('#dw-subnav span').forEach(sp=>sp.addEventListener('click',()=>{
     document.querySelectorAll('#dw-subnav span').forEach(x=>x.classList.toggle('on',x===sp));
   }));
@@ -2899,14 +2906,14 @@
           const action=row.market_url
             ?'<a class="pm-row-action" href="'+esc(row.market_url)+'" target="_blank" rel="noopener">查看</a>'
             :'—';
-          return '<tr data-phase="'+phase+'" data-risk="'+esc(row.risk_label||'low')+'">'+
+          return '<tr data-phase="'+phase+'" data-risk="'+esc(row.risk_label||'low')+'" data-confirm="'+(canConfirm?'1':'0')+'">'+
             '<td class="pm-opportunity-title">'+marketCell+'<span class="pm-table-sub">'+(row.market_type==='sports'?'体育':'普通市场')+'</span></td>'+
             '<td><span class="pm-stage '+phase+'">'+phaseView.label+'</span><span class="pm-table-sub">'+esc(phaseView.detail)+'</span></td>'+
             '<td class="num">账号'+Number(row.account||0)+'<span class="pm-table-sub">'+esc(row.host||'—')+'</span></td>'+
             '<td class="num">'+money(row.daily_reward_usd)+'</td>'+
             '<td class="num">'+money(row.probe_capital_usd)+'<span class="pm-table-sub">'+Number(row.probe_shares_each_side||0).toFixed(0)+' 份/边</span></td>'+
             '<td class="num pm-opportunity-est">'+money(estGross)+'<span class="pm-table-sub">'+(row.actual_daily_gross_usd==null?'模型估算':'按实际占比')+'</span></td>'+
-            '<td><span class="'+riskCls+'">'+risk+'</span><span class="pm-table-sub">评分 '+Number(row.fill_risk||0).toFixed(1)+'</span></td>'+
+            '<td><span class="'+riskCls+'">'+risk+'</span><span class="pm-table-sub">吃单风险 '+Number(row.fill_risk||0).toFixed(1)+' · 越低越好</span></td>'+
             '<td class="num">'+pmDuration(row.observation_span_sec)+'<span class="pm-table-sub">'+Number(row.observation_samples||0)+' 轮</span></td>'+
             '<td><span class="chip '+statusCls+'">'+esc(status)+'</span></td><td>'+action+'</td></tr>';
         }).join(''):'<tr><td colspan="10" class="pm-empty">首次全市场奖励观察完成后显示</td></tr>';
@@ -3027,10 +3034,15 @@
   function filterPMScanRows(){
     const phase=pmFilterValue('pm-scan-phase-filter','phase');
     const risk=(document.getElementById('pm-scan-risk-filter')||{}).value||'all';
+    const status=(document.getElementById('pm-scan-status-filter')||{}).value||'all';
     document.querySelectorAll('#pm-opportunity-body tr[data-phase]').forEach(row=>{
       const phaseOk=phase==='all'||row.dataset.phase===phase;
       const riskOk=risk==='all'||row.dataset.risk==='low'||(risk==='low-medium'&&row.dataset.risk==='medium');
-      row.hidden=!(phaseOk&&riskOk);
+      const statusOk=status==='all'
+        ||(status==='confirm'&&row.dataset.confirm==='1')
+        ||(status==='observe'&&row.dataset.confirm==='0'&&row.dataset.phase!=='live')
+        ||(status==='live'&&row.dataset.phase==='live');
+      row.hidden=!(phaseOk&&riskOk&&statusOk);
     });
   }
   function filterPMMarketRows(){

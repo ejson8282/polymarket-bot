@@ -365,6 +365,7 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert 'id="pm-auto-scan-summary"' in html
     assert 'id="pm-scan-phase-filter"' in html
     assert 'id="pm-scan-risk-filter"' in html
+    assert 'id="pm-scan-status-filter"' in html
     assert 'id="pm-scan-market-count"' in html
     assert 'id="pm-scan-confirm-count"' in html
     assert 'id="pm-opportunity-body"' in html
@@ -378,6 +379,8 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert "actual_reward_share_pct" in html
     assert "verification_status" in html
     assert "filterPMScanRows" in html
+    assert "吃单风险" in html
+    assert "越低越好" in html
 
 
 def test_polymarket_markets_page_has_phase_and_account_filters() -> None:
