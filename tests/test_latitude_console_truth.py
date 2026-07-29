@@ -365,7 +365,10 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert 'id="pm-auto-scan-summary"' in html
     assert 'id="pm-opportunity-body"' in html
     assert 'id="pm-opportunity-summary"' in html
+    assert 'id="pm-verification-grid"' in html
+    assert 'id="pm-verification-summary"' in html
     assert "<h2>自动扫描</h2>" in html
+    assert "<h2>小额验证队列</h2>" in html
     assert "<h2>奖励效率观察</h2>" in html
     assert "只观察，不新增或撤销任何挂单" in html
     assert "<h2>手动扫描</h2>" in html

@@ -188,3 +188,50 @@ def test_alerts_route_only_to_important_discord(monkeypatch) -> None:
         ("important", "critical"),
     ]
     assert feishu_calls == ["critical"]
+
+
+def test_stable_pm_verification_candidate_uses_normal_channel(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pusher,
+        "_discord_webhook",
+        lambda channel: "configured" if channel == "normal" else "",
+    )
+    monkeypatch.setattr(
+        pusher,
+        "send_discord",
+        lambda text, *, channel="normal": calls.append((channel, text)) or True,
+    )
+    state = {
+        "polymarket": {
+            "curator": {
+                "opportunities": [
+                    {
+                        "account": 2,
+                        "condition_id": "condition-a",
+                        "question": "Will the test market resolve yes?",
+                        "verification_recommended": True,
+                        "verification_status": "stable",
+                        "probe_capital_usd": 100,
+                        "risk_adjusted_daily_roi_pct": 3.25,
+                    },
+                    {
+                        "account": 1,
+                        "condition_id": "condition-b",
+                        "verification_recommended": False,
+                        "verification_status": "warming",
+                    },
+                ]
+            }
+        }
+    }
+
+    notified = pusher._notify_pm_verification_candidates(
+        state, {}, 1_800_000_000
+    )
+
+    assert notified == {"2:condition-a": 1_800_000_000}
+    assert calls[0][0] == "normal"
+    assert "仅生成计划，尚未下单" in calls[0][1]

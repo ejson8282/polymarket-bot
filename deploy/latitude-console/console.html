@@ -228,9 +228,15 @@
   .pm-opportunity-actual{color:var(--ok);font-weight:650}
   .pm-opportunity-reason{max-width:240px;white-space:normal;color:var(--faint);font-size:10.5px;line-height:1.35}
   .pm-opportunity-stability{min-width:92px}.pm-opportunity-stability strong{display:block;font:650 12px var(--mono)}
+  .pm-verify-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .pm-verify-card{border:1px solid var(--line);border-radius:7px;padding:12px;background:rgba(26,34,44,.48)}
+  .pm-verify-card a{display:block;color:var(--text);font-weight:600;text-decoration:none;line-height:1.4}
+  .pm-verify-card a:hover{color:var(--accent)}
+  .pm-verify-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px}
+  .pm-verify-meta span{color:var(--faint);font:10px var(--mono)}.pm-verify-meta b{display:block;margin-top:3px;color:var(--text);font:650 12px var(--mono)}
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
-  @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
+  @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}.pm-verify-grid{grid-template-columns:1fr}}
   @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary,.pm-auto-scan-grid{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
@@ -1488,6 +1494,18 @@
   </div>
 
   <div class="pm-view" data-pm-view-panel="markets">
+    <div class="panel">
+      <div class="pm-panel-head">
+        <div>
+          <h2>小额验证队列</h2>
+          <div class="src">只生成计划，不下单；连续稳定且风险不高后才进入</div>
+        </div>
+        <span id="pm-verification-summary" class="chip">等待稳定样本</span>
+      </div>
+      <div id="pm-verification-grid" class="pm-verify-grid">
+        <div class="pm-empty">至少连续观察约 1 小时后生成第一批验证建议</div>
+      </div>
+    </div>
     <div class="panel">
       <div class="pm-panel-head">
         <div><h2>当前配置市场</h2><div class="src">实时公共盘口与当前账号配置合并展示</div></div>
@@ -2779,6 +2797,31 @@
         }).join(''):'<div class="pm-empty">尚未发现自动扫描状态</div>';
       }
       const opportunities=Array.isArray(c.opportunities)?c.opportunities:[];
+      const verificationQueue=opportunities
+        .filter(row=>row.verification_recommended===true)
+        .sort((a,b)=>Number(b.risk_adjusted_daily_roi_pct||0)-Number(a.risk_adjusted_daily_roi_pct||0))
+        .slice(0,6);
+      const verificationGrid=document.getElementById('pm-verification-grid');
+      const verificationSummary=document.getElementById('pm-verification-summary');
+      if(verificationSummary){
+        verificationSummary.textContent=verificationQueue.length
+          ? verificationQueue.length+' 个可验证'
+          : '等待稳定样本';
+        verificationSummary.className='chip '+(verificationQueue.length?'ok':'warn');
+      }
+      if(verificationGrid){
+        verificationGrid.innerHTML=verificationQueue.length?verificationQueue.map(row=>{
+          const title=esc(String(row.question||row.slug||'未命名市场').slice(0,90));
+          const market=row.market_url
+            ?'<a href="'+esc(row.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
+            :'<a>'+title+'</a>';
+          return '<div class="pm-verify-card">'+market+
+            '<div class="src">账号'+Number(row.account||0)+' · '+esc(row.host||'—')+' · '+Number(row.observation_samples||0)+'轮稳定样本</div>'+
+            '<div class="pm-verify-meta"><span>建议本金<b>'+money(row.probe_capital_usd)+'</b></span>'+
+            '<span>风险调整效率<b>'+Number(row.risk_adjusted_daily_roi_pct||0).toFixed(2)+'%/日</b></span>'+
+            '<span>预计份额<b>'+Number(row.estimated_reward_share_pct||0).toFixed(2)+'%</b></span></div></div>';
+        }).join(''):'<div class="pm-empty">至少连续观察约 1 小时后生成第一批验证建议</div>';
+      }
       const opportunityBody=document.getElementById('pm-opportunity-body');
       const opportunitySummary=document.getElementById('pm-opportunity-summary');
       const reasonLabel={

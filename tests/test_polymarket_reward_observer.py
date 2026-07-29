@@ -140,3 +140,5 @@ def test_candidate_requires_repeated_stable_samples_before_verification(
     assert candidate["estimated_share_range_pp"] == 0
     assert candidate["stability_score"] == 100
     assert candidate["verification_status"] == "stable"
+    assert candidate["verification_recommended"] is True
+    assert candidate["risk_adjusted_daily_roi_pct"] > 0

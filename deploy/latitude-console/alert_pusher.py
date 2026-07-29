@@ -191,6 +191,74 @@ def _append_system_event(
 # 防抖:告警必须持续存在 ≥ 这么久才推(kill "闪断一下自己就好"的噪音)。
 # 定时器每 5min 跑,600s = 至少熬过一整个周期还在,才算真问题。
 DEBOUNCE_SEC = 600
+PM_OPPORTUNITY_NOTIFY_COOLDOWN_SEC = 24 * 60 * 60
+
+
+def _notify_pm_verification_candidates(
+    state: dict,
+    previous: dict,
+    now: int,
+) -> dict:
+    retained = {}
+    for key, value in (previous or {}).items():
+        try:
+            notified_at = int(value)
+        except (TypeError, ValueError):
+            continue
+        if now - notified_at < PM_OPPORTUNITY_NOTIFY_COOLDOWN_SEC:
+            retained[str(key)] = notified_at
+
+    rows = (
+        ((state.get("polymarket") or {}).get("curator") or {}).get(
+            "opportunities"
+        )
+        or []
+    )
+    candidates = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("verification_recommended") is not True:
+            continue
+        if row.get("verification_status") not in {"stable", "confirmed"}:
+            continue
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        try:
+            account = int(row.get("account") or 0)
+        except (TypeError, ValueError):
+            account = 0
+        key = f"{account}:{condition_id}"
+        if not condition_id or key in retained:
+            continue
+        candidates.append((key, row))
+    candidates.sort(
+        key=lambda item: float(
+            item[1].get("risk_adjusted_daily_roi_pct") or 0
+        ),
+        reverse=True,
+    )
+    candidates = candidates[:5]
+    if not candidates or not _discord_webhook("normal"):
+        return retained
+
+    lines = []
+    for _, row in candidates:
+        question = str(row.get("question") or row.get("slug") or "未命名市场")
+        if len(question) > 54:
+            question = question[:51] + "..."
+        lines.append(
+            f"· 账号{int(row.get('account') or 0)} {question}"
+            f"｜建议本金 ${float(row.get('probe_capital_usd') or 0):,.2f}"
+            f"｜风险调整效率 {float(row.get('risk_adjusted_daily_roi_pct') or 0):.2f}%/日"
+        )
+    sent = send_discord(
+        "🔎 Polymarket 小额验证候选已稳定:\n"
+        + "\n".join(lines)
+        + f"\n仅生成计划，尚未下单 → {CONSOLE_URL}",
+        channel="normal",
+    )
+    if sent:
+        for key, _ in candidates:
+            retained[key] = now
+    return retained
 
 
 def run_alerts() -> None:
@@ -287,8 +355,22 @@ def run_alerts() -> None:
             channel="normal",
         )
 
-    PUSH_STATE.write_text(json.dumps({"alerts": out_alerts, "audit_offset": offset},
-                                     ensure_ascii=False), encoding="utf-8")
+    opportunity_notified = _notify_pm_verification_candidates(
+        state,
+        ps.get("pm_opportunity_notified") or {},
+        now,
+    )
+    PUSH_STATE.write_text(
+        json.dumps(
+            {
+                "alerts": out_alerts,
+                "audit_offset": offset,
+                "pm_opportunity_notified": opportunity_notified,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def run_digest() -> None:

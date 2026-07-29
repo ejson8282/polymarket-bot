@@ -578,7 +578,24 @@ def _apply_observation_history(
         samples = samples[-HISTORY_SAMPLES_PER_MARKET:]
         row["samples"] = samples
         row["last_seen_at"] = now_ts
-        candidate.update(_stability_fields(samples, now_ts))
+        stability = _stability_fields(samples, now_ts)
+        candidate.update(stability)
+        gross_roi = float(
+            candidate.get("estimated_gross_daily_roi_pct") or 0
+        )
+        fill_risk = float(candidate.get("fill_risk") or 100)
+        stability_ratio = float(stability["stability_score"]) / 100.0
+        risk_ratio = max(0.0, 1.0 - fill_risk / 100.0)
+        candidate["risk_adjusted_daily_roi_pct"] = round(
+            gross_roi * stability_ratio * risk_ratio,
+            2,
+        )
+        candidate["verification_recommended"] = bool(
+            stability["verification_status"] in {"stable", "confirmed"}
+            and fill_risk < 65
+            and stability["stability_score"] >= 70
+            and gross_roi > 0
+        )
 
     history_payload = {
         "version": 1,
