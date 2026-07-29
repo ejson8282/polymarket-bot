@@ -193,6 +193,13 @@
   .pm-auto-scan-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
   .pm-auto-scan-meta span{color:var(--faint);font:10px var(--mono)}
   .pm-auto-scan-meta strong{display:block;color:var(--text);font:600 12px var(--mono);margin-top:3px}
+  .pm-observe-note{display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:var(--faint);font:11px var(--mono)}
+  .pm-opportunity-title{max-width:360px;white-space:normal;line-height:1.35}
+  .pm-opportunity-title a{color:var(--text);text-decoration:none}
+  .pm-opportunity-title a:hover{color:var(--accent)}
+  .pm-opportunity-est{color:var(--accent);font-weight:650}
+  .pm-opportunity-actual{color:var(--ok);font-weight:650}
+  .pm-opportunity-reason{max-width:240px;white-space:normal;color:var(--faint);font-size:10.5px;line-height:1.35}
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
   @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}}
@@ -1472,6 +1479,22 @@
       </div>
     </div>
     <div class="panel">
+      <div class="pm-panel-head">
+        <div>
+          <h2>奖励效率观察</h2>
+          <div class="pm-observe-note">
+            <span>只观察，不新增或撤销任何挂单</span>
+            <span>预计值来自公开盘口；实际占比来自官方账户接口</span>
+          </div>
+        </div>
+        <span id="pm-opportunity-summary" class="chip">等待首次扫描</span>
+      </div>
+      <div class="pm-table-wrap"><table>
+        <thead><tr><th>账号</th><th>市场</th><th>类型</th><th>日奖励</th><th>验证本金</th><th>预计占比</th><th>实际占比</th><th>预计/实际日毛收益</th><th>风险</th><th>观察结论</th></tr></thead>
+        <tbody id="pm-opportunity-body"><tr><td colspan="10" class="pm-empty">首次全市场奖励观察完成后显示</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="panel">
       <div class="pm-panel-head"><div><h2>手动扫描</h2><div class="src">临时筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
       <div class="pm-form-grid">
         <div class="pm-scan-field"><label for="sc-minr">最低日奖励（美元）</label><input id="sc-minr" class="opin" type="number"></div>
@@ -2619,8 +2642,50 @@
           const session=r.session==='night'?'夜盘':(r.session==='day'?'日盘':'当前');
           return '<div class="pm-auto-scan-row"><div class="pm-auto-scan-head"><b>账号'+r.account+' · '+esc(r.host||'—')+'</b><span class="chip '+cls+'">'+state+'</span></div>'+
             '<div class="pm-auto-scan-meta"><span>扫描周期<strong>'+session+' · '+interval+' 分钟</strong></span><span>最近扫描<strong>'+esc(r.last_scan_age||'尚无记录')+'</strong></span><span>当前市场<strong>'+Number(r.markets||0)+' 个</strong></span>'+
-            '<span>本轮新增<strong>'+Number(r.last_scan_added||0)+' 个</strong></span><span>累计新增<strong>'+Number(r.added_total||0)+' 个</strong></span><span>累计过滤<strong>'+Number(r.rejected_total||0)+' 个</strong></span></div></div>';
+            '<span>奖励市场<strong>'+Number(r.rewarded_markets_seen||0)+' 个</strong></span><span>观察候选<strong>'+Number(r.opportunities||0)+' 个</strong></span><span>累计过滤<strong>'+Number(r.rejected_total||0)+' 个</strong></span></div></div>';
         }).join(''):'<div class="pm-empty">尚未发现自动扫描状态</div>';
+      }
+      const opportunities=Array.isArray(c.opportunities)?c.opportunities:[];
+      const opportunityBody=document.getElementById('pm-opportunity-body');
+      const opportunitySummary=document.getElementById('pm-opportunity-summary');
+      const reasonLabel={
+        estimated_majority_share:'预计可取得较高份额',
+        estimated_meaningful_share:'预计份额有意义',
+        estimated_crowded:'竞争较多',
+        minimum_size_raises_capital:'最低份数提高验证本金',
+        high_fill_risk:'吃单风险较高',
+        medium_fill_risk:'吃单风险中等'
+      };
+      if(opportunitySummary){
+        const actualCount=opportunities.filter(row=>row.actual_reward_share_pct!=null).length;
+        opportunitySummary.textContent=opportunities.length
+          ? opportunities.length+' 个候选 · '+actualCount+' 个有实际占比'
+          : '等待首次扫描';
+        opportunitySummary.className='chip '+(opportunities.length?'ok':'warn');
+      }
+      if(opportunityBody){
+        opportunityBody.innerHTML=opportunities.length?opportunities.slice(0,60).map(row=>{
+          const actual=row.actual_reward_share_pct;
+          const estGross=row.estimated_daily_gross_usd;
+          const actualGross=row.actual_daily_gross_usd;
+          const type=row.market_type==='sports'?'体育':'全天';
+          const risk=row.risk_label==='high'?'高':(row.risk_label==='medium'?'中':'低');
+          const riskCls=row.risk_label==='high'?'down':(row.risk_label==='medium'?'warn':'up');
+          const reasons=(row.reasons||[]).map(reason=>reasonLabel[reason]||reason).join('；');
+          const title=esc(String(row.question||row.slug||'未命名市场').slice(0,100));
+          const marketCell=row.market_url
+            ?'<a href="'+esc(row.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
+            :title;
+          return '<tr><td class="num">账号'+Number(row.account||0)+'<div class="src">'+esc(row.host||'—')+'</div></td>'+
+            '<td class="pm-opportunity-title">'+marketCell+'</td><td>'+type+'</td>'+
+            '<td class="num">'+money(row.daily_reward_usd)+'</td>'+
+            '<td class="num">'+money(row.probe_capital_usd)+'<div class="src">'+Number(row.probe_shares_each_side||0).toFixed(0)+'份/边</div></td>'+
+            '<td class="num pm-opportunity-est">'+Number(row.estimated_reward_share_pct||0).toFixed(2)+'%<div class="src">模型估算</div></td>'+
+            '<td class="num '+(actual!=null?'pm-opportunity-actual':'')+'">'+(actual==null?'—':Number(actual).toFixed(2)+'%')+'<div class="src">'+(actual==null?'尚无计分挂单':'官方实时')+'</div></td>'+
+            '<td class="num">'+money(estGross)+' / '+(actualGross==null?'—':money(actualGross))+'<div class="src">预计 / 实际</div></td>'+
+            '<td><span class="'+riskCls+'">'+risk+'</span><div class="src">'+Number(row.fill_risk||0).toFixed(1)+'</div></td>'+
+            '<td class="pm-opportunity-reason">'+esc(reasons||'等待更多观察数据')+'</td></tr>';
+        }).join(''):'<tr><td colspan="10" class="pm-empty">首次全市场奖励观察完成后显示</td></tr>';
       }
     }
     const sponsored=pm.sponsored_guard||{};

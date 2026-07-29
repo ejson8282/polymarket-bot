@@ -79,6 +79,14 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
     def fetch_rebate(maker_address: str, day: str) -> float:
         return rebate_amounts[(maker_address, day)]
 
+    percentages = {
+        1: {"condition-a": 62.5},
+        2: {"condition-b": 18.25},
+    }
+
+    def fetch_percentages(client: int, _signature_type: int) -> dict:
+        return percentages[client]
+
     state = asyncio.run(
         rewards_live.refresh_rewards(
             rewards_live.discover_configs(config_dir),
@@ -87,6 +95,7 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
             build_client=build_client,
             fetch_daily=fetch_daily,
             fetch_rebate=fetch_rebate,
+            fetch_percentages=fetch_percentages,
         )
     )
 
@@ -102,6 +111,10 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
     assert state["accounts"]["1"]["today_total_income_usd"] == 1.05
     assert state["accounts"]["2"]["today_usd"] == 1.4
     assert state["accounts"]["2"]["today_rebates_usd"] == 0.5
+    assert state["accounts"]["1"]["reward_percentages"] == {
+        "condition-a": 62.5
+    }
+    assert state["successful_percentage_accounts"] == 2
 
     cumulative = json.loads(
         (data_dir / "rewards_cumulative.json").read_text(encoding="utf-8")
@@ -153,6 +166,7 @@ def test_finalized_reward_never_decreases_on_empty_rollover_response(
             now=datetime(2026, 7, 28, 8, 1, tzinfo=BJT),
             build_client=build_client,
             fetch_daily=fetch_daily,
+            fetch_percentages=lambda *_args: {},
         )
     )
     cumulative = json.loads(

@@ -1067,6 +1067,7 @@ def _pm_pnl() -> Dict[str, Any]:
 
 def _polymarket() -> Dict[str, Any]:
     reward_state = _pm_reward_sources()
+    reward_live_accounts = reward_state["live_accounts"]
     rewards_today_by_idx = reward_state["today_by_idx"]
     rebates_today_by_idx = reward_state["rebates_today_by_idx"]
     income_today_by_idx = reward_state["income_today_by_idx"]
@@ -1087,6 +1088,7 @@ def _polymarket() -> Dict[str, Any]:
     sponsored_guard_accounts: List[dict] = []
     sponsored_guard_risks: List[dict] = []
     curator_accounts: List[dict] = []
+    curator_opportunities: List[dict] = []
     remotes = _load_pm_remotes()
     for idx in range(1, 31):
         is_remote = idx in remotes
@@ -1120,6 +1122,62 @@ def _polymarket() -> Dict[str, Any]:
             else DATA_DIR / "auto_curator_state.json"
         )
         curator_state = _read_json(curator_path) or {}
+        observer_path = (
+            PM_PEER_DIR / f"reward_observer_state_{idx}.json"
+            if is_remote
+            else DATA_DIR / "reward_observer_state.json"
+        )
+        standalone_observation = _read_json(observer_path) or {}
+        reward_observation = (
+            standalone_observation
+            if isinstance(standalone_observation.get("candidates"), list)
+            else curator_state.get("reward_observation")
+            if isinstance(curator_state.get("reward_observation"), dict)
+            else {}
+        )
+        observation_candidates = (
+            reward_observation.get("candidates")
+            if isinstance(reward_observation.get("candidates"), list)
+            else []
+        )
+        observation_generated = _num(
+            reward_observation.get("generated_at")
+        )
+        observation_age = (
+            max(0, int(time.time() - observation_generated))
+            if observation_generated else None
+        )
+        account_percentages = (
+            reward_live_accounts.get(idx, {}).get("reward_percentages")
+            if isinstance(reward_live_accounts.get(idx, {}), dict)
+            else {}
+        )
+        if not isinstance(account_percentages, dict):
+            account_percentages = {}
+        curator_host_label = (
+            str(remotes[idx].get("label") or "远程")
+            if is_remote else "VPS1"
+        )
+        for candidate in observation_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            row = dict(candidate)
+            condition_id = str(
+                row.get("condition_id") or ""
+            ).strip().lower()
+            actual_percentage = _num(account_percentages.get(condition_id))
+            row["account"] = idx
+            row["host"] = curator_host_label
+            row["observation_age_sec"] = observation_age
+            row["actual_reward_share_pct"] = actual_percentage
+            daily_reward = _num(row.get("daily_reward_usd"))
+            row["actual_daily_gross_usd"] = (
+                round(daily_reward * actual_percentage / 100.0, 2)
+                if daily_reward is not None
+                and actual_percentage is not None
+                else None
+            )
+            curator_opportunities.append(row)
         curator_config = _read_json(MAKER_DIR / f"config_{idx}.json") or {}
         curator_cfg = (
             curator_config.get("auto_curator")
@@ -1156,10 +1214,7 @@ def _polymarket() -> Dict[str, Any]:
         )
         curator_accounts.append({
             "account": idx,
-            "host": (
-                remotes[idx].get("label") or "远程"
-                if is_remote else "VPS1"
-            ),
+            "host": curator_host_label,
             "enabled": curator_enabled,
             "fresh": curator_fresh,
             "engine_running": bool(alive and not paused),
@@ -1179,6 +1234,15 @@ def _polymarket() -> Dict[str, Any]:
             "rejected_total": int(
                 _num(curator_state.get("rejected_total")) or 0
             ),
+            "observation_status": str(
+                reward_observation.get("status") or "waiting"
+            ),
+            "observation_age_sec": observation_age,
+            "observation_age": _age_text(observation_age),
+            "rewarded_markets_seen": int(
+                _num(reward_observation.get("rewarded_markets_seen")) or 0
+            ),
+            "opportunities": len(observation_candidates),
         })
         state_age = _mtime_age(state_path)
         state_fresh = state_age is not None and state_age <= PM_STATE_STALE_SEC
@@ -1358,6 +1422,15 @@ def _polymarket() -> Dict[str, Any]:
         "rejected_total": sum(
             row["rejected_total"] for row in curator_accounts
         ),
+        "observation_mode": "observe_only",
+        "opportunities": sorted(
+            curator_opportunities,
+            key=lambda row: (
+                _num(row.get("estimated_gross_daily_roi_pct")) or 0,
+                _num(row.get("estimated_daily_gross_usd")) or 0,
+            ),
+            reverse=True,
+        )[:100],
     }
     capital = _pm_capital_summary()
     capital_total = _num(capital.get("total")) or 0.0
@@ -5198,6 +5271,22 @@ def _refresh_pm_remotes() -> None:
                     "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                     curator_src,
                     str(PM_PEER_DIR / f"auto_curator_state_{idx}.json"),
+                ],
+                capture_output=True,
+                timeout=15,
+            )
+        except Exception:
+            pass
+        observer_src = (
+            f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/reward_observer_state.json"
+        )
+        try:
+            subprocess.run(
+                [
+                    "scp", "-i", str(r.get("ssh_key", "")),
+                    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                    observer_src,
+                    str(PM_PEER_DIR / f"reward_observer_state_{idx}.json"),
                 ],
                 capture_output=True,
                 timeout=15,

@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh Polymarket live and finalized reward cache
+Description=Refresh Polymarket rewards and read-only LP opportunity cache
 After=network-online.target tailscaled.service
 Wants=network-online.target tailscaled.service
 

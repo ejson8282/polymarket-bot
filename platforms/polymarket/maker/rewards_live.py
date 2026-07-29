@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 try:
+    from .reward_observer import refresh_observer_state
     from .rewards_snapshot import (
         _build_snapshot_client,
         _dates_between,
@@ -29,6 +30,7 @@ try:
         _save_state,
     )
 except ImportError:
+    from reward_observer import refresh_observer_state  # type: ignore
     from rewards_snapshot import (  # type: ignore
         _build_snapshot_client,
         _dates_between,
@@ -146,6 +148,33 @@ def _fetch_daily_rebate_usd(maker_address: str, date_str: str) -> float:
     return total
 
 
+def _fetch_reward_percentages(client: Any, signature_type: int) -> Dict[str, float]:
+    """Return the account's live reward share by condition id."""
+    from py_clob_client_v2.headers.headers import create_level_2_headers
+    from py_clob_client_v2.clob_types import RequestArgs
+    from py_clob_client_v2.http_helpers.helpers import get as clob_get
+
+    path = "/rewards/user/percentages"
+    request = RequestArgs(method="GET", request_path=path)
+    headers = create_level_2_headers(client.signer, client.creds, request)
+    response = clob_get(
+        f"{client.host}{path}?signature_type={int(signature_type)}",
+        headers=headers,
+    )
+    if not isinstance(response, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for condition_id, percentage in response.items():
+        try:
+            value = float(percentage)
+        except (TypeError, ValueError):
+            continue
+        if value < 0:
+            continue
+        out[str(condition_id).strip().lower()] = round(value, 6)
+    return out
+
+
 def _missing_finalized_rebate_dates(
     account_state: dict,
     finalized_day: date,
@@ -189,6 +218,9 @@ async def refresh_rewards(
     build_client: Callable[[Path], tuple] = _build_snapshot_client,
     fetch_daily: Callable[[Any, int, str], float] = _fetch_daily_reward_usd,
     fetch_rebate: Callable[[str, str], float] = _fetch_daily_rebate_usd,
+    fetch_percentages: Callable[
+        [Any, int], Dict[str, float]
+    ] = _fetch_reward_percentages,
 ) -> dict:
     """Fetch live and finalized LP rewards plus maker rebates."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +250,7 @@ async def refresh_rewards(
     live_accounts: Dict[str, dict] = {}
     successful_rewards = 0
     successful_rebates = 0
+    successful_percentages = 0
 
     for account_idx, config_path in configs:
         account_key = str(account_idx)
@@ -235,6 +268,8 @@ async def refresh_rewards(
             "status": "error",
             "reward_status": "error",
             "rebate_status": "error",
+            "percentage_status": "error",
+            "reward_percentages": prior.get("reward_percentages") or {},
             "updated_at": prior.get("updated_at"),
             "error": "income APIs unavailable",
         }
@@ -273,8 +308,10 @@ async def refresh_rewards(
 
         reward_error: Optional[str] = None
         rebate_error: Optional[str] = None
+        percentage_error: Optional[str] = None
         if client_error:
             reward_error = str(client_error).split(":", 1)[0]
+            percentage_error = reward_error
         else:
             try:
                 for day_key in _missing_finalized_dates(
@@ -304,6 +341,20 @@ async def refresh_rewards(
                 successful_rewards += 1
             except Exception as exc:
                 reward_error = type(exc).__name__
+            try:
+                percentages = await asyncio.to_thread(
+                    fetch_percentages, client, signature_type
+                )
+                row["reward_percentages"] = {
+                    str(condition_id).strip().lower(): round(
+                        float(percentage), 6
+                    )
+                    for condition_id, percentage in percentages.items()
+                }
+                row["percentage_status"] = "ok"
+                successful_percentages += 1
+            except Exception as exc:
+                percentage_error = type(exc).__name__
 
         if maker_address:
             try:
@@ -382,6 +433,10 @@ async def refresh_rewards(
         errors = [
             f"reward:{reward_error}" if reward_error else "",
             f"rebate:{rebate_error}" if rebate_error else "",
+            (
+                f"percentages:{percentage_error}"
+                if percentage_error else ""
+            ),
         ]
         row["error"] = ";".join(value for value in errors if value) or None
 
@@ -447,6 +502,7 @@ async def refresh_rewards(
         "successful_accounts": successful_rewards,
         "successful_reward_accounts": successful_rewards,
         "successful_rebate_accounts": successful_rebates,
+        "successful_percentage_accounts": successful_percentages,
         "configured_accounts": len(live_accounts),
     }
 
@@ -476,6 +532,15 @@ def main() -> int:
         print("[rewards-live] no config_N.json files found", flush=True)
         return 1
     state = asyncio.run(refresh_rewards(configs, args.data_dir))
+    observer_state: Dict[str, Any] = {}
+    observer_error: Optional[str] = None
+    try:
+        observer_state = refresh_observer_state(
+            args.data_dir,
+            config_dir=args.config_dir,
+        )
+    except Exception as exc:
+        observer_error = type(exc).__name__
     ok = int(state.get("successful_accounts") or 0)
     total = int(state.get("configured_accounts") or 0)
     print(
@@ -483,7 +548,9 @@ def main() -> int:
         f"date={state.get('reward_date_utc')} accounts={ok}/{total} "
         f"lp_usd={state.get('total_today_usd')} "
         f"rebates_usd={state.get('total_today_rebates_usd')} "
-        f"income_usd={state.get('total_today_income_usd')}",
+        f"income_usd={state.get('total_today_income_usd')} "
+        f"observer_ready={observer_state.get('candidates_ready')} "
+        f"observer_error={observer_error}",
         flush=True,
     )
     return 0 if ok else 1
