@@ -97,6 +97,16 @@ def test_sports_market_is_classified_without_excluding_generic_markets() -> None
     }
 
 
+def test_market_phase_distinguishes_normal_pregame_and_live() -> None:
+    sports = _market(slug="nba-lal-bos-2026-07-30")
+    sports["gameStartTime"] = "2026-07-30T12:00:00Z"
+    start = reward_observer._timestamp(sports["gameStartTime"])
+
+    assert reward_observer._market_phase(_market(), now_ts=start)[0] == "normal"
+    assert reward_observer._market_phase(sports, now_ts=start - 60)[0] == "pregame"
+    assert reward_observer._market_phase(sports, now_ts=start + 60)[0] == "live"
+
+
 def test_standalone_refresh_writes_read_only_dashboard_state(
     tmp_path: Path,
 ) -> None:

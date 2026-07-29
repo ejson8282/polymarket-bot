@@ -13,6 +13,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -37,6 +38,38 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return default
+
+
+def _timestamp(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _market_phase(market: Dict[str, Any], now_ts: Optional[float] = None) -> Tuple[str, Optional[float]]:
+    if not _is_sports_market(market):
+        return "normal", None
+    start_ts = _timestamp(
+        market.get("gameStartTime")
+        or market.get("game_start_time")
+        or market.get("game_start_ts")
+    )
+    if start_ts is None:
+        return "pregame", None
+    return ("live" if (now_ts or time.time()) >= start_ts else "pregame"), start_ts
 
 
 def _token_ids(market: Dict[str, Any]) -> List[str]:
@@ -236,6 +269,7 @@ def _observe_candidate(
     )
     midpoint = yes["mid"]
     fill_risk = _fill_risk(market, midpoint)
+    market_phase, game_start_ts = _market_phase(market)
 
     reasons: List[str] = []
     if estimated_share >= Decimal("0.5"):
@@ -271,6 +305,13 @@ def _observe_candidate(
         "token_id": rough["token_ids"][0],
         "paired_token_id": rough["token_ids"][1],
         "market_type": "sports" if _is_sports_market(market) else "always_on",
+        "market_phase": market_phase,
+        "game_start_ts": game_start_ts,
+        "seconds_to_start": (
+            round(game_start_ts - time.time(), 1)
+            if game_start_ts is not None
+            else None
+        ),
         "daily_reward_usd": round(float(daily_reward), 2),
         "rewards_min_size_shares": round(float(min_size), 4),
         "rewards_max_spread": round(float(spread), 6),

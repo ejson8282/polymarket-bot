@@ -363,20 +363,32 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
 
     assert 'id="pm-auto-scan-grid"' in html
     assert 'id="pm-auto-scan-summary"' in html
+    assert 'id="pm-scan-phase-filter"' in html
+    assert 'id="pm-scan-risk-filter"' in html
+    assert 'id="pm-scan-market-count"' in html
+    assert 'id="pm-scan-confirm-count"' in html
     assert 'id="pm-opportunity-body"' in html
     assert 'id="pm-opportunity-summary"' in html
-    assert 'id="pm-verification-grid"' in html
-    assert 'id="pm-verification-summary"' in html
     assert "<h2>自动扫描</h2>" in html
-    assert "<h2>小额验证队列</h2>" in html
-    assert "测试本金仅用于验证，不是正式资金上限" in html
-    assert "<h2>奖励效率观察</h2>" in html
-    assert "只观察，不新增或撤销任何挂单" in html
+    assert "<h2>市场扫描</h2>" in html
+    assert "<th>阶段</th>" in html
+    assert "可以确认" in html
+    assert "进行中观察" in html
     assert "<h2>手动扫描</h2>" in html
-    assert "estimated_reward_share_pct" in html
     assert "actual_reward_share_pct" in html
     assert "verification_status" in html
-    assert "短期稳定" in html
+    assert "filterPMScanRows" in html
+
+
+def test_polymarket_markets_page_has_phase_and_account_filters() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert "<h2>运行市场</h2>" in html
+    assert 'id="pm-market-phase-filter"' in html
+    assert 'id="pm-market-account-filter"' in html
+    assert 'id="pm-running-notional"' in html
+    assert 'id="pm-running-attention"' in html
+    assert "filterPMMarketRows" in html
 
 
 def test_discord_notification_update_saves_without_echoing_secret(

@@ -1252,6 +1252,9 @@ def _polymarket() -> Dict[str, Any]:
             "rewarded_markets_seen": int(
                 _num(reward_observation.get("rewarded_markets_seen")) or 0
             ),
+            "markets_seen": int(
+                _num(reward_observation.get("markets_seen")) or 0
+            ),
             "opportunities": len(observation_candidates),
         })
         state_age = _mtime_age(state_path)
@@ -4671,6 +4674,22 @@ def _pm_detail() -> Dict[str, Any]:
             if isinstance(observer.get("markets"), dict)
             else {}
         )
+        reward_observer_path = (
+            PM_PEER_DIR / f"reward_observer_state_{idx}.json"
+            if is_remote
+            else DATA_DIR / "reward_observer_state.json"
+        )
+        reward_observer = _read_json(reward_observer_path) or {}
+        reward_candidates = (
+            reward_observer.get("candidates")
+            if isinstance(reward_observer.get("candidates"), list)
+            else []
+        )
+        reward_by_token = {
+            str(candidate.get("token_id")): candidate
+            for candidate in reward_candidates
+            if isinstance(candidate, dict) and candidate.get("token_id")
+        }
         state_markets = (
             state.get("markets") if isinstance(state.get("markets"), dict) else {}
         )
@@ -4700,6 +4719,18 @@ def _pm_detail() -> Dict[str, Any]:
                     if isinstance(live, list)
                     else int(_num(engine_market.get("live_order_count")) or 0)
                 )
+                live_notional = 0.0
+                if isinstance(live, list):
+                    for order in live:
+                        if not isinstance(order, dict):
+                            continue
+                        price = _num(order.get("price")) or 0.0
+                        size = _num(order.get("size"))
+                        if size is None:
+                            original = _num(order.get("original_size")) or 0.0
+                            matched = _num(order.get("size_matched")) or 0.0
+                            size = max(0.0, original - matched)
+                        live_notional += abs(price * size)
                 display_name = str(
                     observed_market.get("display_name")
                     or market_config.get("question")
@@ -4722,6 +4753,21 @@ def _pm_detail() -> Dict[str, Any]:
                     mid = _num(engine_market.get("mid"))
                     quote_source = "引擎快照" if state_fresh else "旧引擎快照"
                 market_risk = str(market_config.get("risk") or "mid").lower()
+                reward_candidate = reward_by_token.get(token_id) or {}
+                game_start_ts = _num(
+                    engine_market.get("game_start_ts")
+                    or market_config.get("game_start_ts")
+                    or market_config.get("gameStartTime")
+                    or reward_candidate.get("game_start_ts")
+                )
+                if game_start_ts is not None:
+                    market_phase = "live" if game_start_ts <= time.time() else "pregame"
+                    seconds_to_start = round(game_start_ts - time.time(), 1)
+                else:
+                    market_phase = str(
+                        reward_candidate.get("market_phase") or "normal"
+                    )
+                    seconds_to_start = None
                 event_budget_pct = _num(
                     strategy.get(f"quote_balance_pct_min_{market_risk}")
                 )
@@ -4732,10 +4778,27 @@ def _pm_detail() -> Dict[str, Any]:
                     "host": host,
                     "session": session_label,
                     "token": _short_token(token_id),
+                    "token_id": token_id,
                     "name": display_name[:120],
+                    "slug": str(
+                        market_config.get("slug")
+                        or reward_candidate.get("slug")
+                        or ""
+                    ),
+                    "market_url": str(
+                        reward_candidate.get("market_url")
+                        or (
+                            f"https://polymarket.com/event/{market_config.get('slug')}"
+                            if market_config.get("slug")
+                            else ""
+                        )
+                    ),
                     "side": str(market_config.get("side") or "YES"),
                     "enabled": bool(market_config.get("enabled", True)),
                     "risk": str(market_config.get("risk") or "—"),
+                    "market_phase": market_phase,
+                    "game_start_ts": game_start_ts,
+                    "seconds_to_start": seconds_to_start,
                     "quote_size": _num(market_config.get("quote_size")),
                     "event_budget_pct": (
                         round(event_budget_pct * 100, 2)
@@ -4757,8 +4820,16 @@ def _pm_detail() -> Dict[str, Any]:
                         if isinstance(item, dict)
                     ][:12],
                     "orders": live_count if orders_verified else None,
+                    "order_notional": (
+                        round(live_notional, 2) if orders_verified else None
+                    ),
                     "orders_last_seen": live_count,
                     "orders_verified": orders_verified,
+                    "estimated_daily_reward_usd": _num(
+                        reward_candidate.get("actual_daily_gross_usd")
+                        if reward_candidate.get("actual_daily_gross_usd") is not None
+                        else reward_candidate.get("estimated_daily_gross_usd")
+                    ),
                     "engine_running": engine_running,
                     "event_state": str(
                         engine_market.get("event_state")

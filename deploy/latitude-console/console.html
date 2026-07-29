@@ -234,10 +234,33 @@
   .pm-verify-card a:hover{color:var(--accent)}
   .pm-verify-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px}
   .pm-verify-meta span{color:var(--faint);font:10px var(--mono)}.pm-verify-meta b{display:block;margin-top:3px;color:var(--text);font:650 12px var(--mono)}
+  .pm-work-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:18px 0 12px}
+  .pm-work-head h2{margin:0;font-size:20px}.pm-work-head p{margin:5px 0 0;color:var(--muted);font-size:12px}
+  .pm-work-state{display:flex;align-items:center;gap:7px;color:var(--muted);font:11px var(--mono);white-space:nowrap}
+  .pm-work-state i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(70,178,107,.10)}
+  .pm-summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .pm-summary-cell{min-height:72px;padding:13px 16px;border-left:1px solid var(--line)}
+  .pm-summary-cell:first-child{border-left:0}.pm-summary-cell span{display:block;color:var(--faint);font:10px var(--mono)}
+  .pm-summary-cell b{display:block;margin-top:6px;font:650 19px var(--mono)}
+  .pm-work-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0}
+  .pm-work-tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .pm-segmented{display:flex;align-items:center;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+  .pm-segmented button{height:32px;padding:0 13px;color:var(--muted);background:transparent;border:0;border-left:1px solid var(--line);font:11px var(--mono);cursor:pointer}
+  .pm-segmented button:first-child{border-left:0}.pm-segmented button.on{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--poly)}
+  .pm-filter-select{height:34px;padding:0 30px 0 10px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;font:11px var(--mono)}
+  .pm-work-table{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .pm-work-table table{min-width:940px}.pm-work-table th{padding:10px 12px;background:rgba(26,34,44,.55)}
+  .pm-work-table td{padding:11px 12px}.pm-work-table tr[hidden]{display:none}
+  .pm-stage{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:99px;color:var(--muted);font:10px var(--mono)}
+  .pm-stage.pregame{color:var(--warn);border-color:rgba(231,197,71,.4)}.pm-stage.live{color:var(--danger);border-color:rgba(229,72,77,.45)}
+  .pm-market-link{color:var(--text);text-decoration:none}.pm-market-link:hover{color:var(--poly)}
+  .pm-row-action{color:var(--poly);font:11px var(--mono);text-decoration:none}.pm-row-action:hover{text-decoration:underline}
+  .pm-table-sub{display:block;margin-top:3px;color:var(--faint);font:10px var(--mono);white-space:normal}
+  .pm-hidden-compat{display:none!important}
   .pm-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--faint)}
   .pm-status-dot.ok{background:var(--ok)}.pm-status-dot.warn{background:var(--warn)}.pm-status-dot.danger{background:var(--danger)}
-  @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}.pm-verify-grid{grid-template-columns:1fr}}
-  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary,.pm-auto-scan-grid{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:1100px){.pm-overview-grid{grid-template-columns:1fr}.pm-health,.pm-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-health-cell:nth-child(3),.pm-rule:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-health-cell:nth-child(4),.pm-rule:nth-child(4){border-top:1px solid var(--line)}.pm-verify-grid{grid-template-columns:1fr}.pm-summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-summary-cell:nth-child(3){border-left:0;border-top:1px solid var(--line)}.pm-summary-cell:nth-child(4){border-top:1px solid var(--line)}}
+  @media(max-width:700px){.pm-head{align-items:flex-start;flex-direction:column;padding:15px}.pm-head-actions{justify-content:flex-start}.pm-subnav{gap:14px;overflow-x:auto;flex-wrap:nowrap}.pm-subnav span{white-space:nowrap}.pm-health,.pm-rule-grid,.pm-sponsored-summary,.pm-auto-scan-grid,.pm-summary-strip{grid-template-columns:1fr}.pm-health-cell,.pm-rule,.pm-sponsored-stat,.pm-summary-cell{border-left:0;border-top:1px solid var(--line)}.pm-health-cell:first-child,.pm-rule:first-child,.pm-sponsored-stat:first-child,.pm-summary-cell:first-child{border-top:0}.pm-sponsored-stat{padding:9px 0}.pm-sponsored-risk{grid-template-columns:62px minmax(0,1fr)}.pm-sponsored-risk .reason{grid-column:2;white-space:normal}.pm-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-work-head,.pm-work-toolbar{align-items:flex-start;flex-direction:column}.pm-segmented{width:100%;overflow:auto}.pm-segmented button{flex:1}.pm-filter-select{width:100%}}
   .banner{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 16px;border-radius:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em}
   .banner.testnet{background:rgba(123,140,222,.10);border:1px solid rgba(123,140,222,.4);color:#9DB4E8}
   .banner.livewarn{background:rgba(229,72,77,.08);border:1px solid rgba(229,72,77,.35);color:#FF9B9E}
@@ -1494,21 +1517,38 @@
   </div>
 
   <div class="pm-view" data-pm-view-panel="markets">
-    <div class="panel">
-      <div class="pm-panel-head">
-        <div><h2>当前配置市场</h2><div class="src">实时公共盘口与当前账号配置合并展示</div></div>
-        <span id="pm-market-count" class="chip">0 个</span>
+    <div class="pm-work-head">
+      <div><h2>运行市场</h2><p>只展示正在配置、挂单或等待引擎处理的市场。</p></div>
+      <div class="pm-work-state"><i></i><span id="pm-market-note">读取市场状态…</span></div>
+    </div>
+    <div class="pm-summary-strip">
+      <div class="pm-summary-cell"><span>运行市场</span><b id="pm-running-count">—</b></div>
+      <div class="pm-summary-cell"><span>当前挂单</span><b id="pm-running-orders">—</b></div>
+      <div class="pm-summary-cell"><span>挂单金额</span><b id="pm-running-notional">—</b></div>
+      <div class="pm-summary-cell"><span>需要注意</span><b id="pm-running-attention">—</b></div>
+    </div>
+    <div class="pm-work-toolbar">
+      <div class="pm-work-tools">
+        <div class="pm-segmented" id="pm-market-phase-filter">
+          <button class="on" data-phase="all">全部</button>
+          <button data-phase="normal">普通</button>
+          <button data-phase="pregame">赛前</button>
+          <button data-phase="live">进行中</button>
+        </div>
+        <select id="pm-market-account-filter" class="pm-filter-select" aria-label="筛选账户">
+          <option value="all">全部账户</option>
+          <option value="1">账户1 · VPS1</option>
+          <option value="2">账户2 · VPS2</option>
+        </select>
       </div>
-      <div class="pm-state-note"><span class="pm-status-dot" id="pm-market-dot"></span><span id="pm-market-note">读取中</span></div>
-      <div class="pm-table-wrap"><table>
-        <thead><tr><th>账号</th><th>时段</th><th>市场</th><th>方向</th><th>bid / ask</th><th>参考挂价</th><th>事件预算</th><th>当前挂单</th><th>状态</th></tr></thead>
-        <tbody id="pm-markets-body"><tr><td colspan="9" class="pm-empty">读取市场…</td></tr></tbody>
-      </table></div>
+      <span id="pm-market-count" class="src">0 个</span>
     </div>
-    <div class="panel">
-      <div class="pm-panel-head"><h2>市场规则</h2><span class="src">随账号配置更新</span></div>
-      <div id="pm-market-rules" class="pm-rule-grid"><div class="pm-rule"><span>状态</span><b>读取中</b></div></div>
-    </div>
+    <div class="pm-work-table"><table>
+      <thead><tr><th>市场</th><th>阶段</th><th>账户</th><th>挂单金额</th><th>当前挂单</th><th>预计日奖励</th><th>状态 / 下一步</th><th>操作</th></tr></thead>
+      <tbody id="pm-markets-body"><tr><td colspan="8" class="pm-empty">读取市场…</td></tr></tbody>
+    </table></div>
+    <span id="pm-market-dot" class="pm-hidden-compat"></span>
+    <div id="pm-market-rules" class="pm-hidden-compat"></div>
   </div>
 
   <div class="pm-view" data-pm-view-panel="fills">
@@ -1542,6 +1582,10 @@
   </div>
 
   <div class="pm-view" data-pm-view-panel="scan">
+    <div class="pm-work-head">
+      <div><h2>市场扫描</h2><p>系统持续找市场；这里集中查看值得确认或继续观察的候选。</p></div>
+      <div class="pm-work-state"><i></i><span id="pm-scan-live-note">自动扫描状态读取中</span></div>
+    </div>
     <div class="panel">
       <div class="pm-panel-head">
         <div><h2>自动扫描</h2><div class="src">每台 VPS 独立扫描并自动更新自己的做市市场</div></div>
@@ -1551,34 +1595,34 @@
         <div class="pm-empty">读取 VPS1 / VPS2 自动扫描状态…</div>
       </div>
     </div>
-    <div class="panel">
-      <div class="pm-panel-head">
-        <div>
-          <h2>小额验证队列</h2>
-          <div class="src">只生成计划，不下单；测试本金仅用于验证，不是正式资金上限</div>
-        </div>
-        <span id="pm-verification-summary" class="chip">等待稳定样本</span>
-      </div>
-      <div id="pm-verification-grid" class="pm-verify-grid">
-        <div class="pm-empty">至少连续观察约 1 小时后生成第一批验证建议</div>
-      </div>
+    <div class="pm-summary-strip">
+      <div class="pm-summary-cell"><span>扫描市场</span><b id="pm-scan-market-count">—</b></div>
+      <div class="pm-summary-cell"><span>当前候选</span><b id="pm-scan-candidate-count">—</b></div>
+      <div class="pm-summary-cell"><span>可以确认</span><b id="pm-scan-confirm-count" class="up">—</b></div>
+      <div class="pm-summary-cell"><span>进行中观察</span><b id="pm-scan-live-count">—</b></div>
     </div>
-    <div class="panel">
-      <div class="pm-panel-head">
-        <div>
-          <h2>奖励效率观察</h2>
-          <div class="pm-observe-note">
-            <span>只观察，不新增或撤销任何挂单</span>
-            <span>预计值来自公开盘口；实际占比来自官方账户接口</span>
-          </div>
+    <div class="pm-work-toolbar">
+      <div class="pm-work-tools">
+        <div class="pm-segmented" id="pm-scan-phase-filter">
+          <button class="on" data-phase="all">全部</button>
+          <button data-phase="normal">普通</button>
+          <button data-phase="pregame">赛前</button>
+          <button data-phase="live">进行中</button>
         </div>
-        <span id="pm-opportunity-summary" class="chip">等待首次扫描</span>
+        <select id="pm-scan-risk-filter" class="pm-filter-select" aria-label="筛选风险">
+          <option value="all">全部风险</option>
+          <option value="low">仅低风险</option>
+          <option value="low-medium">低与中风险</option>
+        </select>
       </div>
-      <div class="pm-table-wrap"><table>
-        <thead><tr><th>账号</th><th>市场</th><th>类型</th><th>日奖励</th><th>测试本金</th><th>预计占比</th><th>实际占比</th><th>预计/实际日毛收益</th><th>稳定性</th><th>风险</th><th>观察结论</th></tr></thead>
-        <tbody id="pm-opportunity-body"><tr><td colspan="11" class="pm-empty">首次全市场奖励观察完成后显示</td></tr></tbody>
-      </table></div>
+      <span id="pm-opportunity-summary" class="src">等待首次扫描</span>
     </div>
+    <div class="pm-work-table"><table>
+      <thead><tr><th>市场</th><th>阶段</th><th>账户</th><th>日奖励</th><th>测试本金</th><th>预计日收益</th><th>风险</th><th>观察时间</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="pm-opportunity-body"><tr><td colspan="10" class="pm-empty">首次全市场奖励观察完成后显示</td></tr></tbody>
+    </table></div>
+    <span id="pm-verification-summary" class="pm-hidden-compat"></span>
+    <div id="pm-verification-grid" class="pm-hidden-compat"></div>
     <div class="panel">
       <div class="pm-panel-head"><div><h2>手动扫描</h2><div class="src">临时筛选奖励、价差、成交量与盘口深度</div></div><span id="scan-status" class="src"></span></div>
       <div class="pm-form-grid">
@@ -2431,6 +2475,16 @@
     document.querySelectorAll('#pm-subnav [data-pm-view]').forEach(item=>item.classList.toggle('on',item===tab));
     document.querySelectorAll('#page-pm [data-pm-view-panel]').forEach(panel=>panel.classList.toggle('on',panel.dataset.pmViewPanel===view));
   }));
+  document.querySelectorAll('#pm-market-phase-filter button').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('#pm-market-phase-filter button').forEach(item=>item.classList.toggle('on',item===button));
+    filterPMMarketRows();
+  }));
+  document.querySelectorAll('#pm-scan-phase-filter button').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('#pm-scan-phase-filter button').forEach(item=>item.classList.toggle('on',item===button));
+    filterPMScanRows();
+  }));
+  document.getElementById('pm-market-account-filter').addEventListener('change',filterPMMarketRows);
+  document.getElementById('pm-scan-risk-filter').addEventListener('change',filterPMScanRows);
   document.querySelectorAll('#dw-subnav span').forEach(sp=>sp.addEventListener('click',()=>{
     document.querySelectorAll('#dw-subnav span').forEach(x=>x.classList.toggle('on',x===sp));
   }));
@@ -2797,83 +2851,66 @@
         }).join(''):'<div class="pm-empty">尚未发现自动扫描状态</div>';
       }
       const opportunities=Array.isArray(c.opportunities)?c.opportunities:[];
-      const verificationQueue=opportunities
-        .filter(row=>row.verification_recommended===true)
-        .sort((a,b)=>Number(b.risk_adjusted_daily_roi_pct||0)-Number(a.risk_adjusted_daily_roi_pct||0))
-        .slice(0,6);
-      const verificationGrid=document.getElementById('pm-verification-grid');
-      const verificationSummary=document.getElementById('pm-verification-summary');
-      if(verificationSummary){
-        verificationSummary.textContent=verificationQueue.length
-          ? verificationQueue.length+' 个可验证'
-          : '等待稳定样本';
-        verificationSummary.className='chip '+(verificationQueue.length?'ok':'warn');
-      }
-      if(verificationGrid){
-        verificationGrid.innerHTML=verificationQueue.length?verificationQueue.map(row=>{
-          const title=esc(String(row.question||row.slug||'未命名市场').slice(0,90));
-          const market=row.market_url
-            ?'<a href="'+esc(row.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
-            :'<a>'+title+'</a>';
-          return '<div class="pm-verify-card">'+market+
-            '<div class="src">账号'+Number(row.account||0)+' · '+esc(row.host||'—')+' · '+Number(row.observation_samples||0)+'轮稳定样本</div>'+
-            '<div class="pm-verify-meta"><span>测试本金<b>'+money(row.probe_capital_usd)+'</b></span>'+
-            '<span>风险调整效率<b>'+Number(row.risk_adjusted_daily_roi_pct||0).toFixed(2)+'%/日</b></span>'+
-            '<span>预计份额<b>'+Number(row.estimated_reward_share_pct||0).toFixed(2)+'%</b></span></div></div>';
-        }).join(''):'<div class="pm-empty">至少连续观察约 1 小时后生成第一批验证建议</div>';
-      }
+      window.__pmOpportunities=opportunities;
       const opportunityBody=document.getElementById('pm-opportunity-body');
       const opportunitySummary=document.getElementById('pm-opportunity-summary');
-      const reasonLabel={
-        estimated_majority_share:'预计可取得较高份额',
-        estimated_meaningful_share:'预计份额有意义',
-        estimated_crowded:'竞争较多',
-        minimum_size_raises_capital:'最低份数提高测试本金',
-        high_fill_risk:'吃单风险较高',
-        medium_fill_risk:'吃单风险中等'
-      };
       const verificationLabel={
         collecting:'采集中',
         warming:'继续观察',
-        stable:'短期稳定',
-        confirmed:'长期确认',
+        stable:'可以确认',
+        confirmed:'可以确认',
         risk_high:'风险较高',
         unstable:'波动较大'
       };
+      const confirmable=opportunities.filter(row=>row.verification_recommended===true&&pmPhase(row)!=='live');
+      const liveRows=opportunities.filter(row=>pmPhase(row)==='live');
+      const scanned=rows.reduce((total,row)=>total+Number(row.markets_seen||0),0);
+      const scanMarketCount=document.getElementById('pm-scan-market-count');
+      const scanCandidateCount=document.getElementById('pm-scan-candidate-count');
+      const scanConfirmCount=document.getElementById('pm-scan-confirm-count');
+      const scanLiveCount=document.getElementById('pm-scan-live-count');
+      const scanLiveNote=document.getElementById('pm-scan-live-note');
+      if(scanMarketCount)scanMarketCount.textContent=scanned.toLocaleString();
+      if(scanCandidateCount)scanCandidateCount.textContent=opportunities.length.toLocaleString();
+      if(scanConfirmCount)scanConfirmCount.textContent=confirmable.length.toLocaleString();
+      if(scanLiveCount)scanLiveCount.textContent=liveRows.length.toLocaleString();
+      if(scanLiveNote)scanLiveNote.textContent=healthy+'/'+rows.length+' 账户正常 · 候选自动更新';
       if(opportunitySummary){
         const actualCount=opportunities.filter(row=>row.actual_reward_share_pct!=null).length;
-        const stableCount=opportunities.filter(row=>['stable','confirmed'].includes(row.verification_status)).length;
         opportunitySummary.textContent=opportunities.length
-          ? opportunities.length+' 个候选 · '+stableCount+' 个稳定 · '+actualCount+' 个有实际占比'
+          ? opportunities.length+' 个候选 · '+confirmable.length+' 个可以确认 · '+actualCount+' 个有实际占比'
           : '等待首次扫描';
-        opportunitySummary.className='chip '+(opportunities.length?'ok':'warn');
       }
       if(opportunityBody){
         opportunityBody.innerHTML=opportunities.length?opportunities.slice(0,60).map(row=>{
-          const actual=row.actual_reward_share_pct;
-          const estGross=row.estimated_daily_gross_usd;
-          const actualGross=row.actual_daily_gross_usd;
-          const type=row.market_type==='sports'?'体育':'全天';
+          const phase=pmPhase(row);
+          const phaseView=pmPhaseView(row);
+          const estGross=row.actual_daily_gross_usd==null?row.estimated_daily_gross_usd:row.actual_daily_gross_usd;
           const risk=row.risk_label==='high'?'高':(row.risk_label==='medium'?'中':'低');
           const riskCls=row.risk_label==='high'?'down':(row.risk_label==='medium'?'warn':'up');
           const verification=row.verification_status||'collecting';
-          const stabilityCls=['stable','confirmed'].includes(verification)?'up':(['risk_high','unstable'].includes(verification)?'down':'warn');
-          const reasons=(row.reasons||[]).map(reason=>reasonLabel[reason]||reason).join('；');
+          const canConfirm=row.verification_recommended===true&&phase!=='live';
+          const status=phase==='live'?'仅观察':(canConfirm?'可以确认':(verificationLabel[verification]||verification));
+          const statusCls=canConfirm?'ok':(phase==='live'||['risk_high','unstable'].includes(verification)?'warn':'');
           const title=esc(String(row.question||row.slug||'未命名市场').slice(0,100));
           const marketCell=row.market_url
-            ?'<a href="'+esc(row.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
+            ?'<a class="pm-market-link" href="'+esc(row.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
             :title;
-          return '<tr><td class="num">账号'+Number(row.account||0)+'<div class="src">'+esc(row.host||'—')+'</div></td>'+
-            '<td class="pm-opportunity-title">'+marketCell+'</td><td>'+type+'</td>'+
+          const action=row.market_url
+            ?'<a class="pm-row-action" href="'+esc(row.market_url)+'" target="_blank" rel="noopener">查看</a>'
+            :'—';
+          return '<tr data-phase="'+phase+'" data-risk="'+esc(row.risk_label||'low')+'">'+
+            '<td class="pm-opportunity-title">'+marketCell+'<span class="pm-table-sub">'+(row.market_type==='sports'?'体育':'普通市场')+'</span></td>'+
+            '<td><span class="pm-stage '+phase+'">'+phaseView.label+'</span><span class="pm-table-sub">'+esc(phaseView.detail)+'</span></td>'+
+            '<td class="num">账号'+Number(row.account||0)+'<span class="pm-table-sub">'+esc(row.host||'—')+'</span></td>'+
             '<td class="num">'+money(row.daily_reward_usd)+'</td>'+
-            '<td class="num">'+money(row.probe_capital_usd)+'<div class="src">'+Number(row.probe_shares_each_side||0).toFixed(0)+'份/边</div></td>'+
-            '<td class="num pm-opportunity-est">'+Number(row.estimated_reward_share_pct||0).toFixed(2)+'%<div class="src">模型估算</div></td>'+
-            '<td class="num '+(actual!=null?'pm-opportunity-actual':'')+'">'+(actual==null?'—':Number(actual).toFixed(2)+'%')+'<div class="src">'+(actual==null?'尚无计分挂单':'官方实时')+'</div></td>'+
-            '<td class="num">'+money(estGross)+' / '+(actualGross==null?'—':money(actualGross))+'<div class="src">预计 / 实际</div></td>'+
-            '<td class="pm-opportunity-stability"><strong class="'+stabilityCls+'">'+esc(verificationLabel[verification]||verification)+'</strong><div class="src">'+Number(row.observation_samples||0)+'轮 · '+Number(row.stability_score||0)+'分</div></td>'+
-            '<td><span class="'+riskCls+'">'+risk+'</span><div class="src">'+Number(row.fill_risk||0).toFixed(1)+'</div></td>'+
-            '<td class="pm-opportunity-reason">'+esc(reasons||'等待更多观察数据')+'</td></tr>';
-        }).join(''):'<tr><td colspan="11" class="pm-empty">首次全市场奖励观察完成后显示</td></tr>';
+            '<td class="num">'+money(row.probe_capital_usd)+'<span class="pm-table-sub">'+Number(row.probe_shares_each_side||0).toFixed(0)+' 份/边</span></td>'+
+            '<td class="num pm-opportunity-est">'+money(estGross)+'<span class="pm-table-sub">'+(row.actual_daily_gross_usd==null?'模型估算':'按实际占比')+'</span></td>'+
+            '<td><span class="'+riskCls+'">'+risk+'</span><span class="pm-table-sub">评分 '+Number(row.fill_risk||0).toFixed(1)+'</span></td>'+
+            '<td class="num">'+pmDuration(row.observation_span_sec)+'<span class="pm-table-sub">'+Number(row.observation_samples||0)+' 轮</span></td>'+
+            '<td><span class="chip '+statusCls+'">'+esc(status)+'</span></td><td>'+action+'</td></tr>';
+        }).join(''):'<tr><td colspan="10" class="pm-empty">首次全市场奖励观察完成后显示</td></tr>';
+        filterPMScanRows();
       }
     }
     const sponsored=pm.sponsored_guard||{};
@@ -2962,6 +2999,58 @@
     const n=Number(value);
     return Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
   }
+  function pmDuration(seconds){
+    const value=Number(seconds);
+    if(!Number.isFinite(value)||value<0)return '—';
+    if(value<3600)return Math.max(1,Math.round(value/60))+' 分钟';
+    if(value<86400)return (value/3600).toFixed(value<10800?1:0)+' 小时';
+    return (value/86400).toFixed(value<259200?1:0)+' 天';
+  }
+  function pmPhase(row){
+    const phase=String((row||{}).market_phase||'').toLowerCase();
+    if(['normal','pregame','live'].includes(phase))return phase;
+    return (row||{}).market_type==='sports'?'pregame':'normal';
+  }
+  function pmPhaseView(row){
+    const phase=pmPhase(row);
+    const seconds=Number((row||{}).seconds_to_start);
+    if(phase==='live')return {label:'进行中',detail:'已开赛'};
+    if(phase==='pregame'){
+      return {label:'赛前',detail:Number.isFinite(seconds)&&seconds>0?pmDuration(seconds)+'后开始':'等待开赛时间'};
+    }
+    return {label:'普通',detail:'持续市场'};
+  }
+  function pmFilterValue(groupId,key){
+    const selected=document.querySelector('#'+groupId+' button.on');
+    return selected?selected.dataset[key]:'all';
+  }
+  function filterPMScanRows(){
+    const phase=pmFilterValue('pm-scan-phase-filter','phase');
+    const risk=(document.getElementById('pm-scan-risk-filter')||{}).value||'all';
+    document.querySelectorAll('#pm-opportunity-body tr[data-phase]').forEach(row=>{
+      const phaseOk=phase==='all'||row.dataset.phase===phase;
+      const riskOk=risk==='all'||row.dataset.risk==='low'||(risk==='low-medium'&&row.dataset.risk==='medium');
+      row.hidden=!(phaseOk&&riskOk);
+    });
+  }
+  function filterPMMarketRows(){
+    const phase=pmFilterValue('pm-market-phase-filter','phase');
+    const account=(document.getElementById('pm-market-account-filter')||{}).value||'all';
+    const rows=Array.from(document.querySelectorAll('#pm-markets-body tr[data-phase]'));
+    rows.forEach(row=>{
+      row.hidden=!((phase==='all'||row.dataset.phase===phase)&&(account==='all'||row.dataset.account===account));
+    });
+    const visible=rows.filter(row=>!row.hidden);
+    const orders=visible.reduce((total,row)=>total+Number(row.dataset.orders||0),0);
+    const notional=visible.reduce((total,row)=>total+Number(row.dataset.notional||0),0);
+    const attention=visible.filter(row=>row.dataset.attention==='1').length;
+    const setText=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value;};
+    setText('pm-running-count',visible.length.toLocaleString());
+    setText('pm-running-orders',orders.toLocaleString()+' 笔');
+    setText('pm-running-notional',money(notional));
+    setText('pm-running-attention',attention.toLocaleString());
+    setText('pm-market-count',visible.length+' / '+rows.length+' 个');
+  }
   function bindPMDetail(detail){
     detail=detail||{};
     const accounts=detail.accounts||[], markets=detail.markets||[];
@@ -2984,33 +3073,43 @@
     const healthExits=document.getElementById('pm-health-exits');
     if(healthExits)healthExits.innerHTML=pending.length?'<span class="down">'+pending.length+' 个处理中</span>':'<span class="up">0 · 无单腿</span>';
 
-    const marketCount=document.getElementById('pm-market-count');
-    if(marketCount)marketCount.textContent=configured+' 个';
     const marketDot=document.getElementById('pm-market-dot');
     const marketNote=document.getElementById('pm-market-note');
     const marketHealthy=observerReady&&configured>0;
     if(marketDot)marketDot.className='pm-status-dot '+(marketHealthy?'ok':'warn');
     if(marketNote)marketNote.textContent=configured
-      ?('公共行情 '+(observer.age==null?'未返回时间':pmAge(observer.age))+' · 只有运行中且状态新鲜时才显示当前挂单')
+      ?('公共行情 '+(observer.age==null?'未返回时间':pmAge(observer.age))+'更新')
       :'当前账号没有启用市场';
 
     const marketBody=document.getElementById('pm-markets-body');
     if(marketBody){
       marketBody.innerHTML=markets.length?markets.map(m=>{
-        const plan=(m.reference_plan||[]).slice(0,3).map(x=>pmPrice(x.price)).join(' / ')||'—';
-        const book=pmPrice(m.bid)+' / '+pmPrice(m.ask);
         const orders=m.orders_verified?String(m.orders):'<span style="color:var(--warn)">待核验</span>';
+        const phase=pmPhase(m), phaseView=pmPhaseView(m);
         let state='已配置',stateClass='warn';
         if(!m.enabled){state='已停用';stateClass='';}
         else if(m.engine_running&&m.engine_state_fresh){state=m.event_state==='ACTIVE'?'报价中':m.event_state;stateClass=m.event_state==='ACTIVE'?'ok':'warn';}
         else if(!m.engine_running){state='引擎停止';}
         else{state='引擎状态迟滞';stateClass='danger';}
-        return '<tr><td class="num">#'+m.account+' · '+esc(m.host||'')+'</td><td>'+esc(m.session)+'</td>'+
-          '<td class="pm-market-name">'+esc(m.name)+'<small>'+esc(m.token)+' · '+esc(m.quote_source||'')+'</small></td>'+
-          '<td class="num">'+esc(m.side)+'</td><td class="num">'+book+'</td><td class="num" style="white-space:normal">'+esc(plan)+'</td>'+
-          '<td class="num">'+(m.event_budget_pct==null?'—':pmNumber(m.event_budget_pct,2)+'% 本金')+'</td><td class="num">'+orders+'</td>'+
-          '<td><span class="chip '+stateClass+'">'+esc(state)+'</span></td></tr>';
-      }).join(''):'<tr><td colspan="9" class="pm-empty">当前没有配置市场</td></tr>';
+        const next=!m.engine_running?'等待启动':(phase==='live'?'盘口波动保护':(phase==='pregame'?'等待开赛前保护':'持续调整报价'));
+        const attention=(!m.enabled||!m.engine_running||!m.engine_state_fresh||m.event_state!=='ACTIVE')?'1':'0';
+        const title=esc(m.name||'未命名市场');
+        const marketCell=m.market_url
+          ?'<a class="pm-market-link" href="'+esc(m.market_url)+'" target="_blank" rel="noopener">'+title+'</a>'
+          :title;
+        const action=m.market_url
+          ?'<a class="pm-row-action" href="'+esc(m.market_url)+'" target="_blank" rel="noopener">查看</a>'
+          :'—';
+        return '<tr data-phase="'+phase+'" data-account="'+Number(m.account||0)+'" data-orders="'+Number(m.orders_verified?m.orders:0)+'" data-notional="'+Number(m.order_notional||0)+'" data-attention="'+attention+'">'+
+          '<td class="pm-market-name">'+marketCell+'<span class="pm-table-sub">'+esc(m.token||'')+' · '+esc(m.session||'')+'</span></td>'+
+          '<td><span class="pm-stage '+phase+'">'+phaseView.label+'</span><span class="pm-table-sub">'+esc(phaseView.detail)+'</span></td>'+
+          '<td class="num">账户'+Number(m.account||0)+'<span class="pm-table-sub">'+esc(m.host||'—')+'</span></td>'+
+          '<td class="num">'+(m.orders_verified?money(m.order_notional):'待核验')+'</td>'+
+          '<td class="num">'+orders+'<span class="pm-table-sub">'+(m.orders_verified?'引擎实时':'等待新鲜状态')+'</span></td>'+
+          '<td class="num">'+(m.estimated_daily_reward_usd==null?'—':money(m.estimated_daily_reward_usd))+'</td>'+
+          '<td><span class="chip '+stateClass+'">'+esc(state)+'</span><span class="pm-table-sub">'+esc(next)+'</span></td><td>'+action+'</td></tr>';
+      }).join(''):'<tr><td colspan="8" class="pm-empty">当前没有配置市场</td></tr>';
+      filterPMMarketRows();
     }
 
     const first=accounts[0]||{}, rules=first.rules||{};
