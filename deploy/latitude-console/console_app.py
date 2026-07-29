@@ -1147,9 +1147,19 @@ def _polymarket() -> Dict[str, Any]:
             max(0, int(time.time() - observation_generated))
             if observation_generated else None
         )
+        percentage_account = reward_live_accounts.get(idx, {})
+        if is_remote:
+            remote_reward_live = (
+                _read_json(PM_PEER_DIR / f"rewards_live_{idx}.json") or {}
+            )
+            remote_reward_accounts = remote_reward_live.get("accounts")
+            if isinstance(remote_reward_accounts, dict):
+                percentage_account = remote_reward_accounts.get(
+                    str(idx), {}
+                )
         account_percentages = (
-            reward_live_accounts.get(idx, {}).get("reward_percentages")
-            if isinstance(reward_live_accounts.get(idx, {}), dict)
+            percentage_account.get("reward_percentages")
+            if isinstance(percentage_account, dict)
             else {}
         )
         if not isinstance(account_percentages, dict):
@@ -5287,6 +5297,22 @@ def _refresh_pm_remotes() -> None:
                     "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                     observer_src,
                     str(PM_PEER_DIR / f"reward_observer_state_{idx}.json"),
+                ],
+                capture_output=True,
+                timeout=15,
+            )
+        except Exception:
+            pass
+        rewards_live_src = (
+            f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/rewards_live.json"
+        )
+        try:
+            subprocess.run(
+                [
+                    "scp", "-i", str(r.get("ssh_key", "")),
+                    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                    rewards_live_src,
+                    str(PM_PEER_DIR / f"rewards_live_{idx}.json"),
                 ],
                 capture_output=True,
                 timeout=15,
