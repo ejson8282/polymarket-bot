@@ -28,7 +28,7 @@
   nav a:hover{color:var(--text);background:var(--panel2)}
   nav a.active{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--var)}
   nav a .b{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;vertical-align:1px}
-  .b-live{background:var(--danger);color:#fff}.b-test{background:#2B3A55;color:#9DB4E8}.b-paper{background:#2E3A2E;color:#8FCF9B}.b-ro{background:#333;color:#AAA}.b-shadow{background:#352B4E;color:#BC8CFF}
+  .b-live{background:var(--danger);color:#fff}.b-test{background:#2B3A55;color:#9DB4E8}.b-paper{background:#2E3A2E;color:#8FCF9B}.b-ro{background:#333;color:#AAA}.b-shadow{background:#352B4E;color:#BC8CFF}.b-new{background:rgba(94,200,216,.16);color:var(--var)}
   .status-cluster{display:flex;align-items:center;gap:8px;white-space:nowrap}
   .pill{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);letter-spacing:.05em}
   .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.danger{color:var(--danger);border-color:rgba(229,72,77,.5)}
@@ -94,6 +94,33 @@
   /* ── 通用面板 ── */
   .page{display:none;padding:0 24px 24px}
   .page.on{display:block}
+  /* ── 经营分析(只读聚合,不改变系统总览) ── */
+  .analytics-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:22px 0 2px}
+  .analytics-title{font-size:24px;font-weight:650;letter-spacing:.01em}.analytics-title small{display:block;margin-top:5px;color:var(--muted);font:12px var(--mono)}
+  .analytics-note{max-width:520px;color:var(--faint);font:10px var(--mono);line-height:1.6;text-align:right}
+  .analytics-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .analytics-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(330px,.75fr);gap:16px;margin-top:16px}
+  .analytics-layout>.panel{min-width:0;margin-top:0}
+  .analytics-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:10px}
+  .analytics-panel-head h2{margin:0}.analytics-panel-head .src{margin:0;text-align:right}
+  .analytics-chart-wrap{position:relative;margin-top:10px;padding:10px 8px 0;border-top:1px solid var(--line)}
+  #analytics-profit-chart{display:block;width:100%;height:285px;background:linear-gradient(180deg,rgba(26,34,44,.72),rgba(14,17,22,.72));border-radius:7px}
+  .analytics-projects{display:grid;gap:9px}
+  .analytics-project{padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(26,34,44,.5)}
+  .analytics-project-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.analytics-project-name{font-weight:600}.analytics-project-meta{color:var(--faint);font:10px var(--mono)}
+  .analytics-project-result{margin-top:8px;font:600 18px var(--mono)}
+  .analytics-project-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:9px}.analytics-project-stat span{display:block;color:var(--faint);font:10px var(--mono)}.analytics-project-stat b{display:block;margin-top:2px;font:11px var(--mono);overflow-wrap:anywhere}
+  .analytics-legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:10px;color:var(--muted);font:10px var(--mono)}.analytics-legend span{display:inline-flex;align-items:center;gap:5px}.analytics-legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .analytics-foot{margin-top:16px;color:var(--faint);font:10px var(--mono);line-height:1.6}
+  .analytics-template-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr);gap:16px;margin-top:16px}
+  .analytics-template-grid>.panel{min-width:0;margin-top:0}
+  .analytics-calendar{display:grid;grid-template-columns:repeat(7,minmax(46px,1fr));gap:6px;margin-top:12px}
+  .analytics-calendar-head{display:grid;grid-template-columns:repeat(7,minmax(46px,1fr));gap:6px;color:var(--faint);font:10px var(--mono);text-align:center}
+  .analytics-day{min-height:55px;padding:7px;border:1px solid var(--line);border-radius:6px;background:rgba(26,34,44,.5)}
+  .analytics-day.empty{opacity:.22;background:transparent}.analytics-day span{display:block;color:var(--muted);font:10px var(--mono)}.analytics-day b{display:block;margin-top:8px;color:var(--faint);font:11px var(--mono)}.analytics-day.unavailable{border-style:dashed}
+  .analytics-detail{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:7px;background:rgba(26,34,44,.5)}
+  .analytics-detail strong{display:block;font:600 13px var(--mono)}.analytics-detail span{display:block;margin-top:4px;color:var(--faint);font:10px var(--mono)}.analytics-detail b{color:var(--muted);font:600 15px var(--mono)}
+  .analytics-template-list{display:grid;gap:8px;margin-top:12px}.analytics-template-item{padding:11px 12px;border:1px dashed var(--line);border-radius:7px}.analytics-template-item strong{display:block;font-size:12px}.analytics-template-item span{display:block;margin-top:4px;color:var(--faint);font:10px var(--mono);line-height:1.55}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}
   .panel h2{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
   .src{font-family:var(--mono);font-size:10px;color:var(--faint);margin:2px 0 12px}
@@ -703,7 +730,7 @@
 .notify-message{min-height:18px;margin-top:10px;color:var(--muted);font-size:11px}
 .notify-message.ok{color:var(--ok)}.notify-message.bad{color:var(--danger)}
 .notify-routing{margin-top:14px}.notify-routing td:first-child{font-weight:600}.notify-routing td:last-child{color:var(--muted)}
-@media(max-width:900px){.notify-grid{grid-template-columns:1fr}.notify-head{align-items:flex-start;flex-direction:column}}
+  @media(max-width:900px){.notify-grid{grid-template-columns:1fr}.notify-head{align-items:flex-start;flex-direction:column}.analytics-layout{grid-template-columns:1fr}.analytics-note{text-align:left}.analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -712,6 +739,7 @@
   <div class="brand">Latitude Alpha<small>UNIFIED CONSOLE</small></div>
   <nav id="nav">
     <a data-page="overview" class="active">总览</a>
+    <a data-page="analytics">经营分析<span class="b b-new">ANALYTICS</span></a>
     <a data-page="plan">工作计划<span class="b b-ro">计划</span></a>
     <a data-page="vardec">Var 对冲<span class="b b-live">LIVE</span></a>
     <a data-page="pm">Polymarket<span class="b b-live">LIVE</span></a>
@@ -807,6 +835,44 @@
     <ul class="events" id="events-list">
       <li><span class="dot d-info"></span><div><div>等待实时事件数据</div></div></li>
     </ul>
+  </div>
+</section>
+
+<!-- ════════════ 页面 · 经营分析(只读聚合,不改变系统总览) ════════════ -->
+<section class="page" id="page-analytics">
+  <div class="analytics-head">
+    <div class="analytics-title">经营分析<small>OPERATING ANALYTICS · 资金 / 利润 / 交易量</small></div>
+    <div class="analytics-note">只读取现有 /api/state；缺失字段显示“—”，不会用演示数字填充。模拟项目单独标记，不计入实盘总结果。</div>
+  </div>
+  <div class="kpis analytics-kpis">
+    <div class="kpi"><div class="label">可核验资金基数</div><div class="value" id="analytics-total-capital">—</div><div class="sub">本金 / 权益快照</div></div>
+    <div class="kpi"><div class="label">项目净结果</div><div class="value" id="analytics-total-result">—</div><div class="sub">只汇总已返回的结果字段</div></div>
+    <div class="kpi"><div class="label">可核验交易量</div><div class="value" id="analytics-total-volume">—</div><div class="sub">不同项目的时间口径可能不同</div></div>
+    <div class="kpi"><div class="label">数据来源</div><div class="value" id="analytics-source-age">—</div><div class="sub">状态快照更新时间</div></div>
+  </div>
+  <div class="analytics-layout">
+    <div class="panel">
+      <div class="analytics-panel-head"><div><h2>总和与项目净结果</h2><div class="src">当前快照 · 组合总和 + 各项目</div></div><span class="chip info">只读</span></div>
+      <div class="analytics-chart-wrap"><canvas id="analytics-profit-chart" aria-label="组合总和与各项目净结果"></canvas></div>
+      <div class="analytics-legend" id="analytics-legend"></div>
+    </div>
+    <div class="panel">
+      <div class="analytics-panel-head"><div><h2>项目拆分</h2><div class="src">本金 / 结果 / 交易量</div></div></div>
+      <div class="analytics-projects" id="analytics-projects"><div class="analytics-project"><span class="analytics-project-meta">等待实时状态…</span></div></div>
+    </div>
+  </div>
+  <div class="analytics-foot">说明：不同项目的“结果”遵循各自来源口径；跨项目内部调拨不重复计入。当前页面只做聚合展示，不会修改任何策略、账户或预算配置。</div>
+  <div class="analytics-template-grid">
+    <div class="panel">
+      <div class="analytics-panel-head"><div><h2>收益日历</h2><div class="src">保留模板结构 · 日级历史源待接入</div></div><span class="chip warn">待接入历史</span></div>
+      <div class="analytics-calendar-head"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+      <div class="analytics-calendar" id="analytics-calendar"><div class="analytics-day unavailable"><span>—</span><b>等待数据</b></div></div>
+      <div class="analytics-detail"><div><strong id="analytics-calendar-detail-date">当前月份</strong><span>交易 / Maker / Fees 需要日级成交归档后显示</span></div><b id="analytics-calendar-detail-value">—</b></div>
+    </div>
+    <div class="panel">
+      <div class="analytics-panel-head"><div><h2>模板模块状态</h2><div class="src">保留交互位置，不伪造历史结果</div></div></div>
+      <div class="analytics-template-list"><div class="analytics-template-item"><strong>总和 / 分项目切换</strong><span>已由当前项目拆分和组合图表承载。</span></div><div class="analytics-template-item"><strong>利润趋势图</strong><span>当前显示实时快照；完整时间序列需要统一历史账本。</span></div><div class="analytics-template-item"><strong>忽略案件</strong><span>顶部告警支持“忽略案件 / 恢复忽略”，仅改变当前 Dashboard 的告警显示状态。</span></div></div>
+    </div>
   </div>
 </section>
 
@@ -2223,6 +2289,20 @@
   const IPO_DEMO_MODE=new URLSearchParams(window.location.search).get('ipo_demo')==='1';
   window.__ipoDemoMode=IPO_DEMO_MODE;
   let allProjectEvents=[], activeEventProject='ALL';
+  const ALERT_IGNORE_STORAGE_KEY='latitude_console_ignored_alerts';
+  function loadIgnoredAlertTags(){
+    try{
+      const raw=window.localStorage.getItem(ALERT_IGNORE_STORAGE_KEY);
+      const parsed=raw?JSON.parse(raw):[];
+      return new Set(Array.isArray(parsed)?parsed.map(String):[]);
+    }catch(e){return new Set();}
+  }
+  function saveIgnoredAlertTags(){
+    try{window.localStorage.setItem(ALERT_IGNORE_STORAGE_KEY,JSON.stringify([...window.__ignoredAlertTags]));}catch(e){}
+  }
+  window.__ignoredAlertTags=window.__ignoredAlertTags||loadIgnoredAlertTags();
+  function ignoreAlert(tag){window.__ignoredAlertTags.add(String(tag||''));saveIgnoredAlertTags();bindEventsAlerts(window.__state||{});}
+  function restoreIgnoredAlerts(){window.__ignoredAlertTags.clear();saveIgnoredAlertTags();bindEventsAlerts(window.__state||{});}
 
   function go(p){
     document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
@@ -2230,6 +2310,7 @@
     document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===p));
     window.scrollTo(0,0);
     if(p==='notifications') loadNotifications();
+    if(p==='analytics') drawAnalyticsChart(analyticsRows(window.__state||{}));
   }
   function goOps(p){
     go(p);
@@ -2523,6 +2604,57 @@
     document.querySelectorAll('[data-k="'+key+'"]').forEach(el=>{ el.innerHTML=html; el.dataset.real='1'; });
   }
   function pnlSpan(p){const c=p>=0?'up':'down',s=p>=0?'+':'';return '<span class="'+c+'">'+s+money(Math.abs(p)).replace('$',p<0?'−$':'$')+'</span>';}
+
+  function analyticsNum(v){const n=Number(v);return Number.isFinite(n)?n:null;}
+  function analyticsFirst(){for(const v of arguments){const n=analyticsNum(v);if(n!=null)return n;}return null;}
+  function analyticsSum(values){const nums=values.map(analyticsNum).filter(v=>v!=null);return nums.length?nums.reduce((a,b)=>a+b,0):null;}
+  function analyticsRows(s){
+    const vd=s.var_decibel||{}, pm=s.polymarket||{}, grid=s.grid||{}, hk=s.account_ops||{}, sa=s.single_account||{};
+    const pmAccounts=Array.isArray(pm.accounts)?pm.accounts:[];
+    const gridRunners=Array.isArray(grid.runners)?grid.runners:[];
+    const pmCapital=analyticsFirst(pm.capital&&pm.capital.total,analyticsSum(pmAccounts.map(a=>analyticsFirst(a.balance,a.principal))));
+    const pmVolume=analyticsFirst(pm.volume_total,pm.volume_today,analyticsSum(pmAccounts.map(a=>a.volume_today)));
+    const gridCapital=analyticsFirst(grid.account&&analyticsSum([grid.account.spot_usdc,grid.account.perp_value,grid.account.xyz_value]),analyticsSum(gridRunners.map(r=>r.equity)));
+    const gridResult=analyticsSum(gridRunners.map(r=>r.pnl));
+    const paperCurve=Array.isArray(sa.equity_curve)?sa.equity_curve:[];
+    const paperResult=paperCurve.length>1?analyticsNum(paperCurve[paperCurve.length-1].value)-analyticsNum(paperCurve[0].value):null;
+    return [
+      {key:'vardec',name:'Var 对冲 Farming',capital:analyticsFirst(vd.capital&&vd.capital.current_equity,vd.equity_total),result:analyticsFirst(vd.pnl_attribution&&vd.pnl_attribution.net_pnl_usdc,vd.capital&&vd.capital.pnl),volume:analyticsFirst(vd.volume_total),color:'#5EC8D8',paper:false,present:!!vd.present},
+      {key:'pm',name:'Polymarket 做市',capital:pmCapital,result:analyticsFirst(pm.income_cumulative_total,pm.income_total,pm.pnl_today),volume:pmVolume,color:'#5B8DEF',paper:false,present:!!pm.present},
+      {key:'grid',name:'网格 Grid',capital:gridCapital,result:gridResult,volume:analyticsSum(gridRunners.map(r=>r.volume)),color:'#BC8CFF',paper:false,present:!!grid.present},
+      {key:'hk',name:'打新 & Alpha',capital:analyticsNum(hk.capital),result:analyticsNum(hk.income),volume:null,color:'#ECA13C',paper:false,present:!!hk.present},
+      {key:'sa',name:'Single Account · Paper',capital:analyticsNum(sa.sim_equity),result:paperResult,volume:null,color:'#9AA7B4',paper:true,present:!!sa.present}
+    ];
+  }
+  function analyticsMoney(v){return v==null?'—':money(v);}
+  function drawAnalyticsChart(rows){
+    const canvas=document.getElementById('analytics-profit-chart');if(!canvas)return;
+    const rect=canvas.getBoundingClientRect();if(!rect.width)return;
+    const dpr=window.devicePixelRatio||1, w=rect.width, h=285;canvas.width=w*dpr;canvas.height=h*dpr;
+    const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+    const usable=rows.filter(r=>r.result!=null), total=analyticsSum(usable.map(r=>r.result));
+    const items=[{name:'组合总和',value:total,color:'#46B26B'}].concat(usable.map(r=>({name:r.name,value:r.result,color:r.color})));
+    if(!items.some(i=>i.value!=null)){ctx.fillStyle='#5A6676';ctx.font='12px IBM Plex Mono,monospace';ctx.fillText('当前没有可核验的利润结果',16,34);return;}
+    const max=Math.max(1,...items.map(i=>Math.abs(i.value||0))), axis=Math.min(250,Math.max(150,w*.34)), span=Math.max(80,w-axis-32), rowH=Math.min(43,(h-28)/items.length);
+    ctx.font='11px IBM Plex Mono,monospace';items.forEach((item,i)=>{const y=22+i*rowH, val=item.value||0, bar=span*Math.abs(val)/max;ctx.fillStyle='#8B98A9';ctx.fillText(item.name,8,y+4);ctx.strokeStyle='rgba(36,46,58,.9)';ctx.beginPath();ctx.moveTo(axis,y-10);ctx.lineTo(axis,y+10);ctx.stroke();ctx.fillStyle=item.color;ctx.fillRect(val>=0?axis:axis-bar,y-8,Math.max(2,bar),16);ctx.fillStyle='#E8EDF2';ctx.fillText((val>=0?'+':'−')+'$'+Math.abs(val).toLocaleString(undefined,{maximumFractionDigits:2}),Math.min(w-110,val>=0?axis+bar+7:axis-bar-108),y+4);});
+  }
+  function bindAnalytics(s){
+    const rows=analyticsRows(s), liveRows=rows.filter(r=>!r.paper), totalCapital=analyticsSum(liveRows.map(r=>r.capital)), totalResult=analyticsSum(liveRows.map(r=>r.result)), totalVolume=analyticsSum(liveRows.map(r=>r.volume));
+    const put=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value;};
+    put('analytics-total-capital',analyticsMoney(totalCapital));put('analytics-total-result',totalResult==null?'—':(totalResult>=0?'+':'−')+analyticsMoney(Math.abs(totalResult)));put('analytics-total-volume',analyticsMoney(totalVolume));put('analytics-source-age',s.ts||'—');
+    const box=document.getElementById('analytics-projects');if(box){box.innerHTML=rows.map(r=>'<div class="analytics-project"><div class="analytics-project-head"><span class="analytics-project-name">'+esc(r.name)+'</span><span class="analytics-project-meta">'+(r.paper?'PAPER · 不计入总和':(r.present?'实时快照':'数据不可达'))+'</span></div><div class="analytics-project-result">'+(r.result==null?'—':pnlSpan(r.result))+'</div><div class="analytics-project-stats"><div class="analytics-project-stat"><span>资金基数</span><b>'+analyticsMoney(r.capital)+'</b></div><div class="analytics-project-stat"><span>交易量</span><b>'+analyticsMoney(r.volume)+'</b></div><div class="analytics-project-stat"><span>状态</span><b>'+(r.present?'已接入':'待核验')+'</b></div></div></div>').join('');}
+    const legend=document.getElementById('analytics-legend');if(legend){const legendRows=[{name:'组合总和',color:'#46B26B'}].concat(rows);legend.innerHTML=legendRows.map(r=>'<span><i style="background:'+r.color+'"></i>'+esc(r.name)+'</span>').join('');}
+    drawAnalyticsChart(rows);
+    bindAnalyticsCalendar(s);
+  }
+  function bindAnalyticsCalendar(s){
+    const box=document.getElementById('analytics-calendar');if(!box)return;
+    const now=new Date(),year=now.getFullYear(),month=now.getMonth(),first=new Date(year,month,1).getDay(),days=new Date(year,month+1,0).getDate();
+    const cells=[];for(let i=0;i<first;i++)cells.push('<div class="analytics-day empty"></div>');for(let day=1;day<=days;day++)cells.push('<div class="analytics-day unavailable"><span>'+day+'</span><b>—</b></div>');while(cells.length%7)cells.push('<div class="analytics-day empty"></div>');
+    box.innerHTML=cells.join('');
+    const detail=document.getElementById('analytics-calendar-detail-date');if(detail)detail.textContent=year+'年'+(month+1)+'月 · 历史结果待接入';
+    const value=document.getElementById('analytics-calendar-detail-value');if(value)value.textContent='—';
+  }
 
   function clearTemplateSamples(){
     document.querySelectorAll('.value[data-k],.v[data-k]').forEach(el=>{
@@ -3952,20 +4084,25 @@
     allProjectEvents=s.events||[];
     renderProjectEvents();
     const bar=document.getElementById('alertbar');
-    const alerts=s.alerts||[];
+    const sourceAlerts=s.alerts||[],ignored=sourceAlerts.filter(x=>window.__ignoredAlertTags.has(String(x.tag||x.msg||''))),alerts=sourceAlerts.filter(x=>!window.__ignoredAlertTags.has(String(x.tag||x.msg||'')));
     setK('pill.alerts','<span class="dot"></span>告警 '+alerts.length);
-    document.querySelectorAll('[data-k="pill.alerts"]').forEach(p=>{p.className='pill '+(alerts.length?'danger':'ok');});
+    document.querySelectorAll('[data-k="pill.alerts"]').forEach(p=>{
+      p.className='pill '+(alerts.length?'danger':'ok');
+      p.title=ignored.length?'点击恢复已忽略告警':'';
+      p.style.cursor=ignored.length?'pointer':'';
+      p.onclick=ignored.length?restoreIgnoredAlerts:null;
+    });
     if(bar){
-      if(!alerts.length){ bar.style.display='none'; }
+      if(!alerts.length){ bar.style.display='none';bar.innerHTML=''; }
       else{
         bar.style.display='flex';
         const a=alerts[0];
         const more=alerts.slice(1).map(x=>
           '<div class="alert-item"><span class="tag">'+esc(x.tag)+'</span><div class="msg">'+x.msg+'</div>'+
-          '<button onclick="go(\''+esc(x.page||'overview')+'\')">进入处理 →</button></div>').join('');
+          '<button onclick="go(\''+esc(x.page||'overview')+'\')">进入处理 →</button><button onclick="ignoreAlert(decodeURIComponent(\''+encodeURIComponent(String(x.tag||x.msg||''))+'\'))">忽略案件</button></div>').join('');
         bar.innerHTML='<div class="alert-main"><span class="tag">'+esc(a.tag)+'</span><div class="msg">'+a.msg+'</div>'+
           (alerts.length>1?'<button class="alert-toggle" onclick="this.closest(\'.alert\').classList.toggle(\'open\');this.textContent=this.closest(\'.alert\').classList.contains(\'open\')?\'收起告警 ↑\':\'查看全部 '+alerts.length+' 条 ↓\'">查看全部 '+alerts.length+' 条 ↓</button>':'')+
-          '<button onclick="go(\''+esc(a.page||'overview')+'\')">进入处理 →</button></div>'+
+          '<button onclick="go(\''+esc(a.page||'overview')+'\')">进入处理 →</button><button onclick="ignoreAlert(decodeURIComponent(\''+encodeURIComponent(String(a.tag||a.msg||''))+'\'))">忽略案件</button></div>'+
           (more?'<div class="alert-more">'+more+'</div>':'');
       }
     }
@@ -5376,6 +5513,7 @@
     try{await loadNotifications();}catch(e){}
     try{await bindDewuOverview();}catch(e){}
     try{bindEventsAlerts(s);}catch(e){}
+    try{bindAnalytics(s);}catch(e){}
     try{await refreshWorkPlan();}catch(e){}
     Object.keys(window.__detail||{}).forEach(pid=>{ if(window.__detail[pid]) renderDetail(pid); });
     document.querySelectorAll('[data-k]:not([data-real])').forEach(el=>{
