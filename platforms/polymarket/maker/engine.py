@@ -601,6 +601,7 @@ class PolyLPSMulti:
             cooldown_sec=float(css_cfg.get("cooldown_sec", 60.0)),
             min_baseline_shares=float(css_cfg.get("min_baseline_shares", 2000.0)),
         )
+        self._cross_side_cancel_inflight: set[str] = set()
 
         self.cooldown_seconds = int(risk.get("cooldown_seconds", 60))
         self.start_freeze_seconds = int(risk.get("start_freeze_seconds", 120))
@@ -2596,11 +2597,38 @@ class PolyLPSMulti:
         self._set_event_state(token_id, EVENT_EXIT_PENDING, f"exit_sell:{reason}")
 
         # Step 1: Cancel all existing orders for this specific token
-        try:
-            await self._cancel_token_orders(token_id)
-            log(f"[exit] token={token_id} canceled all BUY orders")
-        except Exception as e:
-            log(f"[exit] token={token_id} cancel orders warning: {e}")
+        canceled = await self._cancel_token_orders(
+            token_id,
+            reason=f"exit_before_sell:{reason}",
+        )
+        if not canceled:
+            log(
+                f"[exit] token={token_id} token cancel unconfirmed; "
+                "falling back to account-wide BUY cancel"
+            )
+            try:
+                canceled = await self._cancel_all_except_exit()
+            except Exception as exc:
+                log(f"[exit] token={token_id} account-wide cancel failed: {exc}")
+                canceled = False
+        if not canceled:
+            self._set_event_state(
+                token_id,
+                EVENT_PENDING_MANUAL_EXIT,
+                f"buy_cancel_unconfirmed:{reason}",
+            )
+            self.send_discord(
+                f"[EXIT 暂停] {token_id[:16]} | 无法确认 BUY 已撤净，"
+                "已停止自动卖出并升级全局安全撤单"
+            )
+            self._spawn_bg(
+                self.trigger_global_kill_switch(
+                    f"exit_buy_cancel_unconfirmed:{token_id}"
+                ),
+                name=f"exit_cancel_kill_switch:{token_id}",
+            )
+            return
+        log(f"[exit] token={token_id} confirmed all BUY orders canceled")
 
         # Step 2: Check actual position — scan all tokens if the attributed one has none
         position = await self._get_token_position(token_id)
@@ -2743,27 +2771,189 @@ class PolyLPSMulti:
         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_sell_failed:{reason}")
         self.send_discord(f"[EXIT FAILED] {token_id[:16]} | {self._exit_retry_count} attempts | p={fill_price} sz={fill_size} | 需手动处理，其他市场仍暂停")
 
-    async def _cancel_token_orders(self, token_id: str) -> None:
-        """Cancel all live orders for a specific token_id (BUY side cleanup before exit sell)."""
-        try:
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+    async def _cancel_token_orders(
+        self,
+        token_id: str,
+        *,
+        reason: str = "token_buy_cleanup",
+        max_attempts: int = 3,
+    ) -> bool:
+        """Cancel and remotely confirm every live BUY for one token.
+
+        py-clob-client-v2 has no reliable single-order ``cancel`` method. The
+        previous implementation swallowed those per-order failures and could
+        report cleanup even though orders remained live. Use the reviewed
+        batch path and re-read the official open-order endpoint instead.
+        """
+        active_statuses = {"live", "open", "active"}
+
+        def _live_buys(orders: list[dict]) -> tuple[list[str], bool]:
+            ids: list[str] = []
+            unknown_side = False
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                asset = str(
+                    order.get("asset_id") or order.get("token_id") or ""
+                )
+                status = str(order.get("status") or "").lower()
+                if asset != token_id or status not in active_statuses:
+                    continue
+                side = str(order.get("side") or "").upper()
+                if side == "SELL":
+                    continue
+                if side != "BUY":
+                    unknown_side = True
+                    continue
+                order_id = str(order.get("id") or order.get("orderID") or "")
+                if order_id:
+                    ids.append(order_id)
+            return ids, unknown_side
+
+        attempts = max(1, int(max_attempts))
+        for attempt in range(1, attempts + 1):
+            try:
+                orders = await asyncio.to_thread(self.client.get_open_orders)
+            except Exception as exc:
+                log(
+                    f"[cancel-token] token={token_id} reason={reason} "
+                    f"attempt={attempt}/{attempts} read_error={exc}"
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(min(0.25, 0.05 * attempt))
+                    continue
+                return False
             if not isinstance(orders, list):
-                return
-            canceled: list[str] = []
-            for o in orders:
-                oid = str(o.get("id") or o.get("orderID") or "")
-                asset = str(o.get("asset_id") or o.get("token_id") or "")
-                status = str(o.get("status", "")).lower()
-                if asset == token_id and status in ("live", "open", "active") and oid:
-                    try:
-                        await asyncio.to_thread(self.client.cancel, oid)
-                        canceled.append(oid)
-                    except Exception:
-                        pass
-            if canceled:
-                self._sibling_registry.unregister_many(self._funder_lc, canceled)
-        except Exception as e:
-            log(f"[exit] _cancel_token_orders error: {e}")
+                log(
+                    f"[cancel-token] token={token_id} reason={reason} "
+                    "invalid_open_orders_response"
+                )
+                return False
+
+            ids, unknown_side = _live_buys(orders)
+            if unknown_side:
+                log(
+                    f"[cancel-token] token={token_id} reason={reason} "
+                    "active_order_with_unknown_side"
+                )
+                return False
+            if not ids:
+                return True
+
+            try:
+                cleared = await self._cancel_order_ids(
+                    token_id,
+                    ids,
+                    f"{reason}:attempt_{attempt}",
+                )
+            except Exception as exc:
+                log(
+                    f"[cancel-token] token={token_id} reason={reason} "
+                    f"attempt={attempt}/{attempts} cancel_error={exc}"
+                )
+                cleared = False
+            log(
+                f"[cancel-token] token={token_id} reason={reason} "
+                f"attempt={attempt}/{attempts} ids={len(ids)} ack={cleared}"
+            )
+            await asyncio.sleep(min(0.25, 0.05 * attempt))
+
+        try:
+            remaining = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception as exc:
+            log(
+                f"[cancel-token] token={token_id} reason={reason} "
+                f"final_read_error={exc}"
+            )
+            return False
+        if not isinstance(remaining, list):
+            return False
+        remaining_ids, unknown_side = _live_buys(remaining)
+        if unknown_side or remaining_ids:
+            log(
+                f"[cancel-token] token={token_id} reason={reason} "
+                f"unconfirmed_remaining={len(remaining_ids)} "
+                f"unknown_side={unknown_side}"
+            )
+            return False
+        return True
+
+    async def _execute_cross_side_cancel(
+        self,
+        trigger_token: str,
+        paired_token: str,
+        reason: str,
+        *,
+        max_ask: float,
+        current_ask: float,
+        consumed_pct: float,
+    ) -> bool:
+        """Block requotes, cancel the at-risk side, and confirm the result."""
+        inflight = getattr(self, "_cross_side_cancel_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._cross_side_cancel_inflight = inflight
+        inflight.add(paired_token)
+        try:
+            tracker = self._vol_tracker(paired_token)
+            tracker["watch_enter_ts"] = time.time()
+            self._set_event_state(
+                paired_token,
+                EVENT_WATCH,
+                f"cross_side_sentinel:{trigger_token}:{reason}",
+            )
+            canceled = await self._cancel_token_orders(
+                paired_token,
+                reason=f"cross_side_sentinel:{trigger_token}:{reason}",
+            )
+            if not canceled:
+                log(
+                    f"[cross-side-sentinel] LIVE CANCEL UNCONFIRMED "
+                    f"trigger_token={trigger_token[:14]}.. "
+                    f"paired={paired_token[:14]}.. reason={reason}"
+                )
+                try:
+                    self._notify_risk(
+                        "Cross-side cancel unconfirmed",
+                        trigger_token=trigger_token,
+                        paired_token=paired_token,
+                        reason=reason,
+                    )
+                except Exception:
+                    pass
+                # This method already runs in a background task. Await the
+                # global cancel here so ``_cross_side_cancel_inflight`` stays
+                # set until cancellation is confirmed, preventing every
+                # incoming book update from spawning another kill task.
+                await self.trigger_global_kill_switch(
+                    f"cross_side_cancel_unconfirmed:{paired_token}"
+                )
+                return False
+
+            self.cross_side_sentinel.mark_cancelled(paired_token)
+            log(
+                f"[cross-side-sentinel] LIVE CANCEL CONFIRMED "
+                f"trigger_token={trigger_token[:14]}.. "
+                f"paired={paired_token[:14]}.. reason={reason}"
+            )
+            try:
+                self.notify_discord(
+                    "🛡 cross-side sentinel triggered",
+                    {
+                        "trigger_token": trigger_token,
+                        "cancelled_token": paired_token,
+                        "reason": reason,
+                        "ask_depth_max": round(max_ask, 0),
+                        "ask_depth_current": round(current_ask, 0),
+                        "consumed_pct": round(consumed_pct, 3),
+                    },
+                    "warning",
+                )
+            except Exception:
+                pass
+            return True
+        finally:
+            inflight.discard(paired_token)
 
     async def _place_sell_order(self, token_id: str, price: Decimal, size: Decimal) -> Any:
         """Place a SELL limit order."""
@@ -6583,7 +6773,6 @@ class PolyLPSMulti:
                                                 self.market_cfg.get(token_id, {}).get("paired_token_id", "") or ""
                                             )
                                             if _paired and not self.cross_side_sentinel.in_cooldown(_paired):
-                                                self.cross_side_sentinel.mark_cancelled(_paired)
                                                 _mode = "DRY_RUN" if self.cross_side_sentinel.dry_run else "LIVE"
                                                 log(
                                                     f"[cross-side-sentinel] {_mode} TRIGGER trigger_token={token_id[:14]}.. "
@@ -6591,26 +6780,21 @@ class PolyLPSMulti:
                                                     f"window={self.cross_side_sentinel.depth_window_sec:.0f}s "
                                                     f"top{_N}_ask: max={_max_ask:.0f} cur={_cur_ask:.0f} consumed={_max_ask-_cur_ask:.0f}({_pct:.0%})"
                                                 )
-                                                if not self.cross_side_sentinel.dry_run:
+                                                if self.cross_side_sentinel.dry_run:
+                                                    self.cross_side_sentinel.mark_cancelled(_paired)
+                                                elif _paired not in self._cross_side_cancel_inflight:
+                                                    self._cross_side_cancel_inflight.add(_paired)
                                                     self._spawn_bg(
-                                                        self._cancel_token_orders(_paired),
+                                                        self._execute_cross_side_cancel(
+                                                            token_id,
+                                                            _paired,
+                                                            _reason,
+                                                            max_ask=_max_ask,
+                                                            current_ask=_cur_ask,
+                                                            consumed_pct=_pct,
+                                                        ),
                                                         name=f"cross_side_cancel:{_paired}",
                                                     )
-                                                    try:
-                                                        self.notify_discord(
-                                                            "🛡 cross-side sentinel triggered",
-                                                            {
-                                                                "trigger_token": token_id,
-                                                                "cancelled_token": _paired,
-                                                                "reason": _reason,
-                                                                "ask_depth_max": round(_max_ask, 0),
-                                                                "ask_depth_current": round(_cur_ask, 0),
-                                                                "consumed_pct": round(_pct, 3),
-                                                            },
-                                                            "warning",
-                                                        )
-                                                    except Exception:
-                                                        pass
                                     except Exception as _ex:
                                         log(f"[cross-side-sentinel] err: {_ex}")
                             elif event_type == "best_bid_ask":
@@ -7405,8 +7589,14 @@ class PolyLPSMulti:
                                             keep_order_ids=protected_ids)  # 施工包04
         # Verify: only protected orders remain
         remaining = await asyncio.to_thread(self.client.get_open_orders)
+        if not isinstance(remaining, list):
+            log(
+                "[cancel_all_except_exit] invalid verification response; "
+                "cancellation remains unconfirmed"
+            )
+            return False
         live_non_exit = [
-            o for o in (remaining if isinstance(remaining, list) else [])
+            o for o in remaining
             if str(o.get("status", "")).lower() in ("live", "open", "active")
             and str(o.get("id") or o.get("orderID") or "") not in protected_ids
         ]
