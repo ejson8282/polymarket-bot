@@ -627,9 +627,14 @@ class PolyLPSMulti:
                 "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
                 "min_distance_ticks": int(m.get("min_distance_ticks", self.default_min_distance_ticks)),
                 "risk": str(m.get("risk", "mid")).lower(),
+                "base_risk": str(
+                    m.get("eligibility_base_risk") or m.get("risk", "mid")
+                ).lower(),
                 "session": str(m.get("session", "both")).lower(),
                 "paired_token_id": str(m.get("paired_token_id", "")),
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
+                "source": str(m.get("source") or "manual"),
+                "eligibility_managed": bool(m.get("eligibility_managed", False)),
             }
 
         if not self.market_cfg:
@@ -936,7 +941,12 @@ class PolyLPSMulti:
                 "min_distance": Decimal(str(m.get("min_distance_from_best_bid", self.default_min_distance))),
                 "min_distance_ticks": int(m.get("min_distance_ticks", self.default_min_distance_ticks)),
                 "risk": str(m.get("risk", "mid")).lower(),
+                "base_risk": str(
+                    m.get("eligibility_base_risk") or m.get("risk", "mid")
+                ).lower(),
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
+                "source": str(m.get("source") or "manual"),
+                "eligibility_managed": bool(m.get("eligibility_managed", False)),
             }
             if self._night_market_cfg[token_id]["condition_id"]:
                 self._market_condition_ids[token_id] = self._night_market_cfg[token_id]["condition_id"]
@@ -965,6 +975,19 @@ class PolyLPSMulti:
             self._heartbeat_path: Path = self._state_path.parent / ".engine.heartbeat"
         else:
             self._heartbeat_path = self._state_path.parent / f".engine_{self._account_idx}.heartbeat"
+        self._runtime_command_dir = (
+            self._state_path.parent / f"runtime_commands_{self._account_idx}"
+        )
+        self._runtime_result_dir = (
+            self._state_path.parent / f"runtime_results_{self._account_idx}"
+        )
+        self._runtime_command_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_result_dir.mkdir(parents=True, exist_ok=True)
+        self._eligibility_observer_path = (
+            self._state_path.parent / "reward_observer_state.json"
+        )
+        self._eligibility_state: Dict[str, Dict[str, Any]] = {}
+        self._eligibility_check_interval_sec = 300.0
 
         # Rehydrate _curator_events_log from prior engine_state so a restart
         # doesn't wipe recently added records. Reads new key "curator_events"
@@ -4056,8 +4079,13 @@ class PolyLPSMulti:
                     "min_distance": yes_cfg.get("min_distance", self.default_min_distance),
                     "min_distance_ticks": yes_cfg.get("min_distance_ticks", self.default_min_distance_ticks),
                     "risk": self._dual_side_no_risk,
+                    "base_risk": self._dual_side_no_risk,
                     "session": yes_cfg.get("session", "both"),
                     "paired_token_id": yes_tid,
+                    "source": yes_cfg.get("source", "manual"),
+                    "eligibility_managed": bool(
+                        yes_cfg.get("eligibility_managed", False)
+                    ),
                     "_dual_side_auto": True,
                     "game_start_ts_override": float(yes_cfg.get("game_start_ts_override", 0.0) or 0.0),
                     "pre_start_stop_sec_override": int(yes_cfg.get("pre_start_stop_sec_override", 0) or 0),
@@ -4092,6 +4120,8 @@ class PolyLPSMulti:
         pre_start_stop_sec_override: Optional[int] = None,
         league_tags: Optional[list[str]] = None,
         condition_id: Optional[str] = None,
+        eligibility_managed: bool = False,
+        eligibility_base_risk: Optional[str] = None,
     ) -> bool:
         """Register a new market at runtime (no restart). Mirrors the init-time
         market_cfg schema + minimum per-token state (same 5 dicts that dual-side
@@ -4117,8 +4147,11 @@ class PolyLPSMulti:
             "min_distance": Decimal(str(min_distance)) if min_distance is not None else self.default_min_distance,
             "min_distance_ticks": int(min_distance_ticks) if min_distance_ticks is not None else self.default_min_distance_ticks,
             "risk": str(risk).lower(),
+            "base_risk": str(eligibility_base_risk or risk).lower(),
             "session": session_label,
             "paired_token_id": paired_token_id,
+            "source": source,
+            "eligibility_managed": bool(eligibility_managed),
             "_runtime_added": True,
             "game_start_ts_override": float(game_start_ts) if game_start_ts else 0.0,
             "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
@@ -4169,39 +4202,50 @@ class PolyLPSMulti:
         try:
             cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
             section = "night_markets" if session_label == "night" else "markets"
-            existing_tokens = set()
+            persisted_entry = {
+                "token_id": token_id,
+                "paired_token_id": paired_token_id,
+                "side": "YES",
+                "max_incentive_spread": float(spread) if spread is not None else 2.5,
+                "price_tick": 0.01,
+                "min_distance_from_best_bid": 0.01,
+                "quote_size": 100.0,
+                "risk": str(risk).lower(),
+                "enabled": True,
+                "source": source,
+                "eligibility_managed": bool(eligibility_managed),
+                "eligibility_base_risk": str(
+                    eligibility_base_risk or risk
+                ).lower(),
+                "slug": slug or "",
+                "question": question or "",
+                "league": league or "",
+                "league_tags": list(league_tags or []),
+                "condition_id": str(condition_id or "").strip().lower(),
+                "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
+                "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
+            }
+            persisted = False
             for sec in ("markets", "night_markets"):
-                for m in (cfg_disk.get(sec) or []):
-                    tid = str(m.get("token_id", ""))
-                    if tid:
-                        existing_tokens.add(tid)
-            if token_id not in existing_tokens:
+                for market in (cfg_disk.get(sec) or []):
+                    if str(market.get("token_id") or "") != token_id:
+                        continue
+                    market.update(persisted_entry)
+                    market.pop("pending_activation", None)
+                    market.pop("pending_command_id", None)
+                    persisted = True
+            if not persisted:
                 entries = cfg_disk.setdefault(section, []) or []
-                entries.append({
-                    "token_id": token_id,
-                    "paired_token_id": paired_token_id,
-                    "side": "YES",
-                    "max_incentive_spread": float(spread) if spread is not None else 2.5,
-                    "price_tick": 0.01,
-                    "min_distance_from_best_bid": 0.01,
-                    "quote_size": 100.0,
-                    "risk": str(risk).lower(),
-                    "enabled": True,
-                    "source": source,
-                    "slug": slug or "",
-                    "question": question or "",
-                    "league": league or "",
-                    "league_tags": list(league_tags or []),
-                    "condition_id": str(condition_id or "").strip().lower(),
-                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
-                    "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
-                })
+                entries.append(persisted_entry)
                 cfg_disk[section] = entries
-                self._config_path.write_text(
-                    json.dumps(cfg_disk, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                log(f"[runtime-add] persisted to config.json section={section} token={token_id[:16]}")
+            self._config_path.write_text(
+                json.dumps(cfg_disk, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            log(
+                f"[runtime-add] persisted to config.json "
+                f"section={section} token={token_id[:16]}"
+            )
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
 
@@ -4253,12 +4297,272 @@ class PolyLPSMulti:
             self._volatility_tracker.pop(tid, None)
             self._market_condition_ids.pop(tid, None)
             self._sponsored_guard_by_token.pop(tid, None)
+            self._eligibility_state.pop(tid, None)
             self._dual_side_injected.discard(tid)
             self._runtime_added_tokens.discard(tid)
 
         self._request_market_ws_resubscribe()
         log(f"[runtime-remove] token={token_id[:16]} reason={reason}")
         return True
+
+    def _write_runtime_result(self, command_id: str, payload: Dict[str, Any]) -> None:
+        result = {
+            "command_id": command_id,
+            "account": self._account_idx,
+            "finished_at": time.time(),
+            **payload,
+        }
+        path = self._runtime_result_dir / f"{command_id}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+
+    def _mark_runtime_pending_failed(
+        self,
+        token_id: str,
+        command_id: str,
+        error: str,
+    ) -> None:
+        if not token_id:
+            return
+        try:
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            changed = False
+            for section in ("markets", "night_markets"):
+                for market in config.get(section) or []:
+                    if str(market.get("token_id") or "") != token_id:
+                        continue
+                    if (
+                        market.get("pending_command_id")
+                        and str(market.get("pending_command_id")) != command_id
+                    ):
+                        continue
+                    market["enabled"] = False
+                    market["pending_activation"] = False
+                    market["activation_error"] = error[:180]
+                    market["activation_failed_at"] = time.time()
+                    changed = True
+            if changed:
+                self._config_path.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+        except Exception as exc:
+            log(f"[runtime-command] failed-state persist error: {exc}")
+
+    def _reward_observer_snapshot(
+        self,
+    ) -> tuple[Optional[Dict[str, Any]], Dict[str, Dict[str, Any]], Optional[float]]:
+        try:
+            state = json.loads(
+                self._eligibility_observer_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return None, {}, None
+        generated_at = state.get("generated_at")
+        try:
+            age = max(0.0, time.time() - float(generated_at))
+        except (TypeError, ValueError):
+            age = None
+        candidates: Dict[str, Dict[str, Any]] = {}
+        for row in state.get("candidates") or []:
+            if not isinstance(row, dict):
+                continue
+            token_id = str(row.get("token_id") or "")
+            if token_id.isdigit():
+                candidates[token_id] = row
+        return state, candidates, age
+
+    def _runtime_add_from_command(self, market: Dict[str, Any]) -> str:
+        token_id = str(market.get("token_id") or "").strip()
+        paired_token_id = str(market.get("paired_token_id") or "").strip()
+        if not token_id.isdigit() or not paired_token_id.isdigit():
+            raise ValueError("invalid token pair")
+        if token_id in self.market_cfg or token_id in self._night_market_cfg:
+            return "already_configured"
+
+        _, candidates, observer_age = self._reward_observer_snapshot()
+        candidate = candidates.get(token_id)
+        if observer_age is None or observer_age > 900:
+            raise ValueError("reward observer snapshot is stale")
+        if not candidate or candidate.get("verification_recommended") is not True:
+            raise ValueError("market is no longer eligible")
+        if str(candidate.get("market_phase") or "").lower() == "live":
+            raise ValueError("live market is observe-only")
+
+        spread = candidate.get("rewards_max_spread")
+        if spread is None:
+            spread = market.get("max_incentive_spread")
+        risk = "low" if float(candidate.get("fill_risk") or 100) < 35 else "mid"
+        added = self.add_market_runtime(
+            token_id=token_id,
+            paired_token_id=paired_token_id,
+            spread=spread,
+            tick=market.get("price_tick", 0.01),
+            min_distance=market.get("min_distance_from_best_bid", 0.01),
+            risk=risk,
+            session="day",
+            source="dashboard_confirmed",
+            game_start_ts=candidate.get("game_start_ts"),
+            slug=str(candidate.get("slug") or market.get("slug") or ""),
+            question=str(candidate.get("question") or market.get("question") or ""),
+            condition_id=str(candidate.get("condition_id") or ""),
+            eligibility_managed=True,
+            eligibility_base_risk=risk,
+        )
+        return "added" if added else "already_configured"
+
+    async def runtime_command_loop(self) -> None:
+        """Apply dashboard commands without restarting the engine."""
+        while self._running:
+            try:
+                command_paths = sorted(self._runtime_command_dir.glob("*.json"))
+                for path in command_paths[:20]:
+                    processing = path.with_suffix(".processing")
+                    try:
+                        path.replace(processing)
+                    except FileNotFoundError:
+                        continue
+                    command_id = processing.stem
+                    market: Dict[str, Any] = {}
+                    try:
+                        command = json.loads(processing.read_text(encoding="utf-8"))
+                        command_id = str(command.get("command_id") or command_id)
+                        action = str(command.get("action") or "")
+                        if action != "add_market":
+                            raise ValueError(f"unsupported action: {action}")
+                        raw_market = command.get("market")
+                        if not isinstance(raw_market, dict):
+                            raise ValueError("missing market payload")
+                        market = raw_market
+                        status = self._runtime_add_from_command(market)
+                        self._write_runtime_result(
+                            command_id,
+                            {
+                                "ok": True,
+                                "status": status,
+                                "token_id": str(market.get("token_id") or ""),
+                            },
+                        )
+                        log(
+                            f"[runtime-command] id={command_id[:12]} "
+                            f"action={action} status={status}"
+                        )
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {str(exc)[:180]}"
+                        self._mark_runtime_pending_failed(
+                            str(market.get("token_id") or ""),
+                            command_id,
+                            error,
+                        )
+                        self._write_runtime_result(
+                            command_id,
+                            {
+                                "ok": False,
+                                "status": "rejected",
+                                "error": error,
+                            },
+                        )
+                        log(
+                            f"[runtime-command] id={command_id[:12]} "
+                            f"rejected={type(exc).__name__}:{str(exc)[:120]}"
+                        )
+                    finally:
+                        processing.unlink(missing_ok=True)
+            except Exception as exc:
+                log(f"[runtime-command] loop error: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(1.0)
+
+    def _set_eligibility_risk(
+        self,
+        token_id: str,
+        risk: str,
+        *,
+        paired_token_id: str = "",
+    ) -> None:
+        for tid in (token_id, paired_token_id):
+            if not tid:
+                continue
+            cfg = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
+            if not cfg:
+                continue
+            cfg["risk"] = risk
+            self._market_budget_pct.pop(tid, None)
+        self._last_budget_rebalance_ts = 0.0
+
+    async def eligibility_guard_loop(self) -> None:
+        """Keep dashboard-added markets useful without creating an all-off cliff.
+
+        Fresh qualifying observations restore the configured budget tier.
+        Soft failures reduce the market to the high-risk budget tier; they do
+        not remove it. Hard market, sponsor and pre-start exits remain owned by
+        their dedicated safety guards.
+        """
+        while self._running:
+            try:
+                _, candidates, observer_age = self._reward_observer_snapshot()
+                now = time.time()
+                for token_id, cfg in list(self.market_cfg.items()) + list(
+                    self._night_market_cfg.items()
+                ):
+                    if not cfg.get("eligibility_managed") or cfg.get(
+                        "_dual_side_auto"
+                    ):
+                        continue
+                    candidate = candidates.get(token_id)
+                    qualified = bool(
+                        observer_age is not None
+                        and observer_age <= 900
+                        and candidate
+                        and candidate.get("verification_recommended") is True
+                        and str(candidate.get("market_phase") or "").lower()
+                        != "live"
+                    )
+                    previous = self._eligibility_state.get(token_id, {})
+                    failures = 0 if qualified else int(
+                        previous.get("consecutive_failures") or 0
+                    ) + 1
+                    paired = str(cfg.get("paired_token_id") or "")
+                    if qualified:
+                        status = "qualified"
+                        target_risk = str(cfg.get("base_risk") or "mid")
+                    elif failures < 3:
+                        status = "watch"
+                        target_risk = "high"
+                    else:
+                        status = "retained_reduced"
+                        target_risk = "high"
+                    self._set_eligibility_risk(
+                        token_id,
+                        target_risk,
+                        paired_token_id=paired,
+                    )
+                    state = {
+                        "status": status,
+                        "qualified": qualified,
+                        "consecutive_failures": failures,
+                        "observer_age_sec": round(observer_age, 1)
+                        if observer_age is not None
+                        else None,
+                        "updated_at": now,
+                        "reason": (
+                            "eligible"
+                            if qualified
+                            else "soft eligibility failed; budget reduced"
+                        ),
+                    }
+                    self._eligibility_state[token_id] = state
+                    if previous.get("status") != status:
+                        log(
+                            f"[eligibility] token={token_id[:16]} "
+                            f"status={status} failures={failures} risk={target_risk}"
+                        )
+            except Exception as exc:
+                log(f"[eligibility] loop error: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(self._eligibility_check_interval_sec)
 
     def _request_market_ws_resubscribe(self) -> None:
         evt = self._market_ws_resubscribe_evt
@@ -5237,6 +5541,14 @@ class PolyLPSMulti:
             asyncio.create_task(self.state_write_loop(), name="state_write_loop"),
             asyncio.create_task(self.start_guard_sweep_loop(), name="start_guard_sweep_loop"),
             asyncio.create_task(self.heartbeat_loop(), name="heartbeat_loop"),
+            asyncio.create_task(
+                self.runtime_command_loop(),
+                name="runtime_command_loop",
+            ),
+            asyncio.create_task(
+                self.eligibility_guard_loop(),
+                name="eligibility_guard_loop",
+            ),
         ]
         if self._sponsored_guard.enabled:
             tasks.append(
@@ -7429,6 +7741,8 @@ class PolyLPSMulti:
                         "rewards_min_size": q_details.get("rewards_min_size", 0),
                         "has_dual_side": q_details.get("has_dual_side", False),
                         "sponsored_risk": self._sponsored_guard_by_token.get(tid),
+                        "source": str(mcfg.get("source") or "manual"),
+                        "eligibility": self._eligibility_state.get(tid),
                     }
 
                 # Prune curator_events_log entries older than TTL

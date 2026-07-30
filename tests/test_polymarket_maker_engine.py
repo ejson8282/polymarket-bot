@@ -160,6 +160,84 @@ def test_day_market_carry_is_explicit_and_fails_closed():
     assert engine._should_carry_day_market_to_night(1_000.0, cutoff) is True
 
 
+def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": __import__("time").time(),
+                "candidates": [
+                    {
+                        "token_id": "101",
+                        "paired_token_id": "102",
+                        "verification_recommended": True,
+                        "market_phase": "normal",
+                        "rewards_max_spread": 0.05,
+                        "fill_risk": 20,
+                        "condition_id": "condition",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def add_market_runtime(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    engine.add_market_runtime = add_market_runtime
+
+    status = engine._runtime_add_from_command(
+        {
+            "token_id": "101",
+            "paired_token_id": "102",
+            "price_tick": 0.01,
+            "min_distance_from_best_bid": 0.01,
+        }
+    )
+
+    assert status == "added"
+    assert captured["source"] == "dashboard_confirmed"
+    assert captured["eligibility_managed"] is True
+    assert captured["eligibility_base_risk"] == "low"
+    assert captured["spread"] == 0.05
+
+
+def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": __import__("time").time(),
+                "candidates": [
+                    {
+                        "token_id": "101",
+                        "verification_recommended": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        engine._runtime_add_from_command(
+            {"token_id": "101", "paired_token_id": "102"}
+        )
+    except ValueError as exc:
+        assert "no longer eligible" in str(exc)
+    else:
+        raise AssertionError("ineligible market must not be hot-added")
+
+
 def test_cancel_quotes_preserves_unregistered_sell_exit():
     engine = object.__new__(PolyLPSMulti)
     orders = [

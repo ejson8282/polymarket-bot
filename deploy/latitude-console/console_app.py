@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import ast
+import csv
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -106,6 +108,9 @@ IPO_PACK_URL = os.getenv(
 )
 MACMINI_STATUS_URL = os.getenv("MACMINI_STATUS_URL", "http://100.91.159.54:8620/status")
 GRID_CONSOLE_URL = os.getenv("GRID_CONSOLE_URL", "http://127.0.0.1:8610/api/state")  # varxyz-grid 独立控制台(本机)
+GRID_LIVE_DIR = Path(
+    os.getenv("GRID_LIVE_DIR", "/home/ubuntu/varxyz-grid-current-console/data/live")
+)
 DEWU_INVENTORY_PATH = Path(
     os.getenv("DEWU_INVENTORY_PATH", DATA_DIR / "dewu_inventory.json")
 )
@@ -1168,6 +1173,7 @@ def _polymarket() -> Dict[str, Any]:
             str(remotes[idx].get("label") or "远程")
             if is_remote else "VPS1"
         )
+        opportunity_start = len(curator_opportunities)
         for candidate in observation_candidates:
             if not isinstance(candidate, dict):
                 continue
@@ -1189,6 +1195,27 @@ def _polymarket() -> Dict[str, Any]:
             )
             curator_opportunities.append(row)
         curator_config = _read_json(MAKER_DIR / f"config_{idx}.json") or {}
+        configured_tokens = {
+            str(market.get("token_id") or "")
+            for section in ("markets", "night_markets")
+            for market in (curator_config.get(section) or [])
+            if isinstance(market, dict) and market.get("enabled", True)
+        }
+        pending_tokens = {
+            str(market.get("token_id") or "")
+            for section in ("markets", "night_markets")
+            for market in (curator_config.get(section) or [])
+            if isinstance(market, dict) and market.get("pending_activation")
+        }
+        for row in curator_opportunities[opportunity_start:]:
+            row["configured"] = (
+                str(row.get("token_id") or "") in configured_tokens
+                or str(row.get("paired_token_id") or "") in configured_tokens
+            )
+            row["add_pending"] = (
+                str(row.get("token_id") or "") in pending_tokens
+                or str(row.get("paired_token_id") or "") in pending_tokens
+            )
         curator_cfg = (
             curator_config.get("auto_curator")
             if isinstance(curator_config.get("auto_curator"), dict)
@@ -1449,6 +1476,180 @@ def _polymarket() -> Dict[str, Any]:
             # A market slug is not an event slug. Hiding an unverified link is
             # preferable to sending the operator to Polymarket's 404 page.
             row["market_url"] = ""
+    # The scan is performed independently by each account/VPS, but the
+    # operator-facing opportunity list is market-level.  The same condition
+    # therefore appears once with all eligible account routes attached.  This
+    # keeps the UI from suggesting that VPS1 and VPS2 are different markets,
+    # while preserving the routing details needed for execution/debugging.
+    grouped_opportunities: Dict[str, dict] = {}
+    risk_rank = {"low": 1, "medium": 2, "high": 3}
+    verification_rank = {
+        "confirmed": 1,
+        "stable": 1,
+        "collecting": 2,
+        "warming": 3,
+        "unstable": 4,
+        "risk_high": 5,
+    }
+    for row in curator_opportunities:
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        event_slug = str(row.get("event_slug") or "").strip().lower()
+        market_slug = str(row.get("slug") or "").strip().lower()
+        question = str(row.get("question") or "").strip().lower()
+        market_key = (
+            condition_id
+            or (event_slug + "|" + market_slug if event_slug and market_slug else "")
+            or market_slug
+            or question
+        )
+        if not market_key:
+            # Do not collapse malformed rows into one another.
+            market_key = "row:" + str(len(grouped_opportunities))
+        group = grouped_opportunities.get(market_key)
+        if group is None:
+            group = dict(row)
+            group.update({
+                "account": None,
+                "host": "共享",
+                "routes": [],
+                "route_count": 0,
+                "shared_market": True,
+                "actual_reward_share_pct": None,
+                "actual_daily_gross_usd": None,
+                "actual_route_count": 0,
+                "probe_capital_total_usd": 0.0,
+                "_actual_gross_values": [],
+                "_actual_share_values": [],
+                "_risk_rank": 0,
+                "_verification_rank": 0,
+            })
+            grouped_opportunities[market_key] = group
+
+        route = {
+            "account": row.get("account"),
+            "host": row.get("host"),
+            "token_id": row.get("token_id"),
+            "paired_token_id": row.get("paired_token_id"),
+            "condition_id": row.get("condition_id"),
+            "question": row.get("question"),
+            "slug": row.get("slug"),
+            "event_slug": row.get("event_slug"),
+            "market_phase": row.get("market_phase"),
+            "game_start_ts": row.get("game_start_ts"),
+            "rewards_max_spread": row.get("rewards_max_spread"),
+            "probe_shares_each_side": row.get("probe_shares_each_side"),
+            "fill_risk": row.get("fill_risk"),
+            "configured": bool(row.get("configured")),
+            "add_pending": bool(row.get("add_pending")),
+            "actual_reward_share_pct": row.get("actual_reward_share_pct"),
+            "actual_daily_gross_usd": row.get("actual_daily_gross_usd"),
+            "verification_status": row.get("verification_status"),
+            "verification_recommended": bool(row.get("verification_recommended")),
+            "observation_age_sec": row.get("observation_age_sec"),
+        }
+        group["routes"].append(route)
+        group["route_count"] = len(group["routes"])
+        group["configured_route_count"] = sum(
+            1 for item in group["routes"] if item.get("configured")
+        )
+        group["pending_route_count"] = sum(
+            1 for item in group["routes"] if item.get("add_pending")
+        )
+        group["route_label"] = (
+            f"{group['route_count']} 路共享"
+            if group["route_count"] > 1 else "1 路"
+        )
+        capital = _num(row.get("probe_capital_usd"))
+        if capital is not None:
+            group["probe_capital_total_usd"] = round(
+                (_num(group.get("probe_capital_total_usd")) or 0.0) + capital, 2
+            )
+            # Keep this as the per-route amount; the total is explicit above.
+            group["probe_capital_usd"] = max(
+                _num(group.get("probe_capital_usd")) or 0.0, capital
+            )
+        shares = _num(row.get("actual_reward_share_pct"))
+        if shares is not None:
+            group["_actual_share_values"].append(shares)
+        actual_gross = _num(row.get("actual_daily_gross_usd"))
+        if actual_gross is not None:
+            group["_actual_gross_values"].append(actual_gross)
+        group["_risk_rank"] = max(
+            group["_risk_rank"], risk_rank.get(str(row.get("risk_label") or "low"), 1)
+        )
+        group["_verification_rank"] = max(
+            group["_verification_rank"],
+            verification_rank.get(str(row.get("verification_status") or "collecting"), 2),
+        )
+        if row.get("verification_recommended") is True:
+            group["verification_recommended"] = True
+        # These values should normally be identical on both routes.  Taking
+        # the freshest/widest observation makes the merged row conservative.
+        for field in ("observation_span_sec", "observation_samples"):
+            value = _num(row.get(field))
+            if value is not None:
+                group[field] = max(_num(group.get(field)) or 0.0, value)
+        age = _num(row.get("observation_age_sec"))
+        if age is not None:
+            existing_age = _num(group.get("observation_age_sec"))
+            group["observation_age_sec"] = (
+                age if existing_age is None else min(existing_age, age)
+            )
+        for field in ("daily_reward_usd", "estimated_daily_gross_usd", "estimated_gross_daily_roi_pct"):
+            value = _num(row.get(field))
+            if value is not None:
+                group[field] = max(_num(group.get(field)) or 0.0, value)
+
+    for group in grouped_opportunities.values():
+        actuals = group.pop("_actual_gross_values", [])
+        shares = group.pop("_actual_share_values", [])
+        route_count = int(group.get("route_count") or 0)
+        configured_count = int(group.get("configured_route_count") or 0)
+        pending_count = int(group.get("pending_route_count") or 0)
+        group["configured"] = bool(route_count and configured_count == route_count)
+        group["add_pending"] = bool(
+            route_count
+            and configured_count < route_count
+            and configured_count + pending_count == route_count
+        )
+        group["actual_route_count"] = len(actuals)
+        group["actual_daily_gross_usd"] = (
+            round(sum(actuals), 2) if actuals else None
+        )
+        # Route-level percentages remain available in `routes`; a scalar sum
+        # is useful only as a compact indication for the merged row.
+        group["actual_reward_share_pct"] = (
+            round(sum(shares), 4) if shares else None
+        )
+        merged_risk_rank = group.pop("_risk_rank", 0)
+        if merged_risk_rank >= 3:
+            group["risk_label"] = "high"
+        elif merged_risk_rank >= 2:
+            group["risk_label"] = "medium"
+        else:
+            group["risk_label"] = "low"
+        verification = group.pop("_verification_rank", 2)
+        if group.get("verification_recommended") is True and group.get("market_phase") != "live":
+            group["verification_status"] = "confirmed"
+        elif verification >= 5:
+            group["verification_status"] = "risk_high"
+        elif verification >= 4:
+            group["verification_status"] = "unstable"
+        elif verification >= 3:
+            group["verification_status"] = "warming"
+        elif verification <= 1:
+            group["verification_status"] = "stable"
+        else:
+            group["verification_status"] = "collecting"
+
+    market_opportunities = list(grouped_opportunities.values())
+    market_opportunities.sort(
+        key=lambda row: (
+            _num(row.get("estimated_gross_daily_roi_pct")) or 0,
+            _num(row.get("estimated_daily_gross_usd")) or 0,
+        ),
+        reverse=True,
+    )
     curator_out = {
         "enabled": any(row["enabled"] for row in curator_accounts),
         "fresh": bool(curator_accounts) and all(
@@ -1461,14 +1662,10 @@ def _polymarket() -> Dict[str, Any]:
             row["rejected_total"] for row in curator_accounts
         ),
         "observation_mode": "observe_only",
-        "opportunities": sorted(
-            curator_opportunities,
-            key=lambda row: (
-                _num(row.get("estimated_gross_daily_roi_pct")) or 0,
-                _num(row.get("estimated_daily_gross_usd")) or 0,
-            ),
-            reverse=True,
-        )[:100],
+        "raw_opportunity_count": len(curator_opportunities),
+        "unique_market_count": len(market_opportunities),
+        "account_opportunities": curator_opportunities[:200],
+        "opportunities": market_opportunities[:100],
     }
     capital = _pm_capital_summary()
     capital_total = _num(capital.get("total")) or 0.0
@@ -1635,14 +1832,21 @@ def _varia_trades_today() -> Dict[str, Any]:
             r = dict(r)
             r.setdefault("host", path.stem)
             rows.append(r)
-    # (host,id) 去重 + 只算 executed(口径同 varia dashboard);24h 与 7日双窗口
+    # (host,id) 去重 + 只算 executed(口径同 varia dashboard);保留滚动24h，
+    # 同时计算本地自然日，经营分析使用 calendar，其他旧面板继续使用 24h。
     seen = set()
     cutoff_24h = time.time() - 86400
+    local_now = datetime.now().astimezone()
+    cutoff_calendar = datetime.combine(
+        local_now.date(), datetime.min.time(), tzinfo=local_now.tzinfo
+    ).timestamp()
     volume = pnl = fee = funding = slip = loss = 0.0
+    calendar_volume = calendar_pnl = calendar_fee = calendar_funding = calendar_slip = calendar_loss = 0.0
     loss_7d = 0.0
     loss_7d_by_host: Dict[str, float] = {}
     net_week_by_host: Dict[str, float] = {}
     count = 0
+    calendar_count = 0
     for r in rows:
         status = str(r.get("status") or "").strip().lower()
         if status not in ("", "executed"):
@@ -1666,18 +1870,29 @@ def _varia_trades_today() -> Dict[str, Any]:
             net_week_by_host[host] = net_week_by_host.get(host, 0.0) + (
                 r_pnl if r_pnl is not None else -row_loss
             )
-        if ts is None or ts < cutoff_24h:
-            continue
-        volume += notional
-        count += 1
-        loss += row_loss
-        if r_pnl is not None:
-            pnl += r_pnl
-        if cost_bp is not None:
-            fee += abs(cost_bp) * notional / 10000.0
-        funding += (_num(r.get("funding_var")) or 0.0) + (_num(r.get("funding_decibel")) or 0.0)
-        slip += (abs(_num(r.get("var_slippage_bp")) or 0.0)
-                 + abs(_num(r.get("decibel_slippage_bp")) or 0.0)) * notional / 10000.0
+        if ts is not None and ts >= cutoff_24h:
+            volume += notional
+            count += 1
+            loss += row_loss
+            if r_pnl is not None:
+                pnl += r_pnl
+            if cost_bp is not None:
+                fee += abs(cost_bp) * notional / 10000.0
+            funding += (_num(r.get("funding_var")) or 0.0) + (_num(r.get("funding_decibel")) or 0.0)
+            slip += (abs(_num(r.get("var_slippage_bp")) or 0.0)
+                     + abs(_num(r.get("decibel_slippage_bp")) or 0.0)) * notional / 10000.0
+        if ts is not None and ts >= cutoff_calendar:
+            calendar_volume += notional
+            calendar_count += 1
+            calendar_loss += row_loss
+            if r_pnl is not None:
+                calendar_pnl += r_pnl
+            if cost_bp is not None:
+                calendar_fee += abs(cost_bp) * notional / 10000.0
+            calendar_funding += (_num(r.get("funding_var")) or 0.0) + (_num(r.get("funding_decibel")) or 0.0)
+            calendar_slip += (abs(_num(r.get("var_slippage_bp")) or 0.0)
+                              + abs(_num(r.get("decibel_slippage_bp")) or 0.0)) * notional / 10000.0
+    source_complete = db.exists() or peer_dir.exists()
     return {
         "present": count > 0,
         "trades": count, "volume": round(volume, 2), "pnl": round(pnl, 2),
@@ -1687,6 +1902,19 @@ def _varia_trades_today() -> Dict[str, Any]:
         "week_cutoff": datetime.fromtimestamp(cutoff_week, tz=timezone.utc).isoformat(),
         "loss_bps_wan": round(loss / volume * 10000.0, 2) if volume else None,
         "fee": round(fee, 2), "funding": round(funding, 2), "slip": round(slip, 2),
+        "calendar": {
+            "date": local_now.date().isoformat(),
+            "present": calendar_count > 0,
+            "source_complete": source_complete,
+            "trades": calendar_count,
+            "volume": round(calendar_volume, 2) if source_complete else None,
+            "pnl": round(calendar_pnl, 2) if source_complete else None,
+            "loss": round(calendar_loss, 2) if source_complete else None,
+            "fee": round(calendar_fee, 2) if source_complete else None,
+            "funding": round(calendar_funding, 2) if source_complete else None,
+            "slip": round(calendar_slip, 2) if source_complete else None,
+            "source": "varia trades · 本地自然日",
+        },
     }
 
 
@@ -2972,6 +3200,51 @@ def _single_account() -> Dict[str, Any]:
             curve = conn.execute("SELECT equity FROM equity_snapshots ORDER BY ts DESC LIMIT 96").fetchall()
             out["equity_curve"] = [r[0] for r in reversed(curve)]
             out["closed_trades"] = conn.execute("SELECT COUNT(*) FROM positions_closed").fetchone()[0]
+            # strategy_daily is the simulator's only authoritative day-level
+            # result source. Keep it separate from the cumulative equity curve.
+            local_today = datetime.now().astimezone().date().isoformat()
+            daily_rows = conn.execute(
+                "SELECT strategy, trades, wins, gross, fees, funding, net, mdd_intraday "
+                "FROM strategy_daily WHERE date = ?",
+                (local_today,),
+            ).fetchall()
+            if daily_rows:
+                out["today"] = {
+                    "date": local_today,
+                    "strategies": [
+                        {
+                            "strategy": row[0], "trades": int(row[1] or 0),
+                            "wins": int(row[2] or 0), "gross": _num(row[3]) or 0.0,
+                            "fees": _num(row[4]) or 0.0, "funding": _num(row[5]) or 0.0,
+                            "net": _num(row[6]) or 0.0, "mdd_intraday": _num(row[7]),
+                        }
+                        for row in daily_rows
+                    ],
+                    "trades": sum(int(row[1] or 0) for row in daily_rows),
+                    "gross": round(sum(_num(row[3]) or 0.0 for row in daily_rows), 6),
+                    "fees": round(sum(_num(row[4]) or 0.0 for row in daily_rows), 6),
+                    "funding": round(sum(_num(row[5]) or 0.0 for row in daily_rows), 6),
+                    "net": round(sum(_num(row[6]) or 0.0 for row in daily_rows), 6),
+                    "source": "single_account_paper.db.strategy_daily",
+                }
+            else:
+                state_ts = _parse_ts(state.get("ts")) if isinstance(state, dict) else None
+                state_day = (
+                    datetime.fromtimestamp(state_ts, tz=timezone.utc).astimezone().date().isoformat()
+                    if state_ts is not None else ""
+                )
+                db_day = datetime.fromtimestamp(sim_db.stat().st_mtime).astimezone().date().isoformat()
+                live_today = state_day == local_today or db_day == local_today
+                out["today"] = {
+                    "date": local_today, "strategies": [], "trades": 0,
+                    "gross": 0.0 if live_today else None,
+                    "fees": 0.0 if live_today else None,
+                    "funding": 0.0 if live_today else None,
+                    "net": 0.0 if live_today else None,
+                    "present": live_today,
+                    "source": "single_account_paper.db.strategy_daily",
+                    "note": "今日无已平仓交易" if live_today else "今日数据未刷新",
+                }
             conn.close()
         except Exception:
             pass
@@ -4866,6 +5139,16 @@ def _pm_detail() -> Dict[str, Any]:
                     "reward_lower": _num(engine_market.get("reward_lower")),
                     "reward_upper": _num(engine_market.get("reward_upper")),
                     "snapshot_age_ms": _num(engine_market.get("snapshot_age_ms")),
+                    "source": str(
+                        engine_market.get("source")
+                        or market_config.get("source")
+                        or "manual"
+                    ),
+                    "eligibility": (
+                        engine_market.get("eligibility")
+                        if isinstance(engine_market.get("eligibility"), dict)
+                        else None
+                    ),
                     "engine_state_fresh": state_fresh,
                 })
 
@@ -5285,6 +5568,211 @@ def _grid() -> Dict[str, Any]:
     return out
 
 
+def _grid_today(grid: Optional[dict] = None) -> Dict[str, Any]:
+    """Calculate today's grid notional from the append-only fill CSVs.
+
+    The grid API exposes cumulative ``volume`` only. The fill files contain
+    timestamps, so this helper gives analytics a real local-day volume and
+    reconstructs today's *realized* PnL with average-cost matching. Unrealized
+    PnL remains deliberately separate because the API has no prior-day mark.
+    """
+    now = datetime.now().astimezone()
+    start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo).timestamp() * 1000
+    end = (start + 86400 * 1000)
+    by_runner: Dict[str, dict] = {}
+    total_volume = 0.0
+    total_fills = 0
+    total_realized = 0.0
+    latest_ms: Optional[float] = None
+    if GRID_LIVE_DIR.exists():
+        for path in sorted(GRID_LIVE_DIR.glob("*_fills.csv")):
+            runner_name = path.name[:-10]  # remove ``_fills.csv``
+            volume = 0.0
+            fills = 0
+            last_ms: Optional[float] = None
+            realized_today = 0.0
+            realized_all = 0.0
+            try:
+                with path.open("r", encoding="utf-8", newline="") as fh:
+                    rows = []
+                    for row in csv.DictReader(fh):
+                        ts = _num(row.get("ts_ms"))
+                        px = abs(_num(row.get("px")) or 0.0)
+                        qty = abs(_num(row.get("qty")) or 0.0)
+                        if ts is None or px <= 0 or qty <= 0 or ts >= end:
+                            continue
+                        rows.append((ts, str(row.get("side") or "").lower(), px, qty))
+                rows.sort(key=lambda item: item[0])
+                inventory = 0.0
+                average_entry = 0.0
+                for ts, side, px, qty in rows:
+                    signed = qty if side == "buy" else -qty if side == "sell" else 0.0
+                    if not signed:
+                        continue
+                    is_today = start <= ts < end
+                    if inventory == 0.0 or inventory * signed > 0:
+                        average_entry = (
+                            (abs(inventory) * average_entry + abs(signed) * px)
+                            / (abs(inventory) + abs(signed))
+                            if inventory else px
+                        )
+                        inventory += signed
+                    else:
+                        close_qty = min(abs(inventory), abs(signed))
+                        realized = (
+                            (px - average_entry) * close_qty
+                            if inventory > 0
+                            else (average_entry - px) * close_qty
+                        )
+                        realized_all += realized
+                        if is_today:
+                            realized_today += realized
+                        inventory += signed
+                        if abs(inventory) < 1e-12:
+                            inventory = 0.0
+                            average_entry = 0.0
+                        elif (inventory > 0 and signed > 0) or (inventory < 0 and signed < 0):
+                            average_entry = px
+                    if is_today:
+                        volume += px * qty
+                        fills += 1
+                        last_ms = max(last_ms or ts, ts)
+            except (OSError, csv.Error):
+                continue
+            by_runner[runner_name] = {
+                "volume": round(volume, 2), "fills": fills,
+                "realized_pnl": round(realized_today, 6) if fills else None,
+                "realized_pnl_all": round(realized_all, 6) if rows else None,
+                "last_fill_ts": (
+                    datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc).isoformat()
+                    if last_ms is not None else None
+                ),
+                "source": str(path),
+            }
+            total_volume += volume
+            total_fills += fills
+            if fills:
+                total_realized += realized_today
+            if last_ms is not None:
+                latest_ms = max(latest_ms or last_ms, last_ms)
+    runners = (grid or {}).get("runners") if isinstance(grid, dict) else []
+    known = {str(r.get("name") or "") for r in runners if isinstance(r, dict)}
+    source_complete = bool(known) and GRID_LIVE_DIR.exists()
+    return {
+        "date": now.date().isoformat(),
+        "timezone": str(now.tzinfo),
+        "volume": round(total_volume, 2) if source_complete else None,
+        "fills": total_fills,
+        "by_runner": by_runner,
+        "last_fill_at": (
+            datetime.fromtimestamp(latest_ms / 1000, tz=timezone.utc).isoformat()
+            if latest_ms is not None else None
+        ),
+        "pnl": round(total_realized, 6) if source_complete else None,
+        "pnl_source": "varxyz-grid/*_fills.csv · 今日已实现 PnL（均价匹配；未含未实现 PnL）",
+        "source": "varxyz-grid/*_fills.csv",
+        "source_complete": source_complete,
+    }
+
+
+def _analytics_today(
+    vd: dict,
+    pm: dict,
+    grid: dict,
+    ao: dict,
+    sa: dict,
+    automation: dict,
+) -> Dict[str, Any]:
+    """Normalize today's actuals and configured targets for the analytics page."""
+    local_now = datetime.now().astimezone()
+    date_key = local_now.date().isoformat()
+    var_window = vd.get("today") if isinstance(vd.get("today"), dict) else {}
+    var_today = (
+        var_window.get("calendar")
+        if isinstance(var_window.get("calendar"), dict)
+        else var_window
+    )
+    pm_pnl = pm.get("pnl") if isinstance(pm.get("pnl"), dict) else {}
+    grid_today = _grid_today(grid)
+    hk_today = ao.get("today") if isinstance(ao.get("today"), dict) else {}
+    sa_today = sa.get("today") if isinstance(sa.get("today"), dict) else {}
+    weekly_target = _num((automation or {}).get("weekly_volume_target_usdc"))
+    rows = {
+        "vardec": {
+            "name": "Var 对冲 Farming",
+            "volume": _num(var_today.get("volume")),
+            "result": _num(var_today.get("pnl")),
+            "cost": round(
+                abs(_num(var_today.get("fee")) or 0.0)
+                + abs(_num(var_today.get("funding")) or 0.0)
+                + abs(_num(var_today.get("slip")) or 0.0),
+                2,
+            ) if var_today.get("volume") is not None else None,
+            "target_volume": round(weekly_target / 7.0, 2) if weekly_target is not None else None,
+            "target_label": "周目标 ÷ 7" if weekly_target is not None else "未配置",
+            "source": var_today.get("source", "var_decibel.today"),
+            "available": bool(var_today.get("source_complete") or var_today.get("present")),
+        },
+        "pm": {
+            "name": "Polymarket 做市",
+            "volume": _num(pm.get("volume_today")),
+            "result": _num(pm_pnl.get("total_income_today")) if pm_pnl.get("total_income_today") is not None else _num(pm.get("pnl_today")),
+            "cost": None,
+            "target_volume": None,
+            "target_label": "未配置",
+            "source": "polymarket.volume_today + pnl.total_income_today",
+            "available": pm.get("volume_today") is not None or pm_pnl.get("total_income_today") is not None,
+        },
+        "grid": {
+            "name": "网格 Grid",
+            "volume": _num(grid_today.get("volume")),
+            "result": _num(grid_today.get("pnl")),
+            "cost": None,
+            "target_volume": None,
+            "target_label": "未配置",
+            "source": grid_today.get("source"),
+            "available": grid_today.get("volume") is not None,
+            "note": grid_today.get("pnl_source"),
+        },
+        "hk": {
+            "name": "打新 & Alpha",
+            "volume": None,
+            "result": _num(hk_today.get("net")),
+            "cost": _num(hk_today.get("cost")),
+            "target_volume": None,
+            "target_label": "未配置",
+            "source": hk_today.get("source", "account_ops ledger"),
+            "available": bool(hk_today.get("source_complete") or hk_today.get("present")),
+            "note": hk_today.get("note"),
+        },
+        "sa": {
+            "name": "Single Account · Paper",
+            "volume": None,
+            "result": _num(sa_today.get("net")),
+            "cost": _num(sa_today.get("fees")),
+            "target_volume": None,
+            "target_label": "未配置",
+            "source": sa_today.get("source", "single_account_paper.db.strategy_daily"),
+            "available": _num(sa_today.get("net")) is not None,
+            "paper": True,
+            "note": sa_today.get("note"),
+        },
+    }
+    live = [item for item in rows.values() if not item.get("paper")]
+    volume_values = [_num(item.get("volume")) for item in live]
+    result_values = [_num(item.get("result")) for item in live]
+    target_values = [_num(item.get("target_volume")) for item in live]
+    return {
+        "date": date_key,
+        "timezone": str(local_now.tzinfo),
+        "projects": rows,
+        "total_volume": round(sum(v for v in volume_values if v is not None), 2) if any(v is not None for v in volume_values) else None,
+        "total_result": round(sum(v for v in result_values if v is not None), 2) if any(v is not None for v in result_values) else None,
+        "total_target_volume": round(sum(v for v in target_values if v is not None), 2) if any(v is not None for v in target_values) else None,
+        "sources": sorted({str(item.get("source") or "") for item in rows.values() if item.get("available")}),
+    }
+
+
 PM_SIGNER_HOSTPORT = os.getenv("PM_SIGNER_HOSTPORT", "100.91.159.54:8420")
 VAR_SIGNER_HOSTPORT = os.getenv("VAR_SIGNER_HOSTPORT", "100.91.159.54:8787")
 
@@ -5399,6 +5887,29 @@ def _refresh_pm_remotes() -> None:
             )
         except Exception:
             pass
+        remote_config_src = (
+            f"{r.get('ssh_host')}:"
+            f"/home/ubuntu/polymarket-bot/platforms/polymarket/maker/config_{idx}.json"
+        )
+        local_config = MAKER_DIR / f"config_{idx}.json"
+        config_tmp = local_config.with_suffix(".json.remote-tmp")
+        try:
+            result = subprocess.run(
+                [
+                    "scp", "-i", str(r.get("ssh_key", "")),
+                    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                    remote_config_src,
+                    str(config_tmp),
+                ],
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode == 0 and _read_json(config_tmp) is not None:
+                os.replace(config_tmp, local_config)
+            else:
+                config_tmp.unlink(missing_ok=True)
+        except Exception:
+            config_tmp.unlink(missing_ok=True)
         rewards_live_src = (
             f"{r.get('ssh_host')}:{REMOTE_REPO_DATA}/rewards_live.json"
         )
@@ -5634,6 +6145,64 @@ def _account_ops() -> Dict[str, Any]:
     ]
     today = datetime.now().astimezone().date()
 
+    # Ledger entries are the only day-level source for IPO/Alpha. They are
+    # intentionally kept separate from the cumulative account income fields.
+    fx_rates = meta.get("fxRatesToUsd") if isinstance(meta.get("fxRatesToUsd"), dict) else {}
+    today_income = today_cost = today_net = 0.0
+    today_entries = 0
+
+    def _ledger_datetime(value: Any) -> Optional[datetime]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        for pattern in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%m-%d %H:%M"):
+            try:
+                parsed = datetime.strptime(raw[:16], pattern)
+                if pattern == "%m-%d %H:%M":
+                    parsed = parsed.replace(year=today.year)
+                return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            except ValueError:
+                continue
+        return None
+
+    for row in ledger:
+        if not isinstance(row, dict):
+            continue
+        stamp = _ledger_datetime(row.get("time") or row.get("date") or row.get("timestamp"))
+        if stamp is None or stamp.date() != today:
+            continue
+        kind = str(row.get("type") or "").lower()
+        amount = _num(row.get("amount"))
+        if amount is None:
+            continue
+        currency = str(row.get("currency") or "USD").upper()
+        usd = amount * (_num(fx_rates.get(currency)) or 1.0)
+        if any(token in kind for token in ("收益", "奖励", "返佣", "收入", "利润", "盈利")):
+            today_income += usd
+            today_net += usd
+            today_entries += 1
+        elif any(token in kind for token in ("成本", "费用", "手续费", "利息", "损耗")):
+            today_cost += abs(usd)
+            today_net += usd
+            today_entries += 1
+    as_of_raw = str(meta.get("as_of") or "")
+    as_of_day = as_of_raw[:10]
+    source_complete = bool(as_of_day == today.isoformat())
+    today_ledger = {
+        "date": today.isoformat(),
+        "present": today_entries > 0,
+        "source_complete": source_complete,
+        "income": round(today_income, 2) if today_entries else (0.0 if source_complete else None),
+        "cost": round(today_cost, 2) if today_entries else (0.0 if source_complete else None),
+        "net": round(today_net, 2) if today_entries else (0.0 if source_complete else None),
+        "entries": today_entries,
+        "source": "account_ops.ledger",
+        "note": None if today_entries else (
+            "今日账本源已刷新，但没有可识别的收益/成本记录"
+            if source_complete else "账本源尚未刷新到今日"
+        ),
+    }
+
     def _days_until(value: Any) -> Optional[int]:
         raw = str(value or "").strip()
         if not raw:
@@ -5826,6 +6395,7 @@ def _account_ops() -> Dict[str, Any]:
         "as_of": str(meta.get("as_of") or ""),
         "as_of_age": _age_text(_iso_age(meta.get("as_of"))),
         "age_sec": _iso_age(meta.get("as_of")),
+        "today": today_ledger,
     }
 
 
@@ -6717,6 +7287,7 @@ def api_state() -> JSONResponse:
     mm = _macmini()
     fresh = _freshness(vd, ao)
     grid = _grid()
+    analytics_today = _analytics_today(vd, pm, grid, ao, sa, varia_automation)
     alerts = _alerts(vd, pm, sa, ao, mm, fresh, grid)
     return JSONResponse({
         "ts": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),
@@ -6736,6 +7307,7 @@ def api_state() -> JSONResponse:
         "freshness": fresh,
         "events": _events(pm.pop("fill_events", [])),
         "grid": grid,
+        "analytics_today": analytics_today,
         "alerts": alerts,
         "console_release": _console_release(),
         "writes_enabled": WRITES_ENABLED,
@@ -7827,6 +8399,296 @@ def _backup_pm_config(cfg: dict) -> str:
     backup = PM_CONFIG.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
     backup.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return backup.name
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _pm_confirmed_market_entry(row: dict) -> dict:
+    fill_risk = _num(row.get("fill_risk"))
+    risk = "low" if fill_risk is not None and fill_risk < 35 else "mid"
+    return {
+        "token_id": str(row.get("token_id") or ""),
+        "paired_token_id": str(row.get("paired_token_id") or ""),
+        "side": "YES",
+        "max_incentive_spread": round(
+            _num(row.get("rewards_max_spread")) or 0.03,
+            6,
+        ),
+        "price_tick": 0.01,
+        "min_distance_from_best_bid": 0.01,
+        "quote_size": round(
+            _num(row.get("probe_shares_each_side")) or 100,
+            4,
+        ),
+        "risk": risk,
+        "enabled": True,
+        "source": "dashboard_confirmed",
+        "eligibility_managed": True,
+        "eligibility_base_risk": risk,
+        "condition_id": str(row.get("condition_id") or ""),
+        "slug": str(row.get("slug") or ""),
+        "question": str(row.get("question") or ""),
+        "game_start_ts": _num(row.get("game_start_ts")) or 0,
+    }
+
+
+def _pm_deliver_runtime_command(
+    idx: int,
+    command: dict,
+    remote: Optional[dict],
+) -> Optional[str]:
+    command_id = str(command["command_id"])
+    filename = f"{command_id}.json"
+    if remote is None:
+        target = DATA_DIR / f"runtime_commands_{idx}" / filename
+        _write_json_atomic(target, command)
+        return None
+
+    import subprocess
+
+    staging = DATA_DIR / "runtime_dispatch" / filename
+    _write_json_atomic(staging, command)
+    remote_dir = f"{REMOTE_REPO_DATA}/runtime_commands_{idx}"
+    mkdir_result = _remote_ssh(
+        remote,
+        f"mkdir -p {shlex.quote(remote_dir)}",
+        timeout=15,
+    )
+    if mkdir_result.get("rc") != 0:
+        staging.unlink(missing_ok=True)
+        return str(mkdir_result.get("err") or "远程命令目录创建失败")[:160]
+    try:
+        result = subprocess.run(
+            [
+                "scp",
+                "-i",
+                str(remote.get("ssh_key", "")),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                str(staging),
+                f"{remote.get('ssh_host')}:{remote_dir}/{filename}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return (result.stderr or "远程命令发送失败")[:160]
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {str(exc)[:120]}"
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _pm_push_account_config(
+    idx: int,
+    config_path: Path,
+    remote: Optional[dict],
+) -> Optional[str]:
+    if remote is None:
+        return None
+    import subprocess
+
+    destination = (
+        f"{remote.get('ssh_host')}:"
+        f"/home/ubuntu/polymarket-bot/platforms/polymarket/maker/config_{idx}.json"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "scp",
+                "-i",
+                str(remote.get("ssh_key", "")),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                str(config_path),
+                destination,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return (result.stderr or "远程配置发送失败")[:160]
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+@app.post("/api/pm/opportunities/add")
+async def pm_opportunities_add(request: Request) -> JSONResponse:
+    """Append fresh confirmed routes without replacing existing markets."""
+    if not WRITES_ENABLED:
+        return JSONResponse(
+            {"ok": False, "error": "写通道未启用"},
+            status_code=403,
+        )
+    if _is_cloudflare(request):
+        return JSONResponse(
+            {"ok": False, "error": "公网入口只读，请走 Tailscale 内网"},
+            status_code=403,
+        )
+
+    pm_state = _polymarket()
+    curator = pm_state.get("curator") or {}
+    opportunities = curator.get("account_opportunities") or []
+    now = time.time()
+    eligible = [
+        row
+        for row in opportunities
+        if isinstance(row, dict)
+        and row.get("verification_recommended") is True
+        and str(row.get("market_phase") or "").lower() != "live"
+        and (_num(row.get("observation_age_sec")) is not None)
+        and (_num(row.get("observation_age_sec")) or 0) <= 900
+        and str(row.get("token_id") or "").isdigit()
+        and str(row.get("paired_token_id") or "").isdigit()
+    ]
+    remotes = _load_pm_remotes()
+    grouped: Dict[int, List[dict]] = {}
+    for row in eligible:
+        idx = int(_num(row.get("account")) or 0)
+        if idx > 0:
+            grouped.setdefault(idx, []).append(row)
+
+    added: List[dict] = []
+    skipped: List[dict] = []
+    failed: List[dict] = []
+    for idx, rows in grouped.items():
+        config_path = MAKER_DIR / f"config_{idx}.json"
+        config = _read_json(config_path)
+        if not isinstance(config, dict):
+            failed.append({"account": idx, "error": "账号配置不可读"})
+            continue
+        configured = {
+            str(market.get("token_id") or "")
+            for section in ("markets", "night_markets")
+            for market in (config.get(section) or [])
+            if isinstance(market, dict)
+            and (
+                market.get("enabled", True)
+                or market.get("pending_activation")
+            )
+        }
+        new_rows = [
+            row
+            for row in rows
+            if str(row.get("token_id") or "") not in configured
+            and str(row.get("paired_token_id") or "") not in configured
+        ]
+        skipped.extend(
+            {
+                "account": idx,
+                "token_id": str(row.get("token_id") or ""),
+                "reason": "已在运行市场",
+            }
+            for row in rows
+            if row not in new_rows
+        )
+        if not new_rows:
+            continue
+
+        entries = config.setdefault("markets", [])
+        if not isinstance(entries, list):
+            failed.append({"account": idx, "error": "markets 配置格式错误"})
+            continue
+        account_commands: List[dict] = []
+        for row in new_rows:
+            entry = _pm_confirmed_market_entry(row)
+            command_id = (
+                f"dashboard-add-{idx}-{int(now)}-"
+                f"{uuid.uuid4().hex[:10]}"
+            )
+            entries.append(
+                {
+                    **entry,
+                    "enabled": False,
+                    "pending_activation": True,
+                    "pending_command_id": command_id,
+                }
+            )
+            account_commands.append(
+                {
+                    "version": 1,
+                    "command_id": command_id,
+                    "action": "add_market",
+                    "created_at": now,
+                    "market": entry,
+                }
+            )
+
+        backup_dir = DATA_DIR / "config_backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = (
+            backup_dir
+            / f"config_{idx}.{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+        )
+        _write_json_atomic(backup_path, _read_json(config_path) or {})
+        _write_json_atomic(config_path, config)
+        remote = remotes.get(idx)
+        push_error = _pm_push_account_config(idx, config_path, remote)
+        if push_error:
+            failed.append({"account": idx, "error": push_error})
+            continue
+
+        for row, command in zip(new_rows, account_commands):
+            command_error = _pm_deliver_runtime_command(idx, command, remote)
+            if command_error:
+                failed.append(
+                    {
+                        "account": idx,
+                        "token_id": str(row.get("token_id") or ""),
+                        "error": command_error,
+                    }
+                )
+                continue
+            added.append(
+                {
+                    "account": idx,
+                    "token_id": str(row.get("token_id") or ""),
+                    "market": str(row.get("question") or row.get("slug") or "")[
+                        :120
+                    ],
+                    "command_id": command["command_id"],
+                }
+            )
+
+    _audit(
+        "pm_opportunities_add",
+        eligible=len(eligible),
+        added=len(added),
+        skipped=len(skipped),
+        failed=len(failed),
+        accounts=sorted(grouped),
+        source="tailnet",
+    )
+    return JSONResponse(
+        {
+            "ok": not failed,
+            "eligible": len(eligible),
+            "added": added,
+            "skipped": skipped,
+            "failed": failed,
+            "message": (
+                f"已提交 {len(added)} 个市场，"
+                f"跳过 {len(skipped)} 个已加入市场"
+            ),
+        },
+        status_code=200 if not failed else 207,
+    )
 
 
 @app.get("/api/pm/scan")

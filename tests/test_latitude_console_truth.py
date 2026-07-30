@@ -368,6 +368,9 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert 'id="pm-scan-status-filter"' in html
     assert 'id="pm-scan-market-count"' in html
     assert 'id="pm-scan-confirm-count"' in html
+    assert 'id="pm-add-confirmed"' in html
+    assert "/api/pm/opportunities/add" in html
+    assert "一键加入" in html
     assert 'id="pm-opportunity-body"' in html
     assert 'id="pm-opportunity-summary"' in html
     assert "<h2>自动扫描</h2>" in html
@@ -382,6 +385,99 @@ def test_polymarket_scan_page_shows_automatic_and_manual_scans() -> None:
     assert "吃单风险" in html
     assert "越低越好" in html
     assert "opportunities.slice(0,60)" not in html
+
+
+def test_add_confirmed_opportunities_appends_per_account_without_overwrite(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    maker_dir = tmp_path / "maker"
+    data_dir.mkdir()
+    maker_dir.mkdir()
+    for idx in (1, 2):
+        _write_json(
+            maker_dir / f"config_{idx}.json",
+            {
+                "markets": [
+                    {
+                        "token_id": f"{idx}01",
+                        "paired_token_id": f"{idx}02",
+                        "source": "manual",
+                    }
+                ],
+                "night_markets": [],
+            },
+        )
+
+    opportunities = [
+        {
+            "account": idx,
+            "token_id": f"{idx}11",
+            "paired_token_id": f"{idx}12",
+            "condition_id": f"condition-{idx}",
+            "question": f"Market {idx}",
+            "slug": f"market-{idx}",
+            "verification_recommended": True,
+            "market_phase": "normal",
+            "observation_age_sec": 10,
+            "rewards_max_spread": 0.05,
+            "fill_risk": 20,
+            "probe_shares_each_side": 120,
+        }
+        for idx in (1, 2)
+    ]
+    delivered = []
+
+    monkeypatch.setattr(console, "WRITES_ENABLED", True)
+    monkeypatch.setattr(console, "DATA_DIR", data_dir)
+    monkeypatch.setattr(console, "MAKER_DIR", maker_dir)
+    monkeypatch.setattr(console, "_is_cloudflare", lambda _request: False)
+    monkeypatch.setattr(console, "_load_pm_remotes", lambda: {2: {"label": "VPS2"}})
+    monkeypatch.setattr(
+        console,
+        "_polymarket",
+        lambda: {"curator": {"account_opportunities": opportunities}},
+    )
+    monkeypatch.setattr(
+        console,
+        "_pm_push_account_config",
+        lambda idx, _path, remote: (
+            None if idx == 1 or remote == {"label": "VPS2"} else "wrong remote"
+        ),
+    )
+    monkeypatch.setattr(
+        console,
+        "_pm_deliver_runtime_command",
+        lambda idx, command, remote: (
+            delivered.append((idx, command, remote)) or None
+        ),
+    )
+    monkeypatch.setattr(console, "_audit", lambda *args, **kwargs: None)
+
+    response = asyncio.run(console.pm_opportunities_add(object()))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert len(payload["added"]) == 2
+    assert [item[0] for item in delivered] == [1, 2]
+    for idx in (1, 2):
+        config = json.loads(
+            (maker_dir / f"config_{idx}.json").read_text(encoding="utf-8")
+        )
+        assert [market["token_id"] for market in config["markets"]] == [
+            f"{idx}01",
+            f"{idx}11",
+        ]
+        assert config["markets"][1]["source"] == "dashboard_confirmed"
+        assert config["markets"][1]["eligibility_managed"] is True
+
+    delivered.clear()
+    repeated = asyncio.run(console.pm_opportunities_add(object()))
+    repeated_payload = json.loads(repeated.body)
+    assert repeated_payload["added"] == []
+    assert len(repeated_payload["skipped"]) == 2
+    assert delivered == []
 
 
 def test_polymarket_opportunity_links_share_verified_parent_event(
@@ -459,12 +555,11 @@ def test_polymarket_opportunity_links_share_verified_parent_event(
 
     rows = console._polymarket()["curator"]["opportunities"]
 
-    assert len(rows) == 2
-    assert {
-        row["market_url"] for row in rows
-    } == {
+    assert len(rows) == 1
+    assert rows[0]["route_count"] == 2
+    assert rows[0]["market_url"] == (
         "https://polymarket.com/event/parent-event/specific-market-outcome"
-    }
+    )
 
 
 def test_polymarket_markets_page_has_phase_and_account_filters() -> None:
