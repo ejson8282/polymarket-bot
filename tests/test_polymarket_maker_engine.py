@@ -246,14 +246,19 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
         {"id": "buy-1", "status": "live", "side": "BUY"},
         {"id": "sell-exit", "status": "live", "side": "SELL"},
     ]
-    canceled = []
+    canceled_batches = []
 
     class Client:
         def get_open_orders(self):
+            canceled = {
+                order_id
+                for batch in canceled_batches
+                for order_id in batch
+            }
             return [o for o in orders if o["id"] not in canceled]
 
-        def cancel(self, order_id):
-            canceled.append(order_id)
+        def cancel_orders(self, order_ids):
+            canceled_batches.append(list(order_ids))
 
     class Registry:
         def clear_funder(self, *_args, **_kwargs):
@@ -264,10 +269,24 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
     engine._market_live_orders = {}
     engine._sibling_registry = Registry()
     engine._funder_lc = "account"
+    engine._invalidate_all_orders_cache = lambda: None
 
     assert asyncio.run(engine._cancel_all_except_exit()) is True
-    assert canceled == ["buy-1"]
+    assert canceled_batches == [["buy-1"]]
     assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
+
+
+def test_order_path_fails_closed_while_account_is_paused():
+    engine = object.__new__(PolyLPSMulti)
+    engine._is_account_paused = lambda: True
+    engine._halt_preemption_reason = lambda _token_id: None
+
+    try:
+        engine._ensure_order_path_open("101", "submit_pre_post:test")
+    except EventHaltPreempted as exc:
+        assert "account_paused" in str(exc)
+    else:
+        raise AssertionError("paused account must reject every BUY submission path")
 
 
 def _managed_trade_engine() -> PolyLPSMulti:
