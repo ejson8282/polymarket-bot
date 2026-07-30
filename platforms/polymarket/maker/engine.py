@@ -1172,6 +1172,8 @@ class PolyLPSMulti:
         return self._event_quote_block_reason(token_id)
 
     def _ensure_order_path_open(self, token_id: str, label: str) -> None:
+        if self._is_account_paused():
+            raise EventHaltPreempted(f"{label}:account_paused")
         reason = self._halt_preemption_reason(token_id)
         if reason:
             raise EventHaltPreempted(f"{label}:{reason}")
@@ -6218,9 +6220,14 @@ class PolyLPSMulti:
                 if not self._was_paused:
                     log(f"[pause] account {self._account_idx} paused via dashboard — cancelling open orders")
                     try:
-                        await self._cancel_all_except_exit()
+                        canceled = await self._cancel_all_except_exit()
                     except Exception as _e:
                         log(f"[pause] cancel error: {_e}")
+                        canceled = False
+                    if not canceled:
+                        log(f"[pause] account {self._account_idx} cancel not verified — retrying")
+                        await asyncio.sleep(3)
+                        continue
                     self._was_paused = True
                 await asyncio.sleep(3)
                 continue
@@ -7135,14 +7142,22 @@ class PolyLPSMulti:
             and str(o.get("side", "")).upper() == "SELL"
             and (o.get("id") or o.get("orderID"))
         )
+        cancel_ids = []
         for o in orders:
             oid = str(o.get("id") or o.get("orderID") or "")
             status = str(o.get("status", "")).lower()
             if status in ("live", "open", "active") and oid and oid not in protected_ids:
-                try:
-                    await asyncio.to_thread(self.client.cancel, oid)
-                except Exception:
-                    pass
+                cancel_ids.append(oid)
+        if cancel_ids:
+            try:
+                await asyncio.to_thread(self.client.cancel_orders, cancel_ids)
+                self._invalidate_all_orders_cache()
+            except Exception as exc:
+                log(
+                    f"[cancel_all_except_exit] cancel_orders failed "
+                    f"count={len(cancel_ids)} err={exc}"
+                )
+                return False
         # Clear cache after canceling
         self._market_live_orders.clear()
         self._sibling_registry.clear_funder(self._funder_lc,
