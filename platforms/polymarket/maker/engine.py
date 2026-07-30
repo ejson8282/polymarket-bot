@@ -804,6 +804,13 @@ class PolyLPSMulti:
         # YES/NO paired token map: {token_id: paired_token_id}
         self._paired_token_cache: Dict[str, str] = {}
         self._market_condition_ids: Dict[str, str] = {}
+        # Gamma parent event groups can contain several related binary markets.
+        # A shock in one child (for example one Fed outcome) must protect the
+        # other children too, not only the YES/NO pair in the same condition.
+        self._market_parent_event_ids: Dict[str, str] = {}
+        self._parent_event_tokens: Dict[str, set[str]] = {}
+        self._parent_event_cooldown_until: Dict[str, float] = {}
+        self._parent_event_last_shock_ts: Dict[str, float] = {}
         self._sponsored_guard = SponsoredRiskGuard(
             self.cfg.get("sponsored_risk_guard")
         )
@@ -862,6 +869,15 @@ class PolyLPSMulti:
         self._vol_defense_action_threshold: int = int(volatility_cfg.get("defense_action_threshold", 2))
         self._vol_watch_duration_sec: float = float(volatility_cfg.get("watch_duration_sec", 120))
         self._vol_quarantine_duration_sec: float = float(volatility_cfg.get("quarantine_duration_sec", 300))
+        self._parent_event_shock_guard_enabled: bool = bool(
+            volatility_cfg.get("parent_event_shock_guard_enabled", True)
+        )
+        self._parent_event_shock_cooldown_sec: float = float(
+            volatility_cfg.get("parent_event_shock_cooldown_sec", 1800)
+        )
+        self._parent_event_shock_debounce_sec: float = float(
+            volatility_cfg.get("parent_event_shock_debounce_sec", 2)
+        )
         # per-token rolling window: {token_id: {"front_notional_history": [(ts, val)], "defense_actions": [(ts, action)], "watch_enter_ts": float, "quarantine_enter_ts": float, "watch_count": int}}
         self._volatility_tracker: Dict[str, Dict[str, Any]] = {
             tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None, "watch_count": 0}
@@ -1135,6 +1151,23 @@ class PolyLPSMulti:
             EVENT_EXIT_PENDING,
         }:
             return f"event_state={state}"
+
+        parent_event_id = str(
+            getattr(self, "_market_parent_event_ids", {}).get(token_id, "")
+            or ""
+        )
+        parent_cooldown_until = float(
+            getattr(self, "_parent_event_cooldown_until", {}).get(
+                parent_event_id,
+                0.0,
+            )
+            or 0.0
+        )
+        if parent_event_id and time.time() < parent_cooldown_until:
+            return (
+                f"parent_event_cooldown={parent_event_id}:"
+                f"{int(parent_cooldown_until)}"
+            )
 
         # YES and NO share one event. Once either side has inventory to unwind,
         # do not let the other side add fresh exposure while the exit is pending.
@@ -2167,11 +2200,19 @@ class PolyLPSMulti:
             if now - ts <= self._vol_defense_action_window_sec
         ]
 
-    def _vol_check_bba_jump(self, token_id: str, best_bid: Decimal, best_ask: Decimal) -> bool:
+    def _vol_check_bba_jump(
+        self,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        *,
+        update_baseline: bool = True,
+    ) -> bool:
         """Return True if BBA jumped >= threshold ticks."""
         tracker = self._vol_tracker(token_id)
         prev = tracker.get("bba_prev")
-        tracker["bba_prev"] = (best_bid, best_ask)
+        if update_baseline:
+            tracker["bba_prev"] = (best_bid, best_ask)
         if prev is None:
             return False
         prev_bid, prev_ask = prev
@@ -2280,6 +2321,163 @@ class PolyLPSMulti:
         )
         log(f"[quarantine] token={token_id} entered QUARANTINE reason={reason} duration={self._vol_quarantine_duration_sec}s")
         self._notify_risk("Event quarantined", token=token_id, reason=reason)
+
+    def _remember_parent_event(
+        self,
+        token_ids: list[str],
+        raw: Dict[str, Any],
+        normalized: Dict[str, Any],
+    ) -> str:
+        events = raw.get("events")
+        event = (
+            events[0]
+            if isinstance(events, list)
+            and events
+            and isinstance(events[0], dict)
+            else {}
+        )
+        parent_event_id = str(
+            event.get("id")
+            or raw.get("eventId")
+            or raw.get("event_id")
+            or ""
+        ).strip()
+        if not parent_event_id:
+            return ""
+
+        parent_event_slug = str(
+            event.get("slug")
+            or raw.get("eventSlug")
+            or raw.get("event_slug")
+            or ""
+        ).strip()
+        normalized["parent_event_id"] = parent_event_id
+        if parent_event_slug:
+            normalized["parent_event_slug"] = parent_event_slug
+
+        parent_ids = self._market_parent_event_ids
+        parent_tokens = self._parent_event_tokens
+        for candidate in token_ids:
+            token_id = str(candidate or "").strip()
+            if not token_id:
+                continue
+            prior = parent_ids.get(token_id)
+            if prior and prior != parent_event_id:
+                parent_tokens.get(prior, set()).discard(token_id)
+            parent_ids[token_id] = parent_event_id
+            parent_tokens.setdefault(parent_event_id, set()).add(token_id)
+        return parent_event_id
+
+    def _parent_event_members(self, token_id: str) -> tuple[str, list[str]]:
+        parent_event_id = str(
+            getattr(self, "_market_parent_event_ids", {}).get(token_id, "")
+            or ""
+        )
+        if not parent_event_id:
+            return "", [token_id]
+        configured = set(self.market_cfg) | set(self._night_market_cfg)
+        members = sorted(
+            tid
+            for tid in getattr(self, "_parent_event_tokens", {}).get(
+                parent_event_id,
+                set(),
+            )
+            if tid in configured
+        )
+        if token_id not in members:
+            members.append(token_id)
+        return parent_event_id, members
+
+    async def _enter_parent_event_shock_watch(
+        self,
+        token_id: str,
+        reason: str,
+        *,
+        primary_decision: str = "watch",
+    ) -> bool:
+        """Cancel and cool down every configured market in one Gamma event."""
+        if not getattr(self, "_parent_event_shock_guard_enabled", True):
+            if primary_decision == "quarantine":
+                await self._enter_quarantine(token_id, reason)
+            elif primary_decision != "skip":
+                await self._enter_watch(token_id, reason)
+            return False
+
+        parent_event_id, members = self._parent_event_members(token_id)
+        if not parent_event_id:
+            if primary_decision == "quarantine":
+                await self._enter_quarantine(token_id, reason)
+            elif primary_decision != "skip":
+                await self._enter_watch(token_id, reason)
+            return False
+
+        now = time.time()
+        last_shock = float(
+            self._parent_event_last_shock_ts.get(parent_event_id, 0.0) or 0.0
+        )
+        if now - last_shock < self._parent_event_shock_debounce_sec:
+            return True
+
+        self._parent_event_last_shock_ts[parent_event_id] = now
+        cooldown_until = now + self._parent_event_shock_cooldown_sec
+        self._parent_event_cooldown_until[parent_event_id] = max(
+            cooldown_until,
+            float(self._parent_event_cooldown_until.get(parent_event_id, 0.0) or 0.0),
+        )
+        terminal_states = {
+            EVENT_CANCELING,
+            EVENT_HALTED_ON_FILL,
+            EVENT_HALTED_ON_DATA,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+            EVENT_STARTED_BLOCKED,
+        }
+        primary_condition = (
+            set(self._event_token_ids(token_id))
+            if primary_decision == "skip"
+            else set()
+        )
+
+        async def _protect(member: str) -> None:
+            if member in primary_condition:
+                return
+            if self._event_state_name(member) in terminal_states:
+                return
+            member_reason = (
+                reason
+                if member == token_id
+                else f"parent_event_shock:{token_id}:{reason}"
+            )
+            if member == token_id and primary_decision == "quarantine":
+                await self._enter_quarantine(member, member_reason)
+            else:
+                await self._enter_watch(member, member_reason)
+
+        results = await asyncio.gather(
+            *(_protect(member) for member in members),
+            return_exceptions=True,
+        )
+        for member, result in zip(members, results):
+            if isinstance(result, Exception):
+                log(
+                    f"[parent-event-guard] member={member} "
+                    f"err={result.__class__.__name__}:{result}"
+                )
+
+        log(
+            f"[parent-event-guard] parent_event={parent_event_id} "
+            f"trigger={token_id} members={len(members)} "
+            f"cooldown={self._parent_event_shock_cooldown_sec:.0f}s reason={reason}"
+        )
+        self._notify_risk(
+            "Related markets paused",
+            parent_event=parent_event_id,
+            trigger=token_id,
+            markets=len(members),
+            cooldown_sec=self._parent_event_shock_cooldown_sec,
+            reason=reason,
+        )
+        return True
 
     def _vol_check_recovery(self, token_id: str) -> bool:
         """Check if WATCH/QUARANTINE timer has expired and can auto-recover."""
@@ -4913,7 +5111,16 @@ class PolyLPSMulti:
             if front_notional > 0 and self.min_front_bid_notional_usdc > 0:
                 depth_bonus = min(self._level_depth_bonus_cap, front_notional / self.min_front_bid_notional_usdc * self._level_depth_bonus_scale)
             vol_penalty = Decimal("0")
-            if self._vol_check_bba_jump(token_id, self._market_snapshots.get(token_id).best_bid if self._market_snapshots.get(token_id) else p, self._market_snapshots.get(token_id).best_ask if self._market_snapshots.get(token_id) else p):
+            if self._vol_check_bba_jump(
+                token_id,
+                self._market_snapshots.get(token_id).best_bid
+                if self._market_snapshots.get(token_id)
+                else p,
+                self._market_snapshots.get(token_id).best_ask
+                if self._market_snapshots.get(token_id)
+                else p,
+                update_baseline=False,
+            ):
                 vol_penalty += self._level_bba_penalty
             if self._vol_check_defense_action_storm(token_id):
                 vol_penalty += self._level_defense_storm_penalty
@@ -5118,12 +5325,12 @@ class PolyLPSMulti:
                 vol_decision = self._vol_should_watch_or_quarantine(token_id)
                 if vol_decision is None:
                     vol_decision = "watch"
-                if vol_decision == "quarantine":
-                    await self._enter_quarantine(token_id, f"bba_jump:{trigger}")
-                    return
-                elif vol_decision == "watch":
-                    await self._enter_watch(token_id, f"bba_jump:{trigger}")
-                    return
+                await self._enter_parent_event_shock_watch(
+                    token_id,
+                    f"bba_jump:{trigger}",
+                    primary_decision=vol_decision,
+                )
+                return
 
             meta = await self._get_market_meta(token_id)
             lock = self._event_locks[token_id]
@@ -5337,6 +5544,10 @@ class PolyLPSMulti:
                             if other != token_id and other.isdigit():
                                 self._paired_token_cache[token_id] = other
                                 break
+                    parent_tokens = [token_id]
+                    if isinstance(ids, list):
+                        parent_tokens.extend(str(x) for x in ids)
+                    self._remember_parent_event(parent_tokens, raw, nm)
                     condition_id = str(raw.get("market") or raw.get("conditionId") or "").strip()
                     if condition_id:
                         self._market_condition_ids[token_id] = condition_id
@@ -5674,6 +5885,11 @@ class PolyLPSMulti:
             matched_size=matched_size,
             matched_price=matched_price,
             halt_key="t_fill_seen",
+        )
+        await self._enter_parent_event_shock_watch(
+            token_id,
+            f"fill:{reason}",
+            primary_decision="skip",
         )
         # --- P1: auto exit sell after fill halt ---
         fill_price = matched_price if matched_price is not None and matched_price > 0 else Decimal("0")
@@ -8217,6 +8433,10 @@ class PolyLPSMulti:
                         "orders": orders_out,
                         "desired_plan_sig": self._last_plan_sig.get(tid, ""),
                         "condition_id": self._market_condition_ids.get(tid, ""),
+                        "parent_event_id": self._market_parent_event_ids.get(tid, ""),
+                        "parent_event_cooldown_until": self._parent_event_cooldown_until.get(
+                            self._market_parent_event_ids.get(tid, ""),
+                        ),
                         "paired_token_id": str(mcfg.get("paired_token_id") or ""),
                         "price_tick": str(mcfg.get("tick") or ""),
                         "last_quote_ts": self.last_quote_ts.get(tid),
@@ -8301,6 +8521,15 @@ class PolyLPSMulti:
                     ),
                     "night_markets_count": len(self._night_market_cfg),
                     "sponsored_risk_guard": self._sponsored_guard_summary,
+                    "parent_event_shock_guard": {
+                        "enabled": self._parent_event_shock_guard_enabled,
+                        "cooldown_sec": self._parent_event_shock_cooldown_sec,
+                        "active": {
+                            event_id: until
+                            for event_id, until in self._parent_event_cooldown_until.items()
+                            if until > now
+                        },
+                    },
                     "curator_events": curator_events_out,
                     # Legacy key — kept for dashboards that haven't been refreshed.
                     "night_events": [e for e in curator_events_out if e.get("session") == "night"],
