@@ -12,7 +12,9 @@ sys.path.insert(0, str(MAKER_DIR))
 import engine as engine_module  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
+    EVENT_CANCELING,
     EVENT_EXIT_PENDING,
+    EVENT_HALTED_ON_DATA,
     EVENT_PENDING_MANUAL_EXIT,
     EVENT_WATCH,
     EventHaltPreempted,
@@ -522,6 +524,131 @@ def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
     assert spawned == []
     assert kill_reasons == ["cross_side_cancel_unconfirmed:102"]
     assert engine._cross_side_cancel_inflight == set()
+
+
+def _risk_cancel_engine(results: list[bool]):
+    engine = object.__new__(PolyLPSMulti)
+    calls = []
+    kills = []
+    latency = []
+    notifications = []
+
+    async def cancel_token_orders(token_id, *, reason, max_attempts=3):
+        calls.append((token_id, reason, max_attempts))
+        return results.pop(0)
+
+    async def kill_switch(reason):
+        kills.append(reason)
+
+    engine._cancel_token_orders = cancel_token_orders
+    engine.trigger_global_kill_switch = kill_switch
+    engine._mark_latency = lambda token_id, label: latency.append(
+        (token_id, label)
+    )
+    engine._notify_risk = lambda title, **payload: notifications.append(
+        (title, payload)
+    )
+    return engine, calls, kills, latency, notifications
+
+
+def test_risk_cancel_confirms_before_reporting_orders_cleared():
+    engine, calls, kills, latency, notifications = _risk_cancel_engine([True])
+
+    result = asyncio.run(engine._cancel_risk_buys("101", "watch:bba_jump"))
+
+    assert result is True
+    assert calls == [("101", "watch:bba_jump", 3)]
+    assert kills == []
+    assert latency == [("101", "t_orders_cleared")]
+    assert notifications == []
+
+
+def test_risk_cancel_escalates_then_rechecks_official_orders():
+    engine, calls, kills, latency, notifications = _risk_cancel_engine(
+        [False, True]
+    )
+
+    result = asyncio.run(engine._cancel_risk_buys("101", "watch:bba_jump"))
+
+    assert result is True
+    assert calls == [
+        ("101", "watch:bba_jump", 3),
+        ("101", "watch:bba_jump:post_global_verify", 1),
+    ]
+    assert kills == ["risk_cancel_unconfirmed:101:watch:bba_jump"]
+    assert latency == [("101", "t_orders_cleared")]
+    assert notifications == [
+        (
+            "Risk cancellation unconfirmed",
+            {"token": "101", "reason": "watch:bba_jump"},
+        )
+    ]
+
+
+def _event_halt_engine(cancel_result: bool):
+    engine = object.__new__(PolyLPSMulti)
+    states = [EVENT_ACTIVE]
+    reasons = []
+    cancel_calls = []
+    engine._event_locks = {"101": asyncio.Lock()}
+    engine._halt_requested = {"101": None}
+    engine._top_leg_defense_tasks = {}
+    engine._event_state_name = lambda _token_id: states[-1]
+    engine._set_event_state = (
+        lambda _token_id, state, reason: (
+            states.append(state),
+            reasons.append(reason),
+        )
+    )
+    engine._latency_flow_reset = lambda *_args, **_kwargs: None
+    engine._mark_latency = lambda *_args, **_kwargs: None
+    engine._fills_record = []
+    engine._emit_latency_record = lambda *_args, **_kwargs: None
+    engine._paired_token_cache = {}
+    engine.market_cfg = {}
+
+    async def get_live_orders(_token_id):
+        return [{"id": "buy-1", "side": "BUY", "status": "live"}]
+
+    async def cancel_risk_buys(token_id, reason):
+        cancel_calls.append((token_id, reason))
+        return cancel_result
+
+    engine._get_live_orders_fast = get_live_orders
+    engine._cancel_risk_buys = cancel_risk_buys
+    return engine, states, reasons, cancel_calls
+
+
+def test_event_halt_does_not_claim_final_state_before_remote_confirmation():
+    engine, states, reasons, cancel_calls = _event_halt_engine(False)
+
+    asyncio.run(
+        engine._request_event_halt(
+            "101",
+            EVENT_HALTED_ON_DATA,
+            "bad_market_snapshot",
+        )
+    )
+
+    assert states[-1] == EVENT_CANCELING
+    assert EVENT_HALTED_ON_DATA not in states
+    assert cancel_calls == [("101", "halt:bad_market_snapshot")]
+    assert reasons[-1] == "bad_market_snapshot"
+
+
+def test_event_halt_enters_final_state_after_remote_confirmation():
+    engine, states, _reasons, cancel_calls = _event_halt_engine(True)
+
+    asyncio.run(
+        engine._request_event_halt(
+            "101",
+            EVENT_HALTED_ON_DATA,
+            "bad_market_snapshot",
+        )
+    )
+
+    assert states[-1] == EVENT_HALTED_ON_DATA
+    assert cancel_calls == [("101", "halt:bad_market_snapshot")]
 
 
 def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
@@ -1087,12 +1214,12 @@ def _parent_event_guard_engine():
     async def get_live_orders(token_id):
         return [{"id": f"order-{token_id}", "side": "BUY"}]
 
-    async def cancel_order_ids(token_id, order_ids, reason):
-        canceled.append((token_id, tuple(order_ids), reason))
+    async def cancel_risk_buys(token_id, reason):
+        canceled.append((token_id, (f"order-{token_id}",), reason))
         return True
 
     engine._get_live_orders_fast = get_live_orders
-    engine._cancel_order_ids = cancel_order_ids
+    engine._cancel_risk_buys = cancel_risk_buys
     return engine, canceled
 
 

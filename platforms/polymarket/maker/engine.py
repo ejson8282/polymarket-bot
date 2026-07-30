@@ -2270,10 +2270,15 @@ class PolyLPSMulti:
             self._set_event_state(token_id, EVENT_QUARANTINE, f"watch_limit_forbid:{reason}")
             live = await self._get_live_orders_fast(token_id)
             ids = [self._order_id(o) for o in live]
-            if ids:
-                await self._cancel_order_ids(token_id, ids, f"forbid:{reason}")
-            else:
-                self._mark_latency(token_id, "t_orders_cleared")
+            cleared = await self._cancel_risk_buys(
+                token_id,
+                f"forbid:{reason}",
+            )
+            if not cleared:
+                log(
+                    f"[forbid] token={token_id} cancellation remains "
+                    "unconfirmed after global escalation"
+                )
             self._emit_latency_record(
                 token_id,
                 "volatility_forbid",
@@ -2289,10 +2294,15 @@ class PolyLPSMulti:
         self._set_event_state(token_id, EVENT_WATCH, reason)
         live = await self._get_live_orders_fast(token_id)
         ids = [self._order_id(o) for o in live]
-        if ids:
-            await self._cancel_order_ids(token_id, ids, f"watch:{reason}")
-        else:
-            self._mark_latency(token_id, "t_orders_cleared")
+        cleared = await self._cancel_risk_buys(
+            token_id,
+            f"watch:{reason}",
+        )
+        if not cleared:
+            log(
+                f"[watch] token={token_id} cancellation remains "
+                "unconfirmed after global escalation"
+            )
         self._emit_latency_record(
             token_id,
             "volatility_watch",
@@ -2311,10 +2321,15 @@ class PolyLPSMulti:
         self._set_event_state(token_id, EVENT_QUARANTINE, reason)
         live = await self._get_live_orders_fast(token_id)
         ids = [self._order_id(o) for o in live]
-        if ids:
-            await self._cancel_order_ids(token_id, ids, f"quarantine:{reason}")
-        else:
-            self._mark_latency(token_id, "t_orders_cleared")
+        cleared = await self._cancel_risk_buys(
+            token_id,
+            f"quarantine:{reason}",
+        )
+        if not cleared:
+            log(
+                f"[quarantine] token={token_id} cancellation remains "
+                "unconfirmed after global escalation"
+            )
         self._emit_latency_record(
             token_id,
             "volatility_quarantine",
@@ -2877,6 +2892,52 @@ class PolyLPSMulti:
             )
             return False
         return True
+
+    async def _cancel_risk_buys(self, token_id: str, reason: str) -> bool:
+        """Cancel BUY liquidity and fail closed until the venue confirms it."""
+        confirmed = await self._cancel_token_orders(
+            token_id,
+            reason=reason,
+        )
+        if confirmed:
+            self._mark_latency(token_id, "t_orders_cleared")
+            return True
+
+        log(
+            f"[risk-cancel] token={token_id} reason={reason} "
+            "token cancellation unconfirmed; escalating global cancel"
+        )
+        try:
+            self._notify_risk(
+                "Risk cancellation unconfirmed",
+                token=token_id,
+                reason=reason,
+            )
+        except Exception:
+            pass
+        try:
+            await self.trigger_global_kill_switch(
+                f"risk_cancel_unconfirmed:{token_id}:{reason}"
+            )
+        except Exception as exc:
+            log(
+                f"[risk-cancel] token={token_id} reason={reason} "
+                f"global_cancel_error={exc}"
+            )
+
+        confirmed = await self._cancel_token_orders(
+            token_id,
+            reason=f"{reason}:post_global_verify",
+            max_attempts=1,
+        )
+        if confirmed:
+            self._mark_latency(token_id, "t_orders_cleared")
+        else:
+            log(
+                f"[risk-cancel] token={token_id} reason={reason} "
+                "still_unconfirmed"
+            )
+        return confirmed
 
     async def _execute_cross_side_cancel(
         self,
@@ -3993,7 +4054,10 @@ class PolyLPSMulti:
                 self._fills_record = self._fills_record[-100:]
             live = await self._get_live_orders_fast(token_id)
             ids = [self._order_id(o) for o in live]
-            cleared = await self._cancel_order_ids(token_id, ids, f"halt:{reason}") if ids else True
+            cleared = await self._cancel_risk_buys(
+                token_id,
+                f"halt:{reason}",
+            )
             if cleared:
                 self._set_event_state(token_id, final_state, reason)
             else:
@@ -5555,7 +5619,16 @@ class PolyLPSMulti:
                                  if _fast_is_move_back
                                  else self._defense_requote_block_sec)
                     self._defense_block_until[token_id] = time.time() + block_sec
-                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"top_leg_defense:{trigger}:fast_cancel_locked")
+                    cleared = await self._cancel_risk_buys(
+                        token_id,
+                        f"top_leg_defense:{trigger}:fast_cancel_locked",
+                    )
+                    if not cleared:
+                        self._set_event_state(
+                            token_id,
+                            EVENT_CANCELING,
+                            f"risk_cancel_unconfirmed:{trigger}",
+                        )
                 return
             async with lock:
                 live_orders = self._cached_live_orders(token_id)
@@ -5639,7 +5712,17 @@ class PolyLPSMulti:
                                  if action == "MOVE_BACK_TOP_LEG"
                                  else self._defense_requote_block_sec)
                     self._defense_block_until[token_id] = time.time() + block_sec
-                    await self._cancel_order_ids(token_id, [self._order_id(top_order)], f"{trigger}:cancel_top")
+                    cleared = await self._cancel_risk_buys(
+                        token_id,
+                        f"{trigger}:cancel_top",
+                    )
+                    if not cleared:
+                        self._set_event_state(
+                            token_id,
+                            EVENT_CANCELING,
+                            f"risk_cancel_unconfirmed:{trigger}",
+                        )
+                        return
                     self._market_live_orders[token_id] = await self._get_live_orders_fast(token_id)
                 self._emit_latency_record(token_id, "top_leg_defense", {"trigger": trigger, "action": action})
                 if halt_reason is None:
@@ -8719,6 +8802,14 @@ class PolyLPSMulti:
                             for event_id, until in self._parent_event_cooldown_until.items()
                             if until > now
                         },
+                    },
+                    "cross_side_sentinel": {
+                        "enabled": self.cross_side_sentinel.enabled,
+                        "dry_run": self.cross_side_sentinel.dry_run,
+                        "live_protection": (
+                            self.cross_side_sentinel.enabled
+                            and not self.cross_side_sentinel.dry_run
+                        ),
                     },
                     "curator_events": curator_events_out,
                     # Legacy key — kept for dashboards that haven't been refreshed.
