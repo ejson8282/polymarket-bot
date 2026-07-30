@@ -389,14 +389,90 @@ def test_manual_sell_blocks_rebuy_and_only_cancels_managed_buy():
     assert engine._manual_exit_event_until["event-1"] > time.time()
 
 
-def test_balance_drop_is_telemetry_only(monkeypatch):
+def test_balance_resize_plan_only_trims_oversized_managed_layers():
+    engine = _budget_engine()
+    engine.budget_reserve_safety_margin_usdc = Decimal("0")
+    engine._managed_buy_order_ids = {
+        "yes-top",
+        "yes-back",
+        "no-top",
+        "no-back",
+        "small-top",
+    }
+    engine._market_live_orders = {
+        "101": [
+            {
+                "id": "yes-top",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "101",
+                "price": "0.60",
+                "size": "400",
+            },
+            {
+                "id": "yes-back",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "101",
+                "price": "0.55",
+                "size": "500",
+            },
+        ],
+        "102": [
+            {
+                "id": "no-top",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "102",
+                "price": "0.40",
+                "size": "400",
+            },
+            {
+                "id": "no-back",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "102",
+                "price": "0.35",
+                "size": "500",
+            },
+        ],
+        "201": [
+            {
+                "id": "small-top",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "201",
+                "price": "0.70",
+                "size": "300",
+            },
+        ],
+        "202": [],
+    }
+    engine._active_market_cfg = lambda: engine.market_cfg
+
+    plan = engine._balance_resize_plan(Decimal("500"))
+
+    assert len(plan) == 1
+    assert plan[0]["event_key"] == "101|102"
+    assert plan[0]["trim_by_token"] == {
+        "101": ["yes-back"],
+        "102": ["no-back"],
+    }
+
+
+def test_balance_drop_hot_resizes_without_position_scan_or_global_cancel(monkeypatch):
     engine = object.__new__(PolyLPSMulti)
     engine._running = True
     balances = iter([Decimal("100"), Decimal("50")])
     published = []
+    resized = []
 
     async def available(force_refresh=False):
         return next(balances)
+
+    async def resize(previous, available):
+        resized.append((previous, available))
+        return {"status": "complete"}
 
     sleep_calls = 0
 
@@ -411,13 +487,14 @@ def test_balance_drop_is_telemetry_only(monkeypatch):
             published.append((event, payload))
 
     engine._get_collateral_available = available
+    engine._resize_quotes_after_balance_drop = resize
     engine.notify_discord = lambda *_args, **_kwargs: None
     engine._event_bus = EventBus()
     engine._cancel_all_except_exit = lambda: (_ for _ in ()).throw(
-        AssertionError("balance telemetry must not cancel orders")
+        AssertionError("balance resize must not globally cancel orders")
     )
     engine._scan_for_position = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("balance telemetry must not scan user positions")
+        AssertionError("balance resize must not scan user positions")
     )
     monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
 
@@ -425,6 +502,7 @@ def test_balance_drop_is_telemetry_only(monkeypatch):
 
     assert published[0][0] == "balance_drop"
     assert published[0][1]["drop"] == "50"
+    assert resized == [(Decimal("100"), Decimal("50"))]
 
 
 def test_missing_exit_order_with_inventory_stays_pending():

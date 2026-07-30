@@ -714,6 +714,7 @@ class PolyLPSMulti:
         self._balance_fail_streak = 0
         self._balance_cache_ttl_sec = float(execution.get("balance_cache_ttl_sec", 3.0))
         self._balance_cache: tuple[Optional[Decimal], float] = (None, 0.0)
+        self._balance_resize_lock = asyncio.Lock()
         self.max_balance_fail_streak = int(risk.get("max_balance_fail_streak", 8))
         # {token_id: (anchor_value, timestamp)} — TTL-based
         self._anchor_cache: Dict[str, tuple] = {}
@@ -7510,8 +7511,212 @@ class PolyLPSMulti:
                     self._trade_poll_req_exc_streak = 0
                 await asyncio.sleep(3)
 
+    def _balance_resize_plan(self, available: Decimal) -> list[dict]:
+        """Plan event-local quote trims after available collateral falls."""
+        allowed = max(
+            Decimal("0"),
+            available - self.budget_reserve_safety_margin_usdc,
+        )
+        active_tokens = set(self._active_market_cfg())
+        events: Dict[str, set[str]] = {}
+        for token_id in active_tokens:
+            managed_buys = [
+                order
+                for order in self._market_live_orders.get(token_id, [])
+                if self._order_side(order) == "BUY"
+                and self._order_id(order) in self._managed_buy_order_ids
+            ]
+            if managed_buys:
+                events.setdefault(self._event_key(token_id), set()).update(
+                    self._event_token_ids(token_id)
+                )
+
+        plan = []
+        for event_key, event_tokens in events.items():
+            event_tokens &= active_tokens
+            if not event_tokens:
+                continue
+            probe_token = sorted(event_tokens)[0]
+            reserved = self._event_reserved_collateral(probe_token)
+            if reserved <= allowed:
+                continue
+
+            trim_by_token: Dict[str, list[str]] = {}
+            for token_id in sorted(event_tokens):
+                live_buys = [
+                    order
+                    for order in self._market_live_orders.get(token_id, [])
+                    if self._order_side(order) == "BUY"
+                    and str(order.get("status", "") or "").lower()
+                    in ("", "live", "open", "active")
+                ]
+                side_reserved = sum(
+                    (
+                        self._collateral_required_for_order(
+                            token_id,
+                            self._order_price(order),
+                            self._order_size(order),
+                        )
+                        for order in live_buys
+                    ),
+                    Decimal("0"),
+                )
+                if side_reserved <= allowed:
+                    continue
+
+                managed = [
+                    order
+                    for order in live_buys
+                    if self._order_id(order) in self._managed_buy_order_ids
+                ]
+                # Lowest-priced/back layers leave first. The front quote stays
+                # live whenever it fits inside the reduced balance.
+                managed.sort(
+                    key=lambda order: (
+                        self._order_price(order),
+                        self._order_id(order),
+                    )
+                )
+                trim_ids = []
+                remaining = side_reserved
+                for order in managed:
+                    if remaining <= allowed:
+                        break
+                    order_id = self._order_id(order)
+                    if not order_id:
+                        continue
+                    trim_ids.append(order_id)
+                    remaining -= self._collateral_required_for_order(
+                        token_id,
+                        self._order_price(order),
+                        self._order_size(order),
+                    )
+                if trim_ids:
+                    trim_by_token[token_id] = trim_ids
+
+            plan.append(
+                {
+                    "event_key": event_key,
+                    "token_ids": sorted(event_tokens),
+                    "reserved": reserved,
+                    "allowed": allowed,
+                    "excess": reserved - allowed,
+                    "trim_by_token": trim_by_token,
+                }
+            )
+
+        return sorted(plan, key=lambda item: item["excess"], reverse=True)
+
+    async def _resize_quotes_after_balance_drop(
+        self,
+        previous: Decimal,
+        available: Decimal,
+    ) -> dict:
+        """Shrink oversized events one at a time, then immediately re-quote."""
+        if not hasattr(self, "_balance_resize_lock"):
+            self._balance_resize_lock = asyncio.Lock()
+        if self._balance_resize_lock.locked():
+            log(
+                f"[balance-resize] coalesced prev={previous} now={available}; "
+                "another resize is active"
+            )
+            return {"status": "coalesced", "events": 0, "tokens": 0}
+
+        async with self._balance_resize_lock:
+            self._invalidate_all_orders_cache()
+            orders = await self._get_all_orders_cached()
+            active_tokens = set(self._active_market_cfg())
+            by_token: Dict[str, list] = {}
+            for order in orders:
+                token_id = self._order_token_id(order)
+                status = str(order.get("status", "") or "").lower()
+                if token_id in active_tokens and status in (
+                    "",
+                    "live",
+                    "open",
+                    "active",
+                ):
+                    by_token.setdefault(token_id, []).append(order)
+            for token_id in active_tokens:
+                self._market_live_orders[token_id] = self._sorted_live_orders(
+                    by_token.get(token_id, [])
+                )
+
+            resize_plan = self._balance_resize_plan(available)
+            resized_events = 0
+            resized_tokens = 0
+            skipped_events = 0
+            for item in resize_plan:
+                trim_by_token = item["trim_by_token"]
+                if not trim_by_token:
+                    skipped_events += 1
+                    log(
+                        f"[balance-resize] event={item['event_key'][:24]} "
+                        f"reserved={item['reserved']} allowed={item['allowed']} "
+                        "managed_trim=0; unmanaged orders preserved"
+                    )
+                    continue
+
+                # Trim both sides of this event before replacing either side,
+                # so the replacement cannot be rejected by the old reserve.
+                for token_id, order_ids in trim_by_token.items():
+                    await self._cancel_order_ids(
+                        token_id,
+                        order_ids,
+                        "balance_hot_resize_trim",
+                    )
+
+                event_resized = False
+                for token_id in item["token_ids"]:
+                    had_managed_buy = any(
+                        self._order_side(order) == "BUY"
+                        and self._order_id(order) in self._managed_buy_order_ids
+                        for order in by_token.get(token_id, [])
+                    )
+                    if not had_managed_buy:
+                        continue
+                    self.last_quote_ts[token_id] = 0.0
+                    self._last_plan_sig[token_id] = ""
+                    self._last_top_plan_sig[token_id] = ""
+                    self._last_back_plan_sig[token_id] = ""
+                    self._market_budget_skip_until[token_id] = 0.0
+                    try:
+                        await self.update_and_quote_market(token_id)
+                        resized_tokens += 1
+                        event_resized = True
+                    except Exception as exc:
+                        log(
+                            f"[balance-resize] token={token_id[:16]} "
+                            f"requote_error={_format_exc(exc)}"
+                        )
+                if event_resized:
+                    resized_events += 1
+                    log(
+                        f"[balance-resize] event={item['event_key'][:24]} "
+                        f"reserved={item['reserved']} allowed={item['allowed']} "
+                        f"trimmed={sum(len(ids) for ids in trim_by_token.values())} "
+                        "requote=done"
+                    )
+
+            result = {
+                "status": "complete",
+                "events": resized_events,
+                "tokens": resized_tokens,
+                "skipped_events": skipped_events,
+                "candidates": len(resize_plan),
+                "previous": str(previous),
+                "available": str(available),
+            }
+            self._event_bus.publish("balance_quotes_resized", result)
+            log(
+                f"[balance-resize] complete prev={previous} now={available} "
+                f"candidates={len(resize_plan)} events={resized_events} "
+                f"tokens={resized_tokens} skipped={skipped_events}"
+            )
+            return result
+
     async def _balance_drop_watch(self) -> None:
-        """Telemetry: alert on large available-collateral changes without trading."""
+        """Alert on a collateral drop and hot-resize only oversized events."""
         BALANCE_DROP_PCT = Decimal("0.10")  # 10% drop triggers alert
         BALANCE_DROP_ABS = Decimal("20")    # or $20 absolute drop
         prev_balance: Optional[Decimal] = None
@@ -7531,18 +7736,13 @@ class PolyLPSMulti:
                             "prev": str(prev_balance), "now": str(avail),
                             "drop": str(drop), "drop_pct": f"{drop_pct:.4f}",
                         })
-                        # Available collateral alone cannot distinguish a maker
-                        # fill from a website/manual trade, transfer, merge, or
-                        # collateral moving into an existing position. The
-                        # previous implementation canceled forever and then
-                        # selected the largest existing position, which could
-                        # take control of unrelated user inventory. Keep this
-                        # watcher as telemetry only. Actionable fills are
-                        # handled by WS/order/trade feeds after matching an
-                        # engine-owned BUY order ID.
-                        log(
-                            "[balance-drop] telemetry_only=1; no cancel, halt, "
-                            "position scan, or auto-exit"
+                        # Never inspect or dispose of inventory here. A balance
+                        # change can come from a manual website action. Only
+                        # engine-owned BUY liquidity is resized, one event at a
+                        # time, and manual SELL exits remain protected.
+                        await self._resize_quotes_after_balance_drop(
+                            prev_balance,
+                            avail,
                         )
                 if avail is not None:
                     prev_balance = avail
