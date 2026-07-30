@@ -97,10 +97,17 @@ class _ProxiedClobClient:
             token = _current_httpx_client.set(httpx_client)
             try:
                 result = attr(*args, **kwargs)
-                # V2 SDK returns dict for get_order_book; engine code uses .bids/.asks
+                # V2 SDK returns dicts for both book endpoints; engine code
+                # consumes OrderBookSummary attributes.
                 if name == "get_order_book" and isinstance(result, dict):
                     from py_clob_client_v2.clob_types import OrderBookSummary
                     return OrderBookSummary(**result)
+                if name == "get_order_books" and isinstance(result, list):
+                    from py_clob_client_v2.clob_types import OrderBookSummary
+                    return [
+                        OrderBookSummary(**book) if isinstance(book, dict) else book
+                        for book in result
+                    ]
                 return result
             finally:
                 _current_httpx_client.reset(token)
@@ -6581,12 +6588,24 @@ class PolyLPSMulti:
                         raise
             if not used_ws_fallback:
                 if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                    await self._request_event_halt(
+                        token_id,
+                        EVENT_HALTED_ON_DATA,
+                        "order_book:empty_or_unparsed",
+                        halt_key="t_detect",
+                    )
                     return
                 bids = self._coerce_levels(getattr(book, "bids", None))
                 asks = self._coerce_levels(getattr(book, "asks", None))
                 bids, asks = self._sort_book_levels(bids, asks)
                 best_bid, best_ask = self._best_prices_from_levels(bids, asks)
                 if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                    await self._request_event_halt(
+                        token_id,
+                        EVENT_HALTED_ON_DATA,
+                        "order_book:crossed_or_invalid",
+                        halt_key="t_detect",
+                    )
                     return
             if best_bid <= Decimal("0.02") and best_ask >= Decimal("0.98"):
                 ws_snap = self._fresh_valid_snapshot(token_id)
@@ -6603,6 +6622,12 @@ class PolyLPSMulti:
                     anchor = await self._get_anchor_bid_from_gamma(token_id)
                     if anchor is None or anchor <= 0:
                         log(f"[quote-skip] token={token_id} reason=placeholder_book_unresolved bid={best_bid} ask={best_ask}")
+                        await self._request_event_halt(
+                            token_id,
+                            EVENT_HALTED_ON_DATA,
+                            "order_book:placeholder_unresolved",
+                            halt_key="t_detect",
+                        )
                         return
                     best_bid = anchor
                     best_ask = min(Decimal("1"), anchor + Decimal("0.01"))
@@ -8254,6 +8279,10 @@ class PolyLPSMulti:
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
                     "account_id": f"pm-account-{self._account_idx or 1}",
+                    "release_sha": os.getenv("POLYMARKET_RELEASE_SHA") or None,
+                    "release_required": os.getenv(
+                        "POLYMARKET_REQUIRE_RELEASE", ""
+                    ).strip().lower() in {"1", "true", "yes", "on"},
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,
@@ -8469,6 +8498,11 @@ async def _main_with_shutdown(_cfg):
 
 if __name__ == "__main__":
     import sys as _sys
+    from release_guard import verify_release
+
+    _release = verify_release(Path(__file__))
+    if _release:
+        log(f"[release] verified commit={_release['commit']}")
     _cfg = _sys.argv[1] if len(_sys.argv) > 1 else "config.json"
     try:
         asyncio.run(_main_with_shutdown(_cfg))
