@@ -14,6 +14,7 @@ from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_EXIT_PENDING,
     EVENT_PENDING_MANUAL_EXIT,
+    EVENT_WATCH,
     EventHaltPreempted,
     PolyLPSMulti,
     _ProxiedClobClient,
@@ -713,6 +714,211 @@ def test_exit_pending_blocks_both_sides_of_the_same_event():
     assert engine._event_blocks_quote("101") is True
     assert engine._halt_preemption_reason("101").startswith(
         "paired_event_state=EXIT_PENDING"
+    )
+
+
+def test_parent_event_metadata_groups_separate_conditions():
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_parent_event_ids = {}
+    engine._parent_event_tokens = {}
+    normalized = {}
+
+    parent_id = engine._remember_parent_event(
+        ["101", "102"],
+        {
+            "events": [
+                {
+                    "id": "481717",
+                    "slug": "fed-decision-in-september-762",
+                }
+            ]
+        },
+        normalized,
+    )
+    engine._remember_parent_event(
+        ["201", "202"],
+        {"events": [{"id": "481717"}]},
+        {},
+    )
+
+    assert parent_id == "481717"
+    assert normalized["parent_event_id"] == "481717"
+    assert normalized["parent_event_slug"] == "fed-decision-in-september-762"
+    assert engine._parent_event_tokens["481717"] == {
+        "101",
+        "102",
+        "201",
+        "202",
+    }
+
+
+def test_parent_event_cooldown_blocks_related_market_requote():
+    engine = _paired_state_engine()
+    engine._market_parent_event_ids = {"101": "fed", "102": "fed"}
+    engine._parent_event_cooldown_until = {"fed": time.time() + 60}
+
+    assert engine._event_blocks_quote("101") is True
+    assert engine._halt_preemption_reason("102").startswith(
+        "parent_event_cooldown=fed:"
+    )
+
+
+def _parent_event_guard_engine():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {},
+        "102": {},
+        "201": {},
+        "202": {},
+    }
+    engine._night_market_cfg = {}
+    engine._market_parent_event_ids = {
+        "101": "fed",
+        "102": "fed",
+        "201": "fed",
+        "202": "fed",
+    }
+    engine._parent_event_tokens = {
+        "fed": {"101", "102", "201", "202"},
+    }
+    engine._parent_event_cooldown_until = {}
+    engine._parent_event_last_shock_ts = {}
+    engine._parent_event_shock_guard_enabled = True
+    engine._parent_event_shock_cooldown_sec = 1800
+    engine._parent_event_shock_debounce_sec = 2
+    engine._vol_watch_duration_sec = 120
+    engine._repeat_defense_ban_count = 3
+    engine.event_ban_ttl_sec = 86400
+    engine._event_banned_until = {}
+    engine._paired_token_cache = {}
+    engine._event_states = {
+        token_id: {
+            "state": EVENT_ACTIVE,
+            "reason": "init",
+            "updated_at": 0,
+        }
+        for token_id in engine.market_cfg
+    }
+    engine._volatility_tracker = {
+        token_id: {
+            "front_notional_history": [],
+            "defense_actions": [],
+            "bba_prev": None,
+            "watch_count": 0,
+        }
+        for token_id in engine.market_cfg
+    }
+    engine._latency_marks = {token_id: {} for token_id in engine.market_cfg}
+    engine._latency_records = []
+    engine._token_slug_cache = {}
+    engine._event_bus = type(
+        "EventBus",
+        (),
+        {"publish": lambda _self, *_args, **_kwargs: None},
+    )()
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._notify_risk = lambda *_args, **_kwargs: None
+    canceled = []
+
+    async def get_live_orders(token_id):
+        return [{"id": f"order-{token_id}", "side": "BUY"}]
+
+    async def cancel_order_ids(token_id, order_ids, reason):
+        canceled.append((token_id, tuple(order_ids), reason))
+        return True
+
+    engine._get_live_orders_fast = get_live_orders
+    engine._cancel_order_ids = cancel_order_ids
+    return engine, canceled
+
+
+def test_parent_event_shock_cancels_all_related_conditions_once():
+    engine, canceled = _parent_event_guard_engine()
+
+    asyncio.run(
+        engine._enter_parent_event_shock_watch(
+            "101",
+            "bba_jump:test",
+        )
+    )
+    asyncio.run(
+        engine._enter_parent_event_shock_watch(
+            "201",
+            "bba_jump:duplicate",
+        )
+    )
+
+    assert {token_id for token_id, _, _ in canceled} == {
+        "101",
+        "102",
+        "201",
+        "202",
+    }
+    assert all(
+        engine._event_state_name(token_id) == EVENT_WATCH
+        for token_id in engine.market_cfg
+    )
+    assert engine._parent_event_cooldown_until["fed"] > time.time() + 1700
+    assert len(canceled) == 4
+
+
+def test_fill_shock_leaves_primary_condition_to_fill_halt_path():
+    engine, canceled = _parent_event_guard_engine()
+    engine._paired_token_cache = {
+        "101": "102",
+        "102": "101",
+        "201": "202",
+        "202": "201",
+    }
+    engine.market_cfg["101"]["paired_token_id"] = "102"
+    engine.market_cfg["102"]["paired_token_id"] = "101"
+
+    asyncio.run(
+        engine._enter_parent_event_shock_watch(
+            "101",
+            "fill:test",
+            primary_decision="skip",
+        )
+    )
+
+    assert {token_id for token_id, _, _ in canceled} == {"201", "202"}
+    assert engine._event_state_name("101") == EVENT_ACTIVE
+    assert engine._event_state_name("102") == EVENT_ACTIVE
+    assert engine._event_state_name("201") == EVENT_WATCH
+    assert engine._event_state_name("202") == EVENT_WATCH
+
+
+def test_quote_scoring_does_not_consume_bba_jump_baseline():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {"101": {"tick": Decimal("0.01")}}
+    engine._night_market_cfg = {}
+    engine._vol_bba_jump_ticks = 2
+    engine._volatility_tracker = {
+        "101": {
+            "front_notional_history": [],
+            "defense_actions": [],
+            "bba_prev": (Decimal("0.50"), Decimal("0.51")),
+        }
+    }
+
+    assert engine._vol_check_bba_jump(
+        "101",
+        Decimal("0.52"),
+        Decimal("0.53"),
+        update_baseline=False,
+    )
+    assert engine._volatility_tracker["101"]["bba_prev"] == (
+        Decimal("0.50"),
+        Decimal("0.51"),
+    )
+    assert engine._vol_check_bba_jump(
+        "101",
+        Decimal("0.52"),
+        Decimal("0.53"),
+    )
+    assert engine._volatility_tracker["101"]["bba_prev"] == (
+        Decimal("0.52"),
+        Decimal("0.53"),
     )
 
 
