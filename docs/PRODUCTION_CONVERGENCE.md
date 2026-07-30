@@ -56,3 +56,64 @@ verification before Python can enter the trading engine, including when
 The runtime config, data, logs and virtual environment remain outside the
 immutable release. The reviewed systemd drop-in example is
 `deploy/systemd/polymarket-engine-immutable.conf.example`.
+
+## Serialized release wrapper
+
+All later maker deployments and manual rollbacks must run through
+`platforms/polymarket/maker/deploy_release.py`. The wrapper:
+
+- takes the shared VPS1 lock at
+  `/home/ubuntu/latitude-runtime/locks/vps1-production-deploy.lock`;
+- requires the reviewed full SHA at an immutable internal
+  `refs/deploy-candidates/<sha>` ref, then promotes internal `main` only as a
+  fast-forward while holding the lock;
+- requires the exact currently deployed rollback SHA;
+- builds and tests a read-only immutable release before any service change;
+- refuses activation unless the account pause flag and a fresh engine state
+  both confirm the current release is paused;
+- fixes the service name to `polymarket-engine.service`;
+- requires an exact `ACTIVATE:<full-sha>` or `ROLLBACK:<full-sha>`
+  confirmation plus a user authorization ID;
+- restores and restarts the previous release automatically if post-restart
+  verification fails;
+- writes a non-secret audit record below
+  `/home/ubuntu/polymarket-runtime/deployments/`.
+
+`plan` is read-only. `prepare` may build a release but never changes the
+`current` symlink or service. `activate` and `rollback` always restart while
+holding the global lock.
+
+The control machine first confirms the target is merged GitHub `main`, then
+stages that exact object in the internal bare repository. This unique candidate
+ref does not change internal `main`, the running release, or any service:
+
+```bash
+git push \
+  ssh://ubuntu@100.122.255.98/home/ubuntu/repos/polymarket-bot.git \
+  <target-full-sha>:refs/deploy-candidates/<target-full-sha>
+```
+
+VPS1 can therefore deploy a private repository without storing GitHub
+credentials. Example future flow after staging:
+
+```bash
+python3 platforms/polymarket/maker/deploy_release.py plan \
+  <target-full-sha> \
+  --expected-current <current-full-sha>
+
+python3 platforms/polymarket/maker/deploy_release.py prepare \
+  <target-full-sha> \
+  --expected-current <current-full-sha> \
+  --confirm PREPARE:<target-full-sha>
+
+python3 platforms/polymarket/maker/deploy_release.py activate \
+  <target-full-sha> \
+  --expected-current <current-full-sha> \
+  --confirm ACTIVATE:<target-full-sha> \
+  --authorization-id <approved-maintenance-id>
+```
+
+The release that first introduces this wrapper still needs one explicitly
+authorized bootstrap preparation under the same global lock. After that release
+is active, subsequent releases use the wrapper above. Neither this tool nor the
+bootstrap procedure reads or copies secrets into a release.
