@@ -735,10 +735,34 @@
 .vd-hold-sub{margin-top:4px;color:var(--faint);font:9px var(--mono);white-space:nowrap}
 .vd-hold.due .vd-hold-main,.vd-hold.due .vd-hold-sub{color:var(--warn)}
 .vd-hold.unknown .vd-hold-main{color:var(--faint);font-weight:500}
-.vd-stats-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.72fr);gap:14px}
+.vd-stats-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
 .vd-stats-grid .panel{height:auto}
-.vd-stats-breakdown{margin-top:14px}
-.vd-stats-breakdown .grid2{grid-template-columns:1fr 1fr}
+.vd-stats-breakdown{margin-top:12px;padding:0;overflow:hidden}
+.vd-stats-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:15px 17px;border-bottom:1px solid var(--line)}
+.vd-stats-head h2{font-size:15px}.vd-stats-head .src{margin:4px 0 0}
+.vd-stats-live{flex:none;text-align:right;color:var(--faint);font:10px/1.55 var(--mono)}
+.vd-stats-live b{display:block;color:var(--ok);font-size:11px}
+.vd-week-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--line);gap:1px;border-bottom:1px solid var(--line)}
+.vd-week-kpi{min-width:0;padding:14px 17px;background:var(--panel)}
+.vd-week-kpi span{display:block;color:var(--faint);font:10px var(--mono)}
+.vd-week-kpi b{display:block;margin-top:5px;font:650 20px var(--mono)}
+.vd-week-kpi small{display:block;margin-top:4px;color:var(--muted);font:10px var(--mono)}
+.vd-host-summaries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.vd-host-summary{min-width:0;padding:15px 17px;background:var(--panel2)}
+.vd-host-summary-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.vd-host-summary-head b{font-size:13px}.vd-host-summary-head span{color:var(--faint);font:10px var(--mono)}
+.vd-host-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.vd-host-summary-grid span{display:block;color:var(--faint);font:9px var(--mono)}
+.vd-host-summary-grid b{display:block;margin-top:4px;font:600 12px var(--mono);overflow-wrap:anywhere}
+.vd-symbol-summary{padding:14px 17px}
+.vd-symbol-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.vd-symbol-summary-head b{font-size:12px}.vd-symbol-summary-head span{color:var(--faint);font:10px var(--mono)}
+.vd-symbol-summary table{font-size:11px}
+.vd-execution-chain{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin-top:12px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--line);gap:1px}
+.vd-execution-step{position:relative;padding:11px 13px;background:var(--panel)}
+.vd-execution-step span{display:block;color:var(--var);font:9px var(--mono)}
+.vd-execution-step b{display:block;margin-top:4px;font-size:11px}
+.vd-execution-step small{display:block;margin-top:3px;color:var(--faint);font:9.5px/1.45 var(--mono)}
 .vd-opportunity-stack>.vdauto-pools{margin-top:14px}
 .vdauto-route-detail.vd-route-native,.vdauto-compare.vd-compare-native{margin-top:14px}
 @media (max-width:1180px){
@@ -748,6 +772,9 @@
   .vd-funnel-step:nth-child(4){border-left:0;border-top:1px solid var(--line)}
   .vd-funnel-step:nth-child(n+5){border-top:1px solid var(--line)}
   .vd-positions-grid,.vd-stats-grid{grid-template-columns:1fr}
+  .vd-week-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .vd-host-summaries{grid-template-columns:1fr}
+  .vd-execution-chain{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media (max-width:900px){
   .vd-page-head,.vd-commandbar,.vd-view-head{align-items:flex-start;flex-direction:column}
@@ -758,7 +785,9 @@
 @media (max-width:700px){
   .vd-native-nav{flex-wrap:nowrap;overflow-x:auto}
   .vd-native-nav span{flex:none}
-  .vd-host-controls,.vdauto-settings,.vd-stats-breakdown .grid2{grid-template-columns:1fr}
+  .vd-host-controls,.vdauto-settings{grid-template-columns:1fr}
+  .vd-week-kpis,.vd-execution-chain{grid-template-columns:1fr}
+  .vd-host-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .vd-funnel{grid-template-columns:repeat(2,minmax(0,1fr))}
   .vd-funnel-step:nth-child(odd){border-left:0}
   .vd-funnel-step:nth-child(n+3){border-top:1px solid var(--line)}
@@ -1133,8 +1162,8 @@
   </div>
   <div class="subnav vd-native-nav" data-vd-native-nav>
     <span class="on" data-vd-tab="自动运行">自动运行</span>
-    <span data-vd-tab="策略设置">策略设置</span>
     <span data-vd-tab="仓位">仓位</span>
+    <span data-vd-tab="策略设置">策略设置</span>
     <span data-vd-tab="行情机会">行情机会</span>
     <span data-vd-tab="统计与奖励">统计与奖励</span>
     <span data-vd-tab="手动交易">手动交易</span>
@@ -1345,7 +1374,14 @@
 
   <div class="vd-native-view vd-opportunity-stack" data-vd-view="行情机会">
     <div class="vd-view-head">
-      <div><h2>行情机会</h2><p>先看两边共同市场和报价新鲜度，再判断平台点差、入场价差与资金费是否通过。</p></div>
+      <div><h2>行情机会</h2><p>这里不是观察清单，而是自动开仓与低成本退出共用的实时输入。</p></div>
+    </div>
+    <div class="vd-execution-chain" aria-label="行情机会到自动执行的处理链">
+      <div class="vd-execution-step"><span>01 · 候选池</span><b>双平台共同币</b><small>排除单边市场与不可交易品种</small></div>
+      <div class="vd-execution-step"><span>02 · 实时报价</span><b>核对新鲜度</b><small>旧报价不会进入自动计划</small></div>
+      <div class="vd-execution-step"><span>03 · 成本筛选</span><b>点差与资金费</b><small>只保留通过策略门槛的方向</small></div>
+      <div class="vd-execution-step"><span>04 · 开仓复核</span><b>同步双腿价格</b><small>下单前重新计算方向与成本</small></div>
+      <div class="vd-execution-step"><span>05 · 自动执行</span><b>Worker 接收计划</b><small>到期平仓也会等待较低成本窗口</small></div>
     </div>
     <div class="vdauto-compare vd-compare-native" id="vdauto-route-comparison">
       <div class="vdauto-compare-grid">
@@ -1388,58 +1424,56 @@
 
   <div class="vd-native-view" data-vd-view="统计与奖励">
     <div class="vd-view-head">
-      <div><h2>统计与奖励</h2><p>损耗、真实净交易结果、已到账奖励和退款分开呈现，待结算估算不计入权益。</p></div>
-    </div>
-    <div class="vd-stats-grid">
-      <div>
-        <div class="panel" id="vd-equity-panel" style="display:none">
-          <h2>真实净交易结果 <span class="feat f-new">四账户已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
-          <div class="src">总权益 − 初始本金 − 截至当时的已核验充值/提现；包含已实现盈亏、资金费和手续费的净结果。</div>
-          <div class="equity-chart" id="vd-equity-chart">
-            <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
-            <div class="equity-tooltip" id="vd-equity-tooltip" hidden></div>
-          </div>
-          <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
-          <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
-        </div>
-        <div class="panel" id="vd-incentive-panel">
-          <h2>奖励与退款</h2>
-          <div class="src">只显示实际到账；计入总权益与真实净结果，不计入投入本金，也不会重复相加。待结算和估算不计入。</div>
-          <div class="incentive-strip">
-            <div class="incentive-cell">
-              <div class="eyebrow">Ondo 已到账</div>
-              <div class="amount" data-k="vd.inc_ondo">—</div>
-              <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
-            </div>
-            <div class="incentive-cell">
-              <div class="eyebrow">Var 实际退款</div>
-              <div class="amount" data-k="vd.inc_var">—</div>
-              <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
-            </div>
-            <div class="incentive-cell">
-              <div class="eyebrow">真实净结果</div>
-              <div class="amount" data-k="vd.inc_net">—</div>
-              <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
-            </div>
-          </div>
-          <div class="src" style="margin-top:9px" data-k="vd.inc_host_detail"></div>
-        </div>
-      </div>
-      <div>
-        <div class="panel">
-          <h2>今日损耗分解</h2>
-          <div class="src">source · trades 表 cost_bp / funding / slippage（近 24h）</div>
-          <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
-            <span style="width:100%;display:flex;align-items:center;color:var(--faint)">等待真实交易数据</span>
-          </div>
-          <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
-        </div>
-      </div>
+      <div><h2>统计与奖励</h2><p>先看本周实际做了多少、净结果是多少，再看奖励与退款来源。</p></div>
     </div>
     <div class="panel vd-stats-breakdown" id="vd-stats-breakdown">
-      <h2>交易统计</h2>
-      <div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>
-      <div style="color:var(--faint);padding:10px">等待真实交易数据</div>
+      <div class="vd-stats-head">
+        <div><h2>本周对冲经营</h2><div class="src">单边交易量不把 Var 与对冲腿重复相加；真实净结果只在完整平仓后确认。</div></div>
+        <div class="vd-stats-live"><b>页面每 15 秒刷新</b><span id="vd-stats-updated">等待成交记录</span></div>
+      </div>
+      <div style="color:var(--faint);padding:16px">正在合并 VPS1 与 VPS2 成交记录</div>
+    </div>
+    <div class="vd-stats-grid">
+      <div class="panel" id="vd-equity-panel" style="display:none">
+        <h2>本金前后变化 <span class="feat f-new">四账户已对账</span> <span data-k="vd.eq_head" style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:auto"></span></h2>
+        <div class="src">当前总权益与核验投入本金的差额；充值、提现不会被误算成交易盈亏。</div>
+        <div class="equity-chart" id="vd-equity-chart">
+          <svg id="vd-equity-svg" width="100%" height="120" viewBox="0 0 860 120" preserveAspectRatio="none" aria-label="真实净交易结果曲线"></svg>
+          <div class="equity-tooltip" id="vd-equity-tooltip" hidden></div>
+        </div>
+        <div class="src" style="margin-top:6px" data-k="vd.eq_foot"></div>
+        <div class="src" style="margin-top:4px" data-k="vd.eq_sources"></div>
+      </div>
+      <div class="panel" id="vd-incentive-panel">
+        <h2>已到账奖励与退款</h2>
+        <div class="src">只显示实际到账，待结算和概率估算不计入。</div>
+        <div class="incentive-strip">
+          <div class="incentive-cell">
+            <div class="eyebrow">Ondo 奖励</div>
+            <div class="amount" data-k="vd.inc_ondo">—</div>
+            <div class="detail" data-k="vd.inc_ondo_sub">等待账号奖励历史</div>
+          </div>
+          <div class="incentive-cell">
+            <div class="eyebrow">Var 退款</div>
+            <div class="amount" data-k="vd.inc_var">—</div>
+            <div class="detail" data-k="vd.inc_var_sub">等待 transfer history 与退款池</div>
+          </div>
+          <div class="incentive-cell">
+            <div class="eyebrow">含奖励净结果</div>
+            <div class="amount" data-k="vd.inc_net">—</div>
+            <div class="detail" data-k="vd.inc_net_sub">等待本金与四账户权益对账</div>
+          </div>
+        </div>
+        <div class="src" style="margin-top:9px" data-k="vd.inc_host_detail"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>近 24 小时成本来源</h2>
+      <div class="src">把成交价差、滑点、资金费拆开；这里用于找成本问题，不等同于本金盈亏。</div>
+      <div id="vd-loss-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:10.5px">
+        <span style="width:100%;display:flex;align-items:center;color:var(--faint)">等待真实交易数据</span>
+      </div>
+      <div class="src" style="margin-top:8px" data-k="vd.loss_src">—</div>
     </div>
   </div>
 
@@ -5594,12 +5628,36 @@
     const box=document.getElementById('vd-stats-breakdown');
     if(!box) return;
     const detail=((window.__state||{}).varia_detail)||{};
-    box.innerHTML='<h2>交易统计</h2><div class="src">按 VPS 和交易对聚合最近 40 笔已记录成交</div>'+
-      '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
-      _table(['VPS / 路线','笔数','名义','净损耗','每万U成本','净 PnL','胜率'],detail.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+money(r.loss||0)+'</td><td class="num">'+money(r.cost_per_10k||0)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
-      '</div><div><h2 style="font-size:12px">按交易对</h2>'+
-      _table(['交易对','笔数','名义','净 PnL','胜率'],detail.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
-      '</div></div>';
+    const summary=detail.summary||{}, hosts=detail.by_host||[], symbols=(detail.by_symbol||[]).slice(0,10);
+    const updated=detail.updated_at
+      ?'最近成交 '+esc(detail.updated_at)+' · 页面数据刚刷新'
+      :'尚无已记录成交';
+    const hostCards=['VPS1 · Var/Decibel','VPS2 · Var/Ondo'].map(name=>{
+      const r=hosts.find(x=>x.name===name)||{actions:0,rounds:0,notional:0,pnl:0,loss_per_10k:0};
+      return '<div class="vd-host-summary"><div class="vd-host-summary-head"><b>'+esc(name)+'</b><span>本周</span></div>'+
+        '<div class="vd-host-summary-grid">'+
+          '<div><span>成交动作</span><b>'+Number(r.actions||0)+' 次</b></div>'+
+          '<div><span>完整回合</span><b>'+Number(r.rounds||0)+' 轮</b></div>'+
+          '<div><span>单边交易量</span><b>'+money(r.notional||0)+'</b></div>'+
+          '<div><span>每万 U 净损耗</span><b>'+money(r.loss_per_10k||0)+'</b></div>'+
+        '</div><div style="margin-top:11px;color:var(--faint);font:10px var(--mono)">真实净结果 '+pnlSpan(r.pnl||0)+'</div></div>';
+    }).join('');
+    const symbolTable=_table(
+      ['交易对','成交动作','完整回合','单边交易量','真实净结果'],
+      symbols,
+      r=>'<tr><td><b>'+esc(r.name)+'</b></td><td class="num">'+Number(r.actions||0)+'</td><td class="num">'+Number(r.rounds||0)+'</td><td class="num">'+money(r.notional||0)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td></tr>'
+    );
+    box.innerHTML=
+      '<div class="vd-stats-head"><div><h2>本周对冲经营</h2><div class="src">'+
+        esc((detail.week_start||'—')+' 至 '+(detail.week_end||'—'))+
+        ' · 单边量不重复计算两条腿</div></div><div class="vd-stats-live"><b>页面每 15 秒刷新</b><span>'+updated+'</span></div></div>'+
+      '<div class="vd-week-kpis">'+
+        '<div class="vd-week-kpi"><span>成交动作</span><b>'+Number(summary.actions||0)+'</b><small>开仓、平仓各算一次</small></div>'+
+        '<div class="vd-week-kpi"><span>完成对冲回合</span><b>'+Number(summary.rounds||0)+'</b><small>双腿完整平仓后确认</small></div>'+
+        '<div class="vd-week-kpi"><span>单边交易量</span><b>'+money(summary.notional||0)+'</b><small>不把两平台重复相加</small></div>'+
+        '<div class="vd-week-kpi"><span>真实净结果</span><b>'+pnlSpan(summary.pnl||0)+'</b><small>只统计已完成回合</small></div>'+
+      '</div><div class="vd-host-summaries">'+hostCards+'</div>'+
+      '<div class="vd-symbol-summary"><div class="vd-symbol-summary-head"><b>本周主要交易对</b><span>按单边交易量排序 · 最多 10 个</span></div>'+symbolTable+'</div>';
   }
 
   function _vdDirectionLabel(v,hedgeLabel){hedgeLabel=hedgeLabel||'Decibel';return v==='var_buy'?'Var 买 / '+hedgeLabel+' 卖':v==='var_sell'?'Var 卖 / '+hedgeLabel+' 买':'自动选择低成本方向';}
@@ -5732,16 +5790,17 @@
     if(pid==='vardec'){
       const vdt=s.varia_detail||{};
       if(name.indexOf('统计汇总')>=0){
-        html+='<div class="src">按 host / symbol 聚合(近40笔成交)</div>'+
+        html+='<div class="src">按本周已执行动作聚合；只有完整平仓计入真实净结果</div>'+
           '<div class="grid2"><div><h2 style="font-size:12px">按 VPS</h2>'+
-          _table(['VPS','笔数','名义','净损耗','每万U成本','净PnL','胜率'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+money(r.loss||0)+'</td><td class="num">'+money(r.cost_per_10k||0)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+          _table(['VPS','成交动作','完整回合','单边交易量','净损耗','每万U净损耗','真实净结果'],vdt.by_host,r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+Number(r.actions||0)+'</td><td class="num">'+Number(r.rounds||0)+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+money(r.loss||0)+'</td><td class="num">'+money(r.loss_per_10k||0)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td></tr>')+
           '</div><div><h2 style="font-size:12px">按 SYMBOL</h2>'+
-          _table(['SYMBOL','笔数','名义','净PnL','胜率'],vdt.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+r.trades+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td><td class="num">'+r.win_rate+'%</td></tr>')+
+          _table(['SYMBOL','成交动作','完整回合','单边交易量','真实净结果'],vdt.by_symbol,r=>'<tr><td class="num">'+esc(r.name)+'</td><td class="num">'+Number(r.actions||0)+'</td><td class="num">'+Number(r.rounds||0)+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+pnlSpan(r.pnl)+'</td></tr>')+
           '</div></div>';
       } else if(name.indexOf('成交记录')>=0){
-        html+='<div class="src">近 40 笔对冲成交 · 数据来自 trades 表</div>'+
-          _table(['时间','VPS','路线','SYMBOL','策略','名义','双腿方向','basis','净PnL','状态'],vdt.trades,r=>
-            '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td>'+esc(r.route||'—')+'</td><td class="num">'+esc(r.symbol||'—')+'</td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+pnlSpan(r.pnl||0)+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(r.status||'—')+'</span></td></tr>');
+        const statusLabel=v=>({executed:'已成交',executed_partial:'部分成交',failed:'失败',blocked:'已拦截'})[String(v||'').toLowerCase()]||v||'—';
+        html+='<div class="src">VPS1 本地库 + VPS2 同步记录 · 页面每 15 秒刷新 · 最近成交 '+esc(vdt.updated_at||'—')+'</div>'+
+          _table(['北京时间','VPS','动作','交易对','策略','单边名义','双腿方向','价差','平仓净结果','状态'],vdt.trades,r=>
+            '<tr><td class="num">'+esc(r.close)+'</td><td class="num">'+esc(r.host)+'</td><td>'+esc(r.event||'—')+'</td><td class="num"><b>'+esc(r.symbol||'—')+'</b></td><td>'+esc(r.strategy||'—')+'</td><td class="num">'+money(r.notional)+'</td><td class="num">'+esc(r.side)+'</td><td class="num">'+esc(r.basis)+'</td><td class="num">'+(r.event==='平仓'?pnlSpan(r.pnl||0):'—')+'</td><td><span class="chip '+(String(r.status).includes('exec')?'ok':'warn')+'">'+esc(statusLabel(r.status))+'</span></td></tr>');
       }
     }
     box.innerHTML=html;

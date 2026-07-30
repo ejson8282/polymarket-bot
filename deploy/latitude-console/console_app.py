@@ -3254,8 +3254,8 @@ def _single_account() -> Dict[str, Any]:
 # ---------- 原生子视图明细(只读)----------
 
 def _varia_detail() -> Dict[str, Any]:
-    """varia 二级页原生数据:近期成交明细 + 统计聚合(替代 iframe)。"""
-    trades: List[dict] = []
+    """Var 对冲成交明细与本周聚合，合并 VPS1 本地库和 VPS2 peer 记录。"""
+    raw_rows: List[dict] = []
     db = VARIA_DIR / "hedge_bot.sqlite3"
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -3263,14 +3263,63 @@ def _varia_detail() -> Dict[str, Any]:
             "SELECT id, host, symbol, timestamp_open, timestamp_close, target_notional, "
             "var_side, decibel_side, basis_open_bp, basis_close_bp, realized_pnl_usdc, "
             "realized_cost_bp, status, strategy FROM trades "
-            "ORDER BY timestamp_close DESC LIMIT 40")
+            "WHERE COALESCE(timestamp_close, timestamp_open) >= datetime('now','-8 day') "
+            "ORDER BY COALESCE(timestamp_close, timestamp_open) DESC LIMIT 500")
         names = [d[0] for d in cur.description]
-        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        raw_rows.extend(dict(zip(names, r)) for r in cur.fetchall())
         conn.close()
     except Exception:
-        rows = []
-    for r in rows:
-        tc = str(r.get("timestamp_close") or "")
+        pass
+
+    peer_dir = VARIA_DIR / "peer_trades"
+    for path in (sorted(peer_dir.glob("*.json")) if peer_dir.exists() else []):
+        raw = _read_json(path)
+        if not isinstance(raw, list):
+            continue
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("host", path.stem)
+            raw_rows.append(item)
+
+    # A peer snapshot can contain rows already present in the local database.
+    # Prefer the newest copy and never aggregate the same (host, id) twice.
+    deduped: Dict[tuple[str, Any], dict] = {}
+    anonymous: List[dict] = []
+    for row in raw_rows:
+        host = str(row.get("host") or "unknown").strip().lower()
+        row_id = row.get("id")
+        if row_id is None:
+            anonymous.append(row)
+            continue
+        key = (host, row_id)
+        current = deduped.get(key)
+        row_ts = _parse_ts(row.get("timestamp_close") or row.get("timestamp_open")) or 0.0
+        current_ts = (
+            _parse_ts(current.get("timestamp_close") or current.get("timestamp_open")) or 0.0
+            if current
+            else -1.0
+        )
+        if current is None or row_ts >= current_ts:
+            deduped[key] = row
+    rows = list(deduped.values()) + anonymous
+    rows.sort(
+        key=lambda row: _parse_ts(row.get("timestamp_close") or row.get("timestamp_open")) or 0.0,
+        reverse=True,
+    )
+
+    china_tz = timezone(timedelta(hours=8))
+    week_cutoff = _farming_week_cutoff_epoch()
+    next_cutoff = week_cutoff + 7 * 86400
+    trades: List[dict] = []
+    for r in rows[:200]:
+        event_ts = _parse_ts(r.get("timestamp_close") or r.get("timestamp_open"))
+        raw_time = r.get("timestamp_close") or r.get("timestamp_open")
+        if event_ts is not None:
+            close_label = datetime.fromtimestamp(event_ts, tz=china_tz).strftime("%m-%d %H:%M")
+        else:
+            close_label = str(raw_time or "")
         raw_host = str(r.get("host") or "").strip().lower()
         if raw_host == "vps1":
             host_label, route_label, hedge_label = "VPS1", "VPS1 · Var/Decibel", "Decibel"
@@ -3281,25 +3330,43 @@ def _varia_detail() -> Dict[str, Any]:
         side_labels = {"buy": "买", "sell": "卖"}
         var_side = str(r.get("var_side") or "").lower()
         hedge_side = str(r.get("decibel_side") or "").lower()
+        basis_open = _num(r.get("basis_open_bp"))
+        basis_close = _num(r.get("basis_close_bp"))
+        if basis_open is not None and basis_close is not None:
+            basis_label = f"{basis_open:.1f}→{basis_close:.1f}bp"
+        elif basis_open is not None:
+            basis_label = f"开 {basis_open:.1f}bp"
+        elif basis_close is not None:
+            basis_label = f"平 {basis_close:.1f}bp"
+        else:
+            basis_label = "—"
         trades.append({
             "id": r.get("id"), "host": host_label, "route": route_label,
             "symbol": r.get("symbol"), "strategy": r.get("strategy"),
-            "close": tc[5:16].replace("T", " ") if len(tc) >= 16 else tc,
+            "close": close_label,
+            "event": "平仓" if r.get("timestamp_close") else "开仓",
+            "event_ts": event_ts,
             "notional": _num(r.get("target_notional")),
             "side": (
                 f"Var {side_labels.get(var_side, '?')} / "
                 f"{hedge_label} {side_labels.get(hedge_side, '?')}"
             ),
-            "basis": (f"{_num(r.get('basis_open_bp')):.1f}→{_num(r.get('basis_close_bp')):.1f}bp"
-                      if _num(r.get("basis_open_bp")) is not None else "—"),
+            "basis": basis_label,
             "pnl": _num(r.get("realized_pnl_usdc")),
             "cost_bp": _num(r.get("realized_cost_bp")),
             "status": r.get("status"),
         })
-    # 统计聚合(按 host / 按 symbol)
+
+    # 统计口径：本周所有已执行动作计入交易量；只有平仓动作计入完成回合与真实净结果。
     by_host: Dict[str, dict] = {}
     by_symbol: Dict[str, dict] = {}
     for t in trades:
+        if t.get("event_ts") is None or t["event_ts"] < week_cutoff:
+            continue
+        status = str(t.get("status") or "").strip().lower()
+        if status not in ("executed", "executed_partial"):
+            continue
+        is_close = t.get("event") == "平仓"
         for bucket, keyname in (
             (by_host, t["route"]),
             (by_symbol, str(t["symbol"] or "?")),
@@ -3307,30 +3374,57 @@ def _varia_detail() -> Dict[str, Any]:
             b = bucket.setdefault(
                 keyname,
                 {
-                    "trades": 0,
+                    "actions": 0,
+                    "rounds": 0,
                     "notional": 0.0,
                     "pnl": 0.0,
                     "loss": 0.0,
-                    "wins": 0,
                 },
             )
-            b["trades"] += 1
+            b["actions"] += 1
             b["notional"] += t["notional"] or 0.0
-            b["pnl"] += t["pnl"] or 0.0
-            b["loss"] += max(0.0, -(t["pnl"] or 0.0))
-            b["wins"] += 1 if (t["pnl"] or 0) > 0 else 0
+            if is_close:
+                b["rounds"] += 1
+                b["pnl"] += t["pnl"] or 0.0
+                b["loss"] += max(0.0, -(t["pnl"] or 0.0))
+
     def _agg(d):
-        return [{"name": k, "trades": v["trades"], "notional": round(v["notional"], 2),
-                 "pnl": round(v["pnl"], 2),
-                 "loss": round(v["loss"], 2),
-                 "cost_per_10k": round(
-                     v["loss"] / v["notional"] * 10000,
-                     2,
-                 ) if v["notional"] else 0.0,
-                 "win_rate": round(v["wins"] / v["trades"] * 100) if v["trades"] else 0}
-                for k, v in sorted(d.items(), key=lambda kv: -kv[1]["notional"])]
-    return {"present": bool(trades), "trades": trades,
-            "by_host": _agg(by_host), "by_symbol": _agg(by_symbol)}
+        return [
+            {
+                "name": k,
+                "actions": v["actions"],
+                "rounds": v["rounds"],
+                "notional": round(v["notional"], 2),
+                "pnl": round(v["pnl"], 2),
+                "loss": round(v["loss"], 2),
+                "loss_per_10k": round(v["loss"] / v["notional"] * 10000, 2)
+                if v["notional"]
+                else 0.0,
+            }
+            for k, v in sorted(d.items(), key=lambda kv: -kv[1]["notional"])
+        ]
+
+    latest_epoch = max((t.get("event_ts") or 0.0 for t in trades), default=0.0)
+    by_host_rows = _agg(by_host)
+    return {
+        "present": bool(trades),
+        "trades": trades[:100],
+        "by_host": by_host_rows,
+        "by_symbol": _agg(by_symbol),
+        "week_start": datetime.fromtimestamp(week_cutoff, tz=china_tz).strftime("%m-%d %H:%M"),
+        "week_end": datetime.fromtimestamp(next_cutoff, tz=china_tz).strftime("%m-%d %H:%M"),
+        "updated_at": datetime.fromtimestamp(latest_epoch, tz=china_tz).strftime("%m-%d %H:%M")
+        if latest_epoch
+        else None,
+        "age_sec": max(0, int(time.time() - latest_epoch)) if latest_epoch else None,
+        "summary": {
+            "actions": sum(row["actions"] for row in by_host_rows),
+            "rounds": sum(row["rounds"] for row in by_host_rows),
+            "notional": round(sum(row["notional"] for row in by_host_rows), 2),
+            "pnl": round(sum(row["pnl"] for row in by_host_rows), 2),
+            "loss": round(sum(row["loss"] for row in by_host_rows), 2),
+        },
+    }
 
 
 def _varia_decibel_scan_state() -> dict:

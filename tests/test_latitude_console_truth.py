@@ -2200,8 +2200,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "点差 '+platformBp.toFixed(2)+'bp" in html
     assert "预计入场成本" not in html
     assert "VPS2 · Var/Ondo" in html
-    assert "VPS / 路线" in html
-    assert "_table(['时间','VPS','路线','SYMBOL'" in html
+    assert "_table(['北京时间','VPS','动作','交易对','策略'" in html
+    assert "esc(r.host)" in html
     assert "Ondo 部署验收记录（历史，不代表当前仓位）" in html
     assert "VPS2 · Ondo 历史验收快照" in html
     assert "_vdAutoRenderHostLive(host,h)" in html
@@ -2215,8 +2215,8 @@ def test_console_html_contains_no_trading_status_samples_or_dead_buttons() -> No
     assert "VPS2 · Var/Ondo 共同币" in html
     assert "当前资金费外推 24h" in html
     assert "资金费按当前费率外推 24 小时并用百分比显示" in html
-    assert ">Ondo 已到账<" in html
-    assert ">Var 实际退款<" in html
+    assert ">Ondo 奖励<" in html
+    assert ">Var 退款<" in html
     assert ">真实净结果<" in html
     assert "合格亏损 " in html
     assert "退款后净损 " in html
@@ -3445,6 +3445,26 @@ def test_varia_position_table_renders_hold_duration_and_deadline() -> None:
     assert "开仓 '+esc(_vdHoldTime(opened))+' · 到期 " in html
 
 
+def test_varia_native_tabs_and_weekly_operations_layout_are_preserved() -> None:
+    html = HTML_PATH.read_text(encoding="utf-8")
+
+    assert html.index('data-vd-tab="仓位"') < html.index(
+        'data-vd-tab="策略设置"'
+    )
+    for marker in (
+        "行情机会到自动执行的处理链",
+        "这里不是观察清单，而是自动开仓与低成本退出共用的实时输入",
+        "本周对冲经营",
+        "单边量不重复计算两条腿",
+        "完成对冲回合",
+        "VPS1 本地库 + VPS2 同步记录",
+        "平仓净结果",
+    ):
+        assert marker in html
+    assert "r.cost_per_10k" not in html
+    assert "r.win_rate" not in html
+
+
 def test_varia_control_lists_full_ranked_market_candidates(monkeypatch) -> None:
     monkeypatch.setattr(console, "_varia_latest_quotes", lambda: [])
     monkeypatch.setattr(console, "_varia_recent_jobs", lambda: [])
@@ -3465,10 +3485,24 @@ def test_varia_control_lists_full_ranked_market_candidates(monkeypatch) -> None:
     assert state["host_controls"]["vps2"]["symbols"] == ["BTC", "XAU", "AAPL"]
 
 
-def test_varia_detail_labels_routes_and_does_not_present_unattributed_rows_as_all(
+def test_varia_detail_merges_peer_rows_and_aggregates_completed_rounds(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(console, "VARIA_DIR", tmp_path)
+    now = datetime.now(timezone.utc)
+    opened = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    closed = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    peer_closed = (now - timedelta(minutes=30)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    peer_opened = (now - timedelta(minutes=15)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    monkeypatch.setattr(
+        console,
+        "_farming_week_cutoff_epoch",
+        lambda: (now - timedelta(days=1)).timestamp(),
+    )
     with sqlite3.connect(tmp_path / "hedge_bot.sqlite3") as connection:
         connection.execute(
             "CREATE TABLE trades ("
@@ -3478,39 +3512,92 @@ def test_varia_detail_labels_routes_and_does_not_present_unattributed_rows_as_al
             "realized_pnl_usdc REAL, realized_cost_bp REAL, status TEXT, strategy TEXT)"
         )
         rows = [
-            (1, "vps1", "BTC", "2026-07-23 00:00", "2026-07-23 01:00",
+            (1, "vps1", "BTC", opened, closed,
              100, "buy", "sell", 1, 0, 0.1, 1, "executed", "A"),
-            (2, "vps2", "XAU", "2026-07-23 00:00", "2026-07-23 01:00",
+            (2, "vps2", "XAU", opened, closed,
              120, "sell", "buy", 1, 0, -0.1, 1, "executed", "B"),
-            (3, "all", "ETH", "2026-07-23 00:00", "2026-07-23 01:00",
+            (3, "all", "ETH", opened, closed,
              80, "sell", "buy", 1, 0, 0, 1, "executed", None),
         ]
         connection.executemany(
             "INSERT INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
+    _write_json(
+        tmp_path / "peer_trades" / "vps2.json",
+        [
+            {
+                "id": 2,
+                "symbol": "XAU",
+                "timestamp_open": opened,
+                "timestamp_close": peer_closed,
+                "target_notional": 120,
+                "var_side": "sell",
+                "decibel_side": "buy",
+                "basis_open_bp": 2.5,
+                "basis_close_bp": 0.5,
+                "realized_pnl_usdc": -0.2,
+                "realized_cost_bp": 1,
+                "status": "executed",
+                "strategy": "B",
+            },
+            {
+                "id": 4,
+                "symbol": "SOL",
+                "timestamp_open": peer_opened,
+                "timestamp_close": None,
+                "target_notional": 50,
+                "var_side": "buy",
+                "decibel_side": "sell",
+                "basis_open_bp": 0.8,
+                "basis_close_bp": None,
+                "realized_pnl_usdc": None,
+                "realized_cost_bp": None,
+                "status": "executed",
+                "strategy": "B",
+            },
+        ],
+    )
 
     detail = console._varia_detail()
 
-    assert [row["host"] for row in detail["trades"]] == [
-        "VPS1", "VPS2", "未标记",
-    ]
-    assert detail["trades"][0]["route"] == "VPS1 · Var/Decibel"
-    assert detail["trades"][0]["side"] == "Var 买 / Decibel 卖"
-    assert detail["trades"][1]["route"] == "VPS2 · Var/Ondo"
-    assert detail["trades"][1]["side"] == "Var 卖 / Ondo 买"
-    assert detail["trades"][2]["route"] == "未标记 · 历史记录"
-    assert detail["trades"][2]["side"] == "Var 卖 / 对冲腿 买"
+    trades = {row["id"]: row for row in detail["trades"]}
+    assert set(trades) == {1, 2, 3, 4}
+    assert trades[1]["route"] == "VPS1 · Var/Decibel"
+    assert trades[1]["side"] == "Var 买 / Decibel 卖"
+    assert trades[2]["route"] == "VPS2 · Var/Ondo"
+    assert trades[2]["side"] == "Var 卖 / Ondo 买"
+    assert trades[2]["pnl"] == -0.2
+    assert trades[2]["basis"] == "2.5→0.5bp"
+    assert trades[3]["route"] == "未标记 · 历史记录"
+    assert trades[3]["side"] == "Var 卖 / 对冲腿 买"
+    assert trades[4]["event"] == "开仓"
+    assert trades[4]["basis"] == "开 0.8bp"
     assert {row["name"] for row in detail["by_host"]} == {
         "VPS1 · Var/Decibel",
         "VPS2 · Var/Ondo",
         "未标记 · 历史记录",
     }
     by_host = {row["name"]: row for row in detail["by_host"]}
+    assert by_host["VPS1 · Var/Decibel"]["actions"] == 1
+    assert by_host["VPS1 · Var/Decibel"]["rounds"] == 1
     assert by_host["VPS1 · Var/Decibel"]["loss"] == 0
-    assert by_host["VPS1 · Var/Decibel"]["cost_per_10k"] == 0
-    assert by_host["VPS2 · Var/Ondo"]["loss"] == 0.1
-    assert by_host["VPS2 · Var/Ondo"]["cost_per_10k"] == 8.33
+    assert by_host["VPS1 · Var/Decibel"]["loss_per_10k"] == 0
+    assert by_host["VPS2 · Var/Ondo"]["actions"] == 2
+    assert by_host["VPS2 · Var/Ondo"]["rounds"] == 1
+    assert by_host["VPS2 · Var/Ondo"]["notional"] == 170
+    assert by_host["VPS2 · Var/Ondo"]["loss"] == 0.2
+    assert by_host["VPS2 · Var/Ondo"]["loss_per_10k"] == 11.76
+    assert detail["summary"] == {
+        "actions": 4,
+        "rounds": 3,
+        "notional": 350.0,
+        "pnl": -0.1,
+        "loss": 0.2,
+    }
+    assert detail["week_start"]
+    assert detail["week_end"]
+    assert detail["updated_at"]
 
 
 def test_varia_vps2_command_routes_to_peer_without_secrets(monkeypatch, tmp_path: Path) -> None:
