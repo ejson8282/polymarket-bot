@@ -822,6 +822,22 @@ class PolyLPSMulti:
         self._seen_trade_ids: set[str] = set()
         # ordered insertion list — used for correct FIFO truncation (set is unordered)
         self._seen_trade_ids_order: list[str] = []
+        # Orders created by this engine. Account-level trade feeds also include
+        # manual website orders, so order ownership must be explicit before an
+        # observed trade is allowed to trigger automated inventory disposal.
+        self._managed_buy_order_ids: set[str] = set()
+        self._managed_buy_order_ids_order: list[str] = []
+        self._managed_order_history_limit: int = int(
+            execution.get("managed_order_history_limit", 1_000)
+        )
+        # A manual SELL means the user is taking control of that event's exit.
+        # Keep maker BUYs away while it is live and for a short grace period
+        # after it disappears so the engine cannot immediately buy it back.
+        self._manual_exit_cooldown_sec: float = float(
+            execution.get("manual_exit_cooldown_sec", 900)
+        )
+        self._manual_exit_event_until: Dict[str, float] = {}
+        self._manual_exit_last_notice: Dict[str, float] = {}
         # pending unwind SELL orders: [{token_id, fill_price, fill_size, order_id, placed_at}]
         self._pending_unwinds: list[dict] = []
         self._active_exit_orders: Dict[str, str] = {}  # {token_id: order_id} — protected from cancel_all
@@ -1001,6 +1017,19 @@ class PolyLPSMulti:
                     or _prior.get("night_events")
                     or []
                 ) if isinstance(_prior, dict) else []
+                _prior_managed_ids = (
+                    _prior.get("managed_buy_order_ids") or []
+                ) if isinstance(_prior, dict) else []
+                if isinstance(_prior_managed_ids, list):
+                    restored_ids = [
+                        str(order_id)
+                        for order_id in _prior_managed_ids[
+                            -self._managed_order_history_limit:
+                        ]
+                        if order_id
+                    ]
+                    self._managed_buy_order_ids_order = restored_ids
+                    self._managed_buy_order_ids = set(restored_ids)
                 if isinstance(_prior_events, list):
                     _now_ts = time.time()
                     _ttl_cutoff = _now_ts - self._curator_events_ttl_sec
@@ -3159,6 +3188,173 @@ class PolyLPSMulti:
     def _order_size(order: dict) -> Decimal:
         return Decimal(str(order.get("size", 0) or order.get("original_size", 0) or 0))
 
+    def _track_managed_buy_order(self, order_id: str) -> None:
+        order_id = str(order_id or "")
+        if not order_id or order_id in self._managed_buy_order_ids:
+            return
+        self._managed_buy_order_ids.add(order_id)
+        self._managed_buy_order_ids_order.append(order_id)
+        overflow = (
+            len(self._managed_buy_order_ids_order)
+            - self._managed_order_history_limit
+        )
+        if overflow > 0:
+            stale = self._managed_buy_order_ids_order[:overflow]
+            self._managed_buy_order_ids_order = (
+                self._managed_buy_order_ids_order[overflow:]
+            )
+            self._managed_buy_order_ids.difference_update(stale)
+
+    @staticmethod
+    def _trade_order_ids(trade: dict) -> set[str]:
+        ids = {
+            str(
+                trade.get("order_id")
+                or trade.get("orderID")
+                or trade.get("taker_order_id")
+                or ""
+            )
+        }
+        maker_orders = trade.get("maker_orders")
+        if isinstance(maker_orders, list):
+            ids.update(
+                str(order.get("order_id") or order.get("id") or "")
+                for order in maker_orders
+                if isinstance(order, dict)
+            )
+        ids.discard("")
+        return ids
+
+    def _trade_is_managed_inventory_increase(
+        self, trade: dict
+    ) -> tuple[bool, str]:
+        """Classify account trades before automatic exit handling.
+
+        SELL trades reduce inventory and are always user-safe. BUY trades are
+        actionable only when they reference an order created by this engine.
+        This keeps website/manual orders outside the bot's control surface.
+        """
+        maker_orders = trade.get("maker_orders")
+        if isinstance(maker_orders, list):
+            for maker_order in maker_orders:
+                if not isinstance(maker_order, dict):
+                    continue
+                order_id = str(
+                    maker_order.get("order_id")
+                    or maker_order.get("id")
+                    or ""
+                )
+                if order_id not in self._managed_buy_order_ids:
+                    continue
+                maker_side = str(maker_order.get("side") or "").upper()
+                if maker_side == "BUY":
+                    return True, "managed_maker_buy"
+                return False, "managed_maker_non_buy"
+
+        taker_order_id = str(
+            trade.get("taker_order_id")
+            or trade.get("order_id")
+            or trade.get("orderID")
+            or ""
+        )
+        side = str(trade.get("side") or "").upper()
+        if taker_order_id in self._managed_buy_order_ids:
+            if side == "BUY":
+                return True, "managed_taker_buy"
+            return False, "managed_taker_non_buy"
+        if side == "SELL":
+            return False, "manual_or_external_sell"
+        if side == "BUY":
+            return False, "unmanaged_buy"
+        return False, "unknown_side"
+
+    def _manual_sell_orders_for_event(self, orders: list[dict], token_id: str) -> list[dict]:
+        event_tokens = set(self._event_token_ids(token_id))
+        active_exit_ids = {
+            str(order_id)
+            for order_id in self._active_exit_orders.values()
+            if order_id
+        }
+        return [
+            order
+            for order in orders
+            if str(order.get("status", "")).lower() in ("live", "open", "active")
+            and str(order.get("asset_id") or order.get("token_id") or "")
+            in event_tokens
+            and str(order.get("side") or "").upper() == "SELL"
+            and self._order_id(order) not in active_exit_ids
+        ]
+
+    async def _manual_exit_blocks_quote(self, token_id: str) -> bool:
+        """Pause bot BUYs while a user-managed SELL is active or cooling down."""
+        event_key = self._event_key(token_id)
+        now = time.time()
+        try:
+            orders = await self._get_all_orders_cached()
+            manual_sells = self._manual_sell_orders_for_event(orders, token_id)
+        except Exception as exc:
+            log(
+                f"[manual-exit] token={token_id[:16]} order read failed: {exc}"
+            )
+            return now < self._manual_exit_event_until.get(event_key, 0.0)
+
+        if manual_sells:
+            self._manual_exit_event_until[event_key] = (
+                now + self._manual_exit_cooldown_sec
+            )
+            managed_buy_ids = [
+                self._order_id(order)
+                for order in orders
+                if str(order.get("status", "")).lower()
+                in ("live", "open", "active")
+                and str(order.get("asset_id") or order.get("token_id") or "")
+                in set(self._event_token_ids(token_id))
+                and str(order.get("side") or "").upper() == "BUY"
+                and self._order_id(order) in self._managed_buy_order_ids
+            ]
+            if managed_buy_ids:
+                await self._cancel_order_ids(
+                    token_id,
+                    managed_buy_ids,
+                    "manual_exit_protection",
+                )
+            last_notice = self._manual_exit_last_notice.get(event_key, 0.0)
+            if now - last_notice >= 60:
+                self._manual_exit_last_notice[event_key] = now
+                log(
+                    f"[manual-exit] event={event_key[:16]} "
+                    f"manual_sell_orders={len(manual_sells)} "
+                    f"managed_buys_cancelled={len(managed_buy_ids)} "
+                    f"cooldown={int(self._manual_exit_cooldown_sec)}s"
+                )
+            return True
+
+        return now < self._manual_exit_event_until.get(event_key, 0.0)
+
+    async def _adopt_legacy_live_buy_orders(self) -> None:
+        """Reconcile live BUYs created before the current process started."""
+        try:
+            orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception as exc:
+            log(f"[managed-orders] legacy adoption skipped: {exc}")
+            return
+        adopted = 0
+        for order in orders if isinstance(orders, list) else []:
+            if (
+                str(order.get("status", "")).lower()
+                not in ("live", "open", "active")
+                or str(order.get("side") or "").upper() != "BUY"
+            ):
+                continue
+            order_id = self._order_id(order)
+            if not order_id:
+                continue
+            already_known = order_id in self._managed_buy_order_ids
+            self._track_managed_buy_order(order_id)
+            if not already_known:
+                adopted += 1
+        log(f"[managed-orders] adopted_legacy_live_buys={adopted}")
+
     def _size_change_within_tolerance(self, current_size: Decimal, desired_size: Decimal) -> bool:
         if current_size <= 0 or desired_size <= 0:
             return False
@@ -3248,6 +3444,22 @@ class PolyLPSMulti:
 
     async def _cancel_order_ids(self, token_id: str, ids: list[str], reason: str) -> bool:
         ids = [str(x) for x in ids if x]
+        # Quote/risk paths manage BUY liquidity. A SELL is an inventory exit
+        # (including one placed manually on the website) and must never be
+        # swept up by a generic planner cancellation.
+        sell_ids = {
+            self._order_id(order)
+            for orders in self._market_live_orders.values()
+            for order in orders
+            if str(order.get("side") or "").upper() == "SELL"
+        }
+        protected = [order_id for order_id in ids if order_id in sell_ids]
+        if protected:
+            log(
+                f"[manual-exit] preserved {len(protected)} SELL order(s) "
+                f"during cancel reason={reason}"
+            )
+            ids = [order_id for order_id in ids if order_id not in sell_ids]
         if not ids:
             self._mark_latency(token_id, "t_orders_cleared")
             return True
@@ -5274,6 +5486,7 @@ class PolyLPSMulti:
                 o for o in orders
                 if str(o.get("status", "")).lower() in ("live", "open", "active")
                 and str(o.get("asset_id") or o.get("token_id") or "") in event_token_ids
+                and str(o.get("side") or "").upper() != "SELL"
             ]
             ids = [o.get("id") or o.get("orderID") for o in live if (o.get("id") or o.get("orderID"))]
             if ids:
@@ -5506,6 +5719,14 @@ class PolyLPSMulti:
             self._maybe_inject_dual_side_tokens()
         except Exception as e:
             log(f"[dual-side-inject] startup error: {e}")
+
+        try:
+            await asyncio.wait_for(
+                self._adopt_legacy_live_buy_orders(),
+                timeout=15,
+            )
+        except Exception as e:
+            log(f"[managed-orders] startup adoption error: {e}")
 
         if self._sponsored_guard.enabled:
             try:
@@ -6256,6 +6477,8 @@ class PolyLPSMulti:
                 return
             if self._event_blocks_quote(token_id):
                 return
+            if await self._manual_exit_blocks_quote(token_id):
+                return
 
             # # Dual-side gate: auto-injected NO tokens quote alongside YES.
             #    Only gated by: snapshot availability and minimum book depth.
@@ -6732,6 +6955,8 @@ class PolyLPSMulti:
         except Exception:
             oid = ""
         if oid:
+            if str(side).upper() == "BUY":
+                self._track_managed_buy_order(oid)
             registry.register(self._funder_lc, token_id, side, float(price), float(size), oid)
 
     async def _submit_post_order(self, token_id: str, price: Decimal, size: Decimal, label: str) -> Any:
@@ -7025,21 +7250,20 @@ class PolyLPSMulti:
                             if token and token not in self.market_cfg:
                                 continue
 
-                            # Top-level size_matched trusted only for "order"
-                            # events (those are per-user). For "trade" events
-                            # (market-wide broadcasts) we only count when at
-                            # least one maker order in the payload is ours —
-                            # either order_id in our live cache, or the maker
-                            # address matches our funder.
-                            live_ids_for_token: set[str] = {
-                                str(o.get("id") or o.get("orderID") or "")
-                                for o in (self._market_live_orders.get(token) or [])
-                                if isinstance(o, dict)
-                            }
-                            live_ids_for_token.discard("")
+                            # Account streams also contain website/manual
+                            # orders. Only engine-created BUY IDs may trigger
+                            # automated inventory disposal.
+                            event_order_id = str(
+                                it.get("order_id") or it.get("id") or ""
+                            )
                             size_matched = Decimal("0")
                             if typ == "order":
-                                # Own account's order update — trust top-level.
+                                if (
+                                    not event_order_id
+                                    or event_order_id
+                                    not in self._managed_buy_order_ids
+                                ):
+                                    continue
                                 try:
                                     size_matched = Decimal(str(it.get("size_matched", 0) or 0))
                                 except Exception:
@@ -7049,12 +7273,11 @@ class PolyLPSMulti:
                                     if not isinstance(mo, (dict,)):
                                         continue
                                     mo_id = str(mo.get("order_id") or mo.get("id") or "")
-                                    mo_maker = str(mo.get("maker_address") or mo.get("maker") or "").lower()
-                                    is_ours = (
-                                        (mo_id and mo_id in live_ids_for_token)
-                                        or (self._funder_lc and mo_maker == self._funder_lc)
-                                    )
-                                    if not is_ours:
+                                    if (
+                                        not mo_id
+                                        or mo_id
+                                        not in self._managed_buy_order_ids
+                                    ):
                                         continue
                                     try:
                                         size_matched = max(
@@ -7128,6 +7351,8 @@ class PolyLPSMulti:
                     if token not in self.market_cfg and token not in self._night_market_cfg:
                         continue
                     oid = str(o.get("id") or o.get("orderID") or "")
+                    if not oid or oid not in self._managed_buy_order_ids:
+                        continue
 
                     # Detect fully matched/filled orders (any status)
                     matched = max(
@@ -7204,6 +7429,7 @@ class PolyLPSMulti:
                             items = v
                             break
 
+                new_count = 0
                 for t in items:
                     if not isinstance(t, dict):
                         continue
@@ -7211,7 +7437,13 @@ class PolyLPSMulti:
                     if token not in self.market_cfg and token not in self._night_market_cfg:
                         continue
 
-                    tid = str(t.get("id") or t.get("trade_id") or t.get("transactionHash") or "")
+                    tid = str(
+                        t.get("id")
+                        or t.get("trade_id")
+                        or t.get("transaction_hash")
+                        or t.get("transactionHash")
+                        or ""
+                    )
                     if not tid:
                         tid = f"{token}:{t.get('price')}:{t.get('size')}:{t.get('timestamp')}"
 
@@ -7225,6 +7457,7 @@ class PolyLPSMulti:
                         continue
                     self._seen_trade_ids.add(tid)
                     self._seen_trade_ids_order.append(tid)
+                    new_count += 1
 
                     try:
                         sz = Decimal(str(t.get("size") or t.get("matched_amount") or 0))
@@ -7235,6 +7468,17 @@ class PolyLPSMulti:
                     except Exception:
                         px = Decimal("0")
 
+                    managed_increase, classification = (
+                        self._trade_is_managed_inventory_increase(t)
+                    )
+                    if not managed_increase:
+                        log(
+                            f"[trade-poll] ignored account trade id={tid[:16]} "
+                            f"token={token[:16]} side={str(t.get('side') or '').upper()} "
+                            f"class={classification}"
+                        )
+                        continue
+
                     if sz > self.fill_size_threshold:
                         if self._allow_signal(token, f"trade_poll:{tid}"):
                             self._fills_seen += 1
@@ -7243,10 +7487,8 @@ class PolyLPSMulti:
                 if not seeded:
                     seeded = True
                     log(f"[trade-poll] baseline seeded trades_count={len(items)} seen_ids={len(self._seen_trade_ids)}")
-                elif items:
-                    new_count = sum(1 for t in items if isinstance(t, dict) and str(t.get("id") or t.get("trade_id") or t.get("transactionHash") or "") not in self._seen_trade_ids)
-                    if new_count > 0:
-                        log(f"[trade-poll] new_trades={new_count} total={len(items)}")
+                elif new_count > 0:
+                    log(f"[trade-poll] new_trades={new_count} total={len(items)}")
 
                 # keep memory bounded — use insertion-ordered list for correct FIFO truncation
                 if len(self._seen_trade_ids_order) > 5000:
@@ -7269,7 +7511,7 @@ class PolyLPSMulti:
                 await asyncio.sleep(3)
 
     async def _balance_drop_watch(self) -> None:
-        """Fallback fill detector: trigger alert when balance drops significantly between polls."""
+        """Telemetry: alert on large available-collateral changes without trading."""
         BALANCE_DROP_PCT = Decimal("0.10")  # 10% drop triggers alert
         BALANCE_DROP_ABS = Decimal("20")    # or $20 absolute drop
         prev_balance: Optional[Decimal] = None
@@ -7289,75 +7531,19 @@ class PolyLPSMulti:
                             "prev": str(prev_balance), "now": str(avail),
                             "drop": str(drop), "drop_pct": f"{drop_pct:.4f}",
                         })
-                        # Step 1: CANCEL ALL orders immediately — verify all canceled before proceeding
-                        if self._fills_seen == 0 or drop > BALANCE_DROP_ABS:
-                            reason = f"BALANCE_DROP:{prev_balance}->{avail}:drop={drop}"
-                            cancel_verified = False
-                            cancel_attempt = 0
-                            while self._running and not cancel_verified:
-                                cancel_attempt += 1
-                                try:
-                                    cancel_verified = await self._cancel_all_except_exit()
-                                    if cancel_verified:
-                                        log(f"[balance-drop] cancel_all verified after {cancel_attempt} attempt(s)")
-                                    else:
-                                        log(f"[balance-drop] cancel_all attempt {cancel_attempt}: some orders still live, retrying in 2s...")
-                                        await asyncio.sleep(2)
-                                except Exception as ce:
-                                    log(f"[balance-drop] cancel_all attempt {cancel_attempt} error: {ce}, retrying in 2s...")
-                                    await asyncio.sleep(2)
-                            # Halt-scope decision (Kevin 2026-04-26):
-                            # - If remaining balance ≥ runtime_floor_usdc, ONLY
-                            #   halt the filled token (resolved later in this
-                            #   loop). Leave other markets quoting so the fill
-                            #   doesn't cost ~2 hours of reward across the
-                            #   whole engine.
-                            # - Otherwise (or if floor=0), fall back to global
-                            #   halt — when balance is thin, cascading fills
-                            #   are the bigger risk.
-                            keep_others_quoting = (
-                                self.runtime_floor_usdc > 0
-                                and avail is not None
-                                and avail >= self.runtime_floor_usdc
-                            )
-                            if keep_others_quoting:
-                                log(
-                                    f"[balance-drop] runtime_floor={self.runtime_floor_usdc} "
-                                    f"satisfied (avail={avail}); halting only the filled token "
-                                    f"(other markets keep quoting)"
-                                )
-                            else:
-                                log(
-                                    f"[balance-drop] runtime_floor={self.runtime_floor_usdc} "
-                                    f"NOT satisfied (avail={avail}); halting ALL markets"
-                                )
-                                for tid in list(self._active_market_cfg().keys()):
-                                    st = self._event_state_name(tid)
-                                    if st not in {EVENT_HALTED_ON_FILL, EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
-                                        self._set_event_state(tid, EVENT_HALTED_ON_FILL, "balance_drop_global_halt")
-
-                            # Step 2: Scan ALL tokens to find which one has position (loop until found)
-                            # Wait a few seconds for the position to settle on-chain
-                            await asyncio.sleep(5)
-                            self._fills_seen += 1
-                            all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
-                            filled_token, filled_pos = None, 0.0
-                            scan_attempt = 0
-                            while self._running and not filled_token:
-                                scan_attempt += 1
-                                filled_token, filled_pos = await self._scan_for_position(all_tokens)
-                                if filled_token:
-                                    break
-                                log(f"[balance-drop] scan attempt {scan_attempt}: no position found, retrying in 15s...")
-                                if scan_attempt >= 10:
-                                    self.send_fill_discord(f"[BALANCE DROP] ${drop} drop — still scanning for position (attempt {scan_attempt})...")
-                                await asyncio.sleep(15)
-                            if filled_token:
-                                # Compute implied fill price from balance drop
-                                implied_fill_price = drop / Decimal(str(filled_pos)) if filled_pos > 0 else Decimal("0")
-                                log(f"[balance-drop] found filled token={filled_token} pos={filled_pos} implied_fill_price={implied_fill_price} after {scan_attempt} scan(s)")
-                                self._set_event_state(filled_token, EVENT_HALTED_ON_FILL, reason)
-                                self._spawn_bg(self._attempt_exit_sell(filled_token, implied_fill_price, Decimal(str(filled_pos)), reason), name=f"balance_drop_exit:{filled_token}")
+                        # Available collateral alone cannot distinguish a maker
+                        # fill from a website/manual trade, transfer, merge, or
+                        # collateral moving into an existing position. The
+                        # previous implementation canceled forever and then
+                        # selected the largest existing position, which could
+                        # take control of unrelated user inventory. Keep this
+                        # watcher as telemetry only. Actionable fills are
+                        # handled by WS/order/trade feeds after matching an
+                        # engine-owned BUY order ID.
+                        log(
+                            "[balance-drop] telemetry_only=1; no cancel, halt, "
+                            "position scan, or auto-exit"
+                        )
                 if avail is not None:
                     prev_balance = avail
                 await asyncio.sleep(10)
@@ -7789,6 +7975,11 @@ class PolyLPSMulti:
                     "fills": list(self._fills_record[-100:]),
                     "pending_unwinds": list(self._pending_unwinds),
                     "exit_records": list(self._exit_records[-100:]),
+                    "managed_buy_order_ids": list(
+                        self._managed_buy_order_ids_order[
+                            -self._managed_order_history_limit:
+                        ]
+                    ),
                     "night_markets_count": len(self._night_market_cfg),
                     "sponsored_risk_guard": self._sponsored_guard_summary,
                     "curator_events": curator_events_out,

@@ -3,11 +3,13 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import sys
+import time
 
 
 MAKER_DIR = Path(__file__).resolve().parents[1] / "platforms" / "polymarket" / "maker"
 sys.path.insert(0, str(MAKER_DIR))
 
+import engine as engine_module  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_EXIT_PENDING,
@@ -266,6 +268,163 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
     assert asyncio.run(engine._cancel_all_except_exit()) is True
     assert canceled == ["buy-1"]
     assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
+
+
+def _managed_trade_engine() -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine._managed_buy_order_ids = {"bot-buy-1"}
+    engine._managed_buy_order_ids_order = ["bot-buy-1"]
+    engine._managed_order_history_limit = 3
+    return engine
+
+
+def test_trade_classifier_ignores_manual_sell():
+    engine = _managed_trade_engine()
+
+    actionable, reason = engine._trade_is_managed_inventory_increase({
+        "id": "manual-sell-trade",
+        "side": "SELL",
+        "taker_order_id": "manual-sell-order",
+        "maker_orders": [],
+    })
+
+    assert actionable is False
+    assert reason == "manual_or_external_sell"
+
+
+def test_trade_classifier_accepts_managed_maker_buy_when_taker_side_is_sell():
+    engine = _managed_trade_engine()
+
+    actionable, reason = engine._trade_is_managed_inventory_increase({
+        "id": "bot-fill",
+        # CLOB top-level side may describe the taker. The maker order carries
+        # the account's actual side.
+        "side": "SELL",
+        "trader_side": "MAKER",
+        "maker_orders": [{
+            "order_id": "bot-buy-1",
+            "side": "BUY",
+            "matched_amount": "50",
+        }],
+    })
+
+    assert actionable is True
+    assert reason == "managed_maker_buy"
+
+
+def test_trade_classifier_ignores_unmanaged_manual_buy():
+    engine = _managed_trade_engine()
+
+    actionable, reason = engine._trade_is_managed_inventory_increase({
+        "id": "manual-buy-trade",
+        "side": "BUY",
+        "taker_order_id": "manual-buy-order",
+        "maker_orders": [],
+    })
+
+    assert actionable is False
+    assert reason == "unmanaged_buy"
+
+
+def test_managed_order_history_is_bounded():
+    engine = _managed_trade_engine()
+
+    for order_id in ("bot-buy-2", "bot-buy-3", "bot-buy-4"):
+        engine._track_managed_buy_order(order_id)
+
+    assert engine._managed_buy_order_ids_order == [
+        "bot-buy-2",
+        "bot-buy-3",
+        "bot-buy-4",
+    ]
+    assert engine._managed_buy_order_ids == {
+        "bot-buy-2",
+        "bot-buy-3",
+        "bot-buy-4",
+    }
+
+
+def test_manual_sell_blocks_rebuy_and_only_cancels_managed_buy():
+    engine = _managed_trade_engine()
+    engine._active_exit_orders = {}
+    engine._manual_exit_cooldown_sec = 900
+    engine._manual_exit_event_until = {}
+    engine._manual_exit_last_notice = {}
+    engine._event_token_ids = lambda _token_id: ["101", "102"]
+    engine._event_key = lambda _token_id: "event-1"
+    orders = [
+        {
+            "id": "manual-sell",
+            "status": "live",
+            "side": "SELL",
+            "asset_id": "101",
+        },
+        {
+            "id": "bot-buy-1",
+            "status": "live",
+            "side": "BUY",
+            "asset_id": "102",
+        },
+        {
+            "id": "manual-buy",
+            "status": "live",
+            "side": "BUY",
+            "asset_id": "101",
+        },
+    ]
+    canceled = []
+
+    async def all_orders():
+        return orders
+
+    async def cancel(_token_id, ids, reason):
+        canceled.append((ids, reason))
+        return True
+
+    engine._get_all_orders_cached = all_orders
+    engine._cancel_order_ids = cancel
+
+    assert asyncio.run(engine._manual_exit_blocks_quote("101")) is True
+    assert canceled == [(["bot-buy-1"], "manual_exit_protection")]
+    assert engine._manual_exit_event_until["event-1"] > time.time()
+
+
+def test_balance_drop_is_telemetry_only(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    balances = iter([Decimal("100"), Decimal("50")])
+    published = []
+
+    async def available(force_refresh=False):
+        return next(balances)
+
+    sleep_calls = 0
+
+    async def no_wait(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            engine._running = False
+
+    class EventBus:
+        def publish(self, event, payload):
+            published.append((event, payload))
+
+    engine._get_collateral_available = available
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine._event_bus = EventBus()
+    engine._cancel_all_except_exit = lambda: (_ for _ in ()).throw(
+        AssertionError("balance telemetry must not cancel orders")
+    )
+    engine._scan_for_position = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("balance telemetry must not scan user positions")
+    )
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
+
+    asyncio.run(engine._balance_drop_watch())
+
+    assert published[0][0] == "balance_drop"
+    assert published[0][1]["drop"] == "50"
 
 
 def test_missing_exit_order_with_inventory_stays_pending():
