@@ -389,6 +389,54 @@ def test_manual_sell_blocks_rebuy_and_only_cancels_managed_buy():
     assert engine._manual_exit_event_until["event-1"] > time.time()
 
 
+def test_completed_manual_sell_cancels_managed_buys_and_starts_cooldown():
+    engine = object.__new__(PolyLPSMulti)
+    engine._manual_exit_cooldown_sec = 900
+    engine._manual_exit_event_until = {}
+    engine._managed_buy_order_ids = {"bot-buy-yes", "bot-buy-no"}
+    engine._event_key = lambda _token_id: "101|102"
+    engine._event_token_ids = lambda _token_id: ["101", "102"]
+    engine._invalidate_all_orders_cache = lambda: None
+    canceled = []
+
+    async def all_orders():
+        return [
+            {
+                "id": "bot-buy-yes",
+                "status": "live",
+                "side": "BUY",
+                "asset_id": "101",
+            },
+            {
+                "id": "bot-buy-no",
+                "status": "live",
+                "side": "BUY",
+                "asset_id": "102",
+            },
+            {
+                "id": "manual-buy",
+                "status": "live",
+                "side": "BUY",
+                "asset_id": "101",
+            },
+        ]
+
+    async def cancel(token_id, order_ids, reason):
+        canceled.append((token_id, order_ids, reason))
+        return True
+
+    engine._get_all_orders_cached = all_orders
+    engine._cancel_order_ids = cancel
+
+    asyncio.run(engine._register_manual_sell_trade("101", "trade-1"))
+
+    assert canceled == [
+        ("101", ["bot-buy-yes"], "manual_sell_trade_protection"),
+        ("102", ["bot-buy-no"], "manual_sell_trade_protection"),
+    ]
+    assert engine._manual_exit_event_until["101|102"] > time.time()
+
+
 def test_balance_resize_plan_only_trims_oversized_managed_layers():
     engine = _budget_engine()
     engine.budget_reserve_safety_margin_usdc = Decimal("0")
@@ -460,7 +508,47 @@ def test_balance_resize_plan_only_trims_oversized_managed_layers():
     }
 
 
-def test_balance_drop_hot_resizes_without_position_scan_or_global_cancel(monkeypatch):
+def test_balance_resize_plan_can_include_safe_events_for_balance_increase():
+    engine = _budget_engine()
+    engine.budget_reserve_safety_margin_usdc = Decimal("0")
+    engine._managed_buy_order_ids = {"event-one", "event-two"}
+    engine._market_live_orders = {
+        "101": [
+            {
+                "id": "event-one",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "101",
+                "price": "0.60",
+                "size": "400",
+            },
+        ],
+        "102": [],
+        "201": [
+            {
+                "id": "event-two",
+                "side": "BUY",
+                "status": "live",
+                "asset_id": "201",
+                "price": "0.70",
+                "size": "300",
+            },
+        ],
+        "202": [],
+    }
+    engine._active_market_cfg = lambda: engine.market_cfg
+
+    plan = engine._balance_resize_plan(
+        Decimal("1000"),
+        include_within_limit=True,
+    )
+
+    assert [item["event_key"] for item in plan] == ["101|102", "201|202"]
+    assert all(item["oversized"] is False for item in plan)
+    assert all(item["trim_by_token"] == {} for item in plan)
+
+
+def test_balance_change_rebalances_without_position_scan_or_global_cancel(monkeypatch):
     engine = object.__new__(PolyLPSMulti)
     engine._running = True
     balances = iter([Decimal("100"), Decimal("50")])
@@ -487,7 +575,7 @@ def test_balance_drop_hot_resizes_without_position_scan_or_global_cancel(monkeyp
             published.append((event, payload))
 
     engine._get_collateral_available = available
-    engine._resize_quotes_after_balance_drop = resize
+    engine._rebalance_quotes_after_balance_change = resize
     engine.notify_discord = lambda *_args, **_kwargs: None
     engine._event_bus = EventBus()
     engine._cancel_all_except_exit = lambda: (_ for _ in ()).throw(
@@ -500,8 +588,12 @@ def test_balance_drop_hot_resizes_without_position_scan_or_global_cancel(monkeyp
 
     asyncio.run(engine._balance_drop_watch())
 
-    assert published[0][0] == "balance_drop"
-    assert published[0][1]["drop"] == "50"
+    assert published[0] == (
+        "balance_change",
+        {"prev": "100", "now": "50", "change": "-50"},
+    )
+    assert published[1][0] == "balance_drop"
+    assert published[1][1]["drop"] == "50"
     assert resized == [(Decimal("100"), Decimal("50"))]
 
 

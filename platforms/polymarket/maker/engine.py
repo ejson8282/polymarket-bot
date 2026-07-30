@@ -3332,6 +3332,51 @@ class PolyLPSMulti:
 
         return now < self._manual_exit_event_until.get(event_key, 0.0)
 
+    async def _register_manual_sell_trade(
+        self,
+        token_id: str,
+        trade_id: str,
+    ) -> None:
+        """Keep a completed website SELL from being bought back immediately."""
+        event_key = self._event_key(token_id)
+        self._manual_exit_event_until[event_key] = (
+            time.time() + self._manual_exit_cooldown_sec
+        )
+        try:
+            self._invalidate_all_orders_cache()
+            orders = await self._get_all_orders_cached()
+            event_tokens = set(self._event_token_ids(token_id))
+            managed_by_token: Dict[str, list[str]] = {}
+            for order in orders:
+                order_token = self._order_token_id(order)
+                order_id = self._order_id(order)
+                if (
+                    order_token in event_tokens
+                    and self._order_side(order) == "BUY"
+                    and order_id in self._managed_buy_order_ids
+                ):
+                    managed_by_token.setdefault(order_token, []).append(
+                        order_id
+                    )
+            for order_token, order_ids in managed_by_token.items():
+                await self._cancel_order_ids(
+                    order_token,
+                    order_ids,
+                    "manual_sell_trade_protection",
+                )
+            log(
+                f"[manual-exit] completed_sell trade={trade_id[:16]} "
+                f"event={event_key[:24]} "
+                f"managed_buys_cancelled="
+                f"{sum(len(ids) for ids in managed_by_token.values())} "
+                f"cooldown={int(self._manual_exit_cooldown_sec)}s"
+            )
+        except Exception as exc:
+            log(
+                f"[manual-exit] completed_sell trade={trade_id[:16]} "
+                f"event={event_key[:24]} protection_error={_format_exc(exc)}"
+            )
+
     async def _adopt_legacy_live_buy_orders(self) -> None:
         """Reconcile live BUYs created before the current process started."""
         try:
@@ -7473,6 +7518,8 @@ class PolyLPSMulti:
                         self._trade_is_managed_inventory_increase(t)
                     )
                     if not managed_increase:
+                        if classification == "manual_or_external_sell":
+                            await self._register_manual_sell_trade(token, tid)
                         log(
                             f"[trade-poll] ignored account trade id={tid[:16]} "
                             f"token={token[:16]} side={str(t.get('side') or '').upper()} "
@@ -7511,7 +7558,12 @@ class PolyLPSMulti:
                     self._trade_poll_req_exc_streak = 0
                 await asyncio.sleep(3)
 
-    def _balance_resize_plan(self, available: Decimal) -> list[dict]:
+    def _balance_resize_plan(
+        self,
+        available: Decimal,
+        *,
+        include_within_limit: bool = False,
+    ) -> list[dict]:
         """Plan event-local quote trims after available collateral falls."""
         allowed = max(
             Decimal("0"),
@@ -7526,7 +7578,7 @@ class PolyLPSMulti:
                 if self._order_side(order) == "BUY"
                 and self._order_id(order) in self._managed_buy_order_ids
             ]
-            if managed_buys:
+            if managed_buys or include_within_limit:
                 events.setdefault(self._event_key(token_id), set()).update(
                     self._event_token_ids(token_id)
                 )
@@ -7538,11 +7590,12 @@ class PolyLPSMulti:
                 continue
             probe_token = sorted(event_tokens)[0]
             reserved = self._event_reserved_collateral(probe_token)
-            if reserved <= allowed:
+            oversized = reserved > allowed
+            if not oversized and not include_within_limit:
                 continue
 
             trim_by_token: Dict[str, list[str]] = {}
-            for token_id in sorted(event_tokens):
+            for token_id in sorted(event_tokens) if oversized else []:
                 live_buys = [
                     order
                     for order in self._market_live_orders.get(token_id, [])
@@ -7600,14 +7653,22 @@ class PolyLPSMulti:
                     "token_ids": sorted(event_tokens),
                     "reserved": reserved,
                     "allowed": allowed,
-                    "excess": reserved - allowed,
+                    "excess": max(Decimal("0"), reserved - allowed),
+                    "oversized": oversized,
                     "trim_by_token": trim_by_token,
                 }
             )
 
-        return sorted(plan, key=lambda item: item["excess"], reverse=True)
+        return sorted(
+            plan,
+            key=lambda item: (
+                not item["oversized"],
+                -item["excess"],
+                item["event_key"],
+            ),
+        )
 
-    async def _resize_quotes_after_balance_drop(
+    async def _rebalance_quotes_after_balance_change(
         self,
         previous: Decimal,
         available: Decimal,
@@ -7642,13 +7703,16 @@ class PolyLPSMulti:
                     by_token.get(token_id, [])
                 )
 
-            resize_plan = self._balance_resize_plan(available)
+            resize_plan = self._balance_resize_plan(
+                available,
+                include_within_limit=True,
+            )
             resized_events = 0
             resized_tokens = 0
             skipped_events = 0
             for item in resize_plan:
                 trim_by_token = item["trim_by_token"]
-                if not trim_by_token:
+                if item["oversized"] and not trim_by_token:
                     skipped_events += 1
                     log(
                         f"[balance-resize] event={item['event_key'][:24]} "
@@ -7657,24 +7721,19 @@ class PolyLPSMulti:
                     )
                     continue
 
-                # Trim both sides of this event before replacing either side,
-                # so the replacement cannot be rejected by the old reserve.
-                for token_id, order_ids in trim_by_token.items():
-                    await self._cancel_order_ids(
-                        token_id,
-                        order_ids,
-                        "balance_hot_resize_trim",
-                    )
+                if trim_by_token:
+                    # Trim both sides of this event before replacing either
+                    # side, so the replacement cannot be rejected by the old
+                    # reserve.
+                    for token_id, order_ids in trim_by_token.items():
+                        await self._cancel_order_ids(
+                            token_id,
+                            order_ids,
+                            "balance_hot_resize_trim",
+                        )
 
                 event_resized = False
                 for token_id in item["token_ids"]:
-                    had_managed_buy = any(
-                        self._order_side(order) == "BUY"
-                        and self._order_id(order) in self._managed_buy_order_ids
-                        for order in by_token.get(token_id, [])
-                    )
-                    if not had_managed_buy:
-                        continue
                     self.last_quote_ts[token_id] = 0.0
                     self._last_plan_sig[token_id] = ""
                     self._last_top_plan_sig[token_id] = ""
@@ -7692,7 +7751,7 @@ class PolyLPSMulti:
                 if event_resized:
                     resized_events += 1
                     log(
-                        f"[balance-resize] event={item['event_key'][:24]} "
+                        f"[balance-rebalance] event={item['event_key'][:24]} "
                         f"reserved={item['reserved']} allowed={item['allowed']} "
                         f"trimmed={sum(len(ids) for ids in trim_by_token.values())} "
                         "requote=done"
@@ -7707,40 +7766,56 @@ class PolyLPSMulti:
                 "previous": str(previous),
                 "available": str(available),
             }
-            self._event_bus.publish("balance_quotes_resized", result)
+            self._event_bus.publish("balance_quotes_rebalanced", result)
             log(
-                f"[balance-resize] complete prev={previous} now={available} "
+                f"[balance-rebalance] complete prev={previous} now={available} "
                 f"candidates={len(resize_plan)} events={resized_events} "
                 f"tokens={resized_tokens} skipped={skipped_events}"
             )
             return result
 
     async def _balance_drop_watch(self) -> None:
-        """Alert on a collateral drop and hot-resize only oversized events."""
+        """Rebalance engine-owned quotes whenever collateral changes."""
+        BALANCE_CHANGE_EPS = Decimal("0.01")
         BALANCE_DROP_PCT = Decimal("0.10")  # 10% drop triggers alert
         BALANCE_DROP_ABS = Decimal("20")    # or $20 absolute drop
         prev_balance: Optional[Decimal] = None
         while self._running:
             try:
                 avail = await self._get_collateral_available(force_refresh=True)
-                if avail is not None and prev_balance is not None and prev_balance > 0:
+                if avail is not None and prev_balance is not None:
+                    change = avail - prev_balance
                     drop = prev_balance - avail
                     drop_pct = drop / prev_balance if prev_balance > 0 else Decimal("0")
-                    if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
+                    if abs(change) >= BALANCE_CHANGE_EPS:
                         log(
-                            f"[balance-drop] ALERT prev={prev_balance} now={avail} "
-                            f"drop={drop} pct={drop_pct:.2%} — possible undetected fill"
+                            f"[balance-change] prev={prev_balance} now={avail} "
+                            f"change={change}"
                         )
-                        self.notify_discord("Balance Drop", f"prev={prev_balance}\nnow={avail}\ndrop={drop}\npct={drop_pct:.2%}", "warning")
-                        self._event_bus.publish("balance_drop", {
-                            "prev": str(prev_balance), "now": str(avail),
-                            "drop": str(drop), "drop_pct": f"{drop_pct:.4f}",
+                        self._event_bus.publish("balance_change", {
+                            "prev": str(prev_balance),
+                            "now": str(avail),
+                            "change": str(change),
                         })
+                        if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
+                            self.notify_discord(
+                                "Balance Drop",
+                                (
+                                    f"prev={prev_balance}\nnow={avail}\n"
+                                    f"drop={drop}\npct={drop_pct:.2%}"
+                                ),
+                                "warning",
+                            )
+                            self._event_bus.publish("balance_drop", {
+                                "prev": str(prev_balance), "now": str(avail),
+                                "drop": str(drop),
+                                "drop_pct": f"{drop_pct:.4f}",
+                            })
                         # Never inspect or dispose of inventory here. A balance
                         # change can come from a manual website action. Only
                         # engine-owned BUY liquidity is resized, one event at a
                         # time, and manual SELL exits remain protected.
-                        await self._resize_quotes_after_balance_drop(
+                        await self._rebalance_quotes_after_balance_change(
                             prev_balance,
                             avail,
                         )
