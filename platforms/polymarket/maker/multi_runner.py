@@ -31,12 +31,14 @@ _MAKER_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_MAKER_DIR))
 
 from engine import PolyLPSMulti, log  # noqa: E402
+from release_guard import verify_release  # noqa: E402
 from sibling_registry import SiblingOrderRegistry  # noqa: E402
 
 # NOTE: py_clob_client_v2.get_order_books posts `data=params` straight to httpx
 # without dataclass serialization, so passing BookParams instances raises
 # "Object of type BookParams is not JSON serializable". v1 hand-converts to
-# `[{"token_id": tid}]`; we mirror that and ship plain dicts.
+# `[{"token_id": tid}]`; we mirror that and ship plain dicts. The engine client
+# wrapper converts the returned dicts into OrderBookSummary objects.
 
 
 # ── Shared book cache ──────────────────────────────────────────────────────────
@@ -267,6 +269,7 @@ async def multi_run(config_dir: Path) -> None:
 
 
 def main() -> None:
+    verify_release(Path(__file__))
     parser = argparse.ArgumentParser(description="PolyLPS multi-account runner")
     parser.add_argument(
         "--config-dir",

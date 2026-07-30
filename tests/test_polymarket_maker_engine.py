@@ -16,6 +16,7 @@ from engine import (  # noqa: E402
     EVENT_PENDING_MANUAL_EXIT,
     EventHaltPreempted,
     PolyLPSMulti,
+    _ProxiedClobClient,
     _compute_quote_target_shares,
 )
 
@@ -287,6 +288,34 @@ def test_order_path_fails_closed_while_account_is_paused():
         assert "account_paused" in str(exc)
     else:
         raise AssertionError("paused account must reject every BUY submission path")
+
+
+def test_proxied_client_converts_batch_order_book_dicts():
+    class Client:
+        def get_order_books(self, _params):
+            return [
+                {
+                    "market": "condition-1",
+                    "asset_id": "101",
+                    "timestamp": "123",
+                    "hash": "hash",
+                    "bids": [{"price": "0.40", "size": "10"}],
+                    "asks": [{"price": "0.60", "size": "10"}],
+                    "min_order_size": "5",
+                    "neg_risk": False,
+                    "tick_size": "0.01",
+                    "last_trade_price": "0.50",
+                }
+            ]
+
+    books = _ProxiedClobClient(Client(), object()).get_order_books(
+        [{"token_id": "101"}]
+    )
+
+    assert len(books) == 1
+    assert books[0].asset_id == "101"
+    assert books[0].bids
+    assert books[0].asks
 
 
 def _managed_trade_engine() -> PolyLPSMulti:

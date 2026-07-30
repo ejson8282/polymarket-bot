@@ -36,3 +36,18 @@ Polymarket 真钱引擎仍从旧 worktree 运行。为避免中断或改变真�
 6. 只有所有账户稳定后，才归档旧 worktree；仍不得直接删除。
 
 该步骤会触及真钱交易服务，必须取得针对该维护窗口的明确授权。
+
+## Maker release startup invariant
+
+Production maker services must point at
+`/home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/engine.py`
+and set both `POLYMARKET_REQUIRE_RELEASE=1` and the full
+`POLYMARKET_RELEASE_SHA`. Startup fails closed unless:
+
+- `current` resolves to a directory named with that exact commit;
+- `.release-manifest.json` names `ejson8282/polymarket-bot` and the same commit;
+- the running `engine.py` SHA-256 matches the manifest.
+
+The runtime config, data, logs and virtual environment remain outside the
+immutable release. The reviewed systemd drop-in example is
+`deploy/systemd/polymarket-engine-immutable.conf.example`.
