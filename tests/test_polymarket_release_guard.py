@@ -9,7 +9,7 @@ import pytest
 MAKER_DIR = Path(__file__).resolve().parents[1] / "platforms" / "polymarket" / "maker"
 sys.path.insert(0, str(MAKER_DIR))
 
-from release_guard import verify_release  # noqa: E402
+from release_guard import main, verify_release  # noqa: E402
 
 
 SHA = "a" * 40
@@ -69,3 +69,23 @@ def test_release_guard_rejects_wrong_commit(tmp_path):
                 "POLYMARKET_RELEASE_SHA": "b" * 40,
             },
         )
+
+
+def test_release_guard_cli_requires_and_verifies_release(tmp_path, capsys):
+    engine, _manifest = _release(tmp_path)
+
+    assert main(
+        [str(engine)],
+        {
+            "POLYMARKET_REQUIRE_RELEASE": "1",
+            "POLYMARKET_RELEASE_SHA": SHA,
+        },
+    ) == 0
+    assert capsys.readouterr().out.strip() == f"verified {SHA}"
+
+
+def test_release_guard_cli_rejects_disabled_verification(tmp_path):
+    engine, _manifest = _release(tmp_path)
+
+    with pytest.raises(RuntimeError, match="must be required"):
+        main([str(engine)], {})

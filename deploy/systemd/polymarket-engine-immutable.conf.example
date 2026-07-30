@@ -2,5 +2,6 @@
 WorkingDirectory=/home/ubuntu/polymarket-bot/platforms/polymarket/maker
 Environment=POLYMARKET_REQUIRE_RELEASE=1
 EnvironmentFile=/home/ubuntu/polymarket-runtime/engine-release.env
+ExecStartPre=/home/ubuntu/.venv2/bin/python /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/release_guard.py /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/engine.py
 ExecStart=
 ExecStart=/home/ubuntu/.venv2/bin/python /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/engine.py /home/ubuntu/polymarket-bot/platforms/polymarket/maker/config_1.json

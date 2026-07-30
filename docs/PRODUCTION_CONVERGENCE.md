@@ -48,6 +48,11 @@ and set both `POLYMARKET_REQUIRE_RELEASE=1` and the full
 - `.release-manifest.json` names `ejson8282/polymarket-bot` and the same commit;
 - the running `engine.py` SHA-256 matches the manifest.
 
+Install the drop-in as `zz-immutable-release.conf` so it takes precedence over
+older runtime-specific overrides. Its independent `ExecStartPre` runs the same
+verification before Python can enter the trading engine, including when
+`current` accidentally points to an older release without the guard.
+
 The runtime config, data, logs and virtual environment remain outside the
 immutable release. The reviewed systemd drop-in example is
 `deploy/systemd/polymarket-engine-immutable.conf.example`.
