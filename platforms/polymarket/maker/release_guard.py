@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Mapping, Optional
 
 
@@ -44,3 +45,21 @@ def verify_release(
     if manifest.get("engine_sha256") != actual_hash:
         raise RuntimeError("release engine hash mismatch")
     return manifest
+
+
+def main(
+    argv: Optional[list[str]] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        raise SystemExit("usage: release_guard.py /absolute/path/to/engine.py")
+    manifest = verify_release(Path(args[0]), environ=environ)
+    if manifest is None:
+        raise RuntimeError("release verification must be required in production")
+    print(f"verified {manifest['commit']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
