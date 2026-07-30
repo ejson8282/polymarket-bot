@@ -637,10 +637,11 @@ def _event_halt_engine(cancel_result: bool):
     engine._fills_record = []
     engine._emit_latency_record = lambda *_args, **_kwargs: None
     engine._paired_token_cache = {}
+    engine._market_live_orders = {}
     engine.market_cfg = {}
 
     async def get_live_orders(_token_id):
-        return [{"id": "buy-1", "side": "BUY", "status": "live"}]
+        raise AssertionError("risk halt must not depend on the local order cache")
 
     async def cancel_risk_buys(token_id, reason):
         cancel_calls.append((token_id, reason))
@@ -1206,6 +1207,10 @@ def _parent_event_guard_engine():
     }
     engine._parent_event_cooldown_until = {}
     engine._parent_event_last_shock_ts = {}
+    engine._market_live_orders = {
+        token_id: [{"id": f"order-{token_id}", "side": "BUY"}]
+        for token_id in engine.market_cfg
+    }
     engine._parent_event_shock_guard_enabled = True
     engine._parent_event_shock_cooldown_sec = 1800
     engine._parent_event_shock_debounce_sec = 2

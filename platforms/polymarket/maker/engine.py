@@ -2268,8 +2268,10 @@ class PolyLPSMulti:
         if tracker["watch_count"] >= 2 or tracker.get("defense_repeat_count", 0) >= self._repeat_defense_ban_count:
             self._event_banned_until[self._event_key(token_id)] = time.time() + self.event_ban_ttl_sec
             self._set_event_state(token_id, EVENT_QUARANTINE, f"watch_limit_forbid:{reason}")
-            live = await self._get_live_orders_fast(token_id)
-            ids = [self._order_id(o) for o in live]
+            ids = [
+                self._order_id(o)
+                for o in self._cached_live_orders(token_id)
+            ]
             cleared = await self._cancel_risk_buys(
                 token_id,
                 f"forbid:{reason}",
@@ -2292,8 +2294,10 @@ class PolyLPSMulti:
             return
         tracker["watch_enter_ts"] = time.time()
         self._set_event_state(token_id, EVENT_WATCH, reason)
-        live = await self._get_live_orders_fast(token_id)
-        ids = [self._order_id(o) for o in live]
+        ids = [
+            self._order_id(o)
+            for o in self._cached_live_orders(token_id)
+        ]
         cleared = await self._cancel_risk_buys(
             token_id,
             f"watch:{reason}",
@@ -2319,8 +2323,10 @@ class PolyLPSMulti:
         tracker["quarantine_enter_ts"] = time.time()
         tracker["defense_repeat_count"] = int(tracker.get("defense_repeat_count", 0)) + 1
         self._set_event_state(token_id, EVENT_QUARANTINE, reason)
-        live = await self._get_live_orders_fast(token_id)
-        ids = [self._order_id(o) for o in live]
+        ids = [
+            self._order_id(o)
+            for o in self._cached_live_orders(token_id)
+        ]
         cleared = await self._cancel_risk_buys(
             token_id,
             f"quarantine:{reason}",
@@ -4059,8 +4065,10 @@ class PolyLPSMulti:
             })
             if len(self._fills_record) > 200:
                 self._fills_record = self._fills_record[-100:]
-            live = await self._get_live_orders_fast(token_id)
-            ids = [self._order_id(o) for o in live]
+            ids = [
+                self._order_id(o)
+                for o in self._cached_live_orders(token_id)
+            ]
             cleared = await self._cancel_risk_buys(
                 token_id,
                 f"halt:{reason}",
