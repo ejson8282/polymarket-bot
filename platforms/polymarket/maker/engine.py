@@ -2800,7 +2800,14 @@ class PolyLPSMulti:
         report cleanup even though orders remained live. Use the reviewed
         batch path and re-read the official open-order endpoint instead.
         """
-        active_statuses = {"live", "open", "active"}
+        terminal_statuses = {
+            "cancelled",
+            "canceled",
+            "closed",
+            "expired",
+            "filled",
+            "matched",
+        }
 
         def _live_buys(orders: list[dict]) -> tuple[list[str], bool]:
             ids: list[str] = []
@@ -2812,7 +2819,7 @@ class PolyLPSMulti:
                     order.get("asset_id") or order.get("token_id") or ""
                 )
                 status = str(order.get("status") or "").lower()
-                if asset != token_id or status not in active_statuses:
+                if asset != token_id or status in terminal_statuses:
                     continue
                 side = str(order.get("side") or "").upper()
                 if side == "SELL":

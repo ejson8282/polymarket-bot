@@ -436,6 +436,38 @@ def test_token_cleanup_fails_closed_when_remote_buy_remains_live():
     ]
 
 
+def test_token_cleanup_treats_missing_status_as_open():
+    engine = object.__new__(PolyLPSMulti)
+    reads = [
+        [
+            {
+                "id": "buy-without-status",
+                "asset_id": "101",
+                "side": "BUY",
+            }
+        ],
+        [],
+    ]
+
+    class Client:
+        def get_open_orders(self):
+            return reads.pop(0)
+
+    attempts = []
+
+    async def cancel_order_ids(_token_id, order_ids, _reason):
+        attempts.append(tuple(order_ids))
+        return True
+
+    engine.client = Client()
+    engine._cancel_order_ids = cancel_order_ids
+
+    assert asyncio.run(
+        engine._cancel_token_orders("101", reason="missing_status")
+    ) is True
+    assert attempts == [("buy-without-status",)]
+
+
 def _cross_side_cancel_engine(cancel_result: bool):
     engine = object.__new__(PolyLPSMulti)
     engine._cross_side_cancel_inflight = {"102"}
