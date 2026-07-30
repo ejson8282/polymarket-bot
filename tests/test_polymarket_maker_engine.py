@@ -278,6 +278,34 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
     assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
 
 
+def test_cancel_all_fails_closed_when_verification_response_is_invalid():
+    engine = object.__new__(PolyLPSMulti)
+    responses = [
+        [{"id": "buy-1", "status": "live", "side": "BUY"}],
+        None,
+    ]
+
+    class Client:
+        def get_open_orders(self):
+            return responses.pop(0)
+
+        def cancel_orders(self, _order_ids):
+            return None
+
+    class Registry:
+        def clear_funder(self, *_args, **_kwargs):
+            return None
+
+    engine.client = Client()
+    engine._active_exit_orders = {}
+    engine._market_live_orders = {}
+    engine._sibling_registry = Registry()
+    engine._funder_lc = "account"
+    engine._invalidate_all_orders_cache = lambda: None
+
+    assert asyncio.run(engine._cancel_all_except_exit()) is False
+
+
 def test_order_path_fails_closed_while_account_is_paused():
     engine = object.__new__(PolyLPSMulti)
     engine._is_account_paused = lambda: True
@@ -317,6 +345,242 @@ def test_proxied_client_converts_batch_order_book_dicts():
     assert books[0].asset_id == "101"
     assert books[0].bids
     assert books[0].asks
+
+
+def test_token_cleanup_uses_batch_cancel_and_confirms_remote_orders():
+    engine = object.__new__(PolyLPSMulti)
+    reads = [
+        [
+            {
+                "id": "buy-1",
+                "asset_id": "101",
+                "side": "BUY",
+                "status": "LIVE",
+            },
+            {
+                "id": "sell-1",
+                "asset_id": "101",
+                "side": "SELL",
+                "status": "LIVE",
+            },
+        ],
+        [
+            {
+                "id": "sell-1",
+                "asset_id": "101",
+                "side": "SELL",
+                "status": "LIVE",
+            }
+        ],
+    ]
+
+    class Client:
+        def get_open_orders(self):
+            return reads.pop(0)
+
+        def cancel(self, _order_id):
+            raise AssertionError("legacy single-order cancel must not be used")
+
+    canceled = []
+
+    async def cancel_order_ids(token_id, order_ids, reason):
+        canceled.append((token_id, tuple(order_ids), reason))
+        return True
+
+    engine.client = Client()
+    engine._cancel_order_ids = cancel_order_ids
+
+    assert asyncio.run(
+        engine._cancel_token_orders("101", reason="test_cleanup")
+    ) is True
+    assert canceled == [
+        ("101", ("buy-1",), "test_cleanup:attempt_1")
+    ]
+
+
+def test_token_cleanup_fails_closed_when_remote_buy_remains_live():
+    engine = object.__new__(PolyLPSMulti)
+
+    class Client:
+        def get_open_orders(self):
+            return [
+                {
+                    "id": "buy-still-live",
+                    "asset_id": "101",
+                    "side": "BUY",
+                    "status": "LIVE",
+                }
+            ]
+
+    attempts = []
+
+    async def cancel_order_ids(_token_id, order_ids, _reason):
+        attempts.append(tuple(order_ids))
+        return True
+
+    engine.client = Client()
+    engine._cancel_order_ids = cancel_order_ids
+
+    assert asyncio.run(
+        engine._cancel_token_orders(
+            "101",
+            reason="test_unconfirmed",
+            max_attempts=2,
+        )
+    ) is False
+    assert attempts == [
+        ("buy-still-live",),
+        ("buy-still-live",),
+    ]
+
+
+def _cross_side_cancel_engine(cancel_result: bool):
+    engine = object.__new__(PolyLPSMulti)
+    engine._cross_side_cancel_inflight = {"102"}
+    engine._volatility_tracker = {}
+    engine._event_states = {
+        "102": {
+            "state": EVENT_ACTIVE,
+            "reason": "init",
+            "updated_at": 0,
+        }
+    }
+    engine._event_bus = type(
+        "EventBus",
+        (),
+        {"publish": lambda _self, *_args, **_kwargs: None},
+    )()
+    marked = []
+    engine.cross_side_sentinel = type(
+        "Sentinel",
+        (),
+        {"mark_cancelled": lambda _self, token_id: marked.append(token_id)},
+    )()
+    engine._notify_risk = lambda *_args, **_kwargs: None
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    spawned = []
+    kill_reasons = []
+
+    async def cancel_token_orders(_token_id, *, reason):
+        return cancel_result
+
+    async def kill_switch(_reason):
+        kill_reasons.append(_reason)
+        return None
+
+    def spawn(coro, *, name):
+        spawned.append(name)
+        coro.close()
+        return None
+
+    engine._cancel_token_orders = cancel_token_orders
+    engine.trigger_global_kill_switch = kill_switch
+    engine._spawn_bg = spawn
+    return engine, marked, spawned, kill_reasons
+
+
+def test_cross_side_cancel_blocks_requote_and_marks_only_after_confirmation():
+    engine, marked, spawned, kill_reasons = _cross_side_cancel_engine(True)
+
+    result = asyncio.run(
+        engine._execute_cross_side_cancel(
+            "101",
+            "102",
+            "depth_drop",
+            max_ask=10_000,
+            current_ask=2_000,
+            consumed_pct=0.8,
+        )
+    )
+
+    assert result is True
+    assert engine._event_state_name("102") == EVENT_WATCH
+    assert engine._volatility_tracker["102"]["watch_enter_ts"] > 0
+    assert marked == ["102"]
+    assert spawned == []
+    assert kill_reasons == []
+    assert engine._cross_side_cancel_inflight == set()
+
+
+def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
+    engine, marked, spawned, kill_reasons = _cross_side_cancel_engine(False)
+
+    result = asyncio.run(
+        engine._execute_cross_side_cancel(
+            "101",
+            "102",
+            "depth_drop",
+            max_ask=10_000,
+            current_ask=2_000,
+            consumed_pct=0.8,
+        )
+    )
+
+    assert result is False
+    assert engine._event_state_name("102") == EVENT_WATCH
+    assert marked == []
+    assert spawned == []
+    assert kill_reasons == ["cross_side_cancel_unconfirmed:102"]
+    assert engine._cross_side_cancel_inflight == set()
+
+
+def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
+    monkeypatch,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._exit_delay_sec = 0
+    engine._active_exit_orders = {}
+    engine._event_states = {
+        "101": {
+            "state": EVENT_ACTIVE,
+            "reason": "init",
+            "updated_at": 0,
+        }
+    }
+    engine._event_bus = type(
+        "EventBus",
+        (),
+        {"publish": lambda _self, *_args, **_kwargs: None},
+    )()
+    notices = []
+    spawned = []
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def cancel_token_orders(_token_id, *, reason):
+        return False
+
+    async def cancel_all_except_exit():
+        return False
+
+    async def kill_switch(_reason):
+        return None
+
+    def spawn(coro, *, name):
+        spawned.append(name)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_sleep)
+    engine._cancel_token_orders = cancel_token_orders
+    engine._cancel_all_except_exit = cancel_all_except_exit
+    engine.trigger_global_kill_switch = kill_switch
+    engine._spawn_bg = spawn
+    engine.send_discord = notices.append
+
+    asyncio.run(
+        engine._attempt_exit_sell(
+            "101",
+            Decimal("0.50"),
+            Decimal("10"),
+            "test_fill",
+        )
+    )
+
+    assert engine._event_state_name("101") == EVENT_PENDING_MANUAL_EXIT
+    assert notices and "无法确认 BUY 已撤净" in notices[-1]
+    assert spawned == ["exit_cancel_kill_switch:101"]
 
 
 def _managed_trade_engine() -> PolyLPSMulti:
