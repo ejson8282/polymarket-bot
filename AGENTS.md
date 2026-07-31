@@ -8,6 +8,10 @@
 - GitHub `ejson8282/polymarket-bot` 的最新 `main` 是本业务域的代码权威来源。
 - 本仓库只负责 Polymarket 交易域及现存的 Predict.fun/shadow 兼容代码。
 - Latitude 统一 Dashboard 的唯一源码是 `ejson8282/latitude-alpha`。
+- 跨任务角色、共享文件租约和合并队列遵循
+  [`latitude-alpha/docs/AI_COLLABORATION.md`](https://github.com/ejson8282/latitude-alpha/blob/main/docs/AI_COLLABORATION.md)。
+- 本仓库任务属于 `domain:polymarket`。需要 `:8502` 展示变更时先提供稳定业务契约和展示需求，
+  不直接修改 Dashboard 核心文件。
 - 禁止修改或部署本仓库中的历史 `deploy/latitude-console/` 和旧 Dashboard 页面副本。
 
 ## 强制流程
@@ -18,6 +22,8 @@
 4. 一个 PR 只处理一个明确范围；显式暂存文件，不提交顺手修改。
 5. 合并后只从精确 SHA 构建 release；记录配置摘要、部署时间、健康检查和回滚点。
 6. 生产 worktree 有漂移时，先保存清单和哈希，再分类移植；不得把 dirty 内容整体回传。
+7. 所有改动默认使用 Draft PR，填写 owner、base/head、文件、服务、依赖、测试和发布边界；禁止
+   直接推送默认分支。
 
 ## 实盘安全
 
