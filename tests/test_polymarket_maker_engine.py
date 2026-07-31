@@ -1529,6 +1529,11 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
 
     class RemoteSigner:
         def sign_order(self, *_args):
+            engine._market_snapshots["101"] = engine_module.MarketSnapshot(
+                best_bid=Decimal("0.40"),
+                best_ask=Decimal("0.41"),
+                last_update_ts=time.time(),
+            )
             return object()
 
     class Client:
@@ -1542,8 +1547,11 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
     async def release(*_args):
         return None
 
-    async def reject(*_args):
-        raise engine_module.SoftQuoteSkip("book moved during signing")
+    async def market_meta(*_args):
+        return {"maxIncentiveSpread": "0.10"}
+
+    async def start_guard(*_args, **_kwargs):
+        return False
 
     engine.remote_signer = RemoteSigner()
     engine.client = Client()
@@ -1553,7 +1561,19 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
     engine._release_budget_reserve = release
     engine._mark_latency = lambda *_args: None
     engine._mark_signer_recovered = lambda: None
-    engine._validate_passive_buy_quote = reject
+    engine._get_market_meta = market_meta
+    engine._enforce_start_guard = start_guard
+    engine._market_snapshots = {}
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine._token_slug_cache = {}
+    engine.market_cfg = {
+        "101": {
+            "tick": Decimal("0.01"),
+            "spread": Decimal("0.10"),
+        }
+    }
+    engine._night_market_cfg = {}
 
     try:
         asyncio.run(
@@ -1564,7 +1584,8 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
                 "moving-book-test",
             )
         )
-    except engine_module.SoftQuoteSkip:
+    except RuntimeError as exc:
+        assert "price_above_legal_top" in str(exc)
         pass
     else:
         raise AssertionError("a moved book must prevent order submission")
