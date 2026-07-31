@@ -633,6 +633,7 @@ def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
 
 def _risk_cancel_engine(results: list[bool]):
     engine = object.__new__(PolyLPSMulti)
+    engine._market_live_orders = {}
     calls = []
     kills = []
     latency = []
@@ -666,6 +667,56 @@ def test_risk_cancel_confirms_before_reporting_orders_cleared():
     assert kills == []
     assert latency == [("101", "t_orders_cleared")]
     assert notifications == []
+
+
+def test_risk_cancel_dispatches_cached_buys_before_official_verification():
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_live_orders = {
+        "101": [
+            {
+                "id": "cached-buy",
+                "asset_id": "101",
+                "side": "BUY",
+                "status": "live",
+                "price": "0.50",
+            },
+            {
+                "id": "cached-sell",
+                "asset_id": "101",
+                "side": "SELL",
+                "status": "live",
+                "price": "0.60",
+            },
+        ]
+    }
+    sequence = []
+    latency = []
+
+    async def cancel_order_ids(token_id, order_ids, reason):
+        sequence.append(("fast", token_id, tuple(order_ids), reason))
+        return True
+
+    async def cancel_token_orders(token_id, *, reason, max_attempts=3):
+        sequence.append(("verify", token_id, reason, max_attempts))
+        return True
+
+    engine._cancel_order_ids = cancel_order_ids
+    engine._cancel_token_orders = cancel_token_orders
+    engine._mark_latency = lambda token_id, label: latency.append(
+        (token_id, label)
+    )
+
+    assert asyncio.run(engine._cancel_risk_buys("101", "watch:bba_jump")) is True
+    assert sequence == [
+        (
+            "fast",
+            "101",
+            ("cached-buy",),
+            "watch:bba_jump:fast_cached",
+        ),
+        ("verify", "101", "watch:bba_jump", 3),
+    ]
+    assert latency == [("101", "t_orders_cleared")]
 
 
 def test_risk_cancel_escalates_then_rechecks_official_orders():

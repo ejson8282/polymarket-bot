@@ -2918,6 +2918,26 @@ class PolyLPSMulti:
 
     async def _cancel_risk_buys(self, token_id: str, reason: str) -> bool:
         """Cancel BUY liquidity and fail closed until the venue confirms it."""
+        # Risk paths already know the order IDs they are protecting. Dispatch
+        # those cancellations before spending another network round-trip on
+        # get_open_orders(), then use the official endpoint below to verify
+        # and catch any order missing from the local cache.
+        cached_ids = [
+            self._order_id(order)
+            for order in self._cached_live_orders(token_id)
+            if _order_is_live(order) and self._order_side(order) == "BUY"
+        ]
+        if cached_ids:
+            fast_ack = await self._cancel_order_ids(
+                token_id,
+                cached_ids,
+                f"{reason}:fast_cached",
+            )
+            log(
+                f"[risk-cancel] token={token_id} reason={reason} "
+                f"fast_cached={len(cached_ids)} ack={fast_ack}"
+            )
+
         confirmed = await self._cancel_token_orders(
             token_id,
             reason=reason,
