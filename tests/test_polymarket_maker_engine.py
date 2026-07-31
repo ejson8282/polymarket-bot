@@ -14,8 +14,10 @@ from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
     EVENT_EXIT_PENDING,
+    EVENT_HALTED_ON_FILL,
     EVENT_HALTED_ON_DATA,
     EVENT_PENDING_MANUAL_EXIT,
+    EVENT_QUARANTINE,
     EVENT_WATCH,
     EventHaltPreempted,
     PolyLPSMulti,
@@ -64,6 +66,29 @@ def test_quote_target_never_exceeds_available_budget():
 
     assert target == Decimal("210")
     assert warning == ""
+
+
+def test_price_legs_skip_when_reward_zone_has_no_passive_tick():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "tick": Decimal("0.01"),
+            "spread": Decimal("0.01"),
+            "min_distance_ticks": 1,
+        }
+    }
+    engine._night_market_cfg = {}
+    engine._token_slug_cache = {}
+
+    prices = engine._build_price_legs(
+        "101",
+        engine_module.TopOfBook(
+            best_bid=Decimal("0.50"),
+            best_ask=Decimal("0.51"),
+        ),
+    )
+
+    assert prices == []
 
 
 def _budget_engine() -> PolyLPSMulti:
@@ -278,6 +303,54 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
     assert asyncio.run(engine._cancel_all_except_exit()) is True
     assert canceled_batches == [["buy-1"]]
     assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
+
+
+def test_statusless_open_orders_are_handled_conservatively():
+    assert engine_module._order_is_live({"id": "statusless"}) is True
+    assert engine_module._order_is_live(
+        {"id": "unknown", "status": "pending"}
+    ) is True
+    assert engine_module._order_is_live(
+        {"id": "done", "status": "filled"}
+    ) is False
+
+    engine = object.__new__(PolyLPSMulti)
+    orders = [
+        {"id": "buy-statusless", "side": "BUY"},
+        {"id": "sell-statusless", "side": "SELL"},
+        {"id": "buy-filled", "status": "filled", "side": "BUY"},
+    ]
+    canceled_batches = []
+
+    class Client:
+        def get_open_orders(self):
+            canceled = {
+                order_id
+                for batch in canceled_batches
+                for order_id in batch
+            }
+            return [order for order in orders if order["id"] not in canceled]
+
+        def cancel_orders(self, order_ids):
+            canceled_batches.append(list(order_ids))
+
+    class Registry:
+        def clear_funder(self, *_args, **_kwargs):
+            return None
+
+    engine.client = Client()
+    engine._active_exit_orders = {}
+    engine._market_live_orders = {}
+    engine._sibling_registry = Registry()
+    engine._funder_lc = "account"
+    engine._invalidate_all_orders_cache = lambda: None
+
+    assert asyncio.run(engine._cancel_all_except_exit()) is True
+    assert canceled_batches == [["buy-statusless"]]
+    assert {order["id"] for order in engine.client.get_open_orders()} == {
+        "sell-statusless",
+        "buy-filled",
+    }
 
 
 def test_cancel_all_fails_closed_when_verification_response_is_invalid():
@@ -560,6 +633,7 @@ def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
 
 def _risk_cancel_engine(results: list[bool]):
     engine = object.__new__(PolyLPSMulti)
+    engine._market_live_orders = {}
     calls = []
     kills = []
     latency = []
@@ -595,6 +669,56 @@ def test_risk_cancel_confirms_before_reporting_orders_cleared():
     assert notifications == []
 
 
+def test_risk_cancel_dispatches_cached_buys_before_official_verification():
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_live_orders = {
+        "101": [
+            {
+                "id": "cached-buy",
+                "asset_id": "101",
+                "side": "BUY",
+                "status": "live",
+                "price": "0.50",
+            },
+            {
+                "id": "cached-sell",
+                "asset_id": "101",
+                "side": "SELL",
+                "status": "live",
+                "price": "0.60",
+            },
+        ]
+    }
+    sequence = []
+    latency = []
+
+    async def cancel_order_ids(token_id, order_ids, reason):
+        sequence.append(("fast", token_id, tuple(order_ids), reason))
+        return True
+
+    async def cancel_token_orders(token_id, *, reason, max_attempts=3):
+        sequence.append(("verify", token_id, reason, max_attempts))
+        return True
+
+    engine._cancel_order_ids = cancel_order_ids
+    engine._cancel_token_orders = cancel_token_orders
+    engine._mark_latency = lambda token_id, label: latency.append(
+        (token_id, label)
+    )
+
+    assert asyncio.run(engine._cancel_risk_buys("101", "watch:bba_jump")) is True
+    assert sequence == [
+        (
+            "fast",
+            "101",
+            ("cached-buy",),
+            "watch:bba_jump:fast_cached",
+        ),
+        ("verify", "101", "watch:bba_jump", 3),
+    ]
+    assert latency == [("101", "t_orders_cleared")]
+
+
 def test_risk_cancel_escalates_then_rechecks_official_orders():
     engine, calls, kills, latency, notifications = _risk_cancel_engine(
         [False, True]
@@ -617,9 +741,9 @@ def test_risk_cancel_escalates_then_rechecks_official_orders():
     ]
 
 
-def _event_halt_engine(cancel_result: bool):
+def _event_halt_engine(cancel_result: bool, initial_state: str = EVENT_ACTIVE):
     engine = object.__new__(PolyLPSMulti)
-    states = [EVENT_ACTIVE]
+    states = [initial_state]
     reasons = []
     cancel_calls = []
     engine._event_locks = {"101": asyncio.Lock()}
@@ -682,6 +806,62 @@ def test_event_halt_enters_final_state_after_remote_confirmation():
 
     assert states[-1] == EVENT_HALTED_ON_DATA
     assert cancel_calls == [("101", "halt:bad_market_snapshot")]
+
+
+def test_confirmed_fill_promotes_data_halt_to_fill_halt():
+    engine, states, _reasons, cancel_calls = _event_halt_engine(
+        True,
+        initial_state=EVENT_HALTED_ON_DATA,
+    )
+
+    asyncio.run(
+        engine._request_event_halt(
+            "101",
+            EVENT_HALTED_ON_FILL,
+            "late_confirmed_fill",
+        )
+    )
+
+    assert states[-1] == EVENT_HALTED_ON_FILL
+    assert cancel_calls == [("101", "halt:late_confirmed_fill")]
+
+
+def _fill_signal_engine(state: str = EVENT_ACTIVE) -> PolyLPSMulti:
+    engine = _paired_state_engine()
+    engine._event_states["101"]["state"] = state
+    engine._signal_seen_ts = {}
+    engine._event_last_trigger_ts = {}
+    engine._event_banned_until = {}
+    engine.fill_debounce_sec = 15
+    return engine
+
+
+def test_confirmed_fill_signal_survives_defensive_states_and_ban_ttl():
+    for state in (
+        EVENT_WATCH,
+        EVENT_QUARANTINE,
+        EVENT_CANCELING,
+        EVENT_HALTED_ON_DATA,
+    ):
+        engine = _fill_signal_engine(state)
+        engine._event_banned_until[engine._event_key("101")] = time.time() + 3600
+
+        assert engine._allow_signal("101", f"late-fill-{state}") is True
+
+
+def test_confirmed_fill_signal_keeps_dedup_and_exit_ownership():
+    engine = _fill_signal_engine()
+
+    assert engine._allow_signal("101", "trade-1") is True
+    assert engine._allow_signal("101", "trade-1") is False
+
+    for state in (
+        EVENT_HALTED_ON_FILL,
+        EVENT_EXIT_PENDING,
+        EVENT_PENDING_MANUAL_EXIT,
+    ):
+        engine = _fill_signal_engine(state)
+        assert engine._allow_signal("101", f"blocked-{state}") is False
 
 
 def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
@@ -1392,6 +1572,132 @@ def test_submit_rechecks_state_after_signing_before_posting():
         pass
     else:
         raise AssertionError("submit should be preempted after paired exit begins")
+
+    assert posted == []
+
+
+def test_submit_uses_exchange_post_only_after_final_quote_validation():
+    engine = object.__new__(PolyLPSMulti)
+    calls = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            calls.append("signed")
+            return object()
+
+    class Client:
+        def post_order(self, signed, order_type, **kwargs):
+            calls.append(("posted", signed, order_type, kwargs))
+            return {"orderID": "maker-order"}
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        calls.append("released")
+
+    async def validate(*_args):
+        calls.append("validated")
+
+    async def refresh(*_args):
+        return []
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = validate
+    engine._invalidate_all_orders_cache = lambda: None
+    engine._sibling_register_resp = lambda *_args: None
+    engine._refresh_live_orders = refresh
+
+    response = asyncio.run(
+        engine._submit_post_order(
+            "101",
+            Decimal("0.40"),
+            Decimal("10"),
+            "post-only-test",
+        )
+    )
+
+    assert response == {"orderID": "maker-order"}
+    assert calls[0:2] == ["signed", "validated"]
+    post_call = calls[2]
+    assert post_call[0] == "posted"
+    assert post_call[3] == {"post_only": True}
+    assert calls[-1] == "released"
+
+
+def test_submit_does_not_post_when_final_quote_validation_fails():
+    engine = object.__new__(PolyLPSMulti)
+    posted = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            engine._market_snapshots["101"] = engine_module.MarketSnapshot(
+                best_bid=Decimal("0.40"),
+                best_ask=Decimal("0.41"),
+                last_update_ts=time.time(),
+            )
+            return object()
+
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            posted.append(True)
+            return {"orderID": "must-not-post"}
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    async def market_meta(*_args):
+        return {"maxIncentiveSpread": "0.10"}
+
+    async def start_guard(*_args, **_kwargs):
+        return False
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._get_market_meta = market_meta
+    engine._enforce_start_guard = start_guard
+    engine._market_snapshots = {}
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine._token_slug_cache = {}
+    engine.market_cfg = {
+        "101": {
+            "tick": Decimal("0.01"),
+            "spread": Decimal("0.10"),
+        }
+    }
+    engine._night_market_cfg = {}
+
+    try:
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "moving-book-test",
+            )
+        )
+    except RuntimeError as exc:
+        assert "price_above_legal_top" in str(exc)
+        pass
+    else:
+        raise AssertionError("a moved book must prevent order submission")
 
     assert posted == []
 

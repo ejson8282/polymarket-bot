@@ -151,6 +151,25 @@ EVENT_QUARANTINE = "QUARANTINE"
 EVENT_EXIT_PENDING = "EXIT_PENDING"
 EVENT_PENDING_MANUAL_EXIT = "PENDING_MANUAL_EXIT"
 
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        "cancelled",
+        "canceled",
+        "closed",
+        "expired",
+        "filled",
+        "matched",
+    }
+)
+
+
+def _order_is_live(order: Any) -> bool:
+    """Treat every non-terminal record from get_open_orders as still live."""
+    if not isinstance(order, dict):
+        return False
+    status = str(order.get("status") or "").strip().lower()
+    return status not in _TERMINAL_ORDER_STATUSES
+
 
 class EventHaltPreempted(RuntimeError):
     pass
@@ -562,7 +581,9 @@ class PolyLPSMulti:
                 Decimal(str(strategy.get("quote_balance_pct_max_high", 0.70))),
             ),
         }
-        self.post_only = bool(strategy.get("post_only", True))
+        # Maker BUYs are always exchange-enforced post-only. This is a safety
+        # invariant, not a runtime strategy toggle.
+        self.post_only = True
         self.auto_tick = bool(strategy.get("auto_tick", True))
 
         # --- Dynamic budget allocation ---
@@ -1901,8 +1922,7 @@ class PolyLPSMulti:
                 side = self._order_side(order)
                 if side and side != "BUY":
                     continue
-                status = str(order.get("status", "") or "").lower()
-                if status and status not in ("live", "open", "active"):
+                if not _order_is_live(order):
                     continue
                 token_id = self._order_token_id(order) or str(fallback_tid)
                 price = self._order_price(order)
@@ -2806,15 +2826,6 @@ class PolyLPSMulti:
         report cleanup even though orders remained live. Use the reviewed
         batch path and re-read the official open-order endpoint instead.
         """
-        terminal_statuses = {
-            "cancelled",
-            "canceled",
-            "closed",
-            "expired",
-            "filled",
-            "matched",
-        }
-
         def _live_buys(orders: list[dict]) -> tuple[list[str], bool]:
             ids: list[str] = []
             unknown_side = False
@@ -2824,8 +2835,7 @@ class PolyLPSMulti:
                 asset = str(
                     order.get("asset_id") or order.get("token_id") or ""
                 )
-                status = str(order.get("status") or "").lower()
-                if asset != token_id or status in terminal_statuses:
+                if asset != token_id or not _order_is_live(order):
                     continue
                 side = str(order.get("side") or "").upper()
                 if side == "SELL":
@@ -2908,6 +2918,26 @@ class PolyLPSMulti:
 
     async def _cancel_risk_buys(self, token_id: str, reason: str) -> bool:
         """Cancel BUY liquidity and fail closed until the venue confirms it."""
+        # Risk paths already know the order IDs they are protecting. Dispatch
+        # those cancellations before spending another network round-trip on
+        # get_open_orders(), then use the official endpoint below to verify
+        # and catch any order missing from the local cache.
+        cached_ids = [
+            self._order_id(order)
+            for order in self._cached_live_orders(token_id)
+            if _order_is_live(order) and self._order_side(order) == "BUY"
+        ]
+        if cached_ids:
+            fast_ack = await self._cancel_order_ids(
+                token_id,
+                cached_ids,
+                f"{reason}:fast_cached",
+            )
+            log(
+                f"[risk-cancel] token={token_id} reason={reason} "
+                f"fast_cached={len(cached_ids)} ack={fast_ack}"
+            )
+
         confirmed = await self._cancel_token_orders(
             token_id,
             reason=reason,
@@ -3188,7 +3218,7 @@ class PolyLPSMulti:
                 live_ids = {
                     str(o.get("id") or o.get("orderID") or "")
                     for o in orders
-                    if str(o.get("status", "")).lower() in ("live", "open", "active")
+                    if _order_is_live(o)
                 }
 
                 order_gone = order_id and order_id not in live_ids
@@ -3750,7 +3780,7 @@ class PolyLPSMulti:
         return [
             order
             for order in orders
-            if str(order.get("status", "")).lower() in ("live", "open", "active")
+            if _order_is_live(order)
             and str(order.get("asset_id") or order.get("token_id") or "")
             in event_tokens
             and str(order.get("side") or "").upper() == "SELL"
@@ -3777,8 +3807,7 @@ class PolyLPSMulti:
             managed_buy_ids = [
                 self._order_id(order)
                 for order in orders
-                if str(order.get("status", "")).lower()
-                in ("live", "open", "active")
+                if _order_is_live(order)
                 and str(order.get("asset_id") or order.get("token_id") or "")
                 in set(self._event_token_ids(token_id))
                 and str(order.get("side") or "").upper() == "BUY"
@@ -3858,8 +3887,7 @@ class PolyLPSMulti:
         adopted = 0
         for order in orders if isinstance(orders, list) else []:
             if (
-                str(order.get("status", "")).lower()
-                not in ("live", "open", "active")
+                not _order_is_live(order)
                 or str(order.get("side") or "").upper() != "BUY"
             ):
                 continue
@@ -3929,7 +3957,7 @@ class PolyLPSMulti:
         orders = await self._get_all_orders_cached()
         live = [
             o for o in orders
-            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            if _order_is_live(o)
             and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
         ]
         live = self._sorted_live_orders(live)
@@ -4046,7 +4074,11 @@ class PolyLPSMulti:
         lock = self._event_locks[token_id]
         async with lock:
             state = self._event_state_name(token_id)
-            if state in {EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA}:
+            if state == EVENT_HALTED_ON_FILL:
+                return
+            if state == EVENT_HALTED_ON_DATA and final_state != EVENT_HALTED_ON_FILL:
+                return
+            if state in {EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
                 return
             preserve = {halt_key} if halt_key else set()
             self._latency_flow_reset(token_id, preserve=preserve)
@@ -4235,7 +4267,7 @@ class PolyLPSMulti:
             protected_exit_ids = set(self._active_exit_orders.values())
             at_risk = [
                 o for o in orders
-                if str(o.get("status", "")).lower() in ("live", "open", "active")
+                if _order_is_live(o)
                 and str(o.get("asset_id") or o.get("token_id") or "") == str(token_id)
                 and Decimal(str(o.get("price", 0) or 0)) > risk_limit
                 and str(o.get("side", "")).upper() != "SELL"
@@ -4299,7 +4331,7 @@ class PolyLPSMulti:
                 orders = await asyncio.to_thread(self.client.get_open_orders)
                 live = [
                     o for o in orders
-                    if str(o.get("status", "")).lower() in ("live", "open", "active")
+                    if _order_is_live(o)
                 ]
                 if not live:
                     await asyncio.sleep(guard_interval)
@@ -4405,8 +4437,6 @@ class PolyLPSMulti:
         safe_top = book.best_bid - tick * Decimal(distance_ticks)  # ceiling: best_bid - N ticks
 
         if safe_top < reward_lower or safe_top < tick:
-            if book.best_bid >= reward_lower and book.best_bid >= tick:
-                return [self._floor_to_tick(book.best_bid, tick)]
             # No valid position exists in reward zone; skip this market
             log(f"[price-legs-skip] slug={_slug} token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
             return []
@@ -6038,7 +6068,7 @@ class PolyLPSMulti:
             orders = await asyncio.to_thread(self.client.get_open_orders)
             live = [
                 o for o in orders
-                if str(o.get("status", "")).lower() in ("live", "open", "active")
+                if _order_is_live(o)
                 and str(o.get("asset_id") or o.get("token_id") or "") in event_token_ids
                 and str(o.get("side") or "").upper() != "SELL"
             ]
@@ -6136,7 +6166,15 @@ class PolyLPSMulti:
         self._clean_signal_cache()
         ek = self._event_key(token_id)
         now = time.time()
-        if self._event_is_banned(token_id):
+        # A confirmed fill may arrive after a defensive WATCH/QUARANTINE or
+        # cancellation transition. Those states and their ban TTL block new
+        # quotes, not inventory reconciliation. Only an existing fill/exit
+        # workflow owns the position strongly enough to suppress this signal.
+        if self._event_state_name(token_id) in {
+            EVENT_HALTED_ON_FILL,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }:
             return False
         if signal_key in self._signal_seen_ts:
             return False
@@ -7555,10 +7593,20 @@ class PolyLPSMulti:
             else:
                 signed = await asyncio.to_thread(self.client.create_order, args)
             # State may change while remote signing is in flight. Re-check at
-            # the last possible point so an exit transition cannot leak a new
-            # maker BUY into the same YES/NO event.
+            # the last possible point so an exit transition or a moving book
+            # cannot leak a new maker BUY into the same YES/NO event.
             self._ensure_order_path_open(token_id, f"submit_pre_post:{label}")
-            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+            await self._validate_passive_buy_quote(
+                token_id,
+                price,
+                f"submit_final:{label}",
+            )
+            resp = await asyncio.to_thread(
+                self.client.post_order,
+                signed,
+                OrderType.GTC,
+                post_only=True,
+            )
             self._invalidate_all_orders_cache()
             self._sibling_register_resp(token_id, "BUY", price, size, resp)
             try:
@@ -7569,52 +7617,69 @@ class PolyLPSMulti:
         finally:
             await self._release_budget_reserve(reserve_id)
 
-    async def _preflight_post_order(self, token_id: str, price: Decimal, label: str) -> None:
-        self._ensure_order_path_open(token_id, f"place_pre_meta:{label}")
+    async def _validate_passive_buy_quote(
+        self,
+        token_id: str,
+        price: Decimal,
+        label: str,
+    ) -> None:
+        self._ensure_order_path_open(token_id, f"passive_quote:{label}")
         meta = await self._get_market_meta(token_id)
-        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_post_only_order:{label}"):
+        if await self._enforce_start_guard(
+            token_id,
+            meta=meta,
+            trigger=f"passive_quote:{label}",
+        ):
             raise RuntimeError(f"market_start_blocked token={token_id}")
-        await self._acquire_order_throttle(token_id, label)
-        self._ensure_order_path_open(token_id, f"place_post_throttle:{label}")
-        meta = await self._get_market_meta(token_id)
-        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"post_throttle_complete:{label}"):
-            raise RuntimeError(f"market_start_blocked token={token_id}")
+        self._ensure_order_path_open(token_id, f"passive_quote_post_start:{label}")
+
         snap = self._market_snapshots.get(token_id)
+        gate_ok, gate_reason = self._quote_gate(token_id, snap)
         effective = self._effective_snapshot_for_gate(token_id, snap)
         slug = self._token_slug_cache.get(token_id, token_id[:16])
-        if effective and not self._snapshot_is_stale(token_id, effective):
-            fresh_bid = effective.best_bid
-            fresh_ask = effective.best_ask
-            live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
-            live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
-            cfg = self._get_mcfg(token_id)
-            spread = live_spread if live_spread is not None else cfg["spread"]
-            if spread > Decimal("1"):
-                spread = spread / Decimal("100")
-            mid = (fresh_bid + fresh_ask) / Decimal("2")
-            tick = cfg["tick"]
-            reward_lower = max(tick, mid - spread)
-            legal_top = fresh_bid - tick
-            if price > legal_top and legal_top > 0:
-                log(f"[safety] REJECT price>{legal_top} slug={slug} token={token_id[:16]} target={price} legal_top={legal_top} bid={fresh_bid} ask={fresh_ask} spread={spread} reward_lower={reward_lower} label={label}")
-                raise RuntimeError(f"pre_order_reject:price_above_legal_top token={token_id[:16]}")
-            if price < reward_lower:
-                log(f"[safety] REJECT price<reward_lower slug={slug} token={token_id[:16]} target={price} reward_lower={reward_lower} bid={fresh_bid} ask={fresh_ask} spread={spread} mid={mid} label={label}")
-                raise RuntimeError(f"pre_order_reject:price_below_reward_zone token={token_id[:16]}")
-            if price >= fresh_ask:
-                log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
-                raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
-        elif effective is None or self._snapshot_is_stale(token_id, effective):
-            raise SoftQuoteSkip(f"stale_snapshot token={token_id[:16]} label={label}")
+        if not gate_ok or effective is None:
+            raise SoftQuoteSkip(
+                f"{gate_reason}_snapshot token={token_id[:16]} label={label}"
+            )
+
+        fresh_bid = effective.best_bid
+        fresh_ask = effective.best_ask
+        live_spread_raw = meta.get("maxIncentiveSpread") or meta.get("rewardsMaxSpread")
+        live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
+        cfg = self._get_mcfg(token_id)
+        spread = live_spread if live_spread is not None else cfg["spread"]
+        if spread > Decimal("1"):
+            spread = spread / Decimal("100")
+        mid = (fresh_bid + fresh_ask) / Decimal("2")
+        tick = cfg["tick"]
+        reward_lower = max(tick, mid - spread)
+        legal_top = fresh_bid - tick
+        if price > legal_top and legal_top > 0:
+            log(f"[safety] REJECT price>{legal_top} slug={slug} token={token_id[:16]} target={price} legal_top={legal_top} bid={fresh_bid} ask={fresh_ask} spread={spread} reward_lower={reward_lower} label={label}")
+            raise RuntimeError(f"pre_order_reject:price_above_legal_top token={token_id[:16]}")
+        if price < reward_lower:
+            log(f"[safety] REJECT price<reward_lower slug={slug} token={token_id[:16]} target={price} reward_lower={reward_lower} bid={fresh_bid} ask={fresh_ask} spread={spread} mid={mid} label={label}")
+            raise RuntimeError(f"pre_order_reject:price_below_reward_zone token={token_id[:16]}")
+        if price >= fresh_ask:
+            log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
+            raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
+
+    async def _preflight_post_order(self, token_id: str, price: Decimal, label: str) -> None:
+        await self._validate_passive_buy_quote(
+            token_id,
+            price,
+            f"pre_throttle:{label}",
+        )
+        await self._acquire_order_throttle(token_id, label)
+        await self._validate_passive_buy_quote(
+            token_id,
+            price,
+            f"post_throttle:{label}",
+        )
 
     async def _place_post_only_order_fast(self, token_id: str, price: Decimal, size: Decimal, label: str = "post_fast") -> Any:
-        """Fast repost path for defense actions. Assumes caller already made the safety decision."""
-        self._ensure_order_path_open(token_id, f"place_fast:{label}")
-        meta = await self._get_market_meta(token_id)
-        if await self._enforce_start_guard(token_id, meta=meta, trigger=f"place_fast:{label}"):
-            raise RuntimeError(f"market_start_blocked token={token_id}")
-        await self._acquire_order_throttle(token_id, label)
-        self._ensure_order_path_open(token_id, f"place_fast_after_throttle:{label}")
+        """Fast repost path that retains the full passive-order safety gate."""
+        await self._preflight_post_order(token_id, price, label)
         return await self._submit_post_order(token_id, price, size, label)
 
     async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
@@ -7629,7 +7694,7 @@ class PolyLPSMulti:
             return await self._submit_post_order(token_id, price, size, label)
 
     def _count_live_orders(self, orders: list[dict]) -> int:
-        return sum(1 for o in orders if str(o.get("status", "")).lower() in ("live", "open", "active"))
+        return sum(1 for order in orders if _order_is_live(order))
 
     def _recovery_ready(self) -> bool:
         now = time.time()
@@ -7661,15 +7726,14 @@ class PolyLPSMulti:
         protected_ids.update(
             str(o.get("id") or o.get("orderID") or "")
             for o in orders
-            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            if _order_is_live(o)
             and str(o.get("side", "")).upper() == "SELL"
             and (o.get("id") or o.get("orderID"))
         )
         cancel_ids = []
         for o in orders:
             oid = str(o.get("id") or o.get("orderID") or "")
-            status = str(o.get("status", "")).lower()
-            if status in ("live", "open", "active") and oid and oid not in protected_ids:
+            if _order_is_live(o) and oid and oid not in protected_ids:
                 cancel_ids.append(oid)
         if cancel_ids:
             try:
@@ -7695,7 +7759,7 @@ class PolyLPSMulti:
             return False
         live_non_exit = [
             o for o in remaining
-            if str(o.get("status", "")).lower() in ("live", "open", "active")
+            if _order_is_live(o)
             and str(o.get("id") or o.get("orderID") or "") not in protected_ids
         ]
         return len(live_non_exit) == 0
@@ -7966,7 +8030,7 @@ class PolyLPSMulti:
                             await self._trigger_event_offline(token, f"POLL_STATUS_{st.upper()}:{oid}", o_size, o_price)
                             continue
 
-                    if st not in ("live", "open", "active"):
+                    if not _order_is_live(o):
                         continue
 
                     remain = Decimal(str(o.get("remaining_size", o.get("size", 0)) or 0))
@@ -8144,8 +8208,7 @@ class PolyLPSMulti:
                     order
                     for order in self._market_live_orders.get(token_id, [])
                     if self._order_side(order) == "BUY"
-                    and str(order.get("status", "") or "").lower()
-                    in ("", "live", "open", "active")
+                    and _order_is_live(order)
                 ]
                 side_reserved = sum(
                     (
@@ -8550,7 +8613,7 @@ class PolyLPSMulti:
                 live_ids = {
                     str(o.get("id") or o.get("orderID") or "")
                     for o in orders
-                    if str(o.get("status", "")).lower() in ("live", "open", "active")
+                    if _order_is_live(o)
                 }
                 now = time.time()
                 still_pending = []
@@ -8682,7 +8745,9 @@ class PolyLPSMulti:
                             "size_matched_raw": str(o.get("size_matched", 0) or 0),
                             "side": str(o.get("side") or "BUY").lower(),
                             "status": str(o.get("status") or "open").lower(),
-                            "post_only": True,
+                            "post_only": (
+                                self._order_side(o) == "BUY" and self.post_only
+                            ),
                             "is_exit": self._order_id(o) in active_exit_order_ids,
                         }
                         for o in live_orders
