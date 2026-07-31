@@ -581,7 +581,9 @@ class PolyLPSMulti:
                 Decimal(str(strategy.get("quote_balance_pct_max_high", 0.70))),
             ),
         }
-        self.post_only = bool(strategy.get("post_only", True))
+        # Maker BUYs are always exchange-enforced post-only. This is a safety
+        # invariant, not a runtime strategy toggle.
+        self.post_only = True
         self.auto_tick = bool(strategy.get("auto_tick", True))
 
         # --- Dynamic budget allocation ---
@@ -8711,7 +8713,9 @@ class PolyLPSMulti:
                             "size_matched_raw": str(o.get("size_matched", 0) or 0),
                             "side": str(o.get("side") or "BUY").lower(),
                             "status": str(o.get("status") or "open").lower(),
-                            "post_only": True,
+                            "post_only": (
+                                self._order_side(o) == "BUY" and self.post_only
+                            ),
                             "is_exit": self._order_id(o) in active_exit_order_ids,
                         }
                         for o in live_orders
