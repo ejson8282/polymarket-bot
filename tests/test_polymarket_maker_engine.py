@@ -66,6 +66,29 @@ def test_quote_target_never_exceeds_available_budget():
     assert warning == ""
 
 
+def test_price_legs_skip_when_reward_zone_has_no_passive_tick():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "tick": Decimal("0.01"),
+            "spread": Decimal("0.01"),
+            "min_distance_ticks": 1,
+        }
+    }
+    engine._night_market_cfg = {}
+    engine._token_slug_cache = {}
+
+    prices = engine._build_price_legs(
+        "101",
+        engine_module.TopOfBook(
+            best_bid=Decimal("0.50"),
+            best_ask=Decimal("0.51"),
+        ),
+    )
+
+    assert prices == []
+
+
 def _budget_engine() -> PolyLPSMulti:
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
@@ -278,6 +301,54 @@ def test_cancel_quotes_preserves_unregistered_sell_exit():
     assert asyncio.run(engine._cancel_all_except_exit()) is True
     assert canceled_batches == [["buy-1"]]
     assert [o["id"] for o in engine.client.get_open_orders()] == ["sell-exit"]
+
+
+def test_statusless_open_orders_are_handled_conservatively():
+    assert engine_module._order_is_live({"id": "statusless"}) is True
+    assert engine_module._order_is_live(
+        {"id": "unknown", "status": "pending"}
+    ) is True
+    assert engine_module._order_is_live(
+        {"id": "done", "status": "filled"}
+    ) is False
+
+    engine = object.__new__(PolyLPSMulti)
+    orders = [
+        {"id": "buy-statusless", "side": "BUY"},
+        {"id": "sell-statusless", "side": "SELL"},
+        {"id": "buy-filled", "status": "filled", "side": "BUY"},
+    ]
+    canceled_batches = []
+
+    class Client:
+        def get_open_orders(self):
+            canceled = {
+                order_id
+                for batch in canceled_batches
+                for order_id in batch
+            }
+            return [order for order in orders if order["id"] not in canceled]
+
+        def cancel_orders(self, order_ids):
+            canceled_batches.append(list(order_ids))
+
+    class Registry:
+        def clear_funder(self, *_args, **_kwargs):
+            return None
+
+    engine.client = Client()
+    engine._active_exit_orders = {}
+    engine._market_live_orders = {}
+    engine._sibling_registry = Registry()
+    engine._funder_lc = "account"
+    engine._invalidate_all_orders_cache = lambda: None
+
+    assert asyncio.run(engine._cancel_all_except_exit()) is True
+    assert canceled_batches == [["buy-statusless"]]
+    assert {order["id"] for order in engine.client.get_open_orders()} == {
+        "sell-statusless",
+        "buy-filled",
+    }
 
 
 def test_cancel_all_fails_closed_when_verification_response_is_invalid():
@@ -1392,6 +1463,111 @@ def test_submit_rechecks_state_after_signing_before_posting():
         pass
     else:
         raise AssertionError("submit should be preempted after paired exit begins")
+
+    assert posted == []
+
+
+def test_submit_uses_exchange_post_only_after_final_quote_validation():
+    engine = object.__new__(PolyLPSMulti)
+    calls = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            calls.append("signed")
+            return object()
+
+    class Client:
+        def post_order(self, signed, order_type, **kwargs):
+            calls.append(("posted", signed, order_type, kwargs))
+            return {"orderID": "maker-order"}
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        calls.append("released")
+
+    async def validate(*_args):
+        calls.append("validated")
+
+    async def refresh(*_args):
+        return []
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = validate
+    engine._invalidate_all_orders_cache = lambda: None
+    engine._sibling_register_resp = lambda *_args: None
+    engine._refresh_live_orders = refresh
+
+    response = asyncio.run(
+        engine._submit_post_order(
+            "101",
+            Decimal("0.40"),
+            Decimal("10"),
+            "post-only-test",
+        )
+    )
+
+    assert response == {"orderID": "maker-order"}
+    assert calls[0:2] == ["signed", "validated"]
+    post_call = calls[2]
+    assert post_call[0] == "posted"
+    assert post_call[3] == {"post_only": True}
+    assert calls[-1] == "released"
+
+
+def test_submit_does_not_post_when_final_quote_validation_fails():
+    engine = object.__new__(PolyLPSMulti)
+    posted = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            return object()
+
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            posted.append(True)
+            return {"orderID": "must-not-post"}
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    async def reject(*_args):
+        raise engine_module.SoftQuoteSkip("book moved during signing")
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = reject
+
+    try:
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "moving-book-test",
+            )
+        )
+    except engine_module.SoftQuoteSkip:
+        pass
+    else:
+        raise AssertionError("a moved book must prevent order submission")
 
     assert posted == []
 
