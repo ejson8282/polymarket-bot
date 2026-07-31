@@ -19,6 +19,9 @@ from deploy_release import (  # noqa: E402
     DeploymentError,
     DeploymentPaths,
     DeploymentRequest,
+    _require_signer_ready,
+    _state_file_marker,
+    _wait_for_engine_state,
     deployment_lock,
     execute,
 )
@@ -138,6 +141,19 @@ def _paths(tmp_path: Path) -> tuple[DeploymentPaths, Path, str]:
         ),
         encoding="utf-8",
     )
+    runtime_config = tmp_path / "config_1.json"
+    runtime_config.write_text(
+        json.dumps(
+            {
+                "account": {
+                    "signer_server_url": "http://100.64.0.1:8420",
+                    "signer_token": "test-token",
+                    "funder": "0x1234",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     drop_in = tmp_path / "zz-immutable-release.conf"
     drop_in.write_text(
@@ -171,7 +187,9 @@ def _paths(tmp_path: Path) -> tuple[DeploymentPaths, Path, str]:
         drop_in=drop_in,
         pause_flag=pause_flag,
         state_file=state_file,
+        runtime_config=runtime_config,
         python=Path(sys.executable),
+        post_restart_stability_seconds=0.0,
     )
     return paths, source, target_sha
 
@@ -209,22 +227,77 @@ class SystemctlRunner(CommandRunner):
             self.restart_count += 1
             if self.fail_first_restart and self.restart_count == 1:
                 raise subprocess.CalledProcessError(1, normalized)
-            if self.restart_count == 1:
-                self.paths.state_file.write_text(
-                    json.dumps(
-                        {
-                            "release_sha": self.target_sha,
-                            "release_required": True,
-                            "paused": True,
-                            "quotes_sent": 0,
-                            "fills_seen": 0,
-                            "ts": "2099-01-01T00:00:00Z",
-                        }
-                    ),
-                    encoding="utf-8",
-                )
+            release_sha = self.target_sha if self.restart_count == 1 else OLD_SHA
+            self.paths.state_file.write_text(
+                json.dumps(
+                    {
+                        "release_sha": release_sha,
+                        "release_required": True,
+                        "paused": True,
+                        "quotes_sent": 0,
+                        "fills_seen": 0,
+                        "ts": "2099-01-01T00:00:00Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
             return ""
         return super().run(args, cwd=cwd, env=env)
+
+
+class FakeSignerResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _limit: int) -> bytes:
+        return json.dumps(
+            {
+                "api_key": "key",
+                "api_secret": "secret",
+                "api_passphrase": "passphrase",
+                "address": "0xabc",
+            }
+        ).encode("utf-8")
+
+
+class FakeSignerOpener:
+    def __init__(self):
+        self.request = None
+        self.timeout = None
+
+    def open(self, request, timeout):
+        self.request = request
+        self.timeout = timeout
+        return FakeSignerResponse()
+
+
+def _mock_clock_and_signer(monkeypatch):
+    import deploy_release
+
+    monkeypatch.setattr(
+        deploy_release,
+        "_utc_now",
+        lambda: deploy_release.datetime(
+            2099,
+            1,
+            1,
+            tzinfo=deploy_release.timezone.utc,
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_release,
+        "_require_signer_ready",
+        lambda _paths: {
+            "status": "ok",
+            "signer_host": "100.64.0.1",
+            "funder_configured": True,
+        },
+    )
 
 
 def test_global_lock_rejects_a_second_deployment(tmp_path):
@@ -236,6 +309,130 @@ def test_global_lock_rejects_a_second_deployment(tmp_path):
         with pytest.raises(DeploymentError, match="owns the global lock"):
             with deployment_lock(lock_file):
                 pass
+
+
+def test_signer_preflight_validates_response_without_exposing_credentials(
+    tmp_path,
+    monkeypatch,
+):
+    paths, _source, _target_sha = _paths(tmp_path)
+    opener = FakeSignerOpener()
+    monkeypatch.delenv("POLY_SIGNER_SERVER_URL", raising=False)
+    monkeypatch.delenv("SIGNER_TOKEN", raising=False)
+
+    import deploy_release
+
+    monkeypatch.setattr(
+        deploy_release.urllib.request,
+        "build_opener",
+        lambda *_handlers: opener,
+    )
+
+    result = _require_signer_ready(paths, timeout_seconds=7.0)
+
+    assert result == {
+        "status": "ok",
+        "signer_host": "100.64.0.1",
+        "funder_configured": True,
+    }
+    assert opener.timeout == 7.0
+    assert opener.request.full_url == "http://100.64.0.1:8420/derive-creds"
+    assert json.loads(opener.request.data) == {"funder": "0x1234"}
+    assert "api_key" not in result
+    assert "api_secret" not in result
+    assert "api_passphrase" not in result
+
+
+def test_signer_preflight_uses_engine_environment_overrides(tmp_path, monkeypatch):
+    paths, _source, _target_sha = _paths(tmp_path)
+    opener = FakeSignerOpener()
+    monkeypatch.setenv("POLY_SIGNER_SERVER_URL", "http://100.64.0.2:9000")
+    monkeypatch.setenv("SIGNER_TOKEN", "environment-test-token")
+
+    import deploy_release
+
+    monkeypatch.setattr(
+        deploy_release.urllib.request,
+        "build_opener",
+        lambda *_handlers: opener,
+    )
+
+    _require_signer_ready(paths)
+
+    assert opener.request.full_url == "http://100.64.0.2:9000/derive-creds"
+    assert opener.request.get_header("Authorization") == (
+        "Bearer environment-test-token"
+    )
+
+
+def test_wait_for_engine_state_rejects_pre_restart_state(tmp_path):
+    paths, _source, target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(paths=paths, target_sha=target_sha)
+    paths.state_file.write_text(
+        json.dumps(
+            {
+                "release_sha": OLD_SHA,
+                "release_required": True,
+                "paused": True,
+                "quotes_sent": 0,
+                "fills_seen": 0,
+                "ts": "2098-12-31T23:59:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import deploy_release
+
+    with pytest.raises(DeploymentError, match="predates this restart"):
+        _wait_for_engine_state(
+            paths,
+            runner,
+            OLD_SHA,
+            observed_after=deploy_release.datetime(
+                2099,
+                1,
+                1,
+                tzinfo=deploy_release.timezone.utc,
+            ),
+            timeout_seconds=0.01,
+            sleep=lambda _seconds: None,
+        )
+
+
+def test_wait_for_engine_state_requires_file_rewrite(tmp_path, monkeypatch):
+    paths, _source, _target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(paths=paths, target_sha=OLD_SHA)
+    previous_marker = _state_file_marker(paths.state_file)
+
+    import deploy_release
+
+    monkeypatch.setattr(
+        deploy_release,
+        "_utc_now",
+        lambda: deploy_release.datetime(
+            2099,
+            1,
+            1,
+            tzinfo=deploy_release.timezone.utc,
+        ),
+    )
+
+    with pytest.raises(DeploymentError, match="has not been rewritten"):
+        _wait_for_engine_state(
+            paths,
+            runner,
+            OLD_SHA,
+            observed_after=deploy_release.datetime(
+                2099,
+                1,
+                1,
+                tzinfo=deploy_release.timezone.utc,
+            ),
+            previous_state_marker=previous_marker,
+            timeout_seconds=0.01,
+            sleep=lambda _seconds: None,
+        )
 
 
 def test_prepare_requires_exact_confirmation(tmp_path):
@@ -314,19 +511,7 @@ def test_activate_switches_exact_release_and_keeps_engine_paused(
 ):
     paths, _source, target_sha = _paths(tmp_path)
     runner = SystemctlRunner(paths=paths, target_sha=target_sha)
-
-    import deploy_release
-
-    monkeypatch.setattr(
-        deploy_release,
-        "_utc_now",
-        lambda: deploy_release.datetime(
-            2099,
-            1,
-            1,
-            tzinfo=deploy_release.timezone.utc,
-        ),
-    )
+    _mock_clock_and_signer(monkeypatch)
 
     result = execute(
         DeploymentRequest(
@@ -348,15 +533,15 @@ def test_activate_switches_exact_release_and_keeps_engine_paused(
         f"POLYMARKET_RELEASE_SHA={target_sha}\n"
     )
     assert runner.restart_count == 1
+    assert result["signer_preflight"]["status"] == "ok"
 
 
-def test_failed_activation_restores_previous_release(tmp_path, monkeypatch):
+def test_signer_preflight_failure_leaves_current_service_untouched(
+    tmp_path,
+    monkeypatch,
+):
     paths, _source, target_sha = _paths(tmp_path)
-    runner = SystemctlRunner(
-        paths=paths,
-        target_sha=target_sha,
-        fail_first_restart=True,
-    )
+    runner = SystemctlRunner(paths=paths, target_sha=target_sha)
 
     import deploy_release
 
@@ -370,6 +555,41 @@ def test_failed_activation_restores_previous_release(tmp_path, monkeypatch):
             tzinfo=deploy_release.timezone.utc,
         ),
     )
+
+    def fail_preflight(_paths):
+        raise DeploymentError("remote signer preflight returned HTTP 500")
+
+    monkeypatch.setattr(deploy_release, "_require_signer_ready", fail_preflight)
+
+    with pytest.raises(DeploymentError, match="current service was left untouched"):
+        execute(
+            DeploymentRequest(
+                action="activate",
+                target_sha=target_sha,
+                expected_current_sha=OLD_SHA,
+                confirm=f"ACTIVATE:{target_sha}",
+                authorization_id="test-authorization",
+            ),
+            paths=paths,
+            runner=runner,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+    assert runner.restart_count == 0
+    assert paths.current_link.resolve().name == OLD_SHA
+    assert paths.release_env.read_text(encoding="utf-8") == (
+        f"POLYMARKET_RELEASE_SHA={OLD_SHA}\n"
+    )
+
+
+def test_failed_activation_restores_previous_release(tmp_path, monkeypatch):
+    paths, _source, target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(
+        paths=paths,
+        target_sha=target_sha,
+        fail_first_restart=True,
+    )
+    _mock_clock_and_signer(monkeypatch)
 
     with pytest.raises(DeploymentError, match="previous release was restored"):
         execute(
