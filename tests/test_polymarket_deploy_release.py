@@ -505,6 +505,40 @@ def test_prepare_rejects_missing_candidate_ref(tmp_path):
         )
 
 
+def test_prepare_rejects_non_fast_forward_candidate_downgrade(tmp_path):
+    paths, source, target_sha = _paths(tmp_path)
+    old_candidate_sha = _git(source, "rev-parse", "HEAD~1")
+    _git(
+        tmp_path,
+        f"--git-dir={paths.bare_repo}",
+        "update-ref",
+        "refs/heads/main",
+        target_sha,
+    )
+    _git(
+        tmp_path,
+        f"--git-dir={paths.bare_repo}",
+        "update-ref",
+        f"refs/deploy-candidates/{old_candidate_sha}",
+        old_candidate_sha,
+    )
+
+    with pytest.raises(
+        DeploymentError,
+        match="candidate is not a fast-forward descendant of internal main",
+    ):
+        execute(
+            DeploymentRequest(
+                action="prepare",
+                target_sha=old_candidate_sha,
+                expected_current_sha=OLD_SHA,
+                confirm=f"PREPARE:{old_candidate_sha}",
+            ),
+            paths=paths,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+
 def test_activate_switches_exact_release_and_keeps_engine_paused(
     tmp_path,
     monkeypatch,
