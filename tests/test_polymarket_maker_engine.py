@@ -14,8 +14,10 @@ from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
     EVENT_EXIT_PENDING,
+    EVENT_HALTED_ON_FILL,
     EVENT_HALTED_ON_DATA,
     EVENT_PENDING_MANUAL_EXIT,
+    EVENT_QUARANTINE,
     EVENT_WATCH,
     EventHaltPreempted,
     PolyLPSMulti,
@@ -688,9 +690,9 @@ def test_risk_cancel_escalates_then_rechecks_official_orders():
     ]
 
 
-def _event_halt_engine(cancel_result: bool):
+def _event_halt_engine(cancel_result: bool, initial_state: str = EVENT_ACTIVE):
     engine = object.__new__(PolyLPSMulti)
-    states = [EVENT_ACTIVE]
+    states = [initial_state]
     reasons = []
     cancel_calls = []
     engine._event_locks = {"101": asyncio.Lock()}
@@ -753,6 +755,62 @@ def test_event_halt_enters_final_state_after_remote_confirmation():
 
     assert states[-1] == EVENT_HALTED_ON_DATA
     assert cancel_calls == [("101", "halt:bad_market_snapshot")]
+
+
+def test_confirmed_fill_promotes_data_halt_to_fill_halt():
+    engine, states, _reasons, cancel_calls = _event_halt_engine(
+        True,
+        initial_state=EVENT_HALTED_ON_DATA,
+    )
+
+    asyncio.run(
+        engine._request_event_halt(
+            "101",
+            EVENT_HALTED_ON_FILL,
+            "late_confirmed_fill",
+        )
+    )
+
+    assert states[-1] == EVENT_HALTED_ON_FILL
+    assert cancel_calls == [("101", "halt:late_confirmed_fill")]
+
+
+def _fill_signal_engine(state: str = EVENT_ACTIVE) -> PolyLPSMulti:
+    engine = _paired_state_engine()
+    engine._event_states["101"]["state"] = state
+    engine._signal_seen_ts = {}
+    engine._event_last_trigger_ts = {}
+    engine._event_banned_until = {}
+    engine.fill_debounce_sec = 15
+    return engine
+
+
+def test_confirmed_fill_signal_survives_defensive_states_and_ban_ttl():
+    for state in (
+        EVENT_WATCH,
+        EVENT_QUARANTINE,
+        EVENT_CANCELING,
+        EVENT_HALTED_ON_DATA,
+    ):
+        engine = _fill_signal_engine(state)
+        engine._event_banned_until[engine._event_key("101")] = time.time() + 3600
+
+        assert engine._allow_signal("101", f"late-fill-{state}") is True
+
+
+def test_confirmed_fill_signal_keeps_dedup_and_exit_ownership():
+    engine = _fill_signal_engine()
+
+    assert engine._allow_signal("101", "trade-1") is True
+    assert engine._allow_signal("101", "trade-1") is False
+
+    for state in (
+        EVENT_HALTED_ON_FILL,
+        EVENT_EXIT_PENDING,
+        EVENT_PENDING_MANUAL_EXIT,
+    ):
+        engine = _fill_signal_engine(state)
+        assert engine._allow_signal("101", f"blocked-{state}") is False
 
 
 def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(

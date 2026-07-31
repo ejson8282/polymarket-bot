@@ -4054,7 +4054,11 @@ class PolyLPSMulti:
         lock = self._event_locks[token_id]
         async with lock:
             state = self._event_state_name(token_id)
-            if state in {EVENT_HALTED_ON_FILL, EVENT_HALTED_ON_DATA}:
+            if state == EVENT_HALTED_ON_FILL:
+                return
+            if state == EVENT_HALTED_ON_DATA and final_state != EVENT_HALTED_ON_FILL:
+                return
+            if state in {EVENT_EXIT_PENDING, EVENT_PENDING_MANUAL_EXIT}:
                 return
             preserve = {halt_key} if halt_key else set()
             self._latency_flow_reset(token_id, preserve=preserve)
@@ -6142,7 +6146,15 @@ class PolyLPSMulti:
         self._clean_signal_cache()
         ek = self._event_key(token_id)
         now = time.time()
-        if self._event_is_banned(token_id):
+        # A confirmed fill may arrive after a defensive WATCH/QUARANTINE or
+        # cancellation transition. Those states and their ban TTL block new
+        # quotes, not inventory reconciliation. Only an existing fill/exit
+        # workflow owns the position strongly enough to suppress this signal.
+        if self._event_state_name(token_id) in {
+            EVENT_HALTED_ON_FILL,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }:
             return False
         if signal_key in self._signal_seen_ts:
             return False
