@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -23,6 +23,9 @@ import sys
 import tarfile
 import time
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
@@ -55,7 +58,11 @@ class DeploymentPaths:
     )
     pause_flag: Path = Path("/home/ubuntu/polymarket-bot/data/.account_1.paused")
     state_file: Path = Path("/home/ubuntu/polymarket-bot/data/engine_state_1.json")
+    runtime_config: Path = Path(
+        "/home/ubuntu/polymarket-bot/platforms/polymarket/maker/config_1.json"
+    )
     python: Path = Path("/home/ubuntu/.venv2/bin/python")
+    post_restart_stability_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -318,9 +325,90 @@ def _require_paused(
 
 
 def _require_service_active(runner: CommandRunner) -> None:
-    status = runner.run(("systemctl", "is-active", SERVICE_NAME))
+    try:
+        status = runner.run(("systemctl", "is-active", SERVICE_NAME))
+    except subprocess.CalledProcessError as exc:
+        raise DeploymentError(f"{SERVICE_NAME} is not active") from exc
     if status != "active":
         raise DeploymentError(f"{SERVICE_NAME} is not active: {status}")
+
+
+def _require_signer_ready(
+    paths: DeploymentPaths,
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Verify the configured signer can derive CLOB credentials.
+
+    The response credentials only live in this process long enough to validate
+    their shape. They are never written to disk or included in audit output.
+    """
+
+    config = _load_json(paths.runtime_config, "runtime config")
+    account = config.get("account")
+    if not isinstance(account, dict):
+        raise DeploymentError("runtime config account section is missing")
+
+    signer_url = (
+        os.getenv("POLY_SIGNER_SERVER_URL", "").strip()
+        or str(account.get("signer_server_url") or "").strip()
+    ).rstrip("/")
+    signer_token = (
+        os.getenv("SIGNER_TOKEN", "").strip()
+        or str(account.get("signer_token") or "").strip()
+    )
+    funder = str(account.get("funder") or "").strip()
+    if not signer_url or not signer_token:
+        raise DeploymentError("runtime config remote signer is incomplete")
+
+    parsed = urllib.parse.urlsplit(signer_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise DeploymentError("runtime config signer URL is invalid")
+
+    payload: Dict[str, str] = {}
+    if funder:
+        payload["funder"] = funder
+    request = urllib.request.Request(
+        f"{signer_url}/derive-creds",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {signer_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=timeout_seconds) as response:
+            status = int(getattr(response, "status", 200))
+            raw = response.read(65537)
+    except urllib.error.HTTPError as exc:
+        raise DeploymentError(f"remote signer preflight returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise DeploymentError(
+            f"remote signer preflight connection failed ({type(reason).__name__})"
+        ) from exc
+
+    if status != 200:
+        raise DeploymentError(f"remote signer preflight returned HTTP {status}")
+    if len(raw) > 65536:
+        raise DeploymentError("remote signer preflight response is too large")
+    try:
+        credentials = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeploymentError("remote signer preflight returned invalid JSON") from exc
+    required = ("api_key", "api_secret", "api_passphrase", "address")
+    if not isinstance(credentials, dict) or any(
+        not str(credentials.get(field) or "").strip() for field in required
+    ):
+        raise DeploymentError("remote signer preflight returned incomplete credentials")
+
+    return {
+        "status": "ok",
+        "signer_host": parsed.hostname,
+        "funder_configured": bool(funder),
+    }
 
 
 def _require_drop_in(paths: DeploymentPaths) -> None:
@@ -538,28 +626,71 @@ def _write_audit(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _state_file_marker(path: Path) -> tuple[int, int, int, int]:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise DeploymentError(f"engine state unavailable: {path}") from exc
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
 def _wait_for_engine_state(
     paths: DeploymentPaths,
+    runner: CommandRunner,
     target_sha: str,
     *,
+    observed_after: datetime,
+    previous_state_marker: Optional[tuple[int, int, int, int]] = None,
     timeout_seconds: float = 30.0,
     sleep=time.sleep,
 ) -> Dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     last_error = "state unavailable"
+    stable_since: Optional[float] = None
+    minimum_timestamp = observed_after.astimezone(timezone.utc) - timedelta(seconds=1)
+    stability_seconds = max(0.0, paths.post_restart_stability_seconds)
     while time.monotonic() < deadline:
+        _require_service_active(runner)
         try:
+            state_marker = _state_file_marker(paths.state_file)
             state = _load_json(paths.state_file, "engine state")
-            if (
+            state_timestamp = _parse_timestamp(state.get("ts"))
+            maximum_timestamp = _utc_now() + timedelta(seconds=5)
+            state_matches = (
                 state.get("release_sha") == target_sha
                 and state.get("release_required") is True
                 and state.get("paused") is True
                 and state.get("quotes_sent") == 0
                 and state.get("fills_seen") == 0
-            ):
-                return state
-            last_error = "state has not confirmed exact release + paused zero-activity"
+                and state_timestamp >= minimum_timestamp
+                and state_timestamp <= maximum_timestamp
+                and state_marker != previous_state_marker
+            )
+            if state_matches:
+                now_monotonic = time.monotonic()
+                if stable_since is None:
+                    stable_since = now_monotonic
+                stable_for = now_monotonic - stable_since
+                if stable_for >= stability_seconds:
+                    return state
+                last_error = (
+                    "state is fresh but service stability window is incomplete "
+                    f"({stable_for:.1f}/{stability_seconds:.1f}s)"
+                )
+            else:
+                stable_since = None
+                if state_timestamp < minimum_timestamp:
+                    last_error = "engine state predates this restart"
+                elif state_timestamp > maximum_timestamp:
+                    last_error = "engine state timestamp is in the future"
+                elif state_marker == previous_state_marker:
+                    last_error = "engine state file has not been rewritten since restart"
+                else:
+                    last_error = (
+                        "state has not confirmed exact release + paused zero-activity"
+                    )
         except DeploymentError as exc:
+            stable_since = None
             last_error = str(exc)
         sleep(0.5)
     raise DeploymentError(f"post-restart engine verification timed out: {last_error}")
@@ -582,7 +713,6 @@ def _activate_release(
     _require_drop_in(paths)
 
     audit_path = _audit_dir(paths, request.target_sha)
-    old_env = paths.release_env.read_bytes() if paths.release_env.exists() else None
     base_audit: Dict[str, Any] = {
         "source_repository": SOURCE_REPOSITORY,
         "target_sha": request.target_sha,
@@ -593,7 +723,26 @@ def _activate_release(
         "started_at": _iso_now(),
         "lock_file": str(paths.lock_file),
     }
+    _write_audit(audit_path, dict(base_audit, status="preflight"))
+    try:
+        signer_preflight = _require_signer_ready(paths)
+    except Exception as exc:
+        result = dict(
+            base_audit,
+            status="failed",
+            phase="preflight",
+            completed_at=_iso_now(),
+            error=str(exc),
+            service_untouched=True,
+        )
+        _write_audit(audit_path, result)
+        raise DeploymentError(
+            f"signer preflight failed; current service was left untouched: {exc}"
+        ) from exc
+
+    base_audit["signer_preflight"] = signer_preflight
     _write_audit(audit_path, dict(base_audit, status="activating"))
+    old_env = paths.release_env.read_bytes() if paths.release_env.exists() else None
 
     try:
         _atomic_write(
@@ -603,9 +752,17 @@ def _activate_release(
         )
         _atomic_symlink(paths.current_link, release_dir)
         _require_paused(paths, previous_sha)
+        previous_state_marker = _state_file_marker(paths.state_file)
+        restart_requested_at = _utc_now()
         runner.run(("sudo", "-n", "systemctl", "restart", SERVICE_NAME))
         _require_service_active(runner)
-        state = _wait_for_engine_state(paths, request.target_sha)
+        state = _wait_for_engine_state(
+            paths,
+            runner,
+            request.target_sha,
+            observed_after=restart_requested_at,
+            previous_state_marker=previous_state_marker,
+        )
         result = dict(
             base_audit,
             status="succeeded",
@@ -633,9 +790,17 @@ def _activate_release(
             else:
                 _atomic_write(paths.release_env, old_env, mode=0o600)
             _atomic_symlink(paths.current_link, paths.release_root / previous_sha)
+            previous_state_marker = _state_file_marker(paths.state_file)
+            rollback_requested_at = _utc_now()
             runner.run(("sudo", "-n", "systemctl", "restart", SERVICE_NAME))
             _require_service_active(runner)
-            _wait_for_engine_state(paths, previous_sha)
+            _wait_for_engine_state(
+                paths,
+                runner,
+                previous_sha,
+                observed_after=rollback_requested_at,
+                previous_state_marker=previous_state_marker,
+            )
         except Exception as exc:
             rollback_error = str(exc)
         result = dict(
