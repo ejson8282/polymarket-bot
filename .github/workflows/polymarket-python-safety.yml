@@ -1,0 +1,53 @@
+name: Polymarket Python safety
+
+on:
+  pull_request:
+    paths:
+      - "platforms/polymarket/maker/deploy_release.py"
+      - "platforms/polymarket/maker/release_guard.py"
+      - "platforms/polymarket/maker/engine.py"
+      - "tests/test_polymarket_deploy_release.py"
+      - "tests/test_polymarket_release_guard.py"
+      - "tests/test_polymarket_maker_engine.py"
+      - ".github/workflows/polymarket-python-safety.yml"
+  push:
+    branches: [main]
+    paths:
+      - "platforms/polymarket/maker/deploy_release.py"
+      - "platforms/polymarket/maker/release_guard.py"
+      - "platforms/polymarket/maker/engine.py"
+      - "tests/test_polymarket_deploy_release.py"
+      - "tests/test_polymarket_release_guard.py"
+      - "tests/test_polymarket_maker_engine.py"
+      - ".github/workflows/polymarket-python-safety.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polymarket-python-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: >-
+          python -m pip install
+          pytest==9.0.3
+          py_clob_client_v2==1.0.0
+          requests==2.33.1
+          websockets==15.0.1
+      - name: Test release and passive-maker safety
+        run: >-
+          python -m pytest -q
+          tests/test_polymarket_deploy_release.py
+          tests/test_polymarket_release_guard.py
+          tests/test_polymarket_maker_engine.py
