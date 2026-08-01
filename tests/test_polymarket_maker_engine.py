@@ -567,8 +567,12 @@ def _cross_side_cancel_engine(cancel_result: bool):
     engine.notify_discord = lambda *_args, **_kwargs: None
     spawned = []
     kill_reasons = []
+    cancel_calls = []
 
-    async def cancel_token_orders(_token_id, *, reason):
+    async def cancel_risk_buys(_token_id, reason):
+        cancel_calls.append((_token_id, reason))
+        if not cancel_result:
+            await kill_switch(f"risk_cancel_unconfirmed:{_token_id}:{reason}")
         return cancel_result
 
     async def kill_switch(_reason):
@@ -580,14 +584,16 @@ def _cross_side_cancel_engine(cancel_result: bool):
         coro.close()
         return None
 
-    engine._cancel_token_orders = cancel_token_orders
+    engine._cancel_risk_buys = cancel_risk_buys
     engine.trigger_global_kill_switch = kill_switch
     engine._spawn_bg = spawn
-    return engine, marked, spawned, kill_reasons
+    return engine, marked, spawned, kill_reasons, cancel_calls
 
 
 def test_cross_side_cancel_blocks_requote_and_marks_only_after_confirmation():
-    engine, marked, spawned, kill_reasons = _cross_side_cancel_engine(True)
+    engine, marked, spawned, kill_reasons, cancel_calls = (
+        _cross_side_cancel_engine(True)
+    )
 
     result = asyncio.run(
         engine._execute_cross_side_cancel(
@@ -606,11 +612,16 @@ def test_cross_side_cancel_blocks_requote_and_marks_only_after_confirmation():
     assert marked == ["102"]
     assert spawned == []
     assert kill_reasons == []
+    assert cancel_calls == [
+        ("102", "cross_side_sentinel:101:depth_drop"),
+    ]
     assert engine._cross_side_cancel_inflight == set()
 
 
 def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
-    engine, marked, spawned, kill_reasons = _cross_side_cancel_engine(False)
+    engine, marked, spawned, kill_reasons, cancel_calls = (
+        _cross_side_cancel_engine(False)
+    )
 
     result = asyncio.run(
         engine._execute_cross_side_cancel(
@@ -627,7 +638,12 @@ def test_cross_side_cancel_failure_does_not_claim_success_and_escalates():
     assert engine._event_state_name("102") == EVENT_WATCH
     assert marked == []
     assert spawned == []
-    assert kill_reasons == ["cross_side_cancel_unconfirmed:102"]
+    assert cancel_calls == [
+        ("102", "cross_side_sentinel:101:depth_drop"),
+    ]
+    assert kill_reasons == [
+        "risk_cancel_unconfirmed:102:cross_side_sentinel:101:depth_drop"
+    ]
     assert engine._cross_side_cancel_inflight == set()
 
 

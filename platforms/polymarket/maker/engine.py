@@ -3006,9 +3006,9 @@ class PolyLPSMulti:
                 EVENT_WATCH,
                 f"cross_side_sentinel:{trigger_token}:{reason}",
             )
-            canceled = await self._cancel_token_orders(
+            canceled = await self._cancel_risk_buys(
                 paired_token,
-                reason=f"cross_side_sentinel:{trigger_token}:{reason}",
+                f"cross_side_sentinel:{trigger_token}:{reason}",
             )
             if not canceled:
                 log(
@@ -3025,13 +3025,9 @@ class PolyLPSMulti:
                     )
                 except Exception:
                     pass
-                # This method already runs in a background task. Await the
-                # global cancel here so ``_cross_side_cancel_inflight`` stays
-                # set until cancellation is confirmed, preventing every
-                # incoming book update from spawning another kill task.
-                await self.trigger_global_kill_switch(
-                    f"cross_side_cancel_unconfirmed:{paired_token}"
-                )
+                # _cancel_risk_buys already escalates to the global cancel
+                # path and rechecks the official order endpoint. Do not
+                # launch a duplicate account-wide cancellation here.
                 return False
 
             self.cross_side_sentinel.mark_cancelled(paired_token)
