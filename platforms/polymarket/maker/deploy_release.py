@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
@@ -31,6 +31,7 @@ import urllib.request
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
 SERVICE_NAME = "polymarket-engine.service"
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DEPLOYMENT_PROFILES = {"vps1": 1, "vps2": 2}
 
 RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
@@ -63,6 +64,8 @@ class DeploymentPaths:
     )
     python: Path = Path("/home/ubuntu/.venv2/bin/python")
     post_restart_stability_seconds: float = 5.0
+    profile_name: str = "vps1"
+    account_index: int = 1
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,29 @@ class DeploymentRequest:
     expected_current_sha: str
     confirm: str = ""
     authorization_id: str = ""
+    profile_name: str = "vps1"
+
+
+def deployment_paths_for_profile(profile_name: str) -> DeploymentPaths:
+    """Return the account-specific paths for one production node."""
+    profile = str(profile_name or "").strip().lower()
+    try:
+        account_index = DEPLOYMENT_PROFILES[profile]
+    except KeyError as exc:
+        raise DeploymentError(f"unsupported deployment profile: {profile}") from exc
+
+    base = DeploymentPaths()
+    if profile == "vps1":
+        return base
+    return replace(
+        base,
+        profile_name=profile,
+        account_index=account_index,
+        lock_file=base.lock_file.with_name(f"{profile}-production-deploy.lock"),
+        pause_flag=base.pause_flag.with_name(f".account_{account_index}.paused"),
+        state_file=base.state_file.with_name(f"engine_state_{account_index}.json"),
+        runtime_config=base.runtime_config.with_name(f"config_{account_index}.json"),
+    )
 
 
 class CommandRunner:
@@ -422,6 +448,11 @@ def _require_drop_in(paths: DeploymentPaths) -> None:
         f"EnvironmentFile={paths.release_env}",
         f"{paths.current_link}/platforms/polymarket/maker/release_guard.py",
         f"{paths.current_link}/platforms/polymarket/maker/engine.py",
+        (
+            f"ExecStart={paths.python} "
+            f"{paths.current_link}/platforms/polymarket/maker/engine.py "
+            f"{paths.runtime_config}"
+        ),
     )
     missing = [fragment for fragment in required_fragments if fragment not in content]
     if missing:
@@ -576,8 +607,14 @@ def prepare_release(
     return release_dir
 
 
-def _expected_confirmation(action: str, target_sha: str) -> str:
-    return f"{action.upper()}:{target_sha}"
+def _expected_confirmation(
+    action: str,
+    target_sha: str,
+    profile_name: str,
+) -> str:
+    if profile_name == "vps1":
+        return f"{action.upper()}:{target_sha}"
+    return f"{action.upper()}:{profile_name}:{target_sha}"
 
 
 def _validate_request(request: DeploymentRequest) -> DeploymentRequest:
@@ -586,10 +623,17 @@ def _validate_request(request: DeploymentRequest) -> DeploymentRequest:
     action = str(request.action or "").strip().lower()
     if action not in {"plan", "prepare", "activate", "rollback"}:
         raise DeploymentError(f"unsupported deployment action: {action}")
+    profile_name = str(request.profile_name or "").strip().lower()
+    if profile_name not in DEPLOYMENT_PROFILES:
+        raise DeploymentError(f"unsupported deployment profile: {profile_name}")
     if target == expected and action in {"activate", "rollback"}:
         raise DeploymentError("target release is already current")
     if action != "plan":
-        expected_confirmation = _expected_confirmation(action, target)
+        expected_confirmation = _expected_confirmation(
+            action,
+            target,
+            profile_name,
+        )
         if request.confirm != expected_confirmation:
             raise DeploymentError(
                 f"confirmation must exactly equal {expected_confirmation}"
@@ -608,7 +652,41 @@ def _validate_request(request: DeploymentRequest) -> DeploymentRequest:
         expected_current_sha=expected,
         confirm=request.confirm,
         authorization_id=authorization_id,
+        profile_name=profile_name,
     )
+
+
+def _validate_profile_paths(paths: DeploymentPaths) -> None:
+    try:
+        expected_index = DEPLOYMENT_PROFILES[paths.profile_name]
+    except KeyError as exc:
+        raise DeploymentError(
+            f"unsupported deployment profile: {paths.profile_name}"
+        ) from exc
+    if paths.account_index != expected_index:
+        raise DeploymentError("deployment profile account index mismatch")
+
+    expected_names = {
+        "lock": f"{paths.profile_name}-production-deploy.lock",
+        "pause flag": f".account_{expected_index}.paused",
+        "state file": f"engine_state_{expected_index}.json",
+        "runtime config": f"config_{expected_index}.json",
+    }
+    actual_names = {
+        "lock": paths.lock_file.name,
+        "pause flag": paths.pause_flag.name,
+        "state file": paths.state_file.name,
+        "runtime config": paths.runtime_config.name,
+    }
+    mismatches = [
+        f"{label}={actual_names[label]} (expected {expected_name})"
+        for label, expected_name in expected_names.items()
+        if actual_names[label] != expected_name
+    ]
+    if mismatches:
+        raise DeploymentError(
+            "deployment profile paths mismatch: " + ", ".join(mismatches)
+        )
 
 
 def _audit_dir(paths: DeploymentPaths, target_sha: str) -> Path:
@@ -715,6 +793,8 @@ def _activate_release(
     audit_path = _audit_dir(paths, request.target_sha)
     base_audit: Dict[str, Any] = {
         "source_repository": SOURCE_REPOSITORY,
+        "profile_name": paths.profile_name,
+        "account_index": paths.account_index,
         "target_sha": request.target_sha,
         "rollback_sha": previous_sha,
         "service": SERVICE_NAME,
@@ -829,6 +909,11 @@ def execute(
     tests: Sequence[str] = RELEASE_TESTS,
 ) -> Dict[str, Any]:
     normalized = _validate_request(request)
+    _validate_profile_paths(paths)
+    if normalized.profile_name != paths.profile_name:
+        raise DeploymentError(
+            "deployment request profile does not match deployment paths"
+        )
     commands = runner or CommandRunner()
 
     with deployment_lock(paths.lock_file):
@@ -862,6 +947,8 @@ def execute(
             "ok": True,
             "action": normalized.action,
             "source_repository": SOURCE_REPOSITORY,
+            "profile_name": paths.profile_name,
+            "account_index": paths.account_index,
             "target_sha": normalized.target_sha,
             "current_sha": current_sha,
             "service": SERVICE_NAME,
@@ -895,6 +982,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("action", choices=("plan", "prepare", "activate", "rollback"))
     parser.add_argument("target_sha")
     parser.add_argument(
+        "--profile",
+        choices=tuple(DEPLOYMENT_PROFILES),
+        default="vps1",
+        help="Production node/account profile. Defaults to vps1 for compatibility.",
+    )
+    parser.add_argument(
         "--expected-current",
         required=True,
         dest="expected_current_sha",
@@ -921,9 +1014,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         expected_current_sha=args.expected_current_sha,
         confirm=args.confirm,
         authorization_id=args.authorization_id,
+        profile_name=args.profile,
     )
     try:
-        result = execute(request)
+        result = execute(
+            request,
+            paths=deployment_paths_for_profile(args.profile),
+        )
     except (DeploymentError, subprocess.CalledProcessError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1

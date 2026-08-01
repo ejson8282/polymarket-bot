@@ -15,9 +15,9 @@
 
 ## 当前限制
 
-Polymarket 真钱引擎仍从旧 worktree 运行。为避免中断或改变真实交易，本轮没有切换其 service、
-没有重置工作树，也没有更新运行进程。旧目录因此仍会显示 dirty；这不代表还存在未救回的有效
-业务代码。
+VPS1 真钱引擎已经切换到精确 SHA 的 immutable release。VPS2 的独立账号仍保留在旧
+worktree 配置中，必须在单独授权的维护窗口中使用 `vps2` profile 切换；在此之前不得直接启动
+旧 worktree 服务。旧目录仍可能显示 dirty；这不代表还存在未救回的有效业务代码。
 
 在独立 maker release 和服务回滚流程准备好之前：
 
@@ -62,18 +62,21 @@ immutable release. The reviewed systemd drop-in example is
 All later maker deployments and manual rollbacks must run through
 `platforms/polymarket/maker/deploy_release.py`. The wrapper:
 
-- takes the shared VPS1 lock at
-  `/home/ubuntu/latitude-runtime/locks/vps1-production-deploy.lock`;
+- takes the selected node-local lock（`vps1-production-deploy.lock` 或
+  `vps2-production-deploy.lock`）；
 - requires the reviewed full SHA at an immutable internal
   `refs/deploy-candidates/<sha>` ref, then promotes internal `main` only as a
   fast-forward while holding the lock;
 - requires the exact currently deployed rollback SHA;
 - builds and tests a read-only immutable release before any service change;
-- refuses activation unless the account pause flag and a fresh engine state
+- uses an explicit `vps1` or `vps2` profile so the lock, pause flag, state file
+  and runtime config all target the same account;
+- refuses activation unless the selected account pause flag and a fresh engine state
   both confirm the current release is paused;
 - fixes the service name to `polymarket-engine.service`;
-- requires an exact `ACTIVATE:<full-sha>` or `ROLLBACK:<full-sha>`
-  confirmation plus a user authorization ID;
+- requires an exact profile-scoped confirmation plus a user authorization ID;
+  VPS1 keeps `ACTIVATE:<full-sha>` compatibility, while VPS2 requires
+  `ACTIVATE:vps2:<full-sha>` (and the corresponding rollback form);
 - restores and restarts the previous release automatically if post-restart
   verification fails;
 - writes a non-secret audit record below
@@ -99,19 +102,30 @@ credentials. Example future flow after staging:
 ```bash
 python3 platforms/polymarket/maker/deploy_release.py plan \
   <target-full-sha> \
+  --profile vps1 \
   --expected-current <current-full-sha>
 
 python3 platforms/polymarket/maker/deploy_release.py prepare \
   <target-full-sha> \
+  --profile vps1 \
   --expected-current <current-full-sha> \
   --confirm PREPARE:<target-full-sha>
 
 python3 platforms/polymarket/maker/deploy_release.py activate \
   <target-full-sha> \
+  --profile vps1 \
   --expected-current <current-full-sha> \
   --confirm ACTIVATE:<target-full-sha> \
   --authorization-id <approved-maintenance-id>
 ```
+
+VPS2 uses the same flow with `--profile vps2`, the reviewed
+`polymarket-engine-immutable-vps2.conf.example` drop-in, and an account-scoped
+confirmation such as `ACTIVATE:vps2:<target-full-sha>`. A VPS1 confirmation is
+therefore not reusable for VPS2. VPS2 currently has no immutable `current`
+release, so its first migration still requires a separately authorized
+bootstrap window to create the internal bare repository, release link, pause
+marker and reviewed drop-in before this normal flow can be used.
 
 The release that first introduces this wrapper still needs one explicitly
 authorized bootstrap preparation under the same global lock. After that release

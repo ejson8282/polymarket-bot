@@ -1,6 +1,7 @@
 import fcntl
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,9 +20,11 @@ from deploy_release import (  # noqa: E402
     DeploymentError,
     DeploymentPaths,
     DeploymentRequest,
+    _require_drop_in,
     _require_signer_ready,
     _state_file_marker,
     _wait_for_engine_state,
+    deployment_paths_for_profile,
     deployment_lock,
     execute,
 )
@@ -169,7 +172,8 @@ def _paths(tmp_path: Path) -> tuple[DeploymentPaths, Path, str]:
                 ),
                 (
                     f"ExecStart={sys.executable} "
-                    f"{current}/platforms/polymarket/maker/engine.py config.json"
+                    f"{current}/platforms/polymarket/maker/engine.py "
+                    f"{runtime_config}"
                 ),
             )
         )
@@ -192,6 +196,31 @@ def _paths(tmp_path: Path) -> tuple[DeploymentPaths, Path, str]:
         post_restart_stability_seconds=0.0,
     )
     return paths, source, target_sha
+
+
+def _as_vps2(paths: DeploymentPaths) -> DeploymentPaths:
+    pause_flag = paths.pause_flag.with_name(".account_2.paused")
+    state_file = paths.state_file.with_name("engine_state_2.json")
+    runtime_config = paths.runtime_config.with_name("config_2.json")
+    paths.pause_flag.replace(pause_flag)
+    paths.state_file.replace(state_file)
+    paths.runtime_config.replace(runtime_config)
+    paths.drop_in.write_text(
+        paths.drop_in.read_text(encoding="utf-8").replace(
+            str(paths.runtime_config),
+            str(runtime_config),
+        ),
+        encoding="utf-8",
+    )
+    return replace(
+        paths,
+        profile_name="vps2",
+        account_index=2,
+        lock_file=paths.lock_file.with_name("vps2-production-deploy.lock"),
+        pause_flag=pause_flag,
+        state_file=state_file,
+        runtime_config=runtime_config,
+    )
 
 
 class SystemctlRunner(CommandRunner):
@@ -309,6 +338,114 @@ def test_global_lock_rejects_a_second_deployment(tmp_path):
         with pytest.raises(DeploymentError, match="owns the global lock"):
             with deployment_lock(lock_file):
                 pass
+
+
+def test_vps2_profile_uses_account_2_runtime_paths():
+    paths = deployment_paths_for_profile("vps2")
+
+    assert paths.profile_name == "vps2"
+    assert paths.account_index == 2
+    assert paths.lock_file.name == "vps2-production-deploy.lock"
+    assert paths.pause_flag.name == ".account_2.paused"
+    assert paths.state_file.name == "engine_state_2.json"
+    assert paths.runtime_config.name == "config_2.json"
+
+
+def test_vps2_confirmation_is_scoped_to_profile(tmp_path):
+    paths, _source, target_sha = _paths(tmp_path)
+    paths = _as_vps2(paths)
+
+    with pytest.raises(
+        DeploymentError,
+        match=f"PREPARE:vps2:{target_sha}",
+    ):
+        execute(
+            DeploymentRequest(
+                action="prepare",
+                target_sha=target_sha,
+                expected_current_sha=OLD_SHA,
+                confirm=f"PREPARE:{target_sha}",
+                profile_name="vps2",
+            ),
+            paths=paths,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+
+def test_vps2_activate_uses_account_2_profile(tmp_path, monkeypatch):
+    paths, _source, target_sha = _paths(tmp_path)
+    paths = _as_vps2(paths)
+    runner = SystemctlRunner(paths=paths, target_sha=target_sha)
+    _mock_clock_and_signer(monkeypatch)
+
+    result = execute(
+        DeploymentRequest(
+            action="activate",
+            target_sha=target_sha,
+            expected_current_sha=OLD_SHA,
+            confirm=f"ACTIVATE:vps2:{target_sha}",
+            authorization_id="test-vps2-authorization",
+            profile_name="vps2",
+        ),
+        paths=paths,
+        runner=runner,
+        tests=("tests/test_release_smoke.py",),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["profile_name"] == "vps2"
+    assert result["account_index"] == 2
+    assert paths.current_link.resolve().name == target_sha
+    assert runner.restart_count == 1
+
+
+def test_vps1_plan_keeps_backward_compatible_default_profile(tmp_path):
+    paths, _source, target_sha = _paths(tmp_path)
+
+    result = execute(
+        DeploymentRequest(
+            action="plan",
+            target_sha=target_sha,
+            expected_current_sha=OLD_SHA,
+        ),
+        paths=paths,
+        tests=("tests/test_release_smoke.py",),
+    )
+
+    assert result["profile_name"] == "vps1"
+    assert result["account_index"] == 1
+    assert result["will_restart"] is False
+
+
+def test_profile_rejects_account_1_paths_for_vps2(tmp_path):
+    paths, _source, target_sha = _paths(tmp_path)
+    mismatched = replace(paths, profile_name="vps2", account_index=2)
+
+    with pytest.raises(DeploymentError, match="profile paths mismatch"):
+        execute(
+            DeploymentRequest(
+                action="plan",
+                target_sha=target_sha,
+                expected_current_sha=OLD_SHA,
+                profile_name="vps2",
+            ),
+            paths=mismatched,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+
+def test_drop_in_must_name_the_selected_runtime_config(tmp_path):
+    paths, _source, _target_sha = _paths(tmp_path)
+    paths.drop_in.write_text(
+        paths.drop_in.read_text(encoding="utf-8").replace(
+            str(paths.runtime_config),
+            str(paths.runtime_config.with_name("config_2.json")),
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DeploymentError, match=str(paths.runtime_config)):
+        _require_drop_in(paths)
 
 
 def test_signer_preflight_validates_response_without_exposing_credentials(
