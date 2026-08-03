@@ -1,0 +1,51 @@
+name: Predict.fun Python safety
+
+on:
+  pull_request:
+    paths:
+      - "platforms/predictfun/**"
+      - "tests/test_predictfun_*.py"
+      - "deploy/systemd/predictfun-*"
+      - ".github/workflows/predictfun-python-safety.yml"
+  push:
+    branches: [main]
+    paths:
+      - "platforms/predictfun/**"
+      - "tests/test_predictfun_*.py"
+      - "deploy/systemd/predictfun-*"
+      - ".github/workflows/predictfun-python-safety.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: predictfun-python-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: >-
+          python -m pip install
+          pytest==9.0.3
+          requests==2.33.1
+      - name: Test Predict.fun maker and release safety
+        run: >-
+          python -m pytest -q
+          tests/test_predictfun_maker_safety.py
+          tests/test_predictfun_release.py
+      - name: Run offline Predict.fun self-test
+        run: python -m platforms.predictfun.maker.selftest >/dev/null
+      - name: Compile deployment entrypoints
+        run: >-
+          python -m py_compile
+          platforms/predictfun/maker/deploy_release.py
+          platforms/predictfun/maker/runner.py
