@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from platforms.predictfun.client import PredictFunClient, PREDICT_TESTNET_BASE
-from platforms.predictfun.scanner import scan_markets
+from platforms.predictfun.scanner import PredictMarket, scan_markets
 from platforms.predictfun.maker.liquidity_sentinel import LiquiditySentinel
 
 
@@ -82,9 +82,18 @@ async def watch_orderbooks(
     timeout_sec: float = 0,
     max_runtime_sec: float = 0,
     sentinel_config: dict[str, Any] | None = None,
+    initial_market_statuses: dict[str, dict[str, Any]] | None = None,
     session_number: int = 1,
     reconnect_count: int = 0,
 ) -> dict[str, Any]:
+    allowed_market_ids = {str(value) for value in market_ids}
+    market_statuses = {
+        str(market_id): dict(row)
+        for market_id, row in (initial_market_statuses or {}).items()
+        if str(market_id) in allowed_market_ids
+        and isinstance(row, dict)
+        and str(row.get("status") or "").upper() in MARKET_STATUSES
+    }
     state: dict[str, Any] = {
         "schema_version": 2,
         "ts": _utc_now(),
@@ -103,7 +112,7 @@ async def watch_orderbooks(
         "orderbook_latency_ms": {},
         "orderbook_errors": {},
         "trading_statuses": {},
-        "market_statuses": {},
+        "market_statuses": market_statuses,
         "liquidity": {},
         "liquidity_alerts": {},
     }
@@ -217,7 +226,13 @@ async def watch_orderbooks_forever(
     while True:
         session_number += 1
         try:
-            market_ids = await asyncio.to_thread(discover_market_ids, client, cfg, discover_limit)
+            markets = await asyncio.to_thread(
+                discover_markets,
+                client,
+                cfg,
+                discover_limit,
+            )
+            market_ids = [market.id for market in markets]
             if not market_ids:
                 raise RuntimeError("no eligible Predict.fun markets discovered")
             state = await watch_orderbooks(
@@ -228,6 +243,7 @@ async def watch_orderbooks_forever(
                 max_messages=0,
                 timeout_sec=max(30.0, refresh_sec + 30.0),
                 max_runtime_sec=max(30.0, refresh_sec),
+                initial_market_statuses=_market_status_snapshot(markets),
                 sentinel_config=(
                     cfg.get("liquidity_sentinel")
                     if isinstance(cfg.get("liquidity_sentinel"), dict)
@@ -271,10 +287,14 @@ async def watch_orderbooks_forever(
             await asyncio.sleep(0.25)
 
 
-def discover_market_ids(client: PredictFunClient, cfg: dict[str, Any], limit: int) -> list[int]:
+def discover_markets(
+    client: PredictFunClient,
+    cfg: dict[str, Any],
+    limit: int,
+) -> list[PredictMarket]:
     scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
     strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
-    markets = scan_markets(
+    return scan_markets(
         client,
         max_markets=limit,
         first=int(scan_cfg.get("first") or 50),
@@ -283,7 +303,30 @@ def discover_market_ids(client: PredictFunClient, cfg: dict[str, Any], limit: in
         scoring_profile=str(strategy_cfg.get("profile") or "conservative"),
         status_filter=str(scan_cfg.get("status_filter") or "OPEN"),
     )
-    return [m.id for m in markets[:limit]]
+
+
+def discover_market_ids(
+    client: PredictFunClient,
+    cfg: dict[str, Any],
+    limit: int,
+) -> list[int]:
+    return [market.id for market in discover_markets(client, cfg, limit)[:limit]]
+
+
+def _market_status_snapshot(
+    markets: list[PredictMarket],
+) -> dict[str, dict[str, Any]]:
+    updated_at = _utc_now()
+    return {
+        str(market.id): {
+            "status": market.status,
+            "updated_at": updated_at,
+            "upstream_ts_ms": 0,
+            "source": "rest_discovery",
+        }
+        for market in markets
+        if market.id > 0 and market.status in MARKET_STATUSES
+    }
 
 
 def _market_topics(market_ids: list[int]) -> list[str]:
@@ -450,7 +493,13 @@ def main() -> None:
             )
         )
         return
-    market_ids = args.market_id or discover_market_ids(client, cfg, args.discover)
+    initial_market_statuses: dict[str, dict[str, Any]] = {}
+    if args.market_id:
+        market_ids = args.market_id
+    else:
+        markets = discover_markets(client, cfg, args.discover)
+        market_ids = [market.id for market in markets]
+        initial_market_statuses = _market_status_snapshot(markets)
     state = asyncio.run(
         watch_orderbooks(
             ws_url=str(cfg.get("ws_url") or DEFAULT_WS_URL),
@@ -459,6 +508,7 @@ def main() -> None:
             state_path=_state_path(config_path, cfg),
             max_messages=args.max_messages,
             timeout_sec=args.timeout_sec,
+            initial_market_statuses=initial_market_statuses,
             sentinel_config=(cfg.get("liquidity_sentinel") if isinstance(cfg.get("liquidity_sentinel"), dict) else {}),
         )
     )
