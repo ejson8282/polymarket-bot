@@ -13,7 +13,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from platforms.predictfun.client import PredictFunClient
-from platforms.predictfun.maker.dry_run import load_config, run_once
+from platforms.predictfun.maker.dry_run import (
+    _configured_account_ids,
+    load_config,
+    run_once,
+)
 from platforms.predictfun.maker.research import build_research_state
 from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.reconcile import (
@@ -88,6 +92,12 @@ def run_loop(
     kill_switch_path = _configured_path(config_path, cfg, "kill_switch_path", "../../../data/predictfun_kill_switch.json")
     research_state_path = _configured_path(config_path, cfg, "research_state_path", "../../../data/predictfun_market_research.json")
 
+    deployment_cfg = (
+        cfg.get("deployment")
+        if isinstance(cfg.get("deployment"), dict)
+        else {}
+    )
+    account_ids = _configured_account_ids(cfg.get("accounts"))
     state: dict[str, Any] = {
         "ts": _utc_now(),
         "started_at": _utc_now(),
@@ -97,6 +107,8 @@ def run_loop(
         "mode": "dry_run",
         "environment": cfg.get("environment", "testnet"),
         "base_url": cfg.get("base_url"),
+        "deployment_profile": str(deployment_cfg.get("profile") or ""),
+        "account_ids": account_ids,
         **_release_metadata(),
         "interval_sec": interval_sec,
         "cycle_count": 0,
@@ -109,6 +121,7 @@ def run_loop(
         "last_risk_summary": {},
         "last_simulation_summary": {},
         "last_research_summary": {},
+        "last_auth_summary": {},
     }
     _write_runner_state(runner_state_path, state)
 
@@ -194,6 +207,11 @@ def run_loop(
             state["last_risk_status"] = risk_state.get("status") or "UNKNOWN"
             state["last_simulation_summary"] = simulation_state.get("summary") or {}
             state["last_research_summary"] = research_state.get("summary") or {}
+            state["last_auth_summary"] = (
+                plan_state.get("auth")
+                if isinstance(plan_state.get("auth"), dict)
+                else {}
+            )
             state["fast_requote"] = bool(fast_requote)
         except Exception as exc:
             state["error_count"] = int(state.get("error_count") or 0) + 1

@@ -36,12 +36,39 @@ ARCHIVE_PATHS = (
 )
 
 
+@dataclass(frozen=True)
+class DeploymentProfile:
+    name: str
+    account_id: str
+    lock_file: Path
+
+
+DEPLOYMENT_PROFILES = {
+    "vps1": DeploymentProfile(
+        name="vps1",
+        account_id="account_01",
+        lock_file=Path(
+            "/home/ubuntu/latitude-runtime/locks/vps1-production-deploy.lock"
+        ),
+    ),
+    "vps2": DeploymentProfile(
+        name="vps2",
+        account_id="account_02",
+        lock_file=Path(
+            "/home/ubuntu/latitude-runtime/locks/vps2-production-deploy.lock"
+        ),
+    ),
+}
+
+
 class DeploymentError(RuntimeError):
     """Raised when a Predict.fun deployment invariant is not satisfied."""
 
 
 @dataclass(frozen=True)
 class DeploymentPaths:
+    profile: str = "vps1"
+    account_id: str = "account_01"
     bare_repo: Path = Path("/home/ubuntu/repos/predictfun.git")
     release_root: Path = Path("/home/ubuntu/predictfun-releases")
     current_link: Path = Path("/home/ubuntu/predictfun-releases/current")
@@ -68,6 +95,20 @@ class DeploymentPaths:
     service_name: str = "predictfun-dryrun.service"
     timer_name: str = "predictfun-dryrun.timer"
     service_user: str = "ubuntu"
+
+    @classmethod
+    def for_profile(cls, name: str) -> "DeploymentPaths":
+        normalized = str(name or "").strip().lower()
+        profile = DEPLOYMENT_PROFILES.get(normalized)
+        if profile is None:
+            raise DeploymentError(
+                f"unsupported Predict.fun deployment profile: {name}"
+            )
+        return cls(
+            profile=profile.name,
+            account_id=profile.account_id,
+            lock_file=profile.lock_file,
+        )
 
 
 @dataclass(frozen=True)
@@ -166,7 +207,7 @@ def deployment_lock(lock_file: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentError(
-                f"another VPS1 deployment owns the global lock: {lock_file}"
+                f"another deployment owns the host-global lock: {lock_file}"
             ) from exc
         try:
             yield
@@ -422,6 +463,22 @@ def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
             raise DeploymentError(f"unsafe Predict.fun output path: {key}")
         rewritten[str(key)] = str(paths.data_root / filename)
     config["output"] = rewritten
+    accounts = config.get("accounts")
+    if not isinstance(accounts, dict):
+        raise DeploymentError("Predict.fun mainnet config is missing accounts")
+    accounts["enabled"] = True
+    accounts["max_active_accounts"] = 1
+    accounts["ids"] = [paths.account_id]
+    config["accounts"] = accounts
+    risk = config.get("risk")
+    if not isinstance(risk, dict):
+        raise DeploymentError("Predict.fun mainnet config is missing risk")
+    risk["max_active_accounts"] = 1
+    config["risk"] = risk
+    config["deployment"] = {
+        "profile": paths.profile,
+        "account_id": paths.account_id,
+    }
     return (json.dumps(config, indent=2) + "\n").encode("utf-8")
 
 
@@ -517,10 +574,30 @@ def _verify_runner_state(
         ) from exc
     if not isinstance(state, dict):
         raise DeploymentError("Predict.fun runner state must be a JSON object")
+    auth = state.get("last_auth_summary")
+    auth_rows = auth.get("accounts") if isinstance(auth, dict) else None
+    auth_account_ids = [
+        str(row.get("account_id") or "")
+        for row in auth_rows or []
+        if isinstance(row, dict)
+    ]
+    auth_accounts_ok = bool(auth_rows) and all(
+        isinstance(row, dict) and row.get("ok") is True
+        for row in auth_rows
+    )
     checks = {
         "mode": state.get("mode") == "dry_run",
         "release_sha": state.get("release_sha") == target_sha,
         "release_required": state.get("release_required") is True,
+        "profile": state.get("deployment_profile") == paths.profile,
+        "account": state.get("account_ids") == [paths.account_id],
+        "auth": (
+            isinstance(auth, dict)
+            and auth.get("enabled") is True
+            and auth.get("ok") is True
+            and auth_account_ids == [paths.account_id]
+            and auth_accounts_ok
+        ),
         "cycle_count": int(state.get("cycle_count") or 0) >= 1,
         "error_count": int(state.get("error_count") or 0) == 0,
         "last_error": not str(state.get("last_error") or ""),
@@ -615,6 +692,8 @@ def activate_release(
             "status": "activated",
             "target_sha": target_sha,
             "previous_sha": previous_sha,
+            "profile": paths.profile,
+            "account_id": paths.account_id,
             "authorization_id": authorization_id,
             "timer": "active",
             "runner": {
@@ -622,6 +701,12 @@ def activate_release(
                 "cycle_count": state.get("cycle_count"),
                 "error_count": state.get("error_count"),
                 "release_sha": state.get("release_sha"),
+                "deployment_profile": state.get("deployment_profile"),
+                "account_ids": state.get("account_ids"),
+                "auth_ok": bool(
+                    isinstance(state.get("last_auth_summary"), dict)
+                    and state["last_auth_summary"].get("ok") is True
+                ),
                 "last_cycle_finished_at": state.get("last_cycle_finished_at"),
             },
         }
@@ -660,6 +745,8 @@ def activate_release(
 
 def status(paths: DeploymentPaths, runner: CommandRunner) -> dict[str, Any]:
     return {
+        "profile": paths.profile,
+        "account_id": paths.account_id,
         "current_sha": _current_release_sha(paths),
         "timer_active": runner.run(
             ("systemctl", "is-active", paths.timer_name),
@@ -705,6 +792,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Prepare or activate an exact Predict.fun dry-run release."
     )
     parser.add_argument("action", choices=("status", "prepare", "activate"))
+    parser.add_argument(
+        "--profile",
+        required=True,
+        choices=tuple(sorted(DEPLOYMENT_PROFILES)),
+    )
     parser.add_argument("--target-sha", default="")
     parser.add_argument("--expected-current", default="none")
     parser.add_argument("--confirm", default="")
@@ -712,7 +804,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     result = execute(
         args.action,
-        paths=DeploymentPaths(),
+        paths=DeploymentPaths.for_profile(args.profile),
         runner=CommandRunner(),
         target_sha=args.target_sha,
         expected_current=args.expected_current,

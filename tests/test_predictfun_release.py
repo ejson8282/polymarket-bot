@@ -98,16 +98,23 @@ def _source_repo(tmp_path: Path) -> tuple[Path, str]:
     return source, _git(source, "rev-parse", "HEAD")
 
 
-def _paths(tmp_path: Path) -> tuple[DeploymentPaths, str]:
+def _paths(
+    tmp_path: Path,
+    *,
+    profile: str = "vps1",
+    account_id: str = "account_01",
+) -> tuple[DeploymentPaths, str]:
     source, sha = _source_repo(tmp_path)
     bare = tmp_path / "predictfun.git"
     _git(tmp_path, "clone", "--bare", str(source), str(bare))
     runtime = tmp_path / "runtime"
     data = runtime / "data"
-    lock = tmp_path / "locks/vps1-production-deploy.lock"
+    lock = tmp_path / f"locks/{profile}-production-deploy.lock"
     lock.parent.mkdir()
     lock.touch()
     paths = DeploymentPaths(
+        profile=profile,
+        account_id=account_id,
         bare_repo=bare,
         release_root=tmp_path / "releases",
         current_link=tmp_path / "releases/current",
@@ -125,10 +132,18 @@ def _paths(tmp_path: Path) -> tuple[DeploymentPaths, str]:
 
 
 class SystemdRunner(CommandRunner):
-    def __init__(self, paths: DeploymentPaths, sha: str, *, fail_cycle: bool = False):
+    def __init__(
+        self,
+        paths: DeploymentPaths,
+        sha: str,
+        *,
+        fail_cycle: bool = False,
+        auth_ok: bool = True,
+    ) -> None:
         self.paths = paths
         self.sha = sha
         self.fail_cycle = fail_cycle
+        self.auth_ok = auth_ok
         self.calls: list[tuple[str, ...]] = []
 
     def run(
@@ -150,12 +165,29 @@ class SystemdRunner(CommandRunner):
         ):
             self.paths.runner_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
+            config = json.loads(
+                self.paths.runtime_config.read_text(encoding="utf-8")
+            )
+            account_ids = list(config["accounts"]["ids"])
             self.paths.runner_state.write_text(
                 json.dumps(
                     {
                         "mode": "dry_run",
                         "release_sha": self.sha,
                         "release_required": True,
+                        "deployment_profile": config["deployment"]["profile"],
+                        "account_ids": account_ids,
+                        "last_auth_summary": {
+                            "enabled": True,
+                            "ok": self.auth_ok,
+                            "accounts": [
+                                {
+                                    "account_id": account_id,
+                                    "ok": self.auth_ok,
+                                }
+                                for account_id in account_ids
+                            ],
+                        },
                         "cycle_count": 0 if self.fail_cycle else 1,
                         "error_count": 1 if self.fail_cycle else 0,
                         "last_error": "upstream failed" if self.fail_cycle else "",
@@ -271,6 +303,13 @@ def test_activate_runs_one_dry_cycle_without_polymarket_controls(
     assert paths.current_link.resolve() == paths.release_root / sha
     config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
     assert config["environment"] == "mainnet"
+    assert config["deployment"] == {
+        "profile": "vps1",
+        "account_id": "account_01",
+    }
+    assert config["accounts"]["ids"] == ["account_01"]
+    assert config["accounts"]["max_active_accounts"] == 1
+    assert config["risk"]["max_active_accounts"] == 1
     assert paths.runtime_config.stat().st_mode & 0o777 == 0o400
     assert paths.data_root.stat().st_mode & 0o777 == 0o700
     assert all(
@@ -288,6 +327,51 @@ def test_activate_runs_one_dry_cycle_without_polymarket_controls(
         ("systemctl", "enable", "--now", "predictfun-dryrun.timer")
     )
     assert service_start < timer_enable
+    assert result["profile"] == "vps1"
+    assert result["account_id"] == "account_01"
+    assert result["runner"]["auth_ok"] is True
+
+
+def test_profiles_pin_independent_accounts_and_locks() -> None:
+    vps1 = DeploymentPaths.for_profile("vps1")
+    vps2 = DeploymentPaths.for_profile("VPS2")
+
+    assert vps1.profile == "vps1"
+    assert vps1.account_id == "account_01"
+    assert vps1.lock_file.name == "vps1-production-deploy.lock"
+    assert vps2.profile == "vps2"
+    assert vps2.account_id == "account_02"
+    assert vps2.lock_file.name == "vps2-production-deploy.lock"
+    with pytest.raises(DeploymentError, match="unsupported"):
+        DeploymentPaths.for_profile("vps3")
+
+
+def test_vps2_activation_writes_only_account_02(tmp_path: Path) -> None:
+    paths, sha = _paths(
+        tmp_path,
+        profile="vps2",
+        account_id="account_02",
+    )
+    prepare_release(paths, CommandRunner(), sha)
+
+    result = activate_release(
+        paths,
+        SystemdRunner(paths, sha),
+        target_sha=sha,
+        expected_current="none",
+        confirm=CONFIRMATION,
+        authorization_id="test-vps2-authorization",
+    )
+
+    config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+    assert config["deployment"] == {
+        "profile": "vps2",
+        "account_id": "account_02",
+    }
+    assert config["accounts"]["ids"] == ["account_02"]
+    assert "account_01" not in json.dumps(config["accounts"])
+    assert result["profile"] == "vps2"
+    assert result["runner"]["account_ids"] == ["account_02"]
 
 
 def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
@@ -309,8 +393,44 @@ def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
         )
 
     assert not paths.current_link.exists()
-    assert paths.service_unit.read_text(encoding="utf-8") == "legacy predict service\n"
-    assert paths.timer_unit.read_text(encoding="utf-8") == "legacy predict timer\n"
+    assert (
+        paths.service_unit.read_text(encoding="utf-8")
+        == "legacy predict service\n"
+    )
+    assert (
+        paths.timer_unit.read_text(encoding="utf-8")
+        == "legacy predict timer\n"
+    )
+
+
+def test_failed_account_auth_restores_previous_predict_state(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    paths.service_unit.parent.mkdir(parents=True)
+    paths.service_unit.write_text("legacy predict service\n", encoding="utf-8")
+    paths.timer_unit.write_text("legacy predict timer\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match="previous Predict-only service state"):
+        activate_release(
+            paths,
+            SystemdRunner(paths, sha, auth_ok=False),
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="test-auth-failure",
+        )
+
+    assert not paths.current_link.exists()
+    assert (
+        paths.service_unit.read_text(encoding="utf-8")
+        == "legacy predict service\n"
+    )
+    assert (
+        paths.timer_unit.read_text(encoding="utf-8")
+        == "legacy predict timer\n"
+    )
 
 
 def test_systemd_units_are_predict_only_and_release_guarded() -> None:
