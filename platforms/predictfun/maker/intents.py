@@ -8,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from platforms.predictfun.scanner import market_is_tradeable
+
 
 @dataclass(frozen=True)
 class OrderIntent:
@@ -481,7 +483,7 @@ def _inventory_exit_intents(
     market = plan.get("market") if isinstance(plan.get("market"), dict) else {}
     status = str(market.get("status") or "").upper()
     trading_status = str(market.get("trading_status") or market.get("tradingStatus") or "").upper()
-    if status != "OPEN" or trading_status != "OPEN":
+    if not market_is_tradeable(status, trading_status):
         return []
     tick = Decimal(1).scaleb(-int(_dec(market.get("decimal_precision"), "2")))
     out: list[OrderIntent] = []

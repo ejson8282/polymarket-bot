@@ -38,6 +38,8 @@ def _fake_market() -> PredictMarket:
         is_yield_bearing=False,
         yes_token_id="selftest-yes",
         no_token_id="selftest-no",
+        yes_label="YES",
+        no_label="NO",
         best_yes_bid=Decimal("0.44"),
         best_yes_ask=Decimal("0.56"),
         mid=Decimal("0.50"),

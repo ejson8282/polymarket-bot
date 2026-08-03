@@ -14,6 +14,9 @@ class UnsupportedPredictMarket(ValueError):
     pass
 
 
+TRADEABLE_LIFECYCLE_STATUSES = frozenset({"OPEN", "REGISTERED"})
+
+
 @dataclass
 class PredictMarket:
     id: int
@@ -36,6 +39,8 @@ class PredictMarket:
     is_yield_bearing: bool
     yes_token_id: str
     no_token_id: str
+    yes_label: str
+    no_label: str
     best_yes_bid: Decimal
     best_yes_ask: Decimal
     mid: Decimal
@@ -47,22 +52,9 @@ class PredictMarket:
 def normalize_market(raw: dict[str, Any], *, scoring_profile: str = "conservative") -> PredictMarket:
     rewards = raw.get("rewards") if isinstance(raw.get("rewards"), dict) else {}
     current = rewards.get("current") if isinstance(rewards.get("current"), dict) else {}
-    outcomes = raw.get("outcomes") if isinstance(raw.get("outcomes"), list) else []
-    if len(outcomes) != 2 or not all(isinstance(outcome, dict) for outcome in outcomes):
-        raise UnsupportedPredictMarket(
-            f"continuous maker supports exactly two outcomes; market={raw.get('id')} outcomes={len(outcomes)}"
-        )
-    outcomes_by_name = {
-        str(outcome.get("name") or "").strip().upper(): outcome
-        for outcome in outcomes
-        if isinstance(outcome, dict)
-    }
-    if set(outcomes_by_name) != {"YES", "NO"}:
-        raise UnsupportedPredictMarket(
-            f"continuous maker requires canonical YES/NO outcomes; market={raw.get('id')}"
-        )
-    yes = outcomes_by_name["YES"]
-    no = outcomes_by_name["NO"]
+    outcomes = resolve_binary_outcomes(raw)
+    yes = outcomes["YES"]
+    no = outcomes["NO"]
 
     best_yes_bid = _level_price(yes.get("bestBid"))
     best_yes_ask = _level_price(yes.get("bestAsk"))
@@ -112,6 +104,8 @@ def normalize_market(raw: dict[str, Any], *, scoring_profile: str = "conservativ
         is_yield_bearing=_bool_value(raw.get("isYieldBearing"), field="isYieldBearing"),
         yes_token_id=str(yes.get("onChainId") or ""),
         no_token_id=str(no.get("onChainId") or ""),
+        yes_label=_outcome_label(yes),
+        no_label=_outcome_label(no),
         best_yes_bid=best_yes_bid,
         best_yes_ask=best_yes_ask,
         mid=mid,
@@ -173,6 +167,7 @@ def scan_markets(
     min_hourly_rate: Decimal = Decimal("0"),
     include_crypto_updown: bool = False,
     scoring_profile: str = "conservative",
+    status_filter: str | None = "OPEN",
 ) -> list[PredictMarket]:
     out: list[PredictMarket] = []
     cursor: str | None = None
@@ -180,7 +175,7 @@ def scan_markets(
         page = client.list_markets(
             first=min(first, max_markets),
             after=cursor,
-            status="OPEN",
+            status=status_filter,
             has_active_rewards=has_active_rewards,
         )
         items = page.get("data") if isinstance(page.get("data"), list) else []
@@ -191,9 +186,7 @@ def scan_markets(
                 market = normalize_market(item, scoring_profile=scoring_profile)
             except UnsupportedPredictMarket:
                 continue
-            if market.status != "OPEN":
-                continue
-            if market.trading_status != "OPEN":
+            if not market_is_tradeable(market.status, market.trading_status):
                 continue
             if market.hourly_rate < min_hourly_rate:
                 continue
@@ -222,6 +215,67 @@ def _level_price(value: Any) -> Decimal:
     if isinstance(value, dict):
         return as_decimal(value.get("price"))
     return as_decimal(value)
+
+
+def market_is_tradeable(status: Any, trading_status: Any) -> bool:
+    lifecycle = str(status or "").strip().upper()
+    matching = str(trading_status or "").strip().upper()
+    return lifecycle in TRADEABLE_LIFECYCLE_STATUSES and matching == "OPEN"
+
+
+def resolve_binary_outcomes(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Map Predict's two complementary outcomes onto stable internal YES/NO roles.
+
+    Predict uses ``indexSet`` 1 and 2 as the protocol-level outcome identity even
+    when the display labels are values such as ``$60`` and ``$140``.  Older test
+    fixtures and some legacy markets only expose literal YES/NO labels, so that
+    remains a fail-closed compatibility fallback.
+    """
+
+    outcomes = raw.get("outcomes") if isinstance(raw.get("outcomes"), list) else []
+    if len(outcomes) != 2 or not all(isinstance(outcome, dict) for outcome in outcomes):
+        raise UnsupportedPredictMarket(
+            f"continuous maker supports exactly two outcomes; market={raw.get('id')} outcomes={len(outcomes)}"
+        )
+
+    by_index: dict[int, dict[str, Any]] = {}
+    index_complete = True
+    for outcome in outcomes:
+        index_set = _strict_index_set(outcome.get("indexSet"))
+        if index_set is None or index_set in by_index:
+            index_complete = False
+            break
+        by_index[index_set] = outcome
+    if index_complete and set(by_index) == {1, 2}:
+        resolved = {"YES": by_index[1], "NO": by_index[2]}
+    else:
+        by_name = {_outcome_label(outcome).upper(): outcome for outcome in outcomes}
+        if set(by_name) != {"YES", "NO"}:
+            raise UnsupportedPredictMarket(
+                f"continuous maker requires indexSet 1/2 or canonical YES/NO outcomes; market={raw.get('id')}"
+            )
+        resolved = {"YES": by_name["YES"], "NO": by_name["NO"]}
+
+    token_ids = [str(outcome.get("onChainId") or "").strip() for outcome in resolved.values()]
+    if not all(token_ids) or len(set(token_ids)) != 2:
+        raise UnsupportedPredictMarket(
+            f"continuous maker requires two distinct outcome token ids; market={raw.get('id')}"
+        )
+    return resolved
+
+
+def _strict_index_set(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed in {1, 2} else None
+
+
+def _outcome_label(outcome: dict[str, Any]) -> str:
+    return str(outcome.get("name") or outcome.get("label") or "").strip()
 
 
 def _bool_value(value: Any, *, field: str) -> bool:

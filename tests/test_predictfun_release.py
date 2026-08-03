@@ -11,6 +11,7 @@ from typing import Mapping, Optional, Sequence
 
 import pytest
 
+import platforms.predictfun.maker.deploy_release as deploy_release_module
 from platforms.predictfun.maker.deploy_release import (
     CONFIRMATION,
     CommandRunner,
@@ -86,7 +87,11 @@ def _source_repo(tmp_path: Path) -> tuple[Path, str]:
     )
     systemd = source / "deploy/systemd"
     systemd.mkdir(parents=True)
-    for name in ("predictfun-dryrun.service", "predictfun-dryrun.timer"):
+    for name in (
+        "predictfun-dryrun.service",
+        "predictfun-dryrun.timer",
+        "predictfun-ws.service",
+    ):
         shutil.copy2(ROOT / "deploy/systemd" / name, systemd / name)
 
     _git(source, "init")
@@ -123,9 +128,12 @@ def _paths(
         runtime_config=runtime / "config.mainnet.json",
         release_env=runtime / "release.env",
         runner_state=data / "predictfun_mainnet_runner_state.json",
+        ws_state=data / "predictfun_mainnet_ws_state.json",
+        status_state=data / "predictfun_mainnet_status.json",
         lock_file=lock,
         service_unit=tmp_path / "systemd/predictfun-dryrun.service",
         timer_unit=tmp_path / "systemd/predictfun-dryrun.timer",
+        ws_service_unit=tmp_path / "systemd/predictfun-ws.service",
         python=Path(sys.executable),
     )
     return paths, sha
@@ -160,9 +168,40 @@ class SystemdRunner(CommandRunner):
             return "enabled"
         if command[:2] == ("systemctl", "is-active"):
             return "active"
-        if command[:2] == ("systemctl", "start") and command[-1].endswith(
-            ".service"
-        ):
+        if command == ("systemctl", "start", self.paths.ws_service_name):
+            self.paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
+            now = datetime.now(timezone.utc).isoformat()
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            self.paths.ws_state.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "connected": True,
+                        "error": "",
+                        "market_ids": [58416],
+                        "orderbooks": {
+                            "58416": {
+                                "marketId": 58416,
+                                "updateTimestampMs": now_ms,
+                                "bids": [["0.40", "10"]],
+                                "asks": [["0.60", "10"]],
+                            }
+                        },
+                        "orderbook_upstream_updated_at_ms": {
+                            "58416": now_ms,
+                        },
+                        "trading_statuses": {
+                            "58416": {"status": "OPEN"},
+                        },
+                        "market_statuses": {
+                            "58416": {"status": "REGISTERED"},
+                        },
+                        "last_message_at": now,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        if command == ("systemctl", "start", self.paths.service_name):
             self.paths.runner_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
             config = json.loads(
@@ -193,6 +232,27 @@ class SystemdRunner(CommandRunner):
                         "last_error": "upstream failed" if self.fail_cycle else "",
                         "last_cycle_finished_at": now,
                         "running": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.paths.status_state.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ts": now,
+                        "project": "predictfun",
+                        "deployment": {
+                            "profile": config["deployment"]["profile"],
+                            "account_id": account_ids[0],
+                            "release_sha": self.sha,
+                            "mode": "dry_run",
+                        },
+                        "health": {"status": "healthy"},
+                        "capabilities": {
+                            "live_order_submit": False,
+                            "live_order_cancel": False,
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -320,16 +380,32 @@ def test_activate_runs_one_dry_cycle_without_polymarket_controls(
     assert "polymarket-engine" not in rendered_calls
     assert "polymarket-releases" not in rendered_calls
     assert "predictfun-dryrun.service" in rendered_calls
+    assert "predictfun-ws.service" in rendered_calls
+    ws_start = runner.calls.index(
+        ("systemctl", "start", "predictfun-ws.service")
+    )
     service_start = runner.calls.index(
         ("systemctl", "start", "predictfun-dryrun.service")
     )
     timer_enable = runner.calls.index(
         ("systemctl", "enable", "--now", "predictfun-dryrun.timer")
     )
-    assert service_start < timer_enable
+    assert ws_start < service_start < timer_enable
     assert result["profile"] == "vps1"
     assert result["account_id"] == "account_01"
     assert result["runner"]["auth_ok"] is True
+    assert result["status_snapshot"] == {
+        "schema_version": 1,
+        "health": "healthy",
+        "mode": "dry_run",
+    }
+    assert result["websocket"] == {
+        "active": True,
+        "connected": True,
+        "market_count": 1,
+        "book_count": 1,
+        "last_message_at": result["websocket"]["last_message_at"],
+    }
 
 
 def test_profiles_pin_independent_accounts_and_locks() -> None:
@@ -380,6 +456,10 @@ def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
     paths.service_unit.parent.mkdir(parents=True)
     paths.service_unit.write_text("legacy predict service\n", encoding="utf-8")
     paths.timer_unit.write_text("legacy predict timer\n", encoding="utf-8")
+    paths.ws_service_unit.write_text(
+        "legacy predict ws service\n",
+        encoding="utf-8",
+    )
     runner = SystemdRunner(paths, sha, fail_cycle=True)
 
     with pytest.raises(DeploymentError, match="previous Predict-only service state"):
@@ -401,6 +481,10 @@ def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
         paths.timer_unit.read_text(encoding="utf-8")
         == "legacy predict timer\n"
     )
+    assert (
+        paths.ws_service_unit.read_text(encoding="utf-8")
+        == "legacy predict ws service\n"
+    )
 
 
 def test_failed_account_auth_restores_previous_predict_state(
@@ -411,6 +495,10 @@ def test_failed_account_auth_restores_previous_predict_state(
     paths.service_unit.parent.mkdir(parents=True)
     paths.service_unit.write_text("legacy predict service\n", encoding="utf-8")
     paths.timer_unit.write_text("legacy predict timer\n", encoding="utf-8")
+    paths.ws_service_unit.write_text(
+        "legacy predict ws service\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(DeploymentError, match="previous Predict-only service state"):
         activate_release(
@@ -431,6 +519,53 @@ def test_failed_account_auth_restores_previous_predict_state(
         paths.timer_unit.read_text(encoding="utf-8")
         == "legacy predict timer\n"
     )
+    assert (
+        paths.ws_service_unit.read_text(encoding="utf-8")
+        == "legacy predict ws service\n"
+    )
+
+
+def test_failed_ws_acceptance_restores_previous_predict_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    paths.service_unit.parent.mkdir(parents=True)
+    paths.service_unit.write_text("legacy predict service\n", encoding="utf-8")
+    paths.timer_unit.write_text("legacy predict timer\n", encoding="utf-8")
+    paths.ws_service_unit.write_text(
+        "legacy predict ws service\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        deploy_release_module,
+        "_verify_ws_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DeploymentError("websocket probe failed")
+        ),
+    )
+    runner = SystemdRunner(paths, sha)
+
+    with pytest.raises(DeploymentError, match="previous Predict-only service state"):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="test-ws-failure",
+        )
+
+    assert not paths.current_link.exists()
+    assert paths.service_unit.read_text(encoding="utf-8") == "legacy predict service\n"
+    assert paths.timer_unit.read_text(encoding="utf-8") == "legacy predict timer\n"
+    assert (
+        paths.ws_service_unit.read_text(encoding="utf-8")
+        == "legacy predict ws service\n"
+    )
+    rendered_calls = "\n".join(" ".join(call) for call in runner.calls)
+    assert "systemctl start predictfun-dryrun.service" not in rendered_calls
 
 
 def test_systemd_units_are_predict_only_and_release_guarded() -> None:
@@ -440,13 +575,32 @@ def test_systemd_units_are_predict_only_and_release_guarded() -> None:
     timer = (ROOT / "deploy/systemd/predictfun-dryrun.timer").read_text(
         encoding="utf-8"
     )
+    ws_service = (ROOT / "deploy/systemd/predictfun-ws.service").read_text(
+        encoding="utf-8"
+    )
     assert "/home/ubuntu/predictfun-releases/current" in service
     assert "/home/ubuntu/predictfun-runtime" in service
     assert "PREDICTFUN_REQUIRE_RELEASE=1" in service
     assert "release_guard.py" in service
     assert "--once" in service
     assert "Persistent=true" in timer
-    combined = service + timer
+    assert "platforms.predictfun.ws_watch" in ws_service
+    assert "--forever" in ws_service
+    assert "PREDICTFUN_API_KEY" not in ws_service
+    combined = service + timer + ws_service
     assert "/home/ubuntu/polymarket-bot" not in combined
     assert "polymarket-engine" not in combined
     assert "live_order_once" not in combined
+
+
+def test_mainnet_ws_freshness_matches_heartbeat_and_refresh_windows() -> None:
+    config = json.loads(
+        (ROOT / "platforms/predictfun/maker/config.mainnet.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    data = config["data"]
+
+    assert data["require_ws_for_quotes"] is True
+    assert data["ws_state_max_age_sec"] >= 30
+    assert data["ws_orderbook_max_age_sec"] >= 300

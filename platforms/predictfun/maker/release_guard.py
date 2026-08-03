@@ -18,8 +18,11 @@ REQUIRED_FILES = {
     "platforms/predictfun/maker/release_guard.py",
     "platforms/predictfun/maker/runner.py",
     "platforms/predictfun/maker/config.mainnet.json",
+    "platforms/predictfun/maker/status.py",
+    "platforms/predictfun/ws_watch.py",
     "deploy/systemd/predictfun-dryrun.service",
     "deploy/systemd/predictfun-dryrun.timer",
+    "deploy/systemd/predictfun-ws.service",
 }
 
 

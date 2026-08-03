@@ -1,8 +1,24 @@
 # Predict.fun Dry-Run Deployment
 
 This deployment is intentionally separate from every Polymarket service and
-release path. It controls only `predictfun-dryrun.service` and
-`predictfun-dryrun.timer`.
+release path. It controls only `predictfun-ws.service`,
+`predictfun-dryrun.service`, and `predictfun-dryrun.timer`.
+
+## Market-data path
+
+Predict.fun requires an API key for its public market WebSocket. The key stays
+in the existing Mac mini secret file. A restricted relay on the Mac mini adds
+that key to the upstream connection and permits only public market topics from
+the two known VPS Tailscale addresses:
+
+```text
+Predict.fun WS -> Mac mini :8792 relay -> VPS watcher -> runtime JSON
+```
+
+The relay rejects wallet topics, arbitrary methods, duplicate clients, and
+unknown client addresses. It never accepts an API key from a VPS and never
+returns one. The VPS watcher validates market IDs, timestamps, level ranges,
+book ordering, trading status, and market status before a book can be quoted.
 
 ## Host profiles
 
@@ -26,13 +42,45 @@ account's Mac mini auth check to pass.
 - Mutable runtime: `/home/ubuntu/predictfun-runtime`
 - Host-global deployment lock under `/home/ubuntu/latitude-runtime/locks/`
 
+Mac mini relay paths:
+
+- Bare source: `~/repos/predictfun.git`
+- Immutable releases: `~/predictfun-ws-releases/<full-sha>`
+- Current link: `~/predictfun-ws-releases/current`
+- Mutable runtime: `~/predictfun-ws-runtime`
+- LaunchAgent: `~/Library/LaunchAgents/ai.codex.predictfun-ws-relay.plist`
+- Existing secret: `~/.macmini-secrets/predictfun.env`
+
 No private key or API key is stored in these paths. The mainnet config talks to
 the Mac mini Predict API proxy over Tailscale.
 
 ## Fixed release sequence
 
 After the reviewed PR is merged, mirror the exact GitHub `main` commit into the
-dedicated Predict bare repository. Then run:
+dedicated Predict bare repositories. Deploy and accept the Mac mini relay
+first:
+
+```bash
+TARGET=<40-character-merged-sha>
+
+/path/to/reviewed/python \
+  /path/to/reviewed/platforms/predictfun/deploy_ws_relay.py prepare \
+  --target-sha "$TARGET"
+
+/path/to/reviewed/python \
+  /path/to/reviewed/platforms/predictfun/deploy_ws_relay.py activate \
+  --target-sha "$TARGET" \
+  --expected-current none \
+  --confirm DEPLOY_PREDICTFUN_WS_RELAY \
+  --authorization-id <recorded-user-authorization>
+```
+
+For later relay releases, replace `none` with its exact current SHA. Relay
+activation succeeds only after launchd reports it running and a real public
+market subscription passes. A failure restores the previous link and
+LaunchAgent.
+
+Then prepare and activate VPS1:
 
 ```bash
 TARGET=<40-character-merged-sha>
@@ -53,10 +101,12 @@ sudo /home/ubuntu/.venv2/bin/python \
 
 Repeat the commands on VPS2 with `--profile vps2`. For later releases, replace
 `none` with the exact currently deployed Predict SHA. Activation runs one real
-read-only/dry-run cycle and accepts the release only when the state reports the
-exact SHA, profile, account, successful account auth, `mode=dry_run`, one
-completed cycle, and zero errors. A failure restores the previous Predict unit
-and release link.
+read-only/dry-run cycle. It first requires an active WebSocket watcher with a
+fresh schema-v2 snapshot and at least one valid market book, then accepts the
+runner only when state reports the exact SHA, profile, account, successful
+account auth, `mode=dry_run`, one completed cycle, zero errors, and a status
+snapshot that explicitly reports live submit/cancel disabled. A failure
+restores all previous Predict units, config, environment, and release link.
 
 The wrapper never starts, stops, reloads, or restarts
 `polymarket-engine.service`.

@@ -24,6 +24,7 @@ from platforms.predictfun.maker.intents import (
 )
 from platforms.predictfun.scanner import (
     PredictMarket,
+    market_is_tradeable,
     market_to_jsonable,
     normalize_market,
     scan_markets,
@@ -410,10 +411,11 @@ def _basic_skip_reason(
 ) -> str:
     if market.hourly_rate <= 0:
         return "no active reward"
-    if market.status != "OPEN":
-        return f"market status is {market.status or 'unknown'}"
-    if market.trading_status != "OPEN":
-        return f"market trading status is {market.trading_status or 'unknown'}"
+    if not market_is_tradeable(market.status, market.trading_status):
+        return (
+            "market is not tradeable "
+            f"status={market.status or 'unknown'} trading_status={market.trading_status or 'unknown'}"
+        )
     if market.market_variant == "CRYPTO_UP_DOWN" and not allow_crypto_updown_quotes:
         return "crypto up/down disabled in config"
     seconds_left = _seconds_to(market.ends_at)
@@ -638,6 +640,7 @@ def run_once(
         min_hourly_rate=as_decimal(scan_cfg.get("min_hourly_rate")),
         include_crypto_updown=bool(scan_cfg.get("include_crypto_updown", False)),
         scoring_profile=strategy_profile,
+        status_filter=str(scan_cfg.get("status_filter") or "OPEN"),
     )
     markets = _ensure_position_markets(
         client,
@@ -665,6 +668,7 @@ def run_once(
     plans: list[DryRunPlan] = []
     liquidity_blocks = _liquidity_blocks_from_ws_state(ws_state)
     allowed_market_modes = _allowed_market_modes(risk.get("allowed_market_modes"))
+    require_ws_for_quotes = bool(data_cfg.get("require_ws_for_quotes", False))
     for market in markets:
         mode_skip = _market_mode_skip_reason(market, allowed_market_modes)
         if mode_skip:
@@ -701,10 +705,29 @@ def run_once(
         cached_book = _book_from_ws_state(
             ws_state,
             market.id,
-            max_age_sec=float(data_cfg.get("ws_state_max_age_sec") or 120),
+            max_age_sec=float(
+                data_cfg.get("ws_orderbook_max_age_sec")
+                or data_cfg.get("ws_state_max_age_sec")
+                or 120
+            ),
         )
         if cached_book:
             orderbook = cached_book
+        elif require_ws_for_quotes:
+            plans.append(
+                DryRunPlan(
+                    market=market,
+                    can_quote=False,
+                    skip_reason="fresh ws orderbook required",
+                    orderbook_source="ws:required",
+                    best_yes_bid=market.best_yes_bid,
+                    best_yes_ask=market.best_yes_ask,
+                    mid=market.mid,
+                    yes_quotes=[],
+                    no_quotes=[],
+                )
+            )
+            continue
         else:
             try:
                 orderbook = client.get_orderbook(market.id)
@@ -883,6 +906,56 @@ def _book_from_ws_state(
         if (datetime.now(timezone.utc) - dt).total_seconds() > max(0.0, max_age_sec):
             return {}
     except Exception:
+        return {}
+    upstream = (
+        ws_state.get("orderbook_upstream_updated_at_ms")
+        if isinstance(ws_state.get("orderbook_upstream_updated_at_ms"), dict)
+        else {}
+    )
+    try:
+        upstream_ms = int(upstream.get(str(market_id)) or 0)
+    except (TypeError, ValueError):
+        return {}
+    if int(ws_state.get("schema_version") or 0) >= 2 and upstream_ms <= 0:
+        return {}
+    if upstream_ms > 0 and time.time() * 1000 - upstream_ms > max(0.0, max_age_sec) * 1000:
+        return {}
+    trading = (
+        ws_state.get("trading_statuses")
+        if isinstance(ws_state.get("trading_statuses"), dict)
+        else {}
+    )
+    trading_row = trading.get(str(market_id))
+    if int(ws_state.get("schema_version") or 0) >= 2 and not isinstance(
+        trading_row,
+        dict,
+    ):
+        return {}
+    if isinstance(trading_row, dict) and str(
+        trading_row.get("status") or ""
+    ).upper() != "OPEN":
+        return {}
+    market_statuses = (
+        ws_state.get("market_statuses")
+        if isinstance(ws_state.get("market_statuses"), dict)
+        else {}
+    )
+    market_status = market_statuses.get(str(market_id))
+    if int(ws_state.get("schema_version") or 0) >= 2 and not isinstance(
+        market_status,
+        dict,
+    ):
+        return {}
+    if isinstance(market_status, dict) and str(
+        market_status.get("status") or ""
+    ).upper() not in {"OPEN", "REGISTERED"}:
+        return {}
+    errors = (
+        ws_state.get("orderbook_errors")
+        if isinstance(ws_state.get("orderbook_errors"), dict)
+        else {}
+    )
+    if str(errors.get(str(market_id)) or ""):
         return {}
     return {"data": book, "_source": "ws"}
 

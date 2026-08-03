@@ -58,7 +58,15 @@ def evaluate_risk(
         ts=str(plan_state.get("ts") or ""),
         max_age_sec=float(risk_cfg.get("max_plan_state_age_sec") or 180),
     )
-    if bool(data_cfg.get("use_ws_orderbook_cache", True)) and bool(risk_cfg.get("warn_on_stale_ws_state", False)):
+    use_ws = bool(data_cfg.get("use_ws_orderbook_cache", True))
+    require_ws = bool(data_cfg.get("require_ws_for_quotes", False))
+    if use_ws and require_ws:
+        _check_ws_required(
+            checks,
+            ws_state=ws_state,
+            max_age_sec=float(data_cfg.get("ws_state_max_age_sec") or 30),
+        )
+    elif use_ws and bool(risk_cfg.get("warn_on_stale_ws_state", False)):
         _check_age(
             checks,
             name="ws_state_fresh",
@@ -240,6 +248,58 @@ def _check_bool(checks: list[dict[str, Any]], *, name: str, blocked: bool, detai
             "limit": "disabled",
             "detail": detail,
             "block_scope": "hard",
+        }
+    )
+
+
+def _check_ws_required(
+    checks: list[dict[str, Any]],
+    *,
+    ws_state: dict[str, Any],
+    max_age_sec: float,
+) -> None:
+    books = ws_state.get("orderbooks")
+    errors = ws_state.get("orderbook_errors")
+    has_errors = isinstance(errors, dict) and any(
+        str(value or "") for value in errors.values()
+    )
+    _check_bool(
+        checks,
+        name="ws_connected",
+        blocked=ws_state.get("connected") is not True,
+        detail=str(ws_state.get("error") or ""),
+    )
+    _check_age(
+        checks,
+        name="ws_message_fresh",
+        ts=str(ws_state.get("last_message_at") or ""),
+        max_age_sec=max_age_sec,
+    )
+    _check_bool(
+        checks,
+        name="ws_orderbooks_present",
+        blocked=not isinstance(books, dict) or not books,
+    )
+    checks.append(
+        {
+            "name": "ws_orderbook_errors",
+            "status": "WARN" if has_errors else "OK",
+            "value": sum(
+                1 for value in (errors or {}).values() if str(value or "")
+            )
+            if isinstance(errors, dict)
+            else 0,
+            "limit": 0,
+            "detail": ",".join(
+                sorted(
+                    str(key)
+                    for key, value in (errors or {}).items()
+                    if value
+                )
+            )
+            if isinstance(errors, dict)
+            else "",
+            "block_scope": "market",
         }
     )
 

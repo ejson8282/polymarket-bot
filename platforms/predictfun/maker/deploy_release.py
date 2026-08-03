@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from typing import Any, Iterator, Mapping, Optional, Sequence
 
 from platforms.predictfun.maker.release_guard import (
@@ -33,6 +34,7 @@ ARCHIVE_PATHS = (
     "platforms/predictfun",
     "deploy/systemd/predictfun-dryrun.service",
     "deploy/systemd/predictfun-dryrun.timer",
+    "deploy/systemd/predictfun-ws.service",
 )
 
 
@@ -82,6 +84,14 @@ class DeploymentPaths:
         "/home/ubuntu/predictfun-runtime/data/"
         "predictfun_mainnet_runner_state.json"
     )
+    ws_state: Path = Path(
+        "/home/ubuntu/predictfun-runtime/data/"
+        "predictfun_mainnet_ws_state.json"
+    )
+    status_state: Path = Path(
+        "/home/ubuntu/predictfun-runtime/data/"
+        "predictfun_mainnet_status.json"
+    )
     lock_file: Path = Path(
         "/home/ubuntu/latitude-runtime/locks/vps1-production-deploy.lock"
     )
@@ -91,9 +101,13 @@ class DeploymentPaths:
     timer_unit: Path = Path(
         "/etc/systemd/system/predictfun-dryrun.timer"
     )
+    ws_service_unit: Path = Path(
+        "/etc/systemd/system/predictfun-ws.service"
+    )
     python: Path = Path("/home/ubuntu/.venv2/bin/python")
     service_name: str = "predictfun-dryrun.service"
     timer_name: str = "predictfun-dryrun.timer"
+    ws_service_name: str = "predictfun-ws.service"
     service_user: str = "ubuntu"
 
     @classmethod
@@ -482,7 +496,7 @@ def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
     return (json.dumps(config, indent=2) + "\n").encode("utf-8")
 
 
-def _validate_predict_only_unit(content: bytes, label: str) -> None:
+def _validate_predict_only_unit(content: bytes, unit_kind: str) -> None:
     text = content.decode("utf-8")
     forbidden = (
         "polymarket-engine",
@@ -494,15 +508,29 @@ def _validate_predict_only_unit(content: bytes, label: str) -> None:
     )
     found = [value for value in forbidden if value in text]
     if found:
-        raise DeploymentError(f"{label} crosses the Predict.fun boundary: {found}")
-    if label == "service unit":
+        raise DeploymentError(
+            f"{unit_kind} crosses the Predict.fun boundary: {found}"
+        )
+    if unit_kind == "dry-run service unit":
         required = ("platforms.predictfun.maker.runner", "--once")
-    else:
+    elif unit_kind == "dry-run timer unit":
         required = ("[Timer]", "OnUnitActiveSec=")
+    elif unit_kind == "WebSocket service unit":
+        required = (
+            "platforms.predictfun.ws_watch",
+            "--forever",
+            "predictfun-runtime/config.mainnet.json",
+        )
+    else:
+        raise DeploymentError(f"unknown Predict.fun unit kind: {unit_kind}")
     missing = [value for value in required if value not in text]
     if missing:
         raise DeploymentError(
-            f"{label} is not a Predict.fun dry-run unit: missing {missing}"
+            f"{unit_kind} is invalid: missing {missing}"
+        )
+    if "PREDICTFUN_API_KEY" in text:
+        raise DeploymentError(
+            f"{unit_kind} must not load the Predict.fun API key on a VPS"
         )
 
 
@@ -561,6 +589,10 @@ def _parse_timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _is_fresh_after(value: Any, observed_after: datetime) -> bool:
+    return _parse_timestamp(value) >= observed_after.replace(microsecond=0)
+
+
 def _verify_runner_state(
     paths: DeploymentPaths,
     target_sha: str,
@@ -601,14 +633,136 @@ def _verify_runner_state(
         "cycle_count": int(state.get("cycle_count") or 0) >= 1,
         "error_count": int(state.get("error_count") or 0) == 0,
         "last_error": not str(state.get("last_error") or ""),
-        "fresh": _parse_timestamp(state.get("last_cycle_finished_at"))
-        >= observed_after,
+        "fresh": _is_fresh_after(
+            state.get("last_cycle_finished_at"),
+            observed_after,
+        ),
         "stopped": state.get("running") is False,
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
     if failed:
         raise DeploymentError(
             f"Predict.fun dry-run acceptance failed: {', '.join(failed)}"
+        )
+    return state
+
+
+def _verify_ws_state(
+    paths: DeploymentPaths,
+    observed_after: datetime,
+    *,
+    attempts: int = 30,
+    interval_sec: float = 1.0,
+) -> dict[str, Any]:
+    last_failure = "state unavailable"
+    for attempt in range(max(1, attempts)):
+        try:
+            state = json.loads(paths.ws_state.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise DeploymentError(
+                    "Predict.fun WebSocket state must be a JSON object"
+                )
+            books = state.get("orderbooks")
+            market_ids = state.get("market_ids")
+            trading_statuses = state.get("trading_statuses")
+            market_statuses = state.get("market_statuses")
+            upstream_timestamps = state.get(
+                "orderbook_upstream_updated_at_ms"
+            )
+            book_ids = set(books) if isinstance(books, dict) else set()
+            statuses_cover_books = bool(book_ids) and all(
+                isinstance(trading_statuses, dict)
+                and isinstance(trading_statuses.get(market_id), dict)
+                and trading_statuses[market_id].get("status") == "OPEN"
+                and isinstance(market_statuses, dict)
+                and isinstance(market_statuses.get(market_id), dict)
+                and market_statuses[market_id].get("status")
+                in {"OPEN", "REGISTERED"}
+                for market_id in book_ids
+            )
+            timestamps_cover_books = bool(book_ids) and all(
+                isinstance(upstream_timestamps, dict)
+                and int(upstream_timestamps.get(market_id) or 0) > 0
+                for market_id in book_ids
+            )
+            books_are_valid = bool(book_ids) and all(
+                isinstance(books[market_id], dict)
+                and isinstance(books[market_id].get("bids"), list)
+                and isinstance(books[market_id].get("asks"), list)
+                for market_id in book_ids
+            )
+            checks = {
+                "schema": int(state.get("schema_version") or 0) >= 2,
+                "connected": state.get("connected") is True,
+                "error": not str(state.get("error") or ""),
+                "markets": isinstance(market_ids, list) and bool(market_ids),
+                "orderbooks": books_are_valid,
+                "book_timestamps": timestamps_cover_books,
+                "market_statuses": statuses_cover_books,
+                "file_fresh": paths.ws_state.stat().st_mtime
+                >= observed_after.timestamp(),
+                "fresh": _is_fresh_after(
+                    state.get("last_message_at"),
+                    observed_after,
+                ),
+            }
+            failed = sorted(name for name, passed in checks.items() if not passed)
+            if not failed:
+                return state
+            last_failure = ", ".join(failed)
+        except (DeploymentError, OSError, ValueError, json.JSONDecodeError) as exc:
+            last_failure = str(exc)
+        if attempt + 1 < max(1, attempts):
+            time.sleep(max(0.0, interval_sec))
+    raise DeploymentError(
+        f"Predict.fun WebSocket acceptance failed: {last_failure}"
+    )
+
+
+def _verify_status_state(
+    paths: DeploymentPaths,
+    target_sha: str,
+    observed_after: datetime,
+) -> dict[str, Any]:
+    try:
+        state = json.loads(paths.status_state.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise DeploymentError(
+            f"Predict.fun status snapshot unavailable: {paths.status_state}"
+        ) from exc
+    if not isinstance(state, dict):
+        raise DeploymentError("Predict.fun status snapshot must be a JSON object")
+    deployment = (
+        state.get("deployment")
+        if isinstance(state.get("deployment"), dict)
+        else {}
+    )
+    capabilities = (
+        state.get("capabilities")
+        if isinstance(state.get("capabilities"), dict)
+        else {}
+    )
+    health = (
+        state.get("health")
+        if isinstance(state.get("health"), dict)
+        else {}
+    )
+    checks = {
+        "schema": int(state.get("schema_version") or 0) >= 1,
+        "project": state.get("project") == "predictfun",
+        "fresh": _is_fresh_after(state.get("ts"), observed_after),
+        "profile": deployment.get("profile") == paths.profile,
+        "account": deployment.get("account_id") == paths.account_id,
+        "release": deployment.get("release_sha") == target_sha,
+        "mode": deployment.get("mode") == "dry_run",
+        "not_blocked": health.get("status") in {"healthy", "attention"},
+        "no_live_submit": capabilities.get("live_order_submit") is False,
+        "no_live_cancel": capabilities.get("live_order_cancel") is False,
+    }
+    failed = sorted(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise DeploymentError(
+            f"Predict.fun status acceptance failed: {', '.join(failed)}"
         )
     return state
 
@@ -639,15 +793,19 @@ def activate_release(
 
     service_source = release / "deploy/systemd/predictfun-dryrun.service"
     timer_source = release / "deploy/systemd/predictfun-dryrun.timer"
+    ws_service_source = release / "deploy/systemd/predictfun-ws.service"
     service_content = service_source.read_bytes()
     timer_content = timer_source.read_bytes()
-    _validate_predict_only_unit(service_content, "service unit")
-    _validate_predict_only_unit(timer_content, "timer unit")
+    ws_service_content = ws_service_source.read_bytes()
+    _validate_predict_only_unit(service_content, "dry-run service unit")
+    _validate_predict_only_unit(timer_content, "dry-run timer unit")
+    _validate_predict_only_unit(ws_service_content, "WebSocket service unit")
 
     service_uid, service_gid = _prepare_runtime_permissions(paths)
     snapshots = {
         "service": _snapshot(paths.service_unit),
         "timer": _snapshot(paths.timer_unit),
+        "ws_service": _snapshot(paths.ws_service_unit),
         "config": _snapshot(paths.runtime_config),
         "env": _snapshot(paths.release_env),
     }
@@ -659,6 +817,14 @@ def activate_release(
         ("systemctl", "is-active", paths.timer_name),
         check=False,
     ) == "active"
+    ws_service_enabled = runner.run(
+        ("systemctl", "is-enabled", paths.ws_service_name),
+        check=False,
+    ) == "enabled"
+    ws_service_active = runner.run(
+        ("systemctl", "is-active", paths.ws_service_name),
+        check=False,
+    ) == "active"
     previous_target = (
         paths.current_link.resolve(strict=True) if previous_sha is not None else None
     )
@@ -666,6 +832,7 @@ def activate_release(
     try:
         runner.run(("systemctl", "stop", paths.timer_name), check=False)
         runner.run(("systemctl", "stop", paths.service_name), check=False)
+        runner.run(("systemctl", "stop", paths.ws_service_name), check=False)
         _atomic_symlink(paths.current_link, release)
         _atomic_write(
             paths.release_env,
@@ -681,10 +848,31 @@ def activate_release(
             os.chown(paths.runtime_config, service_uid, service_gid)
         _atomic_write(paths.service_unit, service_content, 0o644)
         _atomic_write(paths.timer_unit, timer_content, 0o644)
+        _atomic_write(paths.ws_service_unit, ws_service_content, 0o644)
         runner.run(("systemctl", "daemon-reload"))
         observed_after = datetime.now(timezone.utc)
+        runner.run(("systemctl", "enable", paths.ws_service_name))
+        runner.run(("systemctl", "start", paths.ws_service_name))
+        if runner.run(
+            ("systemctl", "is-active", paths.ws_service_name)
+        ) != "active":
+            raise DeploymentError(
+                "Predict.fun WebSocket service is not active after deployment"
+            )
+        ws_state = _verify_ws_state(paths, observed_after)
         runner.run(("systemctl", "start", paths.service_name))
         state = _verify_runner_state(paths, target_sha, observed_after)
+        status_state = _verify_status_state(paths, target_sha, observed_after)
+        status_health = (
+            status_state.get("health")
+            if isinstance(status_state.get("health"), dict)
+            else {}
+        )
+        status_deployment = (
+            status_state.get("deployment")
+            if isinstance(status_state.get("deployment"), dict)
+            else {}
+        )
         runner.run(("systemctl", "enable", "--now", paths.timer_name))
         if runner.run(("systemctl", "is-active", paths.timer_name)) != "active":
             raise DeploymentError("Predict.fun timer is not active after deployment")
@@ -696,6 +884,18 @@ def activate_release(
             "account_id": paths.account_id,
             "authorization_id": authorization_id,
             "timer": "active",
+            "websocket": {
+                "active": True,
+                "connected": ws_state.get("connected"),
+                "market_count": len(ws_state.get("market_ids") or []),
+                "book_count": len(ws_state.get("orderbooks") or {}),
+                "last_message_at": ws_state.get("last_message_at"),
+            },
+            "status_snapshot": {
+                "schema_version": status_state.get("schema_version"),
+                "health": status_health.get("status"),
+                "mode": status_deployment.get("mode"),
+            },
             "runner": {
                 "mode": state.get("mode"),
                 "cycle_count": state.get("cycle_count"),
@@ -713,6 +913,7 @@ def activate_release(
     except Exception as exc:
         runner.run(("systemctl", "stop", paths.timer_name), check=False)
         runner.run(("systemctl", "stop", paths.service_name), check=False)
+        runner.run(("systemctl", "stop", paths.ws_service_name), check=False)
         if previous_target is None:
             try:
                 paths.current_link.unlink()
@@ -722,6 +923,7 @@ def activate_release(
             _atomic_symlink(paths.current_link, previous_target)
         _restore(paths.service_unit, snapshots["service"])
         _restore(paths.timer_unit, snapshots["timer"])
+        _restore(paths.ws_service_unit, snapshots["ws_service"])
         _restore(paths.runtime_config, snapshots["config"])
         _restore(paths.release_env, snapshots["env"])
         runner.run(("systemctl", "daemon-reload"), check=False)
@@ -735,6 +937,21 @@ def activate_release(
         else:
             runner.run(
                 ("systemctl", "disable", "--now", paths.timer_name),
+                check=False,
+            )
+        if ws_service_enabled:
+            runner.run(
+                ("systemctl", "enable", "--now", paths.ws_service_name),
+                check=False,
+            )
+        elif ws_service_active:
+            runner.run(
+                ("systemctl", "start", paths.ws_service_name),
+                check=False,
+            )
+        else:
+            runner.run(
+                ("systemctl", "disable", "--now", paths.ws_service_name),
                 check=False,
             )
         raise DeploymentError(
@@ -756,6 +973,16 @@ def status(paths: DeploymentPaths, runner: CommandRunner) -> dict[str, Any]:
             ("systemctl", "is-enabled", paths.timer_name),
             check=False,
         ),
+        "ws_service_active": runner.run(
+            ("systemctl", "is-active", paths.ws_service_name),
+            check=False,
+        ),
+        "ws_service_enabled": runner.run(
+            ("systemctl", "is-enabled", paths.ws_service_name),
+            check=False,
+        ),
+        "ws_state_present": paths.ws_state.is_file(),
+        "status_state_present": paths.status_state.is_file(),
         "runner_state_present": paths.runner_state.is_file(),
     }
 

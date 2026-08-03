@@ -6,6 +6,24 @@ signer exposes reviewed order, balance, position, wallet-event, and two-stage
 cancel contracts. API keys and wallet keys stay on the Mac mini; the VPS must
 not receive either secret.
 
+## Poly-parity architecture
+
+The Predict runner now follows the reusable parts of the Polymarket design:
+
+- a persistent public-market WebSocket with heartbeat handling, reconnect
+  backoff, periodic resubscription, and exact Decimal orderbook parsing;
+- per-market trading/market status checks before planning any quote;
+- a liquidity sentinel that detects abrupt depth removal and cools the market;
+- stable market admission, account-aware intents, managed-order ownership,
+  inventory exits, and post-only preflight;
+- a versioned status snapshot for the unified Dashboard;
+- exact-SHA immutable releases with rollback and independent VPS1/VPS2 account
+  profiles.
+
+Predict-specific signing stays on the Mac mini. Its restricted WebSocket relay
+uses the existing API-key secret only for public market topics and sends no
+secret to either VPS. This does not modify or share a Polymarket process.
+
 ## Smoke Check
 
 Run from repo root:
@@ -31,6 +49,7 @@ data/predictfun_runner_state.json
 data/predictfun_simulation_state.json
 data/predictfun_risk_state.json
 data/predictfun_market_research.json
+data/predictfun_status.json
 ```
 
 ## Risk Gate
@@ -49,12 +68,17 @@ the dangerous case where a large position breaches a cap and the cap then
 prevents its own exit. Website/manual orders are outside the managed ownership
 set in every mode.
 
-WebSocket orderbook cache is optional. The runner falls back to REST orderbooks
-when the socket is disconnected, the global state is stale, or that specific
-market's book timestamp is stale. A REST error is never treated as a genuinely
-empty book, so it cannot activate empty-book seeding. Set
-`risk.warn_on_stale_ws_state=true` only after the VPS has the `websockets`
-Python package installed and the watcher is expected to run.
+WebSocket orderbook cache is optional in testnet. Mainnet requires it and does
+not fall back to REST for quoting. A disconnected relay, stale heartbeat,
+missing book, invalid sequence, crossed book, non-open trading status, or
+market-level parse error blocks that market's new quotes. An isolated market
+parse error is surfaced as attention without stopping healthy markets. The
+connection freshness threshold is longer than Predict.fun's heartbeat
+interval. A cached market book may live
+until the five-minute forced resubscription because an unchanged book does not
+produce updates; the live connection and status topics still have to remain
+healthy. A REST error is never treated as a genuinely empty book, so it cannot
+activate empty-book seeding.
 
 The dashboard kill switch writes:
 
@@ -163,3 +187,12 @@ on-chain cancellation.
 
 Unified Dashboard code and service operations belong to `latitude-alpha`, not
 this repository.
+
+## Dashboard contract
+
+Each profile writes `predictfun_mainnet_status.json`. It contains deployment
+identity, runner/WS/signer/risk health, market plans, desired and simulated
+orders, simulated positions, recent actions, and explicit capability flags.
+The Dashboard may mirror Polymarket's layout using this file, but it must label
+all current Predict order/position rows as simulated and keep live controls
+disabled while `live_order_submit` or `live_order_cancel` is false.
