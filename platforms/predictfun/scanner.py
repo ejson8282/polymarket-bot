@@ -10,6 +10,10 @@ from typing import Any
 from .client import PredictFunClient, PREDICT_TESTNET_BASE, as_decimal
 
 
+class UnsupportedPredictMarket(ValueError):
+    pass
+
+
 @dataclass
 class PredictMarket:
     id: int
@@ -40,12 +44,25 @@ class PredictMarket:
     risk_note: str
 
 
-def normalize_market(raw: dict[str, Any]) -> PredictMarket:
+def normalize_market(raw: dict[str, Any], *, scoring_profile: str = "conservative") -> PredictMarket:
     rewards = raw.get("rewards") if isinstance(raw.get("rewards"), dict) else {}
     current = rewards.get("current") if isinstance(rewards.get("current"), dict) else {}
     outcomes = raw.get("outcomes") if isinstance(raw.get("outcomes"), list) else []
-    yes = outcomes[0] if len(outcomes) > 0 and isinstance(outcomes[0], dict) else {}
-    no = outcomes[1] if len(outcomes) > 1 and isinstance(outcomes[1], dict) else {}
+    if len(outcomes) != 2 or not all(isinstance(outcome, dict) for outcome in outcomes):
+        raise UnsupportedPredictMarket(
+            f"continuous maker supports exactly two outcomes; market={raw.get('id')} outcomes={len(outcomes)}"
+        )
+    outcomes_by_name = {
+        str(outcome.get("name") or "").strip().upper(): outcome
+        for outcome in outcomes
+        if isinstance(outcome, dict)
+    }
+    if set(outcomes_by_name) != {"YES", "NO"}:
+        raise UnsupportedPredictMarket(
+            f"continuous maker requires canonical YES/NO outcomes; market={raw.get('id')}"
+        )
+    yes = outcomes_by_name["YES"]
+    no = outcomes_by_name["NO"]
 
     best_yes_bid = _level_price(yes.get("bestBid"))
     best_yes_ask = _level_price(yes.get("bestAsk"))
@@ -69,17 +86,18 @@ def normalize_market(raw: dict[str, Any]) -> PredictMarket:
         spread_threshold=spread_threshold,
         quoted_spread=quoted_spread,
         mid=mid,
-        market_variant=str(raw.get("marketVariant") or ""),
+        market_variant=str(raw.get("marketVariant") or "").upper(),
         ends_at=str(raw.get("endsAt") or ""),
+        scoring_profile=scoring_profile,
     )
 
     return PredictMarket(
         id=int(raw.get("id") or 0),
         title=str(raw.get("title") or ""),
         question=str(raw.get("question") or ""),
-        status=str(raw.get("status") or ""),
-        trading_status=str(raw.get("tradingStatus") or ""),
-        market_variant=str(raw.get("marketVariant") or ""),
+        status=str(raw.get("status") or "").upper(),
+        trading_status=str(raw.get("tradingStatus") or "").upper(),
+        market_variant=str(raw.get("marketVariant") or "").upper(),
         category_slug=str(raw.get("categorySlug") or ""),
         decimal_precision=int(raw.get("decimalPrecision") or 2),
         fee_rate_bps=int(raw.get("feeRateBps") or 0),
@@ -112,6 +130,7 @@ def score_market(
     mid: Decimal,
     market_variant: str,
     ends_at: str,
+    scoring_profile: str = "conservative",
 ) -> tuple[Decimal, str]:
     min_size = max(share_threshold, Decimal("1"))
     reward_eff = hourly_rate / min_size
@@ -126,8 +145,17 @@ def score_market(
         risk_penalty += Decimal("2")
         notes.append("short-window crypto direction")
     if Decimal("0.35") <= mid <= Decimal("0.65"):
-        risk_penalty += Decimal("0.4")
-        notes.append("mid near 50/50")
+        profile = str(scoring_profile or "conservative").strip().lower()
+        if profile not in {"conservative", "balanced", "points"}:
+            profile = "conservative"
+        if profile == "conservative":
+            risk_penalty += Decimal("0.4")
+            notes.append("mid near 50/50")
+        elif profile == "balanced":
+            risk_penalty += Decimal("0.1")
+            notes.append("mid liquidity zone")
+        else:
+            notes.append("mid points zone")
     if _seconds_to(ends_at) is not None and (_seconds_to(ends_at) or 0) < 3600:
         risk_penalty += Decimal("0.8")
         notes.append("near expiry")
@@ -144,6 +172,7 @@ def scan_markets(
     has_active_rewards: bool = True,
     min_hourly_rate: Decimal = Decimal("0"),
     include_crypto_updown: bool = False,
+    scoring_profile: str = "conservative",
 ) -> list[PredictMarket]:
     out: list[PredictMarket] = []
     cursor: str | None = None
@@ -158,7 +187,12 @@ def scan_markets(
         if not items:
             break
         for item in items:
-            market = normalize_market(item)
+            try:
+                market = normalize_market(item, scoring_profile=scoring_profile)
+            except UnsupportedPredictMarket:
+                continue
+            if market.status != "OPEN":
+                continue
             if market.trading_status != "OPEN":
                 continue
             if market.hourly_rate < min_hourly_rate:
@@ -233,4 +267,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
