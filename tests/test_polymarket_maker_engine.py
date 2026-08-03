@@ -986,7 +986,7 @@ def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
     )
 
     assert engine._event_state_name("101") == EVENT_PENDING_MANUAL_EXIT
-    assert notices and "无法确认 BUY 已撤净" in notices[-1]
+    assert notices and "无法确认买单已经撤净" in notices[-1]
     assert spawned == ["exit_cancel_kill_switch:101"]
 
 
