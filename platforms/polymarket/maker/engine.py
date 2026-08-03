@@ -7042,6 +7042,9 @@ class PolyLPSMulti:
                     return
                 self._require_recovery_gate = False
                 self._notify_status("Recovery", action="auto resume quoting")
+            self._resume_expired_global_cooldown_markets(
+                "global_cooldown_recovered"
+            )
             if self._event_is_banned(token_id):
                 # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
                 if self._vol_check_recovery(token_id):
@@ -7704,6 +7707,35 @@ class PolyLPSMulti:
         if any((now - ts) < self.recovery_quiet_sec for ts in self._req_exc_recent.values()):
             return False
         return True
+
+    def _resume_expired_global_cooldown_markets(self, trigger: str) -> int:
+        """Resume only markets stopped by an expired global cooldown.
+
+        Market-specific cooldowns have their own recovery rules and must
+        remain untouched here.
+        """
+        now = time.time()
+        if now < self._cooldown_until or self._require_recovery_gate:
+            return 0
+
+        resumed = 0
+        all_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+        for token_id in all_tokens:
+            entry = self._event_state_entry(token_id)
+            if (
+                str(entry.get("state") or EVENT_ACTIVE) != EVENT_COOLDOWN
+                or str(entry.get("reason") or "") != "global_cooldown"
+            ):
+                continue
+            self._set_event_state(token_id, EVENT_ACTIVE, trigger)
+            resumed += 1
+
+        if resumed:
+            log(
+                f"[recovery] resumed {resumed} market(s) after global cooldown "
+                f"trigger={trigger}"
+            )
+        return resumed
 
     async def _cancel_all_except_exit(self) -> bool:
         """Cancel all live quote orders while preserving every SELL order.

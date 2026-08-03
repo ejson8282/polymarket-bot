@@ -13,6 +13,7 @@ import engine as engine_module  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
+    EVENT_COOLDOWN,
     EVENT_EXIT_PENDING,
     EVENT_HALTED_ON_FILL,
     EVENT_HALTED_ON_DATA,
@@ -24,6 +25,56 @@ from engine import (  # noqa: E402
     _ProxiedClobClient,
     _compute_quote_target_shares,
 )
+
+
+class _RecordingEventBus:
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event_type, payload):
+        self.events.append((event_type, payload))
+
+
+def _global_cooldown_engine() -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {"101": {}, "102": {}, "103": {}}
+    engine._night_market_cfg = {"201": {}}
+    engine._event_states = {
+        "101": {"state": EVENT_COOLDOWN, "reason": "global_cooldown"},
+        "102": {"state": EVENT_COOLDOWN, "reason": "balance_or_allowance"},
+        "103": {"state": EVENT_ACTIVE, "reason": "planner_sync_complete"},
+        "201": {"state": EVENT_COOLDOWN, "reason": "global_cooldown"},
+    }
+    engine._event_bus = _RecordingEventBus()
+    engine._cooldown_until = time.time() - 1
+    engine._require_recovery_gate = False
+    return engine
+
+
+def test_expired_global_cooldown_resumes_only_matching_markets():
+    engine = _global_cooldown_engine()
+
+    resumed = engine._resume_expired_global_cooldown_markets("recovered")
+
+    assert resumed == 2
+    assert engine._event_state_name("101") == EVENT_ACTIVE
+    assert engine._event_state_name("201") == EVENT_ACTIVE
+    assert engine._event_state_name("102") == EVENT_COOLDOWN
+    assert engine._event_state_entry("102")["reason"] == "balance_or_allowance"
+    assert engine._event_state_name("103") == EVENT_ACTIVE
+
+
+def test_global_cooldown_does_not_resume_before_timer_or_recovery_gate():
+    engine = _global_cooldown_engine()
+    engine._cooldown_until = time.time() + 60
+
+    assert engine._resume_expired_global_cooldown_markets("too_early") == 0
+    assert engine._event_state_name("101") == EVENT_COOLDOWN
+
+    engine._cooldown_until = time.time() - 1
+    engine._require_recovery_gate = True
+    assert engine._resume_expired_global_cooldown_markets("not_healthy") == 0
+    assert engine._event_state_name("101") == EVENT_COOLDOWN
 
 
 def test_quote_target_honors_absolute_share_cap():
