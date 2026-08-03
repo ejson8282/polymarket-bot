@@ -28,6 +28,7 @@ from platforms.predictfun.maker.reconcile import (
     write_json,
 )
 from platforms.predictfun.maker.simulator import update_simulation
+from platforms.predictfun.maker.status import build_status_snapshot
 
 
 _STOP = False
@@ -83,6 +84,7 @@ def run_loop(
     api_key = os.getenv(str(cfg.get("api_key_env") or "PREDICTFUN_API_KEY"), "")
     client = PredictFunClient(base_url=str(cfg["base_url"]), api_key=api_key)
 
+    plan_state_path = _configured_path(config_path, cfg, "state_path", "../../../data/predictfun_state.json")
     intents_path = _configured_path(config_path, cfg, "intents_path", "../../../data/predictfun_desired_orders.json")
     report_path = _configured_path(config_path, cfg, "execution_report_path", "../../../data/predictfun_execution_report.json")
     runner_state_path = _configured_path(config_path, cfg, "runner_state_path", "../../../data/predictfun_runner_state.json")
@@ -91,6 +93,7 @@ def run_loop(
     risk_state_path = _configured_path(config_path, cfg, "risk_state_path", "../../../data/predictfun_risk_state.json")
     kill_switch_path = _configured_path(config_path, cfg, "kill_switch_path", "../../../data/predictfun_kill_switch.json")
     research_state_path = _configured_path(config_path, cfg, "research_state_path", "../../../data/predictfun_market_research.json")
+    status_path = _configured_path(config_path, cfg, "status_path", "../../../data/predictfun_status.json")
 
     deployment_cfg = (
         cfg.get("deployment")
@@ -125,14 +128,28 @@ def run_loop(
     }
     _write_runner_state(runner_state_path, state)
 
+    plan_state = load_json(plan_state_path)
+    intents_state = load_json(intents_path)
+    report = load_json(report_path)
+    risk_state = load_json(risk_state_path)
+    simulation_state = load_json(simulation_state_path)
+    research_state = load_json(research_state_path)
+    ws_state = load_json(ws_state_path)
+
     while not _STOP:
         cycle_started = _utc_now()
         state["last_cycle_started_at"] = cycle_started
         state["ts"] = cycle_started
         _write_runner_state(runner_state_path, state)
         fast_requote = False
+        plan_state = load_json(plan_state_path)
+        intents_state = load_json(intents_path)
+        report = load_json(report_path)
+        risk_state = load_json(risk_state_path)
+        simulation_state = load_json(simulation_state_path)
+        research_state = load_json(research_state_path)
+        ws_state = load_json(ws_state_path)
         try:
-            simulation_state = load_json(simulation_state_path)
             previous_intents = _previous_intents_from_simulation(simulation_state)
             plan_state = run_once(
                 client,
@@ -151,12 +168,13 @@ def run_loop(
             research_state = build_research_state(plan_state)
             write_json(research_state_path, research_state)
 
+            ws_state = load_json(ws_state_path)
             risk_state = evaluate_risk(
                 cfg=cfg,
                 plan_state=plan_state,
                 intents_state=intents_state,
                 runner_state=state,
-                ws_state=load_json(ws_state_path),
+                ws_state=ws_state,
                 simulation_state=simulation_state,
                 kill_switch_state=load_json(kill_switch_path),
             )
@@ -219,6 +237,18 @@ def run_loop(
         finally:
             state["last_cycle_finished_at"] = _utc_now()
             state["ts"] = state["last_cycle_finished_at"]
+            _refresh_status_snapshot(
+                status_path=status_path,
+                cfg=cfg,
+                runner_state=state,
+                plan_state=plan_state,
+                intents_state=intents_state,
+                execution_state=report,
+                risk_state=risk_state,
+                simulation_state=simulation_state,
+                research_state=research_state,
+                ws_state=ws_state,
+            )
             _write_runner_state(runner_state_path, state)
 
         if once:
@@ -236,8 +266,55 @@ def run_loop(
     state["running"] = False
     state["stopped_at"] = _utc_now()
     state["ts"] = state["stopped_at"]
+    _refresh_status_snapshot(
+        status_path=status_path,
+        cfg=cfg,
+        runner_state=state,
+        plan_state=plan_state,
+        intents_state=intents_state,
+        execution_state=report,
+        risk_state=risk_state,
+        simulation_state=simulation_state,
+        research_state=research_state,
+        ws_state=ws_state,
+    )
     _write_runner_state(runner_state_path, state)
     return state
+
+
+def _refresh_status_snapshot(
+    *,
+    status_path: Path,
+    cfg: dict[str, Any],
+    runner_state: dict[str, Any],
+    plan_state: dict[str, Any],
+    intents_state: dict[str, Any],
+    execution_state: dict[str, Any],
+    risk_state: dict[str, Any],
+    simulation_state: dict[str, Any],
+    research_state: dict[str, Any],
+    ws_state: dict[str, Any],
+) -> None:
+    try:
+        write_json(
+            status_path,
+            build_status_snapshot(
+                cfg=cfg,
+                runner_state=runner_state,
+                plan_state=plan_state,
+                intents_state=intents_state,
+                execution_state=execution_state,
+                risk_state=risk_state,
+                simulation_state=simulation_state,
+                research_state=research_state,
+                ws_state=ws_state,
+            ),
+        )
+        runner_state["status_snapshot_error"] = ""
+    except Exception as exc:
+        runner_state["status_snapshot_error"] = (
+            f"{exc.__class__.__name__}: {exc}"
+        )
 
 
 def _previous_intents_from_simulation(simulation_state: dict[str, Any]) -> list[dict[str, Any]] | None:

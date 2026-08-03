@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from platforms.predictfun.maker.executor import (
     PredictFunLiveExecutor,
 )
 from platforms.predictfun.maker.intents import build_intent_state, utc_now
+from platforms.predictfun.maker.liquidity_sentinel import LiquiditySentinel
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 from platforms.predictfun.maker.reconcile import (
     reconcile_cancel_only,
@@ -33,6 +35,11 @@ from platforms.predictfun.scanner import (
     normalize_market,
     scan_markets,
     score_market,
+)
+from platforms.predictfun.ws_watch import (
+    _apply_market_message,
+    _write_state_if_due,
+    normalize_orderbook_payload,
 )
 
 
@@ -58,6 +65,8 @@ def _market() -> PredictMarket:
         is_yield_bearing=True,
         yes_token_id="yes-token",
         no_token_id="no-token",
+        yes_label="YES",
+        no_label="NO",
         best_yes_bid=Decimal("0.40"),
         best_yes_ask=Decimal("0.60"),
         mid=Decimal("0.50"),
@@ -233,6 +242,109 @@ def test_ws_state_requires_explicit_connected_true(tmp_path) -> None:
         encoding="utf-8",
     )
     assert _load_fresh_ws_state(state_path, max_age_sec=120) == {}
+
+
+def test_ws_orderbook_payload_is_normalized_and_sorted() -> None:
+    payload = normalize_orderbook_payload(
+        "predictOrderbook/42",
+        {
+            "version": 1,
+            "marketId": 42,
+            "updateTimestampMs": int(time.time() * 1000),
+            "orderCount": 4,
+            "bids": [[0.40, 10], [0.41, 5]],
+            "asks": [[0.60, 10], [0.59, 5]],
+        },
+    )
+    assert payload["bids"] == [["0.41", "5"], ["0.4", "10"]]
+    assert payload["asks"] == [["0.59", "5"], ["0.6", "10"]]
+
+
+def test_ws_orderbook_rejects_market_mismatch_and_crossed_book() -> None:
+    now_ms = int(time.time() * 1000)
+    with pytest.raises(ValueError, match="payload_market_id_mismatch"):
+        normalize_orderbook_payload(
+            "predictOrderbook/42",
+            {"marketId": 41, "updateTimestampMs": now_ms, "bids": [], "asks": []},
+        )
+    with pytest.raises(ValueError, match="orderbook_crossed"):
+        normalize_orderbook_payload(
+            "predictOrderbook/42",
+            {
+                "marketId": 42,
+                "updateTimestampMs": now_ms,
+                "bids": [[0.60, 1]],
+                "asks": [[0.59, 1]],
+            },
+        )
+
+
+def test_ws_orderbook_rejects_out_of_order_update() -> None:
+    now = time.time()
+    state = {
+        "orderbooks": {},
+        "orderbook_updated_at": {},
+        "orderbook_upstream_updated_at_ms": {"42": int(now * 1000)},
+        "orderbook_latency_ms": {},
+        "orderbook_errors": {},
+        "trading_statuses": {},
+        "market_statuses": {},
+        "liquidity": {},
+        "liquidity_alerts": {},
+    }
+    with pytest.raises(ValueError, match="orderbook_update_out_of_order"):
+        _apply_market_message(
+            state,
+            {
+                "topic": "predictOrderbook/42",
+                "data": {
+                    "marketId": 42,
+                    "updateTimestampMs": int(now * 1000) - 1,
+                    "bids": [[0.40, 10]],
+                    "asks": [[0.60, 10]],
+                },
+            },
+            sentinel=LiquiditySentinel.from_config({"enabled": False}),
+            now=now,
+        )
+
+
+def test_ws_book_rejects_non_open_trading_status_and_stale_upstream() -> None:
+    now = time.time()
+    state = {
+        "schema_version": 2,
+        "orderbooks": {"42": {"bids": [["0.4", "10"]], "asks": [["0.6", "10"]]}},
+        "orderbook_updated_at": {"42": utc_now()},
+        "orderbook_upstream_updated_at_ms": {"42": int(now * 1000)},
+        "trading_statuses": {"42": {"status": "CANCEL_ONLY"}},
+        "market_statuses": {"42": {"status": "REGISTERED"}},
+        "orderbook_errors": {},
+    }
+    assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
+
+    state["trading_statuses"]["42"]["status"] = "OPEN"
+    state["orderbook_upstream_updated_at_ms"]["42"] = int((now - 10) * 1000)
+    assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
+
+
+def test_ws_book_requires_all_schema_v2_safety_statuses() -> None:
+    now = time.time()
+    state = {
+        "schema_version": 2,
+        "orderbooks": {"42": {"bids": [["0.4", "10"]], "asks": [["0.6", "10"]]}},
+        "orderbook_updated_at": {"42": utc_now()},
+        "orderbook_upstream_updated_at_ms": {"42": int(now * 1000)},
+        "trading_statuses": {"42": {"status": "OPEN"}},
+        "market_statuses": {"42": {"status": "REGISTERED"}},
+        "orderbook_errors": {},
+    }
+    assert _book_from_ws_state(state, 42, max_age_sec=5)["_source"] == "ws"
+
+    state["market_statuses"] = {}
+    assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
+    state["market_statuses"] = {"42": {"status": "REGISTERED"}}
+    state["orderbook_errors"] = {"42": "orderbook_crossed"}
+    assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
 
 
 def test_points_profile_allows_midpoint_without_hiding_risk_profile() -> None:
@@ -429,8 +541,146 @@ def test_yes_no_tokens_are_mapped_by_name_not_array_order() -> None:
 
     raw["outcomes"][0]["name"] = "UP"
     raw["outcomes"][1]["name"] = "DOWN"
-    with pytest.raises(UnsupportedPredictMarket, match="canonical YES/NO"):
+    with pytest.raises(UnsupportedPredictMarket, match="indexSet 1/2 or canonical YES/NO"):
         normalize_market(raw)
+
+
+def test_live_registered_market_maps_index_sets_and_preserves_display_labels() -> None:
+    raw = {
+        **_raw_market(outcomes=2),
+        "id": 58416,
+        "title": "Will Solana hit $60 or $140 first?",
+        "status": "REGISTERED",
+        "tradingStatus": "OPEN",
+        "outcomes": [
+            {
+                "name": "$140",
+                "indexSet": 2,
+                "onChainId": "high-token",
+                "bestBid": {"price": "0.18"},
+                "bestAsk": {"price": "0.19"},
+            },
+            {
+                "name": "$60",
+                "indexSet": 1,
+                "onChainId": "low-token",
+                "bestBid": {"price": "0.81"},
+                "bestAsk": {"price": "0.82"},
+            },
+        ],
+    }
+
+    market = normalize_market(raw)
+
+    assert market.status == "REGISTERED"
+    assert market.trading_status == "OPEN"
+    assert market.yes_token_id == "low-token"
+    assert market.no_token_id == "high-token"
+    assert market.yes_label == "$60"
+    assert market.no_label == "$140"
+    assert market.best_yes_bid == Decimal("0.81")
+    assert market.best_yes_ask == Decimal("0.82")
+
+
+def test_scanner_uses_open_filter_but_accepts_registered_lifecycle_response() -> None:
+    raw = {
+        **_raw_market(outcomes=2),
+        "status": "REGISTERED",
+        "tradingStatus": "OPEN",
+        "outcomes": [
+            {**_raw_market(outcomes=2)["outcomes"][0], "indexSet": 1},
+            {**_raw_market(outcomes=2)["outcomes"][1], "indexSet": 2},
+        ],
+    }
+
+    class Client:
+        status = ""
+
+        def list_markets(self, **kwargs):
+            self.status = kwargs.get("status")
+            return {"data": [raw], "cursor": None}
+
+    client = Client()
+    markets = scan_markets(client, max_markets=10)
+
+    assert client.status == "OPEN"
+    assert [market.id for market in markets] == [44]
+
+
+def test_ws_orderbook_preserves_exact_decimal_values() -> None:
+    normalized = normalize_orderbook_payload(
+        "predictOrderbook/44",
+        {
+            "marketId": 44,
+            "updateTimestampMs": 1,
+            "bids": [["0.4000000000000000001", "10.2500"]],
+            "asks": [["0.6000000000000000001", "11"]],
+        },
+    )
+
+    assert normalized["bids"] == [["0.4000000000000000001", "10.2500"]]
+    assert normalized["asks"] == [["0.6000000000000000001", "11"]]
+
+
+@pytest.mark.parametrize("bad_value", ["NaN", "Infinity", "-Infinity"])
+def test_ws_orderbook_rejects_non_finite_numbers(bad_value: str) -> None:
+    with pytest.raises(ValueError, match="orderbook_level_out_of_range"):
+        normalize_orderbook_payload(
+            "predictOrderbook/44",
+            {
+                "marketId": 44,
+                "updateTimestampMs": 1,
+                "bids": [[bad_value, "10"]],
+                "asks": [["0.60", "10"]],
+            },
+        )
+
+
+def test_ws_market_status_rejects_unknown_values() -> None:
+    state = {
+        "orderbooks": {},
+        "orderbook_updated_at": {},
+        "orderbook_upstream_updated_at_ms": {},
+        "orderbook_latency_ms": {},
+        "orderbook_errors": {},
+        "trading_statuses": {},
+        "market_statuses": {},
+        "liquidity": {},
+        "liquidity_alerts": {},
+    }
+    with pytest.raises(ValueError, match="market_status_invalid"):
+        _apply_market_message(
+            state,
+            {
+                "topic": "predictMarketStatus/44",
+                "data": {"marketId": 44, "status": "SURPRISE"},
+            },
+            sentinel=LiquiditySentinel.from_config({}),
+            now=time.time(),
+        )
+
+
+def test_ws_state_writes_are_coalesced_but_forceable(tmp_path) -> None:
+    path = tmp_path / "ws.json"
+    state = {"connected": True}
+
+    last = _write_state_if_due(path, state, 10.0, now_monotonic=10.1)
+    assert last == 10.0
+    assert not path.exists()
+
+    last = _write_state_if_due(path, state, last, now_monotonic=10.3)
+    assert last == 10.3
+    assert path.exists()
+
+    state["connected"] = False
+    _write_state_if_due(
+        path,
+        state,
+        last,
+        force=True,
+        now_monotonic=10.31,
+    )
+    assert path.read_text(encoding="utf-8").find('"connected": false') >= 0
 
 
 def test_market_normalization_parses_string_mode_flags() -> None:
@@ -788,6 +1038,68 @@ def test_stale_plan_and_notional_limit_fail_closed() -> None:
     assert risk["blocked"] is True
     blocked = {row["name"] for row in risk["checks"] if row["status"] == "BLOCK"}
     assert {"plan_state_fresh", "desired_total_notional"}.issubset(blocked)
+
+
+def test_required_ws_is_a_hard_risk_gate() -> None:
+    cfg = {
+        "accounts": {"max_active_accounts": 1},
+        "data": {
+            "use_ws_orderbook_cache": True,
+            "require_ws_for_quotes": True,
+            "ws_state_max_age_sec": 5,
+        },
+        "risk": {"max_plan_state_age_sec": 180},
+    }
+    risk = evaluate_risk(
+        cfg=cfg,
+        plan_state={"ts": utc_now()},
+        intents_state={"summary": {}, "intents": []},
+        runner_state={"error_count": 0},
+        ws_state={},
+        simulation_state={"positions": []},
+        kill_switch_state={},
+    )
+    assert risk["hard_blocked"] is True
+    blocked = {row["name"] for row in risk["checks"] if row["status"] == "BLOCK"}
+    assert {
+        "ws_connected",
+        "ws_message_fresh",
+        "ws_orderbooks_present",
+    }.issubset(blocked)
+
+    healthy = {
+        "connected": True,
+        "last_message_at": utc_now(),
+        "orderbooks": {"42": {"bids": [], "asks": []}},
+        "orderbook_errors": {},
+    }
+    risk = evaluate_risk(
+        cfg=cfg,
+        plan_state={"ts": utc_now()},
+        intents_state={"summary": {}, "intents": []},
+        runner_state={"error_count": 0},
+        ws_state=healthy,
+        simulation_state={"positions": []},
+        kill_switch_state={},
+    )
+    assert risk["hard_blocked"] is False
+
+    healthy["orderbook_errors"] = {"43": "orderbook_crossed"}
+    risk = evaluate_risk(
+        cfg=cfg,
+        plan_state={"ts": utc_now()},
+        intents_state={"summary": {}, "intents": []},
+        runner_state={"error_count": 0},
+        ws_state=healthy,
+        simulation_state={"positions": []},
+        kill_switch_state={},
+    )
+    assert risk["hard_blocked"] is False
+    assert risk["status"] == "WARN"
+    error_check = next(
+        row for row in risk["checks"] if row["name"] == "ws_orderbook_errors"
+    )
+    assert error_check["block_scope"] == "market"
 
 
 def test_final_preflight_blocks_crossing_and_mode_changes() -> None:

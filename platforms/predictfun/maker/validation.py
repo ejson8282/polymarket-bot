@@ -3,6 +3,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from platforms.predictfun.scanner import (
+    UnsupportedPredictMarket,
+    market_is_tradeable,
+    resolve_binary_outcomes,
+)
+
 
 def validate_final_order(
     *,
@@ -27,7 +33,7 @@ def validate_final_order(
     trading_status = str(fresh_market.get("tradingStatus") or "").upper()
     if not status or not trading_status:
         return _blocked("market_status_missing")
-    if status != "OPEN" or trading_status != "OPEN":
+    if not market_is_tradeable(status, trading_status):
         return _blocked(f"market_not_open status={status} trading_status={trading_status}")
 
     if "feeRateBps" not in fresh_market or "feeRateBps" not in original_market:
@@ -67,13 +73,18 @@ def validate_final_order(
     if original_precision != fresh_precision:
         return _blocked("market_execution_mode_changed field=decimalPrecision")
 
-    if _canonical_outcomes(original_market) is None or _canonical_outcomes(fresh_market) is None:
+    try:
+        original_outcomes = resolve_binary_outcomes(original_market)
+        fresh_outcomes = resolve_binary_outcomes(fresh_market)
+    except UnsupportedPredictMarket:
         return _blocked("market_outcomes_not_canonical")
     original_outcome = _outcome_by_token(original_market, token_id)
     outcome = _outcome_by_token(fresh_market, token_id)
     if not original_outcome or not outcome:
         return _blocked("outcome_token_missing")
-    if _outcome_name(original_outcome) != _outcome_name(outcome):
+    original_role = _outcome_role(original_outcomes, token_id)
+    fresh_role = _outcome_role(fresh_outcomes, token_id)
+    if not original_role or original_role != fresh_role:
         return _blocked("outcome_token_changed")
 
     side = str(side or "").upper()
@@ -116,16 +127,11 @@ def _outcome_by_token(market: dict[str, Any], token_id: str) -> dict[str, Any]:
     return {}
 
 
-def _canonical_outcomes(market: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
-    outcomes = market.get("outcomes") if isinstance(market.get("outcomes"), list) else []
-    if len(outcomes) != 2 or not all(isinstance(outcome, dict) for outcome in outcomes):
-        return None
-    by_name = {_outcome_name(outcome): outcome for outcome in outcomes}
-    return by_name if set(by_name) == {"YES", "NO"} else None
-
-
-def _outcome_name(outcome: dict[str, Any]) -> str:
-    return str(outcome.get("name") or "").strip().upper()
+def _outcome_role(outcomes: dict[str, dict[str, Any]], token_id: str) -> str:
+    for role, outcome in outcomes.items():
+        if str(outcome.get("onChainId") or "") == str(token_id or ""):
+            return role
+    return ""
 
 
 def _level_price(value: Any) -> Decimal:

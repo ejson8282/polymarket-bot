@@ -4,8 +4,10 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 import time
@@ -21,6 +23,9 @@ from platforms.predictfun.maker.liquidity_sentinel import LiquiditySentinel
 
 
 DEFAULT_WS_URL = "wss://ws.predict.fun/ws"
+TRADING_STATUSES = frozenset({"OPEN", "MATCHING_NOT_ENABLED", "CANCEL_ONLY", "CLOSED"})
+MARKET_STATUSES = frozenset({"OPEN", "REGISTERED", "RESOLVED", "CLOSED", "CANCELLED"})
+STATE_WRITE_INTERVAL_SEC = 0.25
 
 
 def _utc_now() -> str:
@@ -44,6 +49,21 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _write_state_if_due(
+    path: Path,
+    state: dict[str, Any],
+    last_written_monotonic: float,
+    *,
+    force: bool = False,
+    now_monotonic: float | None = None,
+) -> float:
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    if force or now - last_written_monotonic >= STATE_WRITE_INTERVAL_SEC:
+        _write_state(path, state)
+        return now
+    return last_written_monotonic
+
+
 async def _connect(ws_url: str, api_key: str):
     headers = {"x-api-key": api_key} if api_key else None
     try:
@@ -60,36 +80,55 @@ async def watch_orderbooks(
     state_path: Path,
     max_messages: int = 0,
     timeout_sec: float = 0,
+    max_runtime_sec: float = 0,
     sentinel_config: dict[str, Any] | None = None,
+    session_number: int = 1,
+    reconnect_count: int = 0,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
+        "schema_version": 2,
         "ts": _utc_now(),
         "ws_url": ws_url,
         "market_ids": market_ids,
         "connected": False,
         "last_connected": False,
+        "session_number": session_number,
+        "reconnect_count": reconnect_count,
         "completed": False,
         "error": "",
         "messages": [],
         "orderbooks": {},
         "orderbook_updated_at": {},
+        "orderbook_upstream_updated_at_ms": {},
+        "orderbook_latency_ms": {},
+        "orderbook_errors": {},
+        "trading_statuses": {},
+        "market_statuses": {},
         "liquidity": {},
         "liquidity_alerts": {},
     }
     _write_state(state_path, state)
+    last_state_write_monotonic = time.monotonic()
 
     received = 0
     request_id = 1
+    started_monotonic = time.monotonic()
     sentinel = LiquiditySentinel.from_config(sentinel_config or {})
     try:
         async with await _connect(ws_url, api_key) as ws:
             state["connected"] = True
             state["last_connected"] = True
             state["ts"] = _utc_now()
-            _write_state(state_path, state)
+            last_state_write_monotonic = _write_state_if_due(
+                state_path,
+                state,
+                last_state_write_monotonic,
+                force=True,
+            )
 
-            for market_id in market_ids:
-                topic = f"predictOrderbook/{market_id}"
+            topics = _market_topics(market_ids)
+            state["subscribed_topics"] = topics
+            for topic in topics:
                 await ws.send(json.dumps({"method": "subscribe", "requestId": request_id, "params": [topic]}))
                 request_id += 1
 
@@ -104,14 +143,13 @@ async def watch_orderbooks(
                 topic = str(msg.get("topic") or "")
                 if topic == "heartbeat":
                     await ws.send(json.dumps({"method": "heartbeat", "data": msg.get("data")}))
-                elif topic.startswith("predictOrderbook/") and isinstance(msg.get("data"), dict):
-                    market_id = topic.rsplit("/", 1)[-1]
-                    state["orderbooks"][market_id] = msg["data"]
-                    state["orderbook_updated_at"][market_id] = _utc_now()
-                    now = time.time()
-                    sentinel.record(market_id, msg["data"], ts=now)
-                    state["liquidity"] = sentinel.metrics_json(now=now)
-                    state["liquidity_alerts"] = sentinel.alerts_json(now=now)
+                    state["last_heartbeat_at"] = _utc_now()
+                elif topic:
+                    try:
+                        _apply_market_message(state, msg, sentinel=sentinel, now=time.time())
+                    except ValueError as exc:
+                        market_id = topic.rsplit("/", 1)[-1]
+                        state["orderbook_errors"][market_id] = str(exc)
 
                 compact = {
                     "ts": _utc_now(),
@@ -123,9 +161,17 @@ async def watch_orderbooks(
                 state["messages"].append(compact)
                 state["messages"] = state["messages"][-100:]
                 state["ts"] = _utc_now()
-                _write_state(state_path, state)
+                state["last_message_at"] = state["ts"]
+                last_state_write_monotonic = _write_state_if_due(
+                    state_path,
+                    state,
+                    last_state_write_monotonic,
+                )
 
                 if max_messages > 0 and received >= max_messages:
+                    break
+                if max_runtime_sec > 0 and time.monotonic() - started_monotonic >= max_runtime_sec:
+                    state["note"] = "subscription refresh"
                     break
             state["completed"] = True
     except Exception as exc:
@@ -137,8 +183,92 @@ async def watch_orderbooks(
             state["error"] = f"{exc.__class__.__name__}: {exc}"
         state["connected"] = False
         state["ts"] = _utc_now()
-        _write_state(state_path, state)
+        _write_state_if_due(
+            state_path,
+            state,
+            last_state_write_monotonic,
+            force=True,
+        )
+    else:
+        state["connected"] = False
+        state["ts"] = _utc_now()
+        _write_state_if_due(
+            state_path,
+            state,
+            last_state_write_monotonic,
+            force=True,
+        )
     return state
+
+
+async def watch_orderbooks_forever(
+    *,
+    client: PredictFunClient,
+    cfg: dict[str, Any],
+    ws_url: str,
+    api_key: str,
+    state_path: Path,
+    discover_limit: int,
+    refresh_sec: float,
+) -> None:
+    session_number = 0
+    reconnect_count = 0
+    consecutive_failures = 0
+    while True:
+        session_number += 1
+        try:
+            market_ids = await asyncio.to_thread(discover_market_ids, client, cfg, discover_limit)
+            if not market_ids:
+                raise RuntimeError("no eligible Predict.fun markets discovered")
+            state = await watch_orderbooks(
+                ws_url=ws_url,
+                api_key=api_key,
+                market_ids=market_ids,
+                state_path=state_path,
+                max_messages=0,
+                timeout_sec=max(30.0, refresh_sec + 30.0),
+                max_runtime_sec=max(30.0, refresh_sec),
+                sentinel_config=(
+                    cfg.get("liquidity_sentinel")
+                    if isinstance(cfg.get("liquidity_sentinel"), dict)
+                    else {}
+                ),
+                session_number=session_number,
+                reconnect_count=reconnect_count,
+            )
+            if state.get("error"):
+                consecutive_failures += 1
+                reconnect_count += 1
+            else:
+                consecutive_failures = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            consecutive_failures += 1
+            reconnect_count += 1
+            _write_state(
+                state_path,
+                {
+                    "schema_version": 2,
+                    "ts": _utc_now(),
+                    "ws_url": ws_url,
+                    "connected": False,
+                    "completed": False,
+                    "session_number": session_number,
+                    "reconnect_count": reconnect_count,
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                    "market_ids": [],
+                    "orderbooks": {},
+                    "orderbook_updated_at": {},
+                    "trading_statuses": {},
+                    "market_statuses": {},
+                },
+            )
+        if consecutive_failures:
+            backoff = min(30.0, float(2 ** min(consecutive_failures - 1, 5)))
+            await asyncio.sleep(backoff + random.random())
+        else:
+            await asyncio.sleep(0.25)
 
 
 def discover_market_ids(client: PredictFunClient, cfg: dict[str, Any], limit: int) -> list[int]:
@@ -151,8 +281,144 @@ def discover_market_ids(client: PredictFunClient, cfg: dict[str, Any], limit: in
         has_active_rewards=bool(scan_cfg.get("has_active_rewards", True)),
         include_crypto_updown=bool(scan_cfg.get("include_crypto_updown", False)),
         scoring_profile=str(strategy_cfg.get("profile") or "conservative"),
+        status_filter=str(scan_cfg.get("status_filter") or "OPEN"),
     )
     return [m.id for m in markets[:limit]]
+
+
+def _market_topics(market_ids: list[int]) -> list[str]:
+    topics: list[str] = []
+    for market_id in market_ids:
+        topics.extend(
+            (
+                f"predictOrderbook/{market_id}",
+                f"predictTradingStatus/{market_id}",
+                f"predictMarketStatus/{market_id}",
+            )
+        )
+    return topics
+
+
+def _topic_market_id(topic: str, expected_prefix: str) -> int:
+    prefix = f"{expected_prefix}/"
+    if not topic.startswith(prefix):
+        raise ValueError("unexpected_topic")
+    try:
+        market_id = int(topic[len(prefix):])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_topic_market_id") from exc
+    if market_id <= 0:
+        raise ValueError("invalid_topic_market_id")
+    return market_id
+
+
+def _message_market_id(data: dict[str, Any], topic_market_id: int) -> int:
+    try:
+        market_id = int(data.get("marketId"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("payload_market_id_missing") from exc
+    if market_id != topic_market_id:
+        raise ValueError("payload_market_id_mismatch")
+    return market_id
+
+
+def _normalize_levels(raw: Any, *, descending: bool) -> list[list[str]]:
+    if not isinstance(raw, list):
+        raise ValueError("orderbook_levels_invalid")
+    levels: list[tuple[Decimal, Decimal]] = []
+    for row in raw:
+        if not isinstance(row, list) or len(row) < 2:
+            raise ValueError("orderbook_level_invalid")
+        try:
+            price = Decimal(str(row[0]))
+            quantity = Decimal(str(row[1]))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("orderbook_level_invalid") from exc
+        if (
+            not price.is_finite()
+            or not quantity.is_finite()
+            or not Decimal("0") < price < Decimal("1")
+            or quantity < Decimal("0")
+        ):
+            raise ValueError("orderbook_level_out_of_range")
+        if quantity == Decimal("0"):
+            continue
+        levels.append((price, quantity))
+    levels.sort(key=lambda item: item[0], reverse=descending)
+    return [[format(price, "f"), format(quantity, "f")] for price, quantity in levels]
+
+
+def normalize_orderbook_payload(topic: str, data: dict[str, Any]) -> dict[str, Any]:
+    topic_market_id = _topic_market_id(topic, "predictOrderbook")
+    market_id = _message_market_id(data, topic_market_id)
+    try:
+        updated_at_ms = int(data.get("updateTimestampMs"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("orderbook_timestamp_missing") from exc
+    if updated_at_ms <= 0:
+        raise ValueError("orderbook_timestamp_invalid")
+    bids = _normalize_levels(data.get("bids"), descending=True)
+    asks = _normalize_levels(data.get("asks"), descending=False)
+    if bids and asks and Decimal(bids[0][0]) >= Decimal(asks[0][0]):
+        raise ValueError("orderbook_crossed")
+    return {
+        "version": int(data.get("version") or 0),
+        "marketId": market_id,
+        "updateTimestampMs": updated_at_ms,
+        "orderCount": int(data.get("orderCount") or 0),
+        "bids": bids,
+        "asks": asks,
+    }
+
+
+def _apply_market_message(
+    state: dict[str, Any],
+    msg: dict[str, Any],
+    *,
+    sentinel: LiquiditySentinel,
+    now: float,
+) -> None:
+    topic = str(msg.get("topic") or "")
+    data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+    if topic.startswith("predictOrderbook/"):
+        normalized = normalize_orderbook_payload(topic, data)
+        market_id = str(normalized["marketId"])
+        upstream_ms = int(normalized["updateTimestampMs"])
+        previous_ms = int(state["orderbook_upstream_updated_at_ms"].get(market_id) or 0)
+        if previous_ms and upstream_ms < previous_ms:
+            raise ValueError("orderbook_update_out_of_order")
+        state["orderbooks"][market_id] = normalized
+        state["orderbook_updated_at"][market_id] = _utc_now()
+        state["orderbook_upstream_updated_at_ms"][market_id] = upstream_ms
+        state["orderbook_latency_ms"][market_id] = max(0, int(now * 1000) - upstream_ms)
+        state["orderbook_errors"].pop(market_id, None)
+        sentinel.record(market_id, normalized, ts=now)
+        state["liquidity"] = sentinel.metrics_json(now=now)
+        state["liquidity_alerts"] = sentinel.alerts_json(now=now)
+        return
+    if topic.startswith("predictTradingStatus/"):
+        topic_market_id = _topic_market_id(topic, "predictTradingStatus")
+        market_id = _message_market_id(data, topic_market_id)
+        status = str(data.get("tradingStatus") or "").upper()
+        if status not in TRADING_STATUSES:
+            raise ValueError("trading_status_invalid")
+        state["trading_statuses"][str(market_id)] = {
+            "status": status,
+            "updated_at": _utc_now(),
+            "upstream_ts_ms": int(data.get("tsMs") or 0),
+        }
+        return
+    if topic.startswith("predictMarketStatus/"):
+        topic_market_id = _topic_market_id(topic, "predictMarketStatus")
+        market_id = _message_market_id(data, topic_market_id)
+        status = str(data.get("status") or "").upper()
+        if status not in MARKET_STATUSES:
+            raise ValueError("market_status_invalid")
+        state["market_statuses"][str(market_id)] = {
+            "status": status,
+            "updated_at": _utc_now(),
+            "upstream_ts_ms": int(data.get("tsMs") or 0),
+        }
 
 
 def main() -> None:
@@ -163,12 +429,27 @@ def main() -> None:
     parser.add_argument("--discover", type=int, default=3, help="Discover this many reward markets when --market-id is omitted.")
     parser.add_argument("--max-messages", type=int, default=10)
     parser.add_argument("--timeout-sec", type=float, default=12.0)
+    parser.add_argument("--forever", action="store_true")
+    parser.add_argument("--refresh-sec", type=float, default=300.0)
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
     cfg = _load_config(config_path)
     api_key = os.getenv(str(cfg.get("api_key_env") or "PREDICTFUN_API_KEY"), "")
     client = PredictFunClient(base_url=str(cfg.get("base_url") or PREDICT_TESTNET_BASE), api_key=api_key)
+    if args.forever:
+        asyncio.run(
+            watch_orderbooks_forever(
+                client=client,
+                cfg=cfg,
+                ws_url=str(cfg.get("ws_url") or DEFAULT_WS_URL),
+                api_key=api_key,
+                state_path=_state_path(config_path, cfg),
+                discover_limit=max(1, args.discover),
+                refresh_sec=max(30.0, args.refresh_sec),
+            )
+        )
+        return
     market_ids = args.market_id or discover_market_ids(client, cfg, args.discover)
     state = asyncio.run(
         watch_orderbooks(

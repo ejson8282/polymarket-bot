@@ -7,6 +7,7 @@
     "max_markets": 20,
     "candidate_pool_size": 60,
     "first": 50,
+    "status_filter": "OPEN",
     "has_active_rewards": true,
     "min_hourly_rate": "0",
     "include_crypto_updown": false,
@@ -42,7 +43,8 @@
   },
   "data": {
     "use_ws_orderbook_cache": true,
-    "ws_state_max_age_sec": 120
+    "ws_state_max_age_sec": 30,
+    "ws_orderbook_max_age_sec": 330
   },
   "risk": {
     "min_seconds_to_expiry": 3600,
@@ -80,6 +82,7 @@
     "research_state_path": "../../../data/predictfun_market_research.json",
     "admission_state_path": "../../../data/predictfun_admission_state.json",
     "pid_path": "../../../data/predictfun_dry_run.pid",
-    "log_path": "../../../data/predictfun_dry_run.log"
+    "log_path": "../../../data/predictfun_dry_run.log",
+    "status_path": "../../../data/predictfun_status.json"
   }
 }

@@ -1,0 +1,31 @@
+[Unit]
+Description=Predict.fun immutable public market-data WebSocket watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/predictfun-releases/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PREDICTFUN_REQUIRE_RELEASE=1
+EnvironmentFile=/home/ubuntu/predictfun-runtime/release.env
+ExecStartPre=/home/ubuntu/.venv2/bin/python /home/ubuntu/predictfun-releases/current/platforms/predictfun/maker/release_guard.py /home/ubuntu/predictfun-releases/current
+ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.predictfun.ws_watch --config /home/ubuntu/predictfun-runtime/config.mainnet.json --discover 20 --forever --refresh-sec 300
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/ubuntu/predictfun-releases
+ReadWritePaths=/home/ubuntu/predictfun-runtime
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=append:/home/ubuntu/predictfun-runtime/data/predictfun_ws.log
+StandardError=append:/home/ubuntu/predictfun-runtime/data/predictfun_ws.log
+
+[Install]
+WantedBy=multi-user.target
