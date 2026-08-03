@@ -67,18 +67,27 @@ def evaluate_risk(
             warn_only=True,
         )
 
+    all_intents = [item for item in intents_state.get("intents") or [] if isinstance(item, dict)]
+    risk_increasing_intents = [
+        item for item in all_intents if str(item.get("side") or "").upper() == "BUY"
+    ]
     total_notional = _dec((intents_state.get("summary") or {}).get("total_notional"))
+    risk_increasing_notional = sum(
+        (_dec(item.get("notional")) for item in risk_increasing_intents),
+        Decimal("0"),
+    )
     buy_notional_by_mode = _buy_notional_by_mode(intents_state)
     _check_limit(
         checks,
         name="desired_total_notional",
-        value=total_notional,
+        value=risk_increasing_notional,
         limit=_dec(risk_cfg.get("max_total_desired_notional"), "2500"),
+        block_scope="reduce_only",
     )
 
     account_cfg = cfg.get("accounts") if isinstance(cfg.get("accounts"), dict) else {}
     max_accounts = int(account_cfg.get("max_active_accounts") or risk_cfg.get("max_active_accounts") or 10)
-    account_ids = sorted({_account_id(item) for item in intents_state.get("intents") or [] if isinstance(item, dict)})
+    account_ids = sorted({_account_id(item) for item in all_intents})
     _check_limit(
         checks,
         name="active_account_count",
@@ -89,9 +98,7 @@ def evaluate_risk(
     max_account_notional = _dec(risk_cfg.get("max_account_desired_notional"), "100")
     by_account: dict[str, Decimal] = {}
     by_account_market: dict[tuple[str, str], Decimal] = {}
-    for item in intents_state.get("intents") or []:
-        if not isinstance(item, dict):
-            continue
+    for item in risk_increasing_intents:
         account_id = _account_id(item)
         market_id = str(item.get("market_id") or "")
         notional = _dec(item.get("notional"))
@@ -103,6 +110,7 @@ def evaluate_risk(
             name=f"account_notional_{account_id}",
             value=value,
             limit=max_account_notional,
+            block_scope="reduce_only",
         )
 
     max_account_market_notional = _dec(risk_cfg.get("max_account_market_desired_notional"), "40")
@@ -112,20 +120,21 @@ def evaluate_risk(
             name=f"account_market_notional_{account_id}_{market_id}",
             value=value,
             limit=max_account_market_notional,
+            block_scope="reduce_only",
         )
 
     max_market_notional = _dec(risk_cfg.get("max_market_desired_notional"), "75")
     by_market: dict[str, Decimal] = {}
-    for item in intents_state.get("intents") or []:
-        if isinstance(item, dict):
-            market_id = str(item.get("market_id") or "")
-            by_market[market_id] = by_market.get(market_id, Decimal("0")) + _dec(item.get("notional"))
+    for item in risk_increasing_intents:
+        market_id = str(item.get("market_id") or "")
+        by_market[market_id] = by_market.get(market_id, Decimal("0")) + _dec(item.get("notional"))
     for market_id, value in sorted(by_market.items()):
         _check_limit(
             checks,
             name=f"market_notional_{market_id}",
             value=value,
             limit=max_market_notional,
+            block_scope="reduce_only",
         )
 
     max_position = _dec(risk_cfg.get("max_market_position_size"), "100")
@@ -138,12 +147,14 @@ def evaluate_risk(
                 name=f"sim_position_{pos.get('market_id')}_{pos.get('outcome')}",
                 value=abs(_dec(pos.get("size"))),
                 limit=max_position,
+                block_scope="reduce_only",
             )
             _check_limit(
                 checks,
                 name=f"sim_account_position_{account_id}_{pos.get('market_id')}_{pos.get('outcome')}",
                 value=abs(_dec(pos.get("size"))),
                 limit=max_account_position,
+                block_scope="reduce_only",
             )
 
     max_errors = int(risk_cfg.get("max_runner_errors") or 3)
@@ -155,21 +166,31 @@ def evaluate_risk(
             "value": error_count,
             "limit": max_errors,
             "detail": "",
+            "block_scope": "hard",
         }
     )
 
     blocked = any(row["status"] == "BLOCK" for row in checks)
+    hard_blocked = any(
+        row["status"] == "BLOCK" and row.get("block_scope") != "reduce_only"
+        for row in checks
+    )
+    reduce_only = blocked and not hard_blocked
     warn = any(row["status"] == "WARN" for row in checks)
     return {
         "ts": utc_now(),
         "mode": "risk_gate",
         "status": "BLOCK" if blocked else "WARN" if warn else "OK",
         "blocked": blocked,
+        "hard_blocked": hard_blocked,
+        "reduce_only": reduce_only,
+        "execution_mode": "blocked" if hard_blocked else "reduce_only" if reduce_only else "normal",
         "summary": {
             "checks": len(checks),
             "blocked": sum(1 for row in checks if row["status"] == "BLOCK"),
             "warn": sum(1 for row in checks if row["status"] == "WARN"),
             "desired_total_notional": str(total_notional),
+            "risk_increasing_notional": str(risk_increasing_notional),
             "buy_notional_by_mode": {mode: str(value) for mode, value in sorted(buy_notional_by_mode.items())},
             "active_accounts": len(account_ids),
             "sim_positions": len(simulation_state.get("positions") or []),
@@ -178,8 +199,13 @@ def evaluate_risk(
     }
 
 
-def blocked_execution_report(risk_state: dict[str, Any], source_ts: str | None) -> dict[str, Any]:
-    return {
+def blocked_execution_report(
+    risk_state: dict[str, Any],
+    source_ts: str | None,
+    *,
+    managed_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report = {
         "ts": utc_now(),
         "mode": "risk_blocked",
         "source_ts": source_ts,
@@ -200,6 +226,9 @@ def blocked_execution_report(risk_state: dict[str, Any], source_ts: str | None) 
         ],
         "risk": risk_state,
     }
+    if isinstance(managed_state, dict):
+        report["managed_orders"] = managed_state
+    return report
 
 
 def _check_bool(checks: list[dict[str, Any]], *, name: str, blocked: bool, detail: str = "") -> None:
@@ -210,6 +239,7 @@ def _check_bool(checks: list[dict[str, Any]], *, name: str, blocked: bool, detai
             "value": "enabled" if blocked else "disabled",
             "limit": "disabled",
             "detail": detail,
+            "block_scope": "hard",
         }
     )
 
@@ -231,6 +261,7 @@ def _check_age(
             "value": "missing" if age is None else round(age, 1),
             "limit": max_age_sec,
             "detail": f"ts={ts or 'n/a'}",
+            "block_scope": "hard",
         }
     )
 
@@ -241,6 +272,7 @@ def _check_limit(
     name: str,
     value: Decimal,
     limit: Decimal,
+    block_scope: str = "hard",
 ) -> None:
     checks.append(
         {
@@ -249,6 +281,7 @@ def _check_limit(
             "value": str(value),
             "limit": str(limit),
             "detail": "",
+            "block_scope": block_scope,
         }
     )
 
