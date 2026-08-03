@@ -108,8 +108,8 @@ def normalize_market(raw: dict[str, Any], *, scoring_profile: str = "conservativ
         reward_ends_at=str(current.get("endsAt") or ""),
         starts_at=str(raw.get("startsAt") or ""),
         ends_at=str(raw.get("endsAt") or ""),
-        is_neg_risk=bool(raw.get("isNegRisk")),
-        is_yield_bearing=bool(raw.get("isYieldBearing")),
+        is_neg_risk=_bool_value(raw.get("isNegRisk"), field="isNegRisk"),
+        is_yield_bearing=_bool_value(raw.get("isYieldBearing"), field="isYieldBearing"),
         yes_token_id=str(yes.get("onChainId") or ""),
         no_token_id=str(no.get("onChainId") or ""),
         best_yes_bid=best_yes_bid,
@@ -222,6 +222,19 @@ def _level_price(value: Any) -> Decimal:
     if isinstance(value, dict):
         return as_decimal(value.get("price"))
     return as_decimal(value)
+
+
+def _bool_value(value: Any, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise UnsupportedPredictMarket(f"continuous maker requires boolean {field}")
 
 
 def _seconds_to(value: str) -> float | None:

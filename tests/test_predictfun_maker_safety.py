@@ -209,10 +209,27 @@ def test_market_level_ws_timestamp_blocks_stale_book() -> None:
     assert _book_from_ws_state(state, 42, max_age_sec=120) == {}
 
 
+def test_market_level_ws_timestamp_is_required() -> None:
+    state = {
+        "orderbooks": {"42": {"bids": [["0.4", "10"]], "asks": [["0.6", "10"]]}},
+        "orderbook_updated_at": {},
+    }
+    assert _book_from_ws_state(state, 42, max_age_sec=120) == {}
+
+
 def test_disconnected_ws_state_is_rejected_even_with_fresh_timestamp(tmp_path) -> None:
     state_path = tmp_path / "ws.json"
     state_path.write_text(
         '{"connected": false, "ts": "2099-01-01T00:00:00Z", "orderbooks": {}}',
+        encoding="utf-8",
+    )
+    assert _load_fresh_ws_state(state_path, max_age_sec=120) == {}
+
+
+def test_ws_state_requires_explicit_connected_true(tmp_path) -> None:
+    state_path = tmp_path / "ws.json"
+    state_path.write_text(
+        '{"ts": "2099-01-01T00:00:00Z", "orderbooks": {}}',
         encoding="utf-8",
     )
     assert _load_fresh_ws_state(state_path, max_age_sec=120) == {}
@@ -414,6 +431,16 @@ def test_yes_no_tokens_are_mapped_by_name_not_array_order() -> None:
     raw["outcomes"][1]["name"] = "DOWN"
     with pytest.raises(UnsupportedPredictMarket, match="canonical YES/NO"):
         normalize_market(raw)
+
+
+def test_market_normalization_parses_string_mode_flags() -> None:
+    raw = {**_raw_market(outcomes=2), "isNegRisk": "false", "isYieldBearing": "true"}
+    market = normalize_market(raw)
+    assert market.is_neg_risk is False
+    assert market.is_yield_bearing is True
+
+    with pytest.raises(UnsupportedPredictMarket, match="boolean isNegRisk"):
+        normalize_market({**raw, "isNegRisk": "unknown"})
 
 
 def test_admission_hysteresis_prevents_small_rank_churn() -> None:
@@ -831,3 +858,49 @@ def test_final_preflight_blocks_crossing_and_mode_changes() -> None:
     )
     assert no_cap["ok"] is False
     assert no_cap["reason"] == "invalid_max_notional"
+
+
+def test_final_preflight_rejects_invalid_modes_token_remap_and_tick() -> None:
+    original = _raw_market(outcomes=2)
+
+    invalid_mode = {**original, "feeRateBps": "not-a-number"}
+    result = validate_final_order(
+        original_market=invalid_mode,
+        fresh_market=invalid_mode,
+        token_id="yes-token",
+        side="BUY",
+        price=Decimal("0.59"),
+        size=Decimal("1"),
+        max_notional=Decimal("1"),
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "market_execution_mode_invalid field=feeRateBps"
+
+    remapped = dict(original)
+    remapped["outcomes"] = [
+        {**original["outcomes"][0], "name": "NO"},
+        {**original["outcomes"][1], "name": "YES"},
+    ]
+    result = validate_final_order(
+        original_market=original,
+        fresh_market=remapped,
+        token_id="yes-token",
+        side="BUY",
+        price=Decimal("0.59"),
+        size=Decimal("1"),
+        max_notional=Decimal("1"),
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "outcome_token_changed"
+
+    result = validate_final_order(
+        original_market=original,
+        fresh_market=original,
+        token_id="yes-token",
+        side="BUY",
+        price=Decimal("0.591"),
+        size=Decimal("1"),
+        max_notional=Decimal("1"),
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "invalid_price_tick"

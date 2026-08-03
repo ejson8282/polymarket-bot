@@ -823,7 +823,7 @@ def _load_fresh_ws_state(path: Path, *, max_age_sec: float) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    if data.get("connected") is False:
+    if data.get("connected") is not True:
         return {}
     ts = str(data.get("ts") or "")
     if not ts:
@@ -876,13 +876,14 @@ def _book_from_ws_state(
         else {}
     )
     updated_at = str(updated.get(str(market_id)) or "")
-    if updated_at:
-        try:
-            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            if (datetime.now(timezone.utc) - dt).total_seconds() > max(0.0, max_age_sec):
-                return {}
-        except Exception:
+    if not updated_at:
+        return {}
+    try:
+        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - dt).total_seconds() > max(0.0, max_age_sec):
             return {}
+    except Exception:
+        return {}
     return {"data": book, "_source": "ws"}
 
 
