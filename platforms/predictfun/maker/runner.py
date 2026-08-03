@@ -7,7 +7,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Optional
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -27,6 +27,22 @@ from platforms.predictfun.maker.simulator import update_simulation
 
 
 _STOP = False
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _release_metadata(
+    environ: Optional[Mapping[str, str]] = None,
+) -> dict[str, Any]:
+    env = environ if environ is not None else os.environ
+    return {
+        "release_sha": str(env.get("PREDICTFUN_RELEASE_SHA", "")),
+        "release_required": _truthy(
+            str(env.get("PREDICTFUN_REQUIRE_RELEASE", ""))
+        ),
+    }
 
 
 def _handle_stop(signum: int, frame: object) -> None:
@@ -81,6 +97,7 @@ def run_loop(
         "mode": "dry_run",
         "environment": cfg.get("environment", "testnet"),
         "base_url": cfg.get("base_url"),
+        **_release_metadata(),
         "interval_sec": interval_sec,
         "cycle_count": 0,
         "error_count": 0,
