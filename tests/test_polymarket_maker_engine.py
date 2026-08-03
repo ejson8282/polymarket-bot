@@ -24,6 +24,7 @@ from engine import (  # noqa: E402
     PolyLPSMulti,
     _ProxiedClobClient,
     _compute_quote_target_shares,
+    _restore_activity_records,
 )
 
 
@@ -33,6 +34,39 @@ class _RecordingEventBus:
 
     def publish(self, event_type, payload):
         self.events.append((event_type, payload))
+
+
+def test_restore_activity_records_keeps_recent_history_only():
+    fills = [{"id": index} for index in range(140)]
+    exits = [{"id": index} for index in range(120)]
+
+    restored_fills, restored_exits = _restore_activity_records(
+        {
+            "account_index": 2,
+            "fills": fills,
+            "exit_records": exits,
+            "pending_unwinds": [{"id": "must-not-restore"}],
+        },
+        2,
+    )
+
+    assert [row["id"] for row in restored_fills] == list(range(40, 140))
+    assert [row["id"] for row in restored_exits] == list(range(20, 120))
+
+
+def test_restore_activity_records_rejects_wrong_account_or_invalid_payloads():
+    assert _restore_activity_records(
+        {"account_index": 1, "fills": [{"id": 1}]},
+        2,
+    ) == ([], [])
+    assert _restore_activity_records(
+        {"account_index": "bad", "fills": [{"id": 1}]},
+        2,
+    ) == ([], [])
+    assert _restore_activity_records(
+        {"account_index": 2, "fills": "bad", "exit_records": [1, {"id": 2}]},
+        2,
+    ) == ([], [{"id": 2}])
 
 
 def _global_cooldown_engine() -> PolyLPSMulti:

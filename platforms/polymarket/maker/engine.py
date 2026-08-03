@@ -337,6 +337,33 @@ def _contains_any_ci(text: str, needles: list[str]) -> bool:
     return any(str(n or "").strip().lower() in hay for n in needles if str(n or "").strip())
 
 
+def _restore_activity_records(
+    prior_state: object,
+    account_index: int,
+    *,
+    limit: int = 100,
+) -> tuple[list[dict], list[dict]]:
+    """Restore display-only fill/exit history without reviving pending actions."""
+    if not isinstance(prior_state, dict):
+        return [], []
+    prior_account = prior_state.get("account_index")
+    if prior_account is not None:
+        try:
+            if int(prior_account) != account_index:
+                return [], []
+        except (TypeError, ValueError):
+            return [], []
+
+    def recent_dicts(value: object) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+        return [dict(row) for row in value if isinstance(row, dict)][-limit:]
+
+    return recent_dicts(prior_state.get("fills")), recent_dicts(
+        prior_state.get("exit_records")
+    )
+
+
 def _compute_quote_target_shares(
     *,
     available: Decimal,
@@ -891,6 +918,7 @@ class PolyLPSMulti:
         self._active_exit_orders: Dict[str, str] = {}  # {token_id: order_id} — protected from cancel_all
         # Completed exit records: [{token_id, fill_price, sell_price, size, loss, ts}]
         self._exit_records: list[dict] = []
+        self._fills_record: list[dict] = []
         self._unwind_check_interval_sec: int = int(execution.get("unwind_check_interval_sec", 300))
         self._unwind_max_age_sec: int = int(execution.get("unwind_max_age_sec", 14400))
 
@@ -1087,6 +1115,12 @@ class PolyLPSMulti:
                     ]
                     self._managed_buy_order_ids_order = restored_ids
                     self._managed_buy_order_ids = set(restored_ids)
+                restored_fills, restored_exits = _restore_activity_records(
+                    _prior,
+                    self._account_idx,
+                )
+                self._fills_record = restored_fills
+                self._exit_records = restored_exits
                 if isinstance(_prior_events, list):
                     _now_ts = time.time()
                     _ttl_cutoff = _now_ts - self._curator_events_ttl_sec
@@ -1104,10 +1138,14 @@ class PolyLPSMulti:
                     self._curator_events_log = restored
                     if restored:
                         log(f"[engine] restored {len(restored)} curator_events from prior state")
+                if restored_fills or restored_exits:
+                    log(
+                        "[engine] restored activity history "
+                        f"fills={len(restored_fills)} exits={len(restored_exits)}"
+                    )
         except Exception as _re:
-            log(f"[engine] curator_events rehydrate err: {_re}")
+            log(f"[engine] prior state rehydrate err: {_re}")
 
-        self._fills_record: list[dict] = []
         self._market_live_orders: Dict[str, list] = {}
         self._last_balance: Optional[Decimal] = None
         self._market_ws_backoff_cap_sec: int = int(execution.get("market_ws_backoff_cap_sec", 30))
