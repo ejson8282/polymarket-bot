@@ -263,14 +263,25 @@ def _discord_embed_color(level: str) -> int:
     return {"info": 0x2ECC71, "warning": 0xF1C40F, "danger": 0xE74C3C}.get(level, 0x95A5A6)
 
 
+def _discord_description(message: Any) -> str:
+    """Render structured payloads as readable lines, never raw JSON."""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict):
+        return "\n".join(
+            f"{key}：{value}"
+            for key, value in message.items()
+            if value is not None and value != ""
+        )
+    if isinstance(message, (list, tuple, set)):
+        return "\n".join(f"- {value}" for value in message)
+    return str(message)
+
+
 def _send_discord_webhook(url: str, title: str, message: Any, level: str) -> None:
     """Blocking HTTP POST to Discord webhook — runs in daemon thread."""
     try:
-        description = (
-            message
-            if isinstance(message, str)
-            else json.dumps(message, ensure_ascii=False, default=str)
-        )
+        description = _discord_description(message)
         payload = {
             "embeds": [{
                 "title": title,
@@ -1401,9 +1412,15 @@ class PolyLPSMulti:
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             if start_ts:
                 start_hm = datetime.fromtimestamp(start_ts).strftime("%m-%d %H:%M")
-                self.send_discord(f"[赛前下架] {slug} | 开赛 {start_hm} | 撤单={cancelled_n} | {reason} | src={trigger}")
+                self.send_discord(
+                    f"赛前下架\n市场：{slug}\n开赛：{start_hm}\n"
+                    f"撤单：{cancelled_n} 笔\n原因：{self._discord_reason(reason)}\n来源：{trigger}"
+                )
             else:
-                self.send_discord(f"[赛前下架] {slug} | 撤单={cancelled_n} | {reason} | src={trigger}")
+                self.send_discord(
+                    f"赛前下架\n市场：{slug}\n撤单：{cancelled_n} 笔\n"
+                    f"原因：{self._discord_reason(reason)}\n来源：{trigger}"
+                )
         return True
 
     def _mark_latency(self, token_id: str, key: str, ts: Optional[float] = None) -> float:
@@ -2309,7 +2326,10 @@ class PolyLPSMulti:
             log(f"[forbid] token={token_id} watch_count={tracker.get('watch_count', 0)} defense_repeat_count={tracker.get('defense_repeat_count', 0)} reason={reason} ttl={self.event_ban_ttl_sec}s")
             slug = self._token_slug_cache.get(token_id, token_id[:16])
             self.send_discord(
-                f"禁挂提醒\n市场: {slug}\n原因: {reason}\n进入观察次数: {tracker.get('watch_count', 0)}\n重复防御次数: {tracker.get('defense_repeat_count', 0)}\n禁挂时长: {self.event_ban_ttl_sec} 秒"
+                f"禁挂提醒\n市场：{slug}\n原因：{self._discord_reason(reason)}\n"
+                f"进入观察：{tracker.get('watch_count', 0)} 次\n"
+                f"重复防御：{tracker.get('defense_repeat_count', 0)} 次\n"
+                f"禁挂时长：{self.event_ban_ttl_sec:.0f} 秒"
             )
             return
         tracker["watch_enter_ts"] = time.time()
@@ -2362,7 +2382,7 @@ class PolyLPSMulti:
             {"reason": reason, "orders_targeted": len(ids)},
         )
         log(f"[quarantine] token={token_id} entered QUARANTINE reason={reason} duration={self._vol_quarantine_duration_sec}s")
-        self._notify_risk("Event quarantined", token=token_id, reason=reason)
+        self._notify_risk("市场已暂停观察", token=token_id, reason=reason)
 
     def _remember_parent_event(
         self,
@@ -2512,7 +2532,7 @@ class PolyLPSMulti:
             f"cooldown={self._parent_event_shock_cooldown_sec:.0f}s reason={reason}"
         )
         self._notify_risk(
-            "Related markets paused",
+            "关联市场已暂停",
             parent_event=parent_event_id,
             trigger=token_id,
             markets=len(members),
@@ -2659,8 +2679,9 @@ class PolyLPSMulti:
                 f"buy_cancel_unconfirmed:{reason}",
             )
             self.send_discord(
-                f"[EXIT 暂停] {token_id[:16]} | 无法确认 BUY 已撤净，"
-                "已停止自动卖出并升级全局安全撤单"
+                f"退出流程暂停\n市场：{self._discord_market_name(token_id)}\n"
+                "原因：无法确认买单已经撤净\n"
+                "系统处理：已停止自动卖出并启动全局安全撤单"
             )
             self._spawn_bg(
                 self.trigger_global_kill_switch(
@@ -2706,7 +2727,10 @@ class PolyLPSMulti:
                         position = found_pos
                         break
                     if scan_attempt >= 10:
-                        self.send_fill_discord(f"[EXIT] Still scanning for position (attempt {scan_attempt})...")
+                        self.send_fill_discord(
+                            f"正在查找成交后的仓位\n已尝试：{scan_attempt} 次\n"
+                            "系统处理：继续查询，暂不恢复挂单"
+                        )
                 if not position or position <= 0:
                     return
 
@@ -2740,7 +2764,11 @@ class PolyLPSMulti:
         if position is not None and 0 < position <= self._exit_dust_threshold:
             log(f"[exit] token={token_id[:16]} dust_pos={position} thr={self._exit_dust_threshold} — holding global halt")
             self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, "dust_position")
-            self.send_discord(f"[EXIT] dust pos={position} on {token_id[:16]} — 需手动清仓，其他市场保持暂停直到处理完成")
+            self.send_discord(
+                f"发现微量剩余仓位\n市场：{self._discord_market_name(token_id)}\n"
+                f"剩余：{float(position):,.4f} 份\n"
+                "需手动清仓；处理完成前其他市场保持暂停"
+            )
             return
 
         sell_size = Decimal(str(position)) if position and position > 0 else fill_size
@@ -2777,7 +2805,11 @@ class PolyLPSMulti:
         if sell_price <= Decimal("0.02"):
             log(f"[exit] {token_id[:16]} sell_price={sell_price} too low, refusing to sell at loss — MANUAL EXIT")
             self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"sell_price_too_low:{sell_price}")
-            self.send_discord(f"[EXIT 拒绝低价卖出] {token_id[:16]} | price={sell_price} sz={sell_size} | 需手动处理，其他市场仍暂停")
+            self.send_discord(
+                f"已拒绝异常低价卖出\n市场：{self._discord_market_name(token_id)}\n"
+                f"价格：${float(sell_price):.4f}\n数量：{float(sell_size):,.2f} 份\n"
+                "需手动处理；其他市场仍暂停"
+            )
             return
 
         # Step 3: Place SELL order
@@ -2798,8 +2830,15 @@ class PolyLPSMulti:
                     "placed_at": time.time(),
                     "reason": reason,
                 })
-                self.send_discord(f"[EXIT] SELL placed | {token_id[:16]} | p={sell_price} sz={sell_size} | oid={order_id[:12]}")
-                self.notify_discord("Exit Sell Placed", f"token={token_id[:16]} p={sell_price} sz={sell_size}", "warning")
+                self.notify_discord(
+                    "退出单已提交",
+                    (
+                        f"市场：{self._discord_market_name(token_id)}\n"
+                        f"卖出：{float(sell_size):,.2f} 份 × ${float(sell_price):.4f}\n"
+                        "系统处理：等待成交并确认仓位归零"
+                    ),
+                    "warning",
+                )
                 # Step 4: Monitor until sold, then resume
                 self._spawn_bg(self._monitor_exit_order(token_id, order_id, sell_price, sell_size, fill_price, stop_loss_floor, reason), name=f"monitor_exit:{token_id}")
                 return
@@ -2810,7 +2849,12 @@ class PolyLPSMulti:
 
         # all retries failed — don't resume, wait for manual
         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_sell_failed:{reason}")
-        self.send_discord(f"[EXIT FAILED] {token_id[:16]} | {self._exit_retry_count} attempts | p={fill_price} sz={fill_size} | 需手动处理，其他市场仍暂停")
+        self.send_discord(
+            f"退出单提交失败\n市场：{self._discord_market_name(token_id)}\n"
+            f"已尝试：{self._exit_retry_count} 次\n"
+            f"成交价：${float(fill_price):.4f}\n数量：{float(fill_size):,.2f} 份\n"
+            "需手动处理；其他市场仍暂停"
+        )
 
     async def _cancel_token_orders(
         self,
@@ -2952,7 +2996,7 @@ class PolyLPSMulti:
         )
         try:
             self._notify_risk(
-                "Risk cancellation unconfirmed",
+                "风险挂单撤销未确认",
                 token=token_id,
                 reason=reason,
             )
@@ -3018,7 +3062,7 @@ class PolyLPSMulti:
                 )
                 try:
                     self._notify_risk(
-                        "Cross-side cancel unconfirmed",
+                        "对侧挂单撤销未确认",
                         trigger_token=trigger_token,
                         paired_token=paired_token,
                         reason=reason,
@@ -3038,15 +3082,15 @@ class PolyLPSMulti:
             )
             try:
                 self.notify_discord(
-                    "🛡 cross-side sentinel triggered",
-                    {
-                        "trigger_token": trigger_token,
-                        "cancelled_token": paired_token,
-                        "reason": reason,
-                        "ask_depth_max": round(max_ask, 0),
-                        "ask_depth_current": round(current_ask, 0),
-                        "consumed_pct": round(consumed_pct, 3),
-                    },
+                    "对侧风险保护已触发",
+                    (
+                        f"触发市场：{self._discord_market_name(trigger_token)}\n"
+                        f"已撤市场：{self._discord_market_name(paired_token)}\n"
+                        f"触发原因：{self._discord_reason(reason)}\n"
+                        f"盘口深度：{current_ask:,.0f} / 峰值 {max_ask:,.0f}\n"
+                        f"深度下降：{consumed_pct:.0%}\n"
+                        "系统处理：已撤销同一事件另一侧买单"
+                    ),
                     "warning",
                 )
             except Exception:
@@ -3174,7 +3218,10 @@ class PolyLPSMulti:
             log(f"[exit] {token_id[:16]} pos reappeared={recheck} during stability wait")
             return  # don't resume — position came back (new fill?)
         self._resume_halted_markets("exit_complete_resume")
-        self.send_fill_discord(f"[EXIT OK] {token_id[:16]} pos=0 bal_stable={stable}")
+        self.send_fill_discord(
+            f"仓位退出完成\n市场：{self._discord_market_name(token_id)}\n"
+            f"仓位：0\n余额状态：{'已稳定' if stable else '尚未稳定'}"
+        )
 
     async def _monitor_exit_order(self, token_id: str, order_id: str, sell_price: Decimal,
                                   sell_size: Decimal, fill_price: Decimal, stop_loss_floor: Decimal,
@@ -3236,7 +3283,10 @@ class PolyLPSMulti:
                         # balance_drop_global_halt put on unrelated markets. Only the dust token
                         # stays in PENDING_MANUAL_EXIT; _resume_halted_markets skips that state.
                         self._resume_halted_markets("exit_dust_resume")
-                        self.send_discord(f"[EXIT] dust remains={new_position} on {token_id[:16]} — manual review")
+                        self.send_discord(
+                            f"退出后仍有微量仓位\n市场：{self._discord_market_name(token_id)}\n"
+                            f"剩余：{float(new_position):,.4f} 份\n需手动检查"
+                        )
                         return
                     # Order disappeared but still have position — re-place with current pricing
                     sell_size = Decimal(str(new_position))
@@ -3274,8 +3324,12 @@ class PolyLPSMulti:
                         if below_floor_since == 0:
                             below_floor_since = now
                             self.send_discord(
-                                f"[EXIT 警告] {token_id[:16]} 市场价={market_bid} < 止损底线={stop_loss_floor} | "
-                                f"fill={fill_price} sz={sell_size} | 等待回升...")
+                                f"退出价格低于止损底线\n市场：{self._discord_market_name(token_id)}\n"
+                                f"市场价：${float(market_bid):.4f}\n"
+                                f"止损底线：${float(stop_loss_floor):.4f}\n"
+                                f"成交价：${float(fill_price):.4f}\n数量：{float(sell_size):,.2f} 份\n"
+                                "系统处理：等待价格回升"
+                            )
                     else:
                         below_floor_since = 0
 
@@ -3330,7 +3384,11 @@ class PolyLPSMulti:
         log(f"[exit] {token_id[:16]} safety timeout | p={sell_price} sz={sell_size}")
         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, f"exit_safety_timeout:{reason}")
         self._resume_halted_markets("exit_safety_timeout_resume")
-        self.send_discord(f"[EXIT 安全超时] {token_id[:16]} | p={sell_price} sz={sell_size} | 需手动处理，其他市场已恢复")
+        self.send_discord(
+            f"退出流程超时\n市场：{self._discord_market_name(token_id)}\n"
+            f"价格：${float(sell_price):.4f}\n数量：{float(sell_size):,.2f} 份\n"
+            "需手动处理；其他市场已恢复"
+        )
 
     # ---------------------------------------------------------------
     # # session mode (redesigned)
@@ -3461,8 +3519,11 @@ class PolyLPSMulti:
         resume on the next switch check.  Only orders are canceled.
         """
         log("[session] *** SESSION SWITCH BLOCKED — no valid confirmation, canceling orders ***")
-        self.send_fill_discord("[SESSION] 日夜盘切换未确认，撤销所有挂单。请在确认窗口（22:00-00:00）点确认后等待下次切换。")
-        self.notify_discord("Session Switch Blocked", "No confirmation for session switch — canceling all orders, engine stays alive", "warning")
+        self.notify_discord(
+            "日夜盘切换已暂停",
+            "原因：未收到切换确认\n系统处理：已撤销全部挂单，引擎继续运行并等待确认",
+            "warning",
+        )
         try:
             await asyncio.to_thread(self.client.cancel_all)
             self._sibling_registry.clear_funder(self._funder_lc)
@@ -3487,7 +3548,8 @@ class PolyLPSMulti:
                 return  # still no confirmation, stay halted (no orders)
             # Confirmation arrived! Resume by allowing the switch to proceed
             log(f"[session] confirmation received — resuming switch to {current}")
-            self.send_fill_discord(f"[SESSION] 确认已收到，恢复切换到 {current} 盘")
+            session_name = "夜盘" if current == "night" else "日盘"
+            self.send_fill_discord(f"日夜盘确认已收到\n系统处理：正在切换到{session_name}")
             self._session_halted_no_confirm = False
             # Fall through to do the actual switch setup below
             prev = self._last_session
@@ -3510,8 +3572,7 @@ class PolyLPSMulti:
                 return
 
         log(f"[session] === SESSION SWITCH: {prev} — {current} ===")
-        self._notify_status("Session switch", previous=prev, current=current)
-        self.send_fill_discord(f"[SESSION] Switching from {prev} to {current}")
+        self._notify_status("日夜盘切换", previous=prev, current=current)
 
         # Day → Night: selective migration (Kevin 2026-04-26).
         # Don't blow away every order — only cancel markets whose game starts
@@ -4938,7 +4999,10 @@ class PolyLPSMulti:
 
         slug_display = slug or self._token_slug_cache.get(token_id, token_id[:16])
         log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
-        self.send_discord(f"[自动加入] {slug_display} | token={token_id[:16]} | spread={spread} | src={source}")
+        self.send_discord(
+            f"市场已自动加入\n市场：{slug_display}\n"
+            f"价差：{spread}\n来源：{source}"
+        )
 
         # Persist every auto-added market (day + night) for dashboard display.
         try:
@@ -5521,9 +5585,9 @@ class PolyLPSMulti:
             self._market_live_orders.pop(token_id, None)
             live_orders = await self._refresh_live_orders(token_id)
             if old_price is not None and old_price != price:
-                self.send_discord(f"[调价] {slug} | {old_price} → {price} | sz={size}")
+                self.send_discord(f"调价\n市场：{slug}\n价格：{old_price} → {price}\n数量：{size}")
             elif old_price is None:
-                self.send_discord(f"[挂单] {slug} | p={price} sz={size}")
+                self.send_discord(f"挂单\n市场：{slug}\n价格：{price}\n数量：{size}")
         self._last_top_plan_sig[token_id] = desired_sig
         return live_orders
 
@@ -5567,7 +5631,7 @@ class PolyLPSMulti:
         if old_back_prices != new_back_prices:
             old_str = ",".join(str(p) for p in old_back_prices) if old_back_prices else "-"
             new_str = ",".join(str(p) for p in new_back_prices) if new_back_prices else "-"
-            self.send_discord(f"[调价·后腿] {slug} | {old_str} → {new_str}")
+            self.send_discord(f"对侧调价\n市场：{slug}\n价格：{old_str} → {new_str}")
         self._last_back_plan_sig[token_id] = desired_sig
         return live_orders
 
@@ -6101,9 +6165,16 @@ class PolyLPSMulti:
         slug = self._token_slug_cache.get(token_id, token_id[:16])
         msg = f"Health check failed: {slug}\nReason: {reason}"
         log(f"[health] {msg}")
-        self.notify_discord("Health Check Failure", f"market={slug}\ntoken={token_id}\nreason={reason}", "warning")
+        self.notify_discord(
+            "市场健康检查异常",
+            (
+                f"市场：{slug}\n"
+                f"原因：{self._discord_reason(reason)}\n"
+                "系统处理：已停止该市场并撤销相关挂单"
+            ),
+            "warning",
+        )
         self._event_bus.publish("health_fail", {"token_id": token_id, "slug": slug, "reason": reason})
-        self._notify_status("Message", text=msg)
 
     async def market_health_loop(self) -> None:
         while self._running:
@@ -6189,7 +6260,7 @@ class PolyLPSMulti:
         matched_price: Optional[Decimal] = None,
     ) -> None:
         log(f"[risk] FILL_HALT token={token_id} reason={reason} size={matched_size} price={matched_price}")
-        self.notify_discord("Fill Detected", self._format_fill_alert(token_id, reason, matched_size, matched_price), "danger")
+        self.notify_discord("检测到成交", self._format_fill_alert(token_id, reason, matched_size, matched_price), "danger")
         self._event_bus.publish("fill", {
             "token_id": token_id, "reason": reason,
             "size": str(matched_size), "price": str(matched_price),
@@ -6304,7 +6375,7 @@ class PolyLPSMulti:
         _current_account_idx_ctx.set(self._account_idx)
         n_markets = len(self._active_market_cfg())
         log(f"[engine] starting with {n_markets} active markets")
-        self.notify_discord("Engine Started", f"Markets: {n_markets}", "info")
+        self.notify_discord("做市引擎已启动", f"运行市场：{n_markets} 个", "info")
         self._event_bus.publish("engine_start", {"n_markets": n_markets})
 
         # Inject paired NO tokens before any task starts (so WS subscribes to them)
@@ -6441,7 +6512,11 @@ class PolyLPSMulti:
         if not self._proxy_failover_is_enabled():
             return
         if time.time() < self._proxy_failover_observe_until:
-            msg = f"[PROXY] recovered source={source} node={self._proxy_failover_last_switch_to or '-'}"
+            msg = (
+                "网络代理已恢复\n"
+                f"检测来源：{source}\n"
+                f"当前节点：{self._proxy_failover_last_switch_to or '-'}"
+            )
             log(msg)
             self.send_fill_discord(msg)
         self._proxy_failover_observe_until = 0.0
@@ -6640,9 +6715,9 @@ class PolyLPSMulti:
                     f"halt={self._proxy_failover_switch_window_sec:.0f}s"
                 )
                 self.send_discord(
-                    f"[ALERT] Proxy failover halted\n"
-                    f"已轮换所有 {total} 个节点，均未恢复\n"
-                    f"halt {int(self._proxy_failover_switch_window_sec)}s"
+                    "网络代理切换已暂停\n"
+                    f"已轮换全部 {total} 个节点，均未恢复\n"
+                    f"暂停时间：{int(self._proxy_failover_switch_window_sec)} 秒"
                 )
                 return
             if current in untried:
@@ -6678,8 +6753,10 @@ class PolyLPSMulti:
                 f"reason={reason} observe={self._proxy_failover_observe_sec:.0f}s round={tried}/{total}"
             )
             self.send_fill_discord(
-                f"[PROXY] switch {current or '-'} → {target}\n"
-                f"reason={reason} observe={int(self._proxy_failover_observe_sec)}s round={tried}/{total}"
+                f"网络代理已切换\n节点：{current or '-'} → {target}\n"
+                f"原因：{self._discord_reason(reason)}\n"
+                f"观察：{int(self._proxy_failover_observe_sec)} 秒\n"
+                f"本轮：{tried}/{total}"
             )
 
     def _is_req_exc(self, e: Exception) -> bool:
@@ -7823,9 +7900,16 @@ class PolyLPSMulti:
             self._require_recovery_gate = True
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
-            self.notify_discord("Kill Switch Activated", f"reason={reason}\ncooldown={self.cooldown_seconds}s", "danger")
+            self.notify_discord(
+                "安全暂停已触发",
+                (
+                    f"原因：{self._discord_reason(reason)}\n"
+                    f"冷静期：{self.cooldown_seconds:.0f} 秒\n"
+                    "系统处理：持续撤单，确认安全后自动恢复"
+                ),
+                "danger",
+            )
             self._event_bus.publish("kill_switch", {"reason": reason, "cooldown_seconds": self.cooldown_seconds})
-            self._notify_status("Message", text=msg)
 
     async def _ws_user_watch(self) -> None:
         if not self.kill_switch_on_fill:
@@ -7898,8 +7982,8 @@ class PolyLPSMulti:
                                 f"(total_reconnects={self._fill_ws_reconnect_count})")
                             try:
                                 self.send_discord(
-                                    f"[fill-ws] 断线 {down_sec:.0f}s 已重连 "
-                                    f"(累计重连 {self._fill_ws_reconnect_count} 次)")
+                                    f"成交连接已恢复\n断线时间：{down_sec:.0f} 秒\n"
+                                    f"累计重连：{self._fill_ws_reconnect_count} 次")
                             except Exception:
                                 pass
                         else:
@@ -8434,10 +8518,12 @@ class PolyLPSMulti:
                         })
                         if drop > BALANCE_DROP_ABS or drop_pct > BALANCE_DROP_PCT:
                             self.notify_discord(
-                                "Balance Drop",
+                                "可用余额下降",
                                 (
-                                    f"prev={prev_balance}\nnow={avail}\n"
-                                    f"drop={drop}\npct={drop_pct:.2%}"
+                                    f"原余额：${float(prev_balance):,.2f}\n"
+                                    f"现余额：${float(avail):,.2f}\n"
+                                    f"减少：${float(drop):,.2f}（{drop_pct:.2%}）\n"
+                                    "系统处理：正在按新余额调整挂单"
                                 ),
                                 "warning",
                             )
@@ -8468,11 +8554,11 @@ class PolyLPSMulti:
         while self._running:
             await asyncio.sleep(3600)
             msg = (
-                "Hourly summary\n"
-                f"Markets monitored: {len(self.market_cfg)}\n"
-                f"Quotes sent this hour: {self._quotes_sent}\n"
-                f"Fills detected this hour: {self._fills_seen}\n"
-                f"Cooldown active: {'Yes' if time.time() < self._cooldown_until else 'No'}"
+                "每小时运行汇总\n"
+                f"监控市场：{len(self.market_cfg)} 个\n"
+                f"本小时挂单：{self._quotes_sent} 笔\n"
+                f"本小时成交：{self._fills_seen} 笔\n"
+                f"安全冷静期：{'生效中' if time.time() < self._cooldown_until else '未触发'}"
             )
             self._notify_status("Message", text=msg)
 
@@ -8544,7 +8630,10 @@ class PolyLPSMulti:
                         self._last_back_plan_sig[tid] = ""
                         slug = self._token_slug_cache.get(tid, tid[:16])
                         start_hm = datetime.fromtimestamp(start_ts).strftime("%m-%d %H:%M")
-                        self.send_discord(f"[赛前下架] {slug} | 开赛 {start_hm} | 撤单={cancelled_n} | cutoff={cutoff_sec}s | src=sweep")
+                        self.send_discord(
+                            f"赛前下架\n市场：{slug}\n开赛：{start_hm}\n"
+                            f"撤单：{cancelled_n} 笔\n提前：{cutoff_sec} 秒\n来源：定时检查"
+                        )
 
                         # Drop the market from market_cfg entirely at cutoff so we
                         # stop receiving WS/REST data for it (avoids snapshot-drop
@@ -8684,13 +8773,11 @@ class PolyLPSMulti:
                                     EVENT_PENDING_MANUAL_EXIT,
                                     "exit_order_missing_with_inventory",
                                 )
-                            self._notify_status(
-                                "Message",
-                                text=(
-                                    "[UNWIND ALERT] Exit order is no longer open, "
-                                    f"but position={position}. Keep account halted and replace exit. "
-                                    f"token={token_id} order_id={oid}"
-                                ),
+                            self._notify_attention(
+                                "退出单异常",
+                                market=token_id,
+                                position=f"{float(position):,.4f} 份",
+                                action="退出单已不在挂单中；账户保持暂停，等待重新提交退出单",
                             )
                         self._active_exit_orders.pop(token_id, None)
                         still_pending.append(uw)
@@ -8699,17 +8786,18 @@ class PolyLPSMulti:
                     if age > self._unwind_max_age_sec:
                         # Timed out — notify via Discord for manual review, keep order alive
                         hours = age / 3600
-                        msg = (
-                            f"[UNWIND ALERT] Unwind order not filled after {hours:.1f}h\n"
-                            f"token={token_id}\n"
-                            f"fill_price={fill_price} size={fill_size} notional={float(fill_price * fill_size):.2f}\n"
-                            f"order_id={oid}\n"
-                            f"position={position}\n"
-                            f"reason={uw.get('reason', '')}\n"
-                            f"Action required: check market and decide manually."
-                        )
                         log(f"[unwind] timeout alert token={token_id} age={hours:.1f}h order_id={oid} position={position}")
-                        self._notify_status("Message", text=msg)
+                        self._notify_attention(
+                            "退出单等待超时",
+                            market=token_id,
+                            waiting=f"{hours:.1f} 小时",
+                            fill_price=f"${float(fill_price):.4f}",
+                            size=f"{float(fill_size):,.2f} 份",
+                            notional=f"${float(fill_price * fill_size):,.2f}",
+                            position=f"{float(position):,.4f} 份",
+                            reason=uw.get("reason", ""),
+                            action="请检查市场并人工决定是否调整退出价格",
+                        )
                         still_pending.append(uw)
                     else:
                         still_pending.append(uw)
@@ -8952,88 +9040,112 @@ class PolyLPSMulti:
                 log(f"[state-writer] error: {e}")
             await asyncio.sleep(self._state_write_interval_sec)
 
-    def _notify_risk(self, title: str, **fields) -> None:
-        body = [title]
-        for k, v in fields.items():
-            if v is None or v == "":
+    def _discord_market_name(self, token_id: Any) -> str:
+        token = str(token_id or "")
+        return self._token_slug_cache.get(token, token[:16] or "未知市场")
+
+    @staticmethod
+    def _discord_reason(reason: Any) -> str:
+        raw = str(reason or "").strip()
+        lowered = raw.lower()
+        translations = (
+            ("ws_trade_match", "WebSocket 成交回报"),
+            ("remote_signer_unreachable", "Mac mini 签名器不可达"),
+            ("bba_jump", "盘口价格快速变化"),
+            ("near_expiry", "市场临近到期"),
+            ("request_exception_storm", "网络请求连续异常"),
+            ("balance_drop", "可用余额明显下降"),
+            ("price_change", "盘口价格变化"),
+            ("high_liq", "盘口深度快速下降"),
+        )
+        for marker, label in translations:
+            if marker in lowered:
+                return label
+        return raw or "系统风险信号"
+
+    def _format_discord_fields(self, title: str, fields: Dict[str, Any]) -> str:
+        title_map = {
+            "Market WS down": "行情连接中断",
+            "Market WS full restart": "行情连接正在重建",
+            "Fill WS full restart": "成交连接正在重建",
+            "Recovery": "系统已恢复",
+            "Message": "系统消息",
+        }
+        labels = {
+            "token": "市场",
+            "market": "市场",
+            "trigger": "触发市场",
+            "trigger_token": "触发市场",
+            "paired_token": "关联市场",
+            "parent_event": "事件编号",
+            "markets": "关联市场数",
+            "reason": "原因",
+            "cooldown_sec": "暂停时间",
+            "age_sec": "中断时间",
+            "action": "系统处理",
+            "failures": "连续失败次数",
+            "previous": "原时段",
+            "current": "新时段",
+            "text": "详情",
+            "waiting": "已等待",
+            "fill_price": "成交价",
+            "size": "成交数量",
+            "notional": "成交金额",
+            "position": "当前仓位",
+        }
+        market_keys = {"token", "market", "trigger", "trigger_token", "paired_token"}
+        session_names = {"day": "日盘", "night": "夜盘", "unknown": "未知"}
+        body = [title_map.get(title, title)]
+        for key, value in fields.items():
+            if value is None or value == "":
                 continue
-            body.append(f"{k}: {v}")
-        self.send_discord("\n".join(body))
+            if key in market_keys:
+                value = self._discord_market_name(value)
+            elif key == "reason":
+                value = self._discord_reason(value)
+            elif key in {"previous", "current"}:
+                value = session_names.get(str(value), value)
+            elif key in {"cooldown_sec", "age_sec"}:
+                value = f"{float(value):.0f} 秒"
+            body.append(f"{labels.get(key, key)}：{value}")
+        return "\n".join(body)
+
+    def _notify_risk(self, title: str, **fields) -> None:
+        headline, *details = self._format_discord_fields(title, fields).splitlines()
+        self.notify_discord(headline, "\n".join(details), "warning")
 
     def _format_fill_alert(self, token_id: str, reason: str,
                            matched_size: Optional[Decimal],
                            matched_price: Optional[Decimal]) -> str:
-        """Build a rich fill alert message: market name, fill data, top-5
-        orderbook snapshot at fill time, defense context. Used by the fill
-        Discord notification so post-mortem doesn't require log diving."""
-        slug = self._token_slug_cache.get(token_id, token_id[:16])
-        snap = self._market_snapshots.get(token_id)
-
-        lines: list[str] = []
-        lines.append(f"slug: {slug}")
-        lines.append(f"reason: {reason}")
+        """Build a concise operator-facing fill message."""
+        slug = self._discord_market_name(token_id)
+        lines = [f"市场：{slug}"]
         if matched_size is not None:
-            lines.append(f"size: {matched_size}")
+            lines.append(f"成交数量：{float(matched_size):,.2f} 份")
         if matched_price is not None:
             try:
                 _val = float(matched_size or 0) * float(matched_price or 0)
-                lines.append(f"price: ${float(matched_price):.4f}  notional: ${_val:.2f}")
+                lines.append(
+                    f"成交价格：${float(matched_price):.4f}（金额 ${_val:,.2f}）"
+                )
             except Exception:
-                lines.append(f"price: {matched_price}")
-        lines.append(f"token: {token_id[:24]}…")
-
-        # Orderbook snapshot at fill time (top 5 each side, from cached WS snap)
-        if snap is not None:
-            bids = sorted(getattr(snap, "bids", []) or [], key=lambda b: -float(b[0]))[:5]
-            asks = sorted(getattr(snap, "asks", []) or [], key=lambda a: float(a[0]))[:5]
-            lines.append("")
-            lines.append("ORDERBOOK at fill (top 5):")
-            for p, s in asks[::-1]:  # show asks descending for visual clarity
-                lines.append(f"  ASK ${float(p):.4f} x {float(s):,.0f}")
-            best_bid = float(snap.best_bid) if getattr(snap, "best_bid", 0) else 0
-            best_ask = float(snap.best_ask) if getattr(snap, "best_ask", 0) else 0
-            lines.append(f"  --- mid ${(best_bid+best_ask)/2:.4f} (bid ${best_bid:.4f} / ask ${best_ask:.4f}) ---")
-            for p, s in bids:
-                lines.append(f"  BID ${float(p):.4f} x {float(s):,.0f}")
-
-            # Front depth above fill price (what the gate watches)
-            if matched_price is not None:
-                try:
-                    fp = float(matched_price)
-                    front_shares = sum(float(s) for (p, s) in (getattr(snap, "bids", []) or []) if float(p) >= fp)
-                    front_usd = sum(float(p) * float(s) for (p, s) in (getattr(snap, "bids", []) or []) if float(p) >= fp)
-                    lines.append(f"  front-of-fill: {front_shares:,.0f} shares / ${front_usd:,.0f} USD")
-                except Exception:
-                    pass
-        else:
-            lines.append("(no cached orderbook snapshot)")
-
+                lines.append(f"成交价格：{matched_price}")
+        lines.append(f"来源：{self._discord_reason(reason)}")
+        lines.append("系统处理：已撤销相关买单，正在退出仓位")
         return "\n".join(lines)
 
 
     def _notify_fill(self, title: str, **fields) -> None:
-        body = [title]
-        for k, v in fields.items():
-            if v is None or v == "":
-                continue
-            body.append(f"{k}: {v}")
-        self.send_discord("\n".join(body))
+        headline, *details = self._format_discord_fields(title, fields).splitlines()
+        self.notify_discord(headline, "\n".join(details), "danger")
 
     def _notify_status(self, title: str, **fields) -> None:
-        body = [title]
-        for k, v in fields.items():
-            if v is None or v == "":
-                continue
-            body.append(f"{k}: {v}")
-        self.send_discord("\n".join(body))
+        headline, *details = self._format_discord_fields(title, fields).splitlines()
+        self.notify_discord(headline, "\n".join(details), "info")
 
     def _notify_attention(self, title: str, **fields) -> None:
-        body = [title]
-        for k, v in fields.items():
-            if v is None or v == "":
-                continue
-            body.append(f"{k}: {v}")
-        self.send_discord("\n".join(body))
+        headline, *details = self._format_discord_fields(title, fields).splitlines()
+        self.notify_discord(headline, "\n".join(details), "warning")
 
     def _discord_prefix(self) -> str:
         """Multi-account Discord tag (empty string in single-account mode)."""
