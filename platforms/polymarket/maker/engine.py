@@ -9042,7 +9042,8 @@ class PolyLPSMulti:
 
     def _discord_market_name(self, token_id: Any) -> str:
         token = str(token_id or "")
-        return self._token_slug_cache.get(token, token[:16] or "未知市场")
+        cache = getattr(self, "_token_slug_cache", {})
+        return cache.get(token, token[:16] or "未知市场")
 
     @staticmethod
     def _discord_reason(reason: Any) -> str:
