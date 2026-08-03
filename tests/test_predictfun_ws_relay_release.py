@@ -91,6 +91,27 @@ class LaunchctlRunner(CommandRunner):
         return ""
 
 
+class DelayedLaunchctlRunner(LaunchctlRunner):
+    def __init__(self, delayed_prints: int) -> None:
+        super().__init__()
+        self.delayed_prints = delayed_prints
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Optional[Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        check: bool = True,
+    ) -> str:
+        command = tuple(str(value) for value in args)
+        if command[:2] == ("launchctl", "print") and self.delayed_prints > 0:
+            self.calls.append(command)
+            self.delayed_prints -= 1
+            return "state = waiting"
+        return super().run(args, cwd=cwd, env=env, check=check)
+
+
 def _prepare(tmp_path: Path) -> tuple[RelayDeploymentPaths, str]:
     paths, sha = _paths(tmp_path)
     prepare_release(paths, CommandRunner(), sha)
@@ -171,6 +192,37 @@ def test_activate_renders_launch_agent_and_probes_public_market(
     assert "launchctl bootstrap" in rendered_calls
     assert "launchctl kickstart -k" in rendered_calls
     assert "polymarket-engine" not in rendered_calls
+
+
+def test_activate_waits_for_launch_agent_to_reach_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, sha = _prepare(tmp_path)
+    runner = DelayedLaunchctlRunner(delayed_prints=2)
+    monkeypatch.setattr(
+        "platforms.predictfun.deploy_ws_relay.time.sleep",
+        lambda _seconds: None,
+    )
+
+    result = activate_release(
+        paths,
+        runner,
+        target_sha=sha,
+        expected_current="none",
+        confirm=CONFIRMATION,
+        authorization_id="test-delayed-launch",
+        discover_market=lambda _url: 58416,
+        relay_probe=lambda _url, market_id: {
+            "ok": True,
+            "market_id": market_id,
+        },
+    )
+
+    assert result["status"] == "activated"
+    assert len(
+        [call for call in runner.calls if call[:2] == ("launchctl", "print")]
+    ) == 3
 
 
 def test_failed_probe_restores_prior_launch_agent(

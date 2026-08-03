@@ -8,10 +8,33 @@ import pytest
 from platforms.predictfun.ws_relay import (
     RelayProtocolError,
     client_admission_error,
+    connect_upstream,
     probe_relay,
     server_message_is_allowed,
     validate_client_message,
 )
+
+
+def test_upstream_websocket_bypasses_system_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    sentinel = object()
+
+    async def fake_connect(url: str, **kwargs: object) -> object:
+        calls.append((url, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(
+        "platforms.predictfun.ws_relay.websockets.connect",
+        fake_connect,
+    )
+
+    result = asyncio.run(connect_upstream("wss://ws.predict.fun/ws", "fixture"))
+
+    assert result is sentinel
+    assert calls[0][0] == "wss://ws.predict.fun/ws"
+    assert calls[0][1]["proxy"] is None
 
 
 @pytest.mark.parametrize(
