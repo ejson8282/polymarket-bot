@@ -8560,7 +8560,7 @@ class PolyLPSMulti:
                 f"本小时成交：{self._fills_seen} 笔\n"
                 f"安全冷静期：{'生效中' if time.time() < self._cooldown_until else '未触发'}"
             )
-            self._notify_status("Message", text=msg)
+            self._notify_attention("Message", text=msg)
 
     async def start_guard_sweep_loop(self) -> None:
         """Periodically scan all markets and enforce hard pre-start stop.

@@ -46,6 +46,27 @@ def _engine_method(name: str) -> ast.FunctionDef:
     )
 
 
+def _engine_async_method(name: str) -> ast.AsyncFunctionDef:
+    engine_path = (
+        Path(__file__).resolve().parents[1]
+        / "platforms"
+        / "polymarket"
+        / "maker"
+        / "engine.py"
+    )
+    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
+    engine_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PolyLPSMulti"
+    )
+    return next(
+        node
+        for node in engine_class.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+    )
+
+
 def _module_function(name: str) -> ast.FunctionDef:
     engine_path = (
         Path(__file__).resolve().parents[1]
@@ -120,6 +141,18 @@ def test_polymarket_notifications_reload_dashboard_webhook_files() -> None:
     assert "_discord_important_webhook_file" in names
     assert "discord_normal_webhook.txt" in source
     assert "discord_important_webhook.txt" in source
+
+
+def test_hourly_summary_uses_important_notification_channel() -> None:
+    method = _engine_async_method("summary_loop")
+    names = {
+        node.attr
+        for node in ast.walk(method)
+        if isinstance(node, ast.Attribute)
+    }
+
+    assert "_notify_attention" in names
+    assert "_notify_status" not in names
 
 
 def test_polymarket_has_no_independent_webhook_route() -> None:
