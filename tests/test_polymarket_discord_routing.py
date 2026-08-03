@@ -1,5 +1,7 @@
 import ast
+from decimal import Decimal
 from pathlib import Path
+from typing import Any, Optional
 
 
 def _message_classifier():
@@ -58,6 +60,22 @@ def _module_function(name: str) -> ast.FunctionDef:
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == name
     )
+
+
+def _compiled_module_function(name: str):
+    function = _module_function(name)
+    namespace = {"Any": Any}
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    exec(compile(module, "<discord-test>", "exec"), namespace)
+    return namespace[name]
+
+
+def _compiled_engine_method(name: str):
+    function = _engine_method(name)
+    namespace = {"Decimal": Decimal, "Optional": Optional}
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    exec(compile(module, "<discord-test>", "exec"), namespace)
+    return namespace[name]
 
 
 def test_polymarket_discord_message_classification() -> None:
@@ -130,3 +148,68 @@ def test_polymarket_has_no_independent_webhook_route() -> None:
         'reporting.get("fill_discord_webhook"',
     ):
         assert legacy_key not in source
+
+
+def test_structured_discord_payload_is_never_rendered_as_raw_json() -> None:
+    render = _compiled_module_function("_discord_description")
+
+    description = render({"原因": "盘口变化", "数量": 2})
+
+    assert description == "原因：盘口变化\n数量：2"
+    assert "{" not in description
+    assert '"原因"' not in description
+
+
+def test_fill_alert_is_concise_chinese_without_orderbook_dump() -> None:
+    format_fill = _compiled_engine_method("_format_fill_alert")
+
+    class FakeEngine:
+        @staticmethod
+        def _discord_market_name(_token_id: str) -> str:
+            return "示例市场"
+
+        @staticmethod
+        def _discord_reason(_reason: str) -> str:
+            return "WebSocket 成交回报"
+
+    message = format_fill(
+        FakeEngine(),
+        "token-1",
+        "WS_TRADE_MATCH:12.34",
+        Decimal("12.34"),
+        Decimal("0.78"),
+    )
+
+    assert "市场：示例市场" in message
+    assert "成交数量：12.34 份" in message
+    assert "成交价格：$0.7800（金额 $9.63）" in message
+    assert "系统处理：已撤销相关买单，正在退出仓位" in message
+    assert "ORDERBOOK" not in message
+    assert "ASK" not in message
+    assert "BID" not in message
+    assert "token-1" not in message
+
+
+def test_key_operator_notifications_use_chinese_titles_and_no_dict_payload() -> None:
+    engine_path = (
+        Path(__file__).resolve().parents[1]
+        / "platforms"
+        / "polymarket"
+        / "maker"
+        / "engine.py"
+    )
+    source = engine_path.read_text(encoding="utf-8")
+
+    for title in (
+        '"检测到成交"',
+        '"可用余额下降"',
+        '"退出单已提交"',
+        '"对侧风险保护已触发"',
+        '"安全暂停已触发"',
+    ):
+        assert title in source
+
+    assert '"Fill Detected"' not in source
+    assert '"Balance Drop"' not in source
+    assert '"Exit Sell Placed"' not in source
+    assert '"🛡 cross-side sentinel triggered"' not in source

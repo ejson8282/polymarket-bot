@@ -802,7 +802,7 @@ def test_risk_cancel_escalates_then_rechecks_official_orders():
     assert latency == [("101", "t_orders_cleared")]
     assert notifications == [
         (
-            "Risk cancellation unconfirmed",
+            "风险挂单撤销未确认",
             {"token": "101", "reason": "watch:bba_jump"},
         )
     ]
@@ -986,7 +986,7 @@ def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
     )
 
     assert engine._event_state_name("101") == EVENT_PENDING_MANUAL_EXIT
-    assert notices and "无法确认 BUY 已撤净" in notices[-1]
+    assert notices and "无法确认买单已经撤净" in notices[-1]
     assert spawned == ["exit_cancel_kill_switch:101"]
 
 
@@ -1347,7 +1347,7 @@ def test_missing_exit_order_with_inventory_stays_pending():
     engine.client = Client()
     engine._get_token_position = position
     engine._set_event_state = lambda *args: states.append(args)
-    engine._notify_status = lambda *args, **kwargs: notifications.append((args, kwargs))
+    engine._notify_attention = lambda *args, **kwargs: notifications.append((args, kwargs))
     engine._resume_halted_markets = lambda *_args: (_ for _ in ()).throw(
         AssertionError("inventory must not resume")
     )
