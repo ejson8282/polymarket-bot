@@ -9,6 +9,7 @@ from typing import Mapping, Optional, Sequence
 
 import pytest
 
+import platforms.predictfun.deploy_ws_relay as relay_deploy
 from platforms.predictfun.deploy_ws_relay import (
     ARCHIVE_PATHS,
     CONFIRMATION,
@@ -113,6 +114,29 @@ def test_prepare_builds_minimal_immutable_mac_relay(tmp_path: Path) -> None:
         if path.is_file() and path.name != ".release-manifest.json"
     }
     assert all(path.stat().st_mode & 0o222 == 0 for path in release.rglob("*"))
+
+
+def test_prepare_promotes_before_making_release_immutable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, sha = _paths(tmp_path)
+    expected_release = paths.release_root / sha
+    immutable_paths: list[Path] = []
+    original_make_immutable = relay_deploy._make_immutable
+
+    def record_make_immutable(path: Path) -> None:
+        assert path == expected_release
+        assert path.is_dir()
+        immutable_paths.append(path)
+        original_make_immutable(path)
+
+    monkeypatch.setattr(relay_deploy, "_make_immutable", record_make_immutable)
+
+    result = prepare_release(paths, CommandRunner(), sha)
+
+    assert result["status"] == "prepared"
+    assert immutable_paths == [expected_release]
 
 
 def test_activate_renders_launch_agent_and_probes_public_market(

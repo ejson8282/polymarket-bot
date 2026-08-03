@@ -366,9 +366,9 @@ def prepare_release(
             encoding="utf-8",
         )
         (temporary / ".release-manifest.json").chmod(0o444)
-        _make_immutable(temporary)
         os.replace(temporary, release)
         promoted = True
+        _make_immutable(release)
         return {
             "status": "prepared",
             "manifest": verify_release(release, target_sha),
