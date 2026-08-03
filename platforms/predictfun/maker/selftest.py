@@ -22,7 +22,7 @@ def _fake_market() -> PredictMarket:
         title="PF self-test market",
         question="PF self-test market?",
         status="OPEN",
-        trading_status="TRADING",
+        trading_status="OPEN",
         market_variant="BINARY",
         category_slug="self-test",
         decimal_precision=2,
@@ -70,6 +70,7 @@ def run_selftest() -> dict:
         avoid_mid_band_low=Decimal("0.00"),
         avoid_mid_band_high=Decimal("0.00"),
         allow_crypto_updown_quotes=False,
+        min_depth_notional=Decimal("2"),
     )
     empty_market = _fake_market()
     empty_market.best_yes_bid = Decimal("0")
@@ -88,6 +89,7 @@ def run_selftest() -> dict:
         avoid_mid_band_low=Decimal("0.35"),
         avoid_mid_band_high=Decimal("0.65"),
         allow_crypto_updown_quotes=False,
+        min_depth_notional=Decimal("2"),
     )
     plan_json = plan_to_jsonable(plan)
     first_intents = build_intent_state(
@@ -176,6 +178,13 @@ def run_selftest() -> dict:
         environment="selftest",
         plans=[plan_json],
         previous_intents=filled_sim["active_orders"],
+        inventory_positions=filled_sim["positions"],
+        inventory_config={
+            "halt_market_buys_while_position": True,
+            "exit_quote_size_pct_of_position": "1",
+            "min_exit_size": "1",
+            "exit_edge_ticks": 1,
+        },
     )
 
     checks = {
@@ -187,7 +196,10 @@ def run_selftest() -> dict:
         "exit_sell_count": sum(1 for item in exit_intents["intents"] if item.get("side") == "SELL"),
         "report_action_count": report["summary"]["actions"],
         "fill_new_count": filled_sim["summary"]["fills_new"],
-        "refill_create_count": refill_after_fill["summary"]["create"],
+        "refill_buy_count": sum(1 for item in refill_after_fill["intents"] if item.get("side") == "BUY"),
+        "refill_exit_count": sum(
+            1 for item in refill_after_fill["intents"] if item.get("purpose") == "inventory_exit"
+        ),
         "empty_seed_quote_count": len(empty_seed_plan.yes_quotes) + len(empty_seed_plan.no_quotes),
         "reserved_cap_intent_count": reserved_cap_intents["summary"]["desired"],
         "liquidity_cancel_count": liquidity_cancel_intents["summary"]["cancel"],
@@ -204,7 +216,8 @@ def run_selftest() -> dict:
         and checks["exit_sell_count"] >= 1
         and checks["report_action_count"] == 2
         and checks["fill_new_count"] == 1
-        and checks["refill_create_count"] == 2
+        and checks["refill_buy_count"] == 0
+        and checks["refill_exit_count"] == 1
         and checks["empty_seed_quote_count"] == 4
         and checks["reserved_cap_intent_count"] == 2
         and checks["liquidity_cancel_count"] == 2

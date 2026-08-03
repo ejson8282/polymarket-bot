@@ -25,6 +25,7 @@ class OrderIntent:
     market_mode: str = "standard"
     token_id: str = ""
     fee_rate_bps: int = 0
+    purpose: str = "maker_quote"
 
 
 def utc_now() -> str:
@@ -41,6 +42,7 @@ def build_intents_from_plans(
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
     accounts = _configured_accounts(accounts_config)
+    configured_account_ids = {str(account["account_id"]) for account in accounts}
     assignment = _account_assignment(accounts_config)
     positions = _position_map(inventory_positions or [])
     reserved: dict[tuple[str, int, str], Decimal] = {}
@@ -51,56 +53,67 @@ def build_intents_from_plans(
     max_account_notional = _dec(planner.get("max_account_notional"))
     max_account_market_notional = _dec(planner.get("max_account_market_notional"))
     for plan_index, plan in enumerate(plans):
-        if not plan.get("can_quote"):
-            continue
         market = plan.get("market") if isinstance(plan.get("market"), dict) else {}
         market_id = int(market.get("id") or 0)
+        if market_id <= 0:
+            continue
         is_neg_risk, is_yield_bearing, market_mode = _market_flags(market)
         fee_rate_bps = int(_dec(market.get("fee_rate_bps")))
         for account in _accounts_for_plan(accounts, plan_index, assignment):
             account_id = str(account["account_id"])
-            for quote in list(plan.get("yes_quotes") or []) + list(plan.get("no_quotes") or []):
-                outcome = str(quote.get("outcome") or "")
-                side = str(quote.get("side") or "")
-                price = _dec(quote.get("price"))
-                size = _dec(quote.get("size"))
-                if not _can_add_buy_inventory(
-                    positions,
-                    account_id=account_id,
-                    market_id=market_id,
-                    outcome=outcome,
-                    size=size,
-                    inventory=inventory,
-                    reserved=reserved,
-                ):
-                    continue
-                intent = _intent(
-                    account_id=account_id,
-                    market_id=market_id,
-                    outcome=outcome,
-                    side=side,
-                    price=price,
-                    size=size,
-                    reason=str(quote.get("reason") or ""),
-                    is_neg_risk=is_neg_risk,
-                    is_yield_bearing=is_yield_bearing,
-                    market_mode=market_mode,
-                    token_id=_token_id_for_outcome(market, outcome),
-                    fee_rate_bps=fee_rate_bps,
-                )
-                if not _can_add_notional(
-                    reserved_notional_by_account,
-                    reserved_notional_by_account_market,
-                    account_id=account_id,
-                    market_id=market_id,
-                    notional=intent.notional,
-                    max_account_notional=max_account_notional,
-                    max_account_market_notional=max_account_market_notional,
-                ):
-                    continue
-                intents.append(intent)
-                _reserve_buy_inventory(reserved, intent)
-                _reserve_notional(reserved_notional_by_account, reserved_notional_by_account_market, intent)
+            halt_buys = _halt_market_buys_while_position(
+                positions,
+                account_id=account_id,
+                market_id=market_id,
+                inventory=inventory,
+            )
+            if plan.get("can_quote") and not halt_buys:
+                for quote in list(plan.get("yes_quotes") or []) + list(plan.get("no_quotes") or []):
+                    outcome = str(quote.get("outcome") or "")
+                    side = str(quote.get("side") or "")
+                    price = _dec(quote.get("price"))
+                    size = _dec(quote.get("size"))
+                    if not _can_add_buy_inventory(
+                        positions,
+                        account_id=account_id,
+                        market_id=market_id,
+                        outcome=outcome,
+                        size=size,
+                        inventory=inventory,
+                        reserved=reserved,
+                    ):
+                        continue
+                    intent = _intent(
+                        account_id=account_id,
+                        market_id=market_id,
+                        outcome=outcome,
+                        side=side,
+                        price=price,
+                        size=size,
+                        reason=str(quote.get("reason") or ""),
+                        is_neg_risk=is_neg_risk,
+                        is_yield_bearing=is_yield_bearing,
+                        market_mode=market_mode,
+                        token_id=_token_id_for_outcome(market, outcome),
+                        fee_rate_bps=fee_rate_bps,
+                    )
+                    if not _can_add_notional(
+                        reserved_notional_by_account,
+                        reserved_notional_by_account_market,
+                        account_id=account_id,
+                        market_id=market_id,
+                        notional=intent.notional,
+                        max_account_notional=max_account_notional,
+                        max_account_market_notional=max_account_market_notional,
+                    ):
+                        continue
+                    intents.append(intent)
+                    _reserve_buy_inventory(reserved, intent)
+                    _reserve_notional(reserved_notional_by_account, reserved_notional_by_account_market, intent)
+
+        for account_id in _position_accounts_for_market(positions, market_id):
+            if account_id not in configured_account_ids:
+                continue
             intents.extend(
                 _inventory_exit_intents(
                     plan,
@@ -125,8 +138,11 @@ def stable_intent_id(
     side: str,
     price: Decimal,
     size: Decimal,
+    purpose: str = "maker_quote",
 ) -> str:
-    raw = "|".join([account_id, str(market_id), outcome.upper(), side.upper(), str(price), str(size)])
+    raw = "|".join(
+        [account_id, str(market_id), outcome.upper(), side.upper(), str(price), str(size), purpose]
+    )
     return "pf-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -177,6 +193,7 @@ def build_intent_state(
     total_notional = sum(_dec(item.get("notional")) for item in desired)
     by_account: dict[str, dict[str, Any]] = {}
     by_mode: dict[str, dict[str, Any]] = {}
+    by_purpose: dict[str, int] = {}
     for item in desired:
         account_id = str(item.get("account_id") or "acct01")
         row = by_account.setdefault(account_id, {"desired": 0, "total_notional": Decimal("0")})
@@ -195,6 +212,8 @@ def build_intent_state(
             mode_row["buy_notional"] += notional
         else:
             mode_row["sell"] += 1
+        purpose = str(item.get("purpose") or "maker_quote")
+        by_purpose[purpose] = by_purpose.get(purpose, 0) + 1
     by_account_json = {
         account_id: {
             "desired": row["desired"],
@@ -223,6 +242,7 @@ def build_intent_state(
                 }
                 for mode, row in sorted(by_mode.items())
             },
+            "purposes": dict(sorted(by_purpose.items())),
         },
         "accounts": by_account_json,
         "diff": {
@@ -263,6 +283,7 @@ def _intent(
     market_mode: str = "standard",
     token_id: str = "",
     fee_rate_bps: int = 0,
+    purpose: str = "maker_quote",
 ) -> OrderIntent:
     notional = price * size
     intent_id = stable_intent_id(
@@ -272,6 +293,7 @@ def _intent(
         side=side,
         price=price,
         size=size,
+        purpose=purpose,
     )
     return OrderIntent(
         intent_id=intent_id,
@@ -288,6 +310,7 @@ def _intent(
         market_mode=market_mode,
         token_id=token_id,
         fee_rate_bps=fee_rate_bps,
+        purpose=purpose,
     )
 
 
@@ -381,6 +404,19 @@ def _position_map(positions: list[dict[str, Any]]) -> dict[tuple[str, int, str],
     return out
 
 
+def _position_accounts_for_market(
+    positions: dict[tuple[str, int, str], Decimal],
+    market_id: int,
+) -> list[str]:
+    return sorted(
+        {
+            account_id
+            for (account_id, position_market_id, _outcome), size in positions.items()
+            if position_market_id == market_id and size > 0
+        }
+    )
+
+
 def _can_add_buy_inventory(
     positions: dict[tuple[str, int, str], Decimal],
     *,
@@ -409,6 +445,21 @@ def _reserve_buy_inventory(reserved: dict[tuple[str, int, str], Decimal], intent
     reserved[key] = reserved.get(key, Decimal("0")) + intent.size
 
 
+def _halt_market_buys_while_position(
+    positions: dict[tuple[str, int, str], Decimal],
+    *,
+    account_id: str,
+    market_id: int,
+    inventory: dict[str, Any],
+) -> bool:
+    if not _bool(inventory.get("halt_market_buys_while_position", True)):
+        return False
+    return any(
+        positions.get((account_id, market_id, outcome), Decimal("0")) > 0
+        for outcome in ("YES", "NO")
+    )
+
+
 def _inventory_exit_intents(
     plan: dict[str, Any],
     *,
@@ -428,6 +479,10 @@ def _inventory_exit_intents(
     if pct <= 0:
         return []
     market = plan.get("market") if isinstance(plan.get("market"), dict) else {}
+    status = str(market.get("status") or "").upper()
+    trading_status = str(market.get("trading_status") or market.get("tradingStatus") or "").upper()
+    if status != "OPEN" or trading_status != "OPEN":
+        return []
     tick = Decimal(1).scaleb(-int(_dec(market.get("decimal_precision"), "2")))
     out: list[OrderIntent] = []
     for outcome in ("YES", "NO"):
@@ -453,6 +508,7 @@ def _inventory_exit_intents(
                 market_mode=market_mode,
                 token_id=_token_id_for_outcome(market, outcome),
                 fee_rate_bps=fee_rate_bps,
+                purpose="inventory_exit",
             )
         )
     return out

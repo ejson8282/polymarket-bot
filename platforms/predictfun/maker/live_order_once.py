@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 
 from platforms.predictfun.client import PredictFunClient
 from platforms.predictfun.maker.dry_run import load_config
+from platforms.predictfun.maker.validation import validate_final_order
 from platforms.predictfun.scanner import scan_markets
 
 
@@ -81,6 +82,7 @@ def _pick_market(client: PredictFunClient, cfg: dict[str, Any], market_id: int |
     if market_id:
         return client.get_market(market_id)["data"]
     scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
+    strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
     markets = scan_markets(
         client,
         max_markets=10,
@@ -88,6 +90,7 @@ def _pick_market(client: PredictFunClient, cfg: dict[str, Any], market_id: int |
         has_active_rewards=True,
         min_hourly_rate=Decimal("0"),
         include_crypto_updown=False,
+        scoring_profile=str(strategy_cfg.get("profile") or "conservative"),
     )
     if not markets:
         raise RuntimeError("no_open_reward_markets")
@@ -96,18 +99,17 @@ def _pick_market(client: PredictFunClient, cfg: dict[str, Any], market_id: int |
 
 def _pick_outcome(market: dict[str, Any], outcome_name: str) -> dict[str, Any]:
     outcomes = market.get("outcomes") if isinstance(market.get("outcomes"), list) else []
-    if not outcomes:
-        raise RuntimeError("market_has_no_outcomes")
-    if outcome_name:
-        for item in outcomes:
-            if isinstance(item, dict) and str(item.get("name", "")).upper() == outcome_name.upper():
-                return item
-        if outcome_name.upper() == "YES":
-            return outcomes[0]
-        if outcome_name.upper() == "NO" and len(outcomes) > 1:
-            return outcomes[1]
+    outcomes_by_name = {
+        str(item.get("name") or "").strip().upper(): item
+        for item in outcomes
+        if isinstance(item, dict)
+    }
+    if len(outcomes) != 2 or set(outcomes_by_name) != {"YES", "NO"}:
+        raise RuntimeError("market_requires_canonical_yes_no_outcomes")
+    selected = str(outcome_name or "YES").strip().upper()
+    if selected not in outcomes_by_name:
         raise RuntimeError("outcome_not_found")
-    return outcomes[0]
+    return outcomes_by_name[selected]
 
 
 def _safe_buy_price(outcome: dict[str, Any], explicit_price: str) -> str:
@@ -197,6 +199,39 @@ def main() -> None:
                 indent=2,
             ))
             return
+        try:
+            fresh_payload = client.get_market(int(market.get("id") or 0))
+            fresh_market = fresh_payload.get("data") if isinstance(fresh_payload.get("data"), dict) else {}
+            final_preflight = validate_final_order(
+                original_market=market,
+                fresh_market=fresh_market,
+                token_id=str(outcome.get("onChainId") or ""),
+                side=args.side,
+                price=_dec(price),
+                size=_dec(args.size),
+                max_notional=_dec(args.max_notional),
+            )
+        except Exception as exc:
+            final_preflight = {"ok": False, "reason": f"fresh_market_check_failed:{type(exc).__name__}"}
+        if not final_preflight.get("ok"):
+            print(json.dumps(
+                {
+                    "ok": False,
+                    "status": 0,
+                    "live": True,
+                    "market_id": market.get("id"),
+                    "market_title": market.get("title"),
+                    "outcome": outcome.get("name"),
+                    "side": args.side,
+                    "price": price,
+                    "size": args.size,
+                    "error": "final_preflight_blocked",
+                    "final_preflight": final_preflight,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ))
+            return
         body["submit"] = True
         body["confirm"] = args.confirm
         endpoint = "submit-order"
@@ -220,13 +255,20 @@ def main() -> None:
         "size": args.size,
         "response": payload,
     }
+    if args.live:
+        result["final_preflight"] = final_preflight
     if args.live and args.remove_after and result["ok"] and payload.get("order_hash"):
         remove_resp = requests.post(
             f"{signer_url}/predictfun/accounts/{args.account}/remove-order-by-hash",
             json={"remove": True, "confirm": "REMOVE_PREDICTFUN_ORDER", "hash": payload["order_hash"]},
             timeout=float(signer_cfg.get("timeout_sec") or 20),
         )
-        result["remove"] = {"status": remove_resp.status_code, "response": remove_resp.json()}
+        result["remove"] = {
+            "status": remove_resp.status_code,
+            "response": remove_resp.json(),
+            "scope": "off_book_only",
+            "onchain_cancel_verified": False,
+        }
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

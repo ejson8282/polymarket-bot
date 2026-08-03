@@ -72,6 +72,7 @@ async def watch_orderbooks(
         "error": "",
         "messages": [],
         "orderbooks": {},
+        "orderbook_updated_at": {},
         "liquidity": {},
         "liquidity_alerts": {},
     }
@@ -106,6 +107,7 @@ async def watch_orderbooks(
                 elif topic.startswith("predictOrderbook/") and isinstance(msg.get("data"), dict):
                     market_id = topic.rsplit("/", 1)[-1]
                     state["orderbooks"][market_id] = msg["data"]
+                    state["orderbook_updated_at"][market_id] = _utc_now()
                     now = time.time()
                     sentinel.record(market_id, msg["data"], ts=now)
                     state["liquidity"] = sentinel.metrics_json(now=now)
@@ -141,12 +143,14 @@ async def watch_orderbooks(
 
 def discover_market_ids(client: PredictFunClient, cfg: dict[str, Any], limit: int) -> list[int]:
     scan_cfg = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
+    strategy_cfg = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
     markets = scan_markets(
         client,
         max_markets=limit,
         first=int(scan_cfg.get("first") or 50),
         has_active_rewards=bool(scan_cfg.get("has_active_rewards", True)),
         include_crypto_updown=bool(scan_cfg.get("include_crypto_updown", False)),
+        scoring_profile=str(strategy_cfg.get("profile") or "conservative"),
     )
     return [m.id for m in markets[:limit]]
 

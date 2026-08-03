@@ -15,8 +15,14 @@ if __package__ in {None, ""}:
 from platforms.predictfun.client import PredictFunClient
 from platforms.predictfun.maker.dry_run import load_config, run_once
 from platforms.predictfun.maker.research import build_research_state
-from platforms.predictfun.maker.risk import blocked_execution_report, evaluate_risk
-from platforms.predictfun.maker.reconcile import load_json, reconcile_once, write_json
+from platforms.predictfun.maker.risk import evaluate_risk
+from platforms.predictfun.maker.reconcile import (
+    load_json,
+    reconcile_cancel_only,
+    reconcile_once,
+    reconcile_reduce_only,
+    write_json,
+)
 from platforms.predictfun.maker.simulator import update_simulation
 
 
@@ -106,6 +112,12 @@ def run_loop(
                 inventory_positions=simulation_state.get("positions") if isinstance(simulation_state.get("positions"), list) else None,
             )
             intents_state = load_json(intents_path)
+            previous_execution = load_json(report_path)
+            managed_state = (
+                previous_execution.get("managed_orders")
+                if isinstance(previous_execution.get("managed_orders"), dict)
+                else {}
+            )
             research_state = build_research_state(plan_state)
             write_json(research_state_path, research_state)
 
@@ -120,14 +132,25 @@ def run_loop(
             )
             write_json(risk_state_path, risk_state)
 
-            if risk_state.get("blocked"):
-                report = blocked_execution_report(risk_state, intents_state.get("ts"))
+            execution_mode = str(risk_state.get("execution_mode") or "blocked")
+            if execution_mode == "blocked":
+                report = reconcile_cancel_only(
+                    managed_state=managed_state,
+                    reason="risk_gate",
+                    risk_state=risk_state,
+                )
+            elif execution_mode == "reduce_only":
+                report = reconcile_reduce_only(
+                    intents_state,
+                    managed_state=managed_state,
+                    risk_state=risk_state,
+                )
             else:
-                report = reconcile_once(intents_state)
+                report = reconcile_once(intents_state, managed_state=managed_state)
             write_json(report_path, report)
 
             sim_cfg = cfg.get("simulation") if isinstance(cfg.get("simulation"), dict) else {}
-            if bool(sim_cfg.get("enabled", True)) and not risk_state.get("blocked"):
+            if bool(sim_cfg.get("enabled", True)) and execution_mode != "blocked":
                 from decimal import Decimal
 
                 simulation_state = update_simulation(

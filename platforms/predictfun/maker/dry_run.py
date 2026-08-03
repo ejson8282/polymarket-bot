@@ -16,12 +16,18 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from platforms.predictfun.client import PredictFunClient, as_decimal, decimal_tick
+from platforms.predictfun.maker.admission import select_stable_markets
 from platforms.predictfun.maker.intents import (
     build_intent_state,
     load_previous_intents,
     write_intent_state,
 )
-from platforms.predictfun.scanner import PredictMarket, market_to_jsonable, scan_markets
+from platforms.predictfun.scanner import (
+    PredictMarket,
+    market_to_jsonable,
+    normalize_market,
+    scan_markets,
+)
 
 
 @dataclass
@@ -96,6 +102,7 @@ def build_quote_plan(
     avoid_mid_band_low: Decimal,
     avoid_mid_band_high: Decimal,
     allow_crypto_updown_quotes: bool,
+    avoid_mid_band: bool = True,
     min_order_notional: Decimal = Decimal("0"),
     max_order_notional: Decimal = Decimal("0"),
     min_depth_notional: Decimal = Decimal("0"),
@@ -103,6 +110,19 @@ def build_quote_plan(
     depth_levels: int = 3,
 ) -> DryRunPlan:
     tick = decimal_tick(market.decimal_precision)
+    orderbook_source = str(orderbook.get("_source") or "unknown")
+    if orderbook.get("error") or orderbook_source.endswith("_error"):
+        return DryRunPlan(
+            market=market,
+            can_quote=False,
+            skip_reason="orderbook unavailable",
+            orderbook_source=orderbook_source,
+            best_yes_bid=market.best_yes_bid,
+            best_yes_ask=market.best_yes_ask,
+            mid=market.mid,
+            yes_quotes=[],
+            no_quotes=[],
+        )
     data = orderbook.get("data") if isinstance(orderbook.get("data"), dict) else {}
     bids = _levels(data.get("bids"))
     asks = _levels(data.get("asks"))
@@ -114,18 +134,6 @@ def build_quote_plan(
         mid = (best_yes_bid + best_yes_ask) / Decimal("2")
 
     truly_empty_book = not bids and not asks and market.best_yes_bid <= 0 and market.best_yes_ask <= 0
-    if truly_empty_book and (min_depth_notional > 0 or min_depth_shares > 0):
-        return DryRunPlan(
-            market=market,
-            can_quote=False,
-            skip_reason="empty book liquidity guard",
-            orderbook_source=str(orderbook.get("_source") or "unknown"),
-            best_yes_bid=best_yes_bid,
-            best_yes_ask=best_yes_ask,
-            mid=mid,
-            yes_quotes=[],
-            no_quotes=[],
-        )
     if seed_empty_books and truly_empty_book:
         skip = _basic_skip_reason(
             market,
@@ -178,6 +186,7 @@ def build_quote_plan(
         avoid_mid_band_low=avoid_mid_band_low,
         avoid_mid_band_high=avoid_mid_band_high,
         allow_crypto_updown_quotes=allow_crypto_updown_quotes,
+        avoid_mid_band=avoid_mid_band,
     )
     if skip:
         return DryRunPlan(
@@ -401,6 +410,10 @@ def _basic_skip_reason(
 ) -> str:
     if market.hourly_rate <= 0:
         return "no active reward"
+    if market.status != "OPEN":
+        return f"market status is {market.status or 'unknown'}"
+    if market.trading_status != "OPEN":
+        return f"market trading status is {market.trading_status or 'unknown'}"
     if market.market_variant == "CRYPTO_UP_DOWN" and not allow_crypto_updown_quotes:
         return "crypto up/down disabled in config"
     seconds_left = _seconds_to(market.ends_at)
@@ -419,6 +432,7 @@ def _quote_skip_reason(
     avoid_mid_band_low: Decimal,
     avoid_mid_band_high: Decimal,
     allow_crypto_updown_quotes: bool,
+    avoid_mid_band: bool,
 ) -> str:
     basic = _basic_skip_reason(
         market,
@@ -431,7 +445,7 @@ def _quote_skip_reason(
         return "empty book"
     if best_yes_ask <= best_yes_bid:
         return "crossed book"
-    if avoid_mid_band_low <= mid <= avoid_mid_band_high:
+    if avoid_mid_band and avoid_mid_band_low <= mid <= avoid_mid_band_high:
         return f"mid risk band mid={mid}"
     return ""
 
@@ -601,6 +615,11 @@ def run_once(
     out_cfg = cfg.get("output") or {}
     accounts_cfg = cfg.get("accounts") if isinstance(cfg.get("accounts"), (dict, list)) else {}
     inventory_cfg = cfg.get("inventory") if isinstance(cfg.get("inventory"), dict) else {}
+    strategy_profile = str(strategy.get("profile") or "conservative").strip().lower()
+    if strategy_profile not in {"conservative", "balanced", "points"}:
+        strategy_profile = "conservative"
+    if inventory_positions is None:
+        inventory_positions = _load_inventory_positions(config_path, cfg)
     ws_state = {}
     ws_state_path_raw = str(out_cfg.get("ws_state_path") or "").strip()
     if bool(data_cfg.get("use_ws_orderbook_cache", True)) and ws_state_path_raw:
@@ -609,14 +628,39 @@ def run_once(
             ws_state_path,
             max_age_sec=float(data_cfg.get("ws_state_max_age_sec") or 120),
         )
+    max_markets = int(scan_cfg.get("max_markets") or 20)
+    candidate_pool_size = max(max_markets, int(scan_cfg.get("candidate_pool_size") or max_markets))
     markets = scan_markets(
         client,
-        max_markets=int(scan_cfg.get("max_markets") or 20),
+        max_markets=candidate_pool_size,
         first=int(scan_cfg.get("first") or 50),
         has_active_rewards=bool(scan_cfg.get("has_active_rewards", True)),
         min_hourly_rate=as_decimal(scan_cfg.get("min_hourly_rate")),
         include_crypto_updown=bool(scan_cfg.get("include_crypto_updown", False)),
+        scoring_profile=strategy_profile,
     )
+    markets = _ensure_position_markets(
+        client,
+        markets,
+        inventory_positions,
+        scoring_profile=strategy_profile,
+    )
+    admission_path_raw = str(out_cfg.get("admission_state_path") or "").strip()
+    previous_admission = {}
+    admission_path: Path | None = None
+    if admission_path_raw:
+        admission_path = (config_path.parent / admission_path_raw).resolve()
+        previous_admission = _load_json_object(admission_path)
+    markets, admission_state = select_stable_markets(
+        markets,
+        previous_state=previous_admission,
+        max_markets=max_markets,
+        min_dwell_sec=float(scan_cfg.get("min_market_dwell_sec") or 0),
+        replacement_score_margin=as_decimal(scan_cfg.get("replacement_score_margin"), "0"),
+        pinned_market_ids=_position_market_ids(inventory_positions),
+    )
+    if admission_path is not None:
+        _write_json_object(admission_path, admission_state)
 
     plans: list[DryRunPlan] = []
     liquidity_blocks = _liquidity_blocks_from_ws_state(ws_state)
@@ -654,7 +698,11 @@ def run_once(
                 )
             )
             continue
-        cached_book = _book_from_ws_state(ws_state, market.id)
+        cached_book = _book_from_ws_state(
+            ws_state,
+            market.id,
+            max_age_sec=float(data_cfg.get("ws_state_max_age_sec") or 120),
+        )
         if cached_book:
             orderbook = cached_book
         else:
@@ -682,6 +730,7 @@ def run_once(
                 avoid_mid_band_low=as_decimal(risk.get("avoid_mid_band_low"), "0.35"),
                 avoid_mid_band_high=as_decimal(risk.get("avoid_mid_band_high"), "0.65"),
                 allow_crypto_updown_quotes=bool(risk.get("allow_crypto_updown_quotes", False)),
+                avoid_mid_band=strategy_profile == "conservative",
                 min_order_notional=as_decimal(strategy.get("min_order_notional"), "0"),
                 max_order_notional=as_decimal(strategy.get("max_order_notional"), "0"),
                 min_depth_notional=as_decimal(liquidity_cfg.get("min_depth_notional"), "0"),
@@ -695,7 +744,9 @@ def run_once(
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "environment": cfg.get("environment", "testnet"),
         "base_url": cfg.get("base_url"),
+        "strategy_profile": strategy_profile,
         "plans": [plan_to_jsonable(plan) for plan in plans],
+        "admission": admission_state.get("summary") or {},
     }
     if auth_check.get("enabled"):
         state["auth"] = auth_check
@@ -713,8 +764,6 @@ def run_once(
         intents_path = (config_path.parent / intents_path_raw).resolve()
         if previous_intents is None:
             previous_intents = load_previous_intents(intents_path)
-        if inventory_positions is None:
-            inventory_positions = _load_inventory_positions(config_path, cfg)
         intent_state = build_intent_state(
             environment=str(cfg.get("environment", "testnet")),
             plans=state["plans"],
@@ -774,6 +823,8 @@ def _load_fresh_ws_state(path: Path, *, max_age_sec: float) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if data.get("connected") is not True:
+        return {}
     ts = str(data.get("ts") or "")
     if not ts:
         return {}
@@ -809,10 +860,29 @@ def _liquidity_blocks_from_ws_state(ws_state: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _book_from_ws_state(ws_state: dict[str, Any], market_id: int) -> dict[str, Any]:
+def _book_from_ws_state(
+    ws_state: dict[str, Any],
+    market_id: int,
+    *,
+    max_age_sec: float = 120,
+) -> dict[str, Any]:
     books = ws_state.get("orderbooks") if isinstance(ws_state.get("orderbooks"), dict) else {}
     book = books.get(str(market_id))
     if not isinstance(book, dict):
+        return {}
+    updated = (
+        ws_state.get("orderbook_updated_at")
+        if isinstance(ws_state.get("orderbook_updated_at"), dict)
+        else {}
+    )
+    updated_at = str(updated.get(str(market_id)) or "")
+    if not updated_at:
+        return {}
+    try:
+        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - dt).total_seconds() > max(0.0, max_age_sec):
+            return {}
+    except Exception:
         return {}
     return {"data": book, "_source": "ws"}
 
@@ -829,6 +899,56 @@ def _load_inventory_positions(config_path: Path, cfg: dict[str, Any]) -> list[di
         return []
     positions = data.get("positions") if isinstance(data, dict) else []
     return positions if isinstance(positions, list) else []
+
+
+def _position_market_ids(positions: list[dict[str, Any]]) -> set[int]:
+    out: set[int] = set()
+    for row in positions:
+        if not isinstance(row, dict) or as_decimal(row.get("size")) <= 0:
+            continue
+        try:
+            market_id = int(row.get("market_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if market_id > 0:
+            out.add(market_id)
+    return out
+
+
+def _ensure_position_markets(
+    client: PredictFunClient,
+    markets: list[PredictMarket],
+    positions: list[dict[str, Any]],
+    *,
+    scoring_profile: str,
+) -> list[PredictMarket]:
+    by_id = {market.id: market for market in markets}
+    for market_id in sorted(_position_market_ids(positions)):
+        if market_id in by_id:
+            continue
+        try:
+            payload = client.get_market(market_id)
+            raw = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            market = normalize_market(raw, scoring_profile=scoring_profile)
+        except Exception:
+            continue
+        by_id[market.id] = market
+    return sorted(by_id.values(), key=lambda market: market.score, reverse=True)
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json_object(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 if __name__ == "__main__":

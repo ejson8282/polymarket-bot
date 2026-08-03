@@ -11,8 +11,9 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from platforms.predictfun.maker.executor import DryRunExecutor, ExecutableOrder
+from platforms.predictfun.maker.executor import DryRunExecutor, ExecutableOrder, PredictFunExecutor
 from platforms.predictfun.maker.intents import utc_now
+from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -48,26 +49,38 @@ def _to_order(item: dict[str, Any]) -> ExecutableOrder:
         is_neg_risk=bool(item.get("is_neg_risk")),
         is_yield_bearing=bool(item.get("is_yield_bearing")),
         market_mode=str(item.get("market_mode") or "standard"),
+        purpose=str(item.get("purpose") or "maker_quote"),
     )
 
 
-def reconcile_once(intents_state: dict[str, Any]) -> dict[str, Any]:
-    executor = DryRunExecutor()
+def reconcile_once(
+    intents_state: dict[str, Any],
+    *,
+    executor: PredictFunExecutor | None = None,
+    managed_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    executor = executor or DryRunExecutor()
+    registry = ManagedOrderRegistry.from_state(managed_state)
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
     results = []
     for item in diff.get("cancel") or []:
         if isinstance(item, dict):
-            results.append(
-                asdict(
-                    executor.cancel(
-                        str(item.get("intent_id") or ""),
-                        account_id=str(item.get("account_id") or "acct01"),
-                    )
+            intent_id = str(item.get("intent_id") or "")
+            account_id = str(item.get("account_id") or "acct01")
+            for managed in registry.active_for_intent(intent_id, account_id):
+                result = executor.cancel(
+                    managed.order_id,
+                    intent_id=managed.intent_id,
+                    account_id=managed.account_id,
                 )
-            )
+                registry.record_cancel(managed.order_id, result)
+                results.append(asdict(result))
     for item in diff.get("create") or []:
         if isinstance(item, dict):
-            results.append(asdict(executor.create(_to_order(item))))
+            order = _to_order(item)
+            result = executor.create(order)
+            registry.record_create(order, result)
+            results.append(asdict(result))
     return {
         "ts": utc_now(),
         "mode": "dry_run",
@@ -79,6 +92,99 @@ def reconcile_once(intents_state: dict[str, Any]) -> dict[str, Any]:
             "failed": sum(1 for row in results if not row.get("ok")),
         },
         "results": results,
+        "managed_orders": registry.to_state(),
+    }
+
+
+def reconcile_cancel_only(
+    *,
+    managed_state: dict[str, Any] | None,
+    executor: PredictFunExecutor | None = None,
+    reason: str,
+    risk_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Cancel engine-owned orders while keeping all create actions disabled."""
+
+    executor = executor or DryRunExecutor()
+    registry = ManagedOrderRegistry.from_state(managed_state)
+    results: list[dict[str, Any]] = []
+    for managed in registry.active():
+        result = executor.cancel(
+            managed.order_id,
+            intent_id=managed.intent_id,
+            account_id=managed.account_id,
+        )
+        registry.record_cancel(managed.order_id, result)
+        results.append(asdict(result))
+    return {
+        "ts": utc_now(),
+        "mode": "cancel_only" if results else "risk_blocked",
+        "reason": reason,
+        "summary": {
+            "actions": len(results),
+            "create": 0,
+            "cancel": len(results),
+            "failed": sum(1 for row in results if not row.get("ok")),
+            "blocked": 1,
+        },
+        "results": results,
+        "managed_orders": registry.to_state(),
+        "risk": risk_state or {},
+    }
+
+
+def reconcile_reduce_only(
+    intents_state: dict[str, Any],
+    *,
+    managed_state: dict[str, Any] | None,
+    executor: PredictFunExecutor | None = None,
+    risk_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Cancel maker quotes and allow only position-reducing exit intents."""
+
+    executor = executor or DryRunExecutor()
+    registry = ManagedOrderRegistry.from_state(managed_state)
+    desired_exit_ids = {
+        str(item.get("intent_id") or "")
+        for item in intents_state.get("intents") or []
+        if isinstance(item, dict) and str(item.get("purpose") or "") == "inventory_exit"
+    }
+    results: list[dict[str, Any]] = []
+    for managed in registry.active():
+        if managed.purpose == "inventory_exit" and managed.intent_id in desired_exit_ids:
+            continue
+        result = executor.cancel(
+            managed.order_id,
+            intent_id=managed.intent_id,
+            account_id=managed.account_id,
+        )
+        registry.record_cancel(managed.order_id, result)
+        results.append(asdict(result))
+
+    diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
+    for item in diff.get("create") or []:
+        if not isinstance(item, dict) or str(item.get("purpose") or "") != "inventory_exit":
+            continue
+        order = _to_order(item)
+        result = executor.create(order)
+        registry.record_create(order, result)
+        results.append(asdict(result))
+
+    return {
+        "ts": utc_now(),
+        "mode": "reduce_only",
+        "source_ts": intents_state.get("ts"),
+        "summary": {
+            "actions": len(results),
+            "create": sum(1 for row in results if row.get("action") == "create"),
+            "cancel": sum(1 for row in results if row.get("action") == "cancel"),
+            "failed": sum(1 for row in results if not row.get("ok")),
+            "blocked": 0,
+            "reduce_only": 1,
+        },
+        "results": results,
+        "managed_orders": registry.to_state(),
+        "risk": risk_state or {},
     }
 
 

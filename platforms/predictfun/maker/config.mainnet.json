@@ -5,12 +5,16 @@
   "api_key_env": "",
   "scan": {
     "max_markets": 20,
+    "candidate_pool_size": 60,
     "first": 50,
     "has_active_rewards": true,
     "min_hourly_rate": "0",
-    "include_crypto_updown": false
+    "include_crypto_updown": false,
+    "min_market_dwell_sec": 1800,
+    "replacement_score_margin": "0.05"
   },
   "strategy": {
+    "profile": "conservative",
     "quote_size_pct_of_share_threshold": "1.00",
     "min_quote_size": "10",
     "edge_ticks": 1,
@@ -35,7 +39,8 @@
     "max_long_size_per_outcome": "100",
     "exit_quote_size_pct_of_position": "1.00",
     "min_exit_size": "1",
-    "exit_edge_ticks": 1
+    "exit_edge_ticks": 1,
+    "halt_market_buys_while_position": true
   },
   "data": {
     "use_ws_orderbook_cache": true,
@@ -75,6 +80,7 @@
     "risk_state_path": "../../../data/predictfun_mainnet_risk_state.json",
     "kill_switch_path": "../../../data/predictfun_mainnet_kill_switch.json",
     "research_state_path": "../../../data/predictfun_mainnet_market_research.json",
+    "admission_state_path": "../../../data/predictfun_mainnet_admission_state.json",
     "pid_path": "../../../data/predictfun_mainnet_dry_run.pid",
     "log_path": "../../../data/predictfun_mainnet_dry_run.log"
   },

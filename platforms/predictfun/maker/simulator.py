@@ -46,15 +46,21 @@ def update_simulation(
     fills = [row for row in previous_state.get("fills", []) if isinstance(row, dict)]
 
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
-    for item in diff.get("cancel") or []:
-        if isinstance(item, dict):
-            active_orders.pop(str(item.get("intent_id") or ""), None)
+    successful = {
+        (str(row.get("action") or ""), str(row.get("intent_id") or ""))
+        for row in execution_report.get("results") or []
+        if isinstance(row, dict) and row.get("ok") and row.get("intent_id")
+    }
+    for action, intent_id in successful:
+        if action == "cancel":
+            active_orders.pop(intent_id, None)
     for item in diff.get("create") or []:
-        if isinstance(item, dict) and item.get("intent_id"):
+        if (
+            isinstance(item, dict)
+            and item.get("intent_id")
+            and ("create", str(item.get("intent_id"))) in successful
+        ):
             active_orders[str(item["intent_id"])] = _order_from_intent(item)
-    for item in diff.get("keep") or []:
-        if isinstance(item, dict) and item.get("intent_id"):
-            active_orders.setdefault(str(item["intent_id"]), _order_from_intent(item))
 
     books = _market_books(plan_state)
     newly_filled: list[dict[str, Any]] = []

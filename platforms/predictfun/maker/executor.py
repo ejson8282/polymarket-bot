@@ -12,6 +12,8 @@ class ExecutionResult:
     action: str
     ok: bool
     message: str
+    order_id: str = ""
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ class ExecutableOrder:
     is_neg_risk: bool = False
     is_yield_bearing: bool = False
     market_mode: str = "standard"
+    purpose: str = "maker_quote"
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,8 @@ class LiveOrder:
     size: Decimal
     filled_size: Decimal
     status: str
+    account_id: str = ""
+    purpose: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,7 @@ class PredictFunExecutor(Protocol):
     def create(self, order: ExecutableOrder) -> ExecutionResult:
         ...
 
-    def cancel(self, intent_id: str, account_id: str = "") -> ExecutionResult:
+    def cancel(self, order_id: str, *, intent_id: str = "", account_id: str = "") -> ExecutionResult:
         ...
 
     def list_orders(self) -> list[LiveOrder]:
@@ -86,15 +91,19 @@ class DryRunExecutor:
             action="create",
             ok=True,
             message="dry-run only; no order submitted",
+            order_id=f"dry:{order.intent_id}",
+            status="open",
         )
 
-    def cancel(self, intent_id: str, account_id: str = "") -> ExecutionResult:
+    def cancel(self, order_id: str, *, intent_id: str = "", account_id: str = "") -> ExecutionResult:
         return ExecutionResult(
             intent_id=intent_id,
             account_id=account_id,
             action="cancel",
             ok=True,
             message="dry-run only; no order canceled",
+            order_id=order_id,
+            status="cancelled",
         )
 
     def list_orders(self) -> list[LiveOrder]:
@@ -115,22 +124,22 @@ class PredictFunLiveExecutor:
     should need SDK/JWT/signing details.
     """
 
-    def __init__(self, *, base_url: str, api_key: str, signer_url: str = "") -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+    def __init__(self, *, signer_url: str, account_id: str) -> None:
         self.signer_url = signer_url.rstrip("/")
+        self.account_id = account_id
 
     def create(self, order: ExecutableOrder) -> ExecutionResult:
         del order
         return self._not_ready("create")
 
-    def cancel(self, intent_id: str, account_id: str = "") -> ExecutionResult:
+    def cancel(self, order_id: str, *, intent_id: str = "", account_id: str = "") -> ExecutionResult:
         return ExecutionResult(
             intent_id=intent_id,
             account_id=account_id,
             action="cancel",
             ok=False,
             message="live Predict.fun executor is blocked until API key, JWT, wallet, and signer path are confirmed",
+            order_id=order_id,
         )
 
     def list_orders(self) -> list[LiveOrder]:
