@@ -518,7 +518,13 @@ def activate_release(
         runner.run(("plutil", "-lint", str(paths.launch_agent)))
         runner.run(("launchctl", "bootstrap", domain, str(paths.launch_agent)))
         runner.run(("launchctl", "kickstart", "-k", service))
-        service_state = runner.run(("launchctl", "print", service))
+        service_state = ""
+        for attempt in range(10):
+            service_state = runner.run(("launchctl", "print", service))
+            if "state = running" in service_state:
+                break
+            if attempt < 9:
+                time.sleep(0.25)
         if "state = running" not in service_state:
             raise RelayDeploymentError("relay launch agent is not running")
 

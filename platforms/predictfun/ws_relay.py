@@ -114,6 +114,7 @@ async def connect_upstream(upstream_url: str, api_key: str):
         return await websockets.connect(
             upstream_url,
             additional_headers=headers,
+            proxy=None,
             ping_interval=20,
             ping_timeout=20,
             close_timeout=5,
@@ -123,6 +124,7 @@ async def connect_upstream(upstream_url: str, api_key: str):
         return await websockets.connect(
             upstream_url,
             extra_headers=headers,
+            proxy=None,
             ping_interval=20,
             ping_timeout=20,
             close_timeout=5,
