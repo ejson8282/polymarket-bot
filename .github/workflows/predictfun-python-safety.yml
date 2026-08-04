@@ -48,6 +48,7 @@ jobs:
           tests/test_predictfun_maker_safety.py
           tests/test_predictfun_release.py
           tests/test_predictfun_status.py
+          tests/test_predictfun_ws_watch.py
           tests/test_predictfun_ws_relay.py
           tests/test_predictfun_ws_relay_release.py
       - name: Run offline Predict.fun self-test

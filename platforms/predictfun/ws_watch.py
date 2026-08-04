@@ -27,6 +27,10 @@ DEFAULT_WS_URL = "wss://ws.predict.fun/ws"
 TRADING_STATUSES = frozenset({"OPEN", "MATCHING_NOT_ENABLED", "CANCEL_ONLY", "CLOSED"})
 MARKET_STATUSES = frozenset({"OPEN", "REGISTERED", "RESOLVED", "CLOSED", "CANCELLED"})
 STATE_WRITE_INTERVAL_SEC = 0.25
+# Predict application heartbeats can be more than six minutes apart.
+DEFAULT_FOREVER_IDLE_TIMEOUT_SEC = 15 * 60.0
+FOREVER_IDLE_REFRESH_MULTIPLIER = 3.0
+RECONNECT_SETTLE_SEC = 2.0
 
 
 def _utc_now() -> str:
@@ -316,6 +320,7 @@ async def watch_orderbooks_forever(
     state_path: Path,
     discover_limit: int,
     refresh_sec: float,
+    idle_timeout_sec: float = DEFAULT_FOREVER_IDLE_TIMEOUT_SEC,
 ) -> None:
     session_number = 0
     reconnect_count = 0
@@ -342,7 +347,10 @@ async def watch_orderbooks_forever(
                 market_ids=market_ids,
                 state_path=state_path,
                 max_messages=0,
-                timeout_sec=max(30.0, refresh_sec + 30.0),
+                timeout_sec=_forever_idle_timeout_sec(
+                    refresh_sec=refresh_sec,
+                    configured_sec=idle_timeout_sec,
+                ),
                 max_runtime_sec=0,
                 initial_market_statuses=_market_status_snapshot(markets),
                 sentinel_config=(
@@ -357,9 +365,9 @@ async def watch_orderbooks_forever(
             )
             if state.get("error"):
                 consecutive_failures += 1
-                reconnect_count += 1
             else:
                 consecutive_failures = 0
+            reconnect_count += 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -384,10 +392,27 @@ async def watch_orderbooks_forever(
                 },
             )
         if consecutive_failures:
-            backoff = min(30.0, float(2 ** min(consecutive_failures - 1, 5)))
+            backoff = max(
+                RECONNECT_SETTLE_SEC,
+                min(30.0, float(2 ** min(consecutive_failures - 1, 5))),
+            )
             await asyncio.sleep(backoff + random.random())
         else:
-            await asyncio.sleep(0.25)
+            # The relay needs a brief window to release the previous client IP.
+            await asyncio.sleep(RECONNECT_SETTLE_SEC)
+
+
+def _forever_idle_timeout_sec(
+    *,
+    refresh_sec: float,
+    configured_sec: float,
+) -> float:
+    refresh_window = max(30.0, float(refresh_sec))
+    return max(
+        DEFAULT_FOREVER_IDLE_TIMEOUT_SEC,
+        float(configured_sec),
+        refresh_window * FOREVER_IDLE_REFRESH_MULTIPLIER,
+    )
 
 
 def discover_markets(
@@ -650,6 +675,12 @@ def main() -> None:
     parser.add_argument("--timeout-sec", type=float, default=12.0)
     parser.add_argument("--forever", action="store_true")
     parser.add_argument("--refresh-sec", type=float, default=300.0)
+    parser.add_argument(
+        "--idle-timeout-sec",
+        type=float,
+        default=DEFAULT_FOREVER_IDLE_TIMEOUT_SEC,
+        help="Reconnect after this much upstream message silence in forever mode.",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -666,6 +697,7 @@ def main() -> None:
                 state_path=_state_path(config_path, cfg),
                 discover_limit=max(1, args.discover),
                 refresh_sec=max(30.0, args.refresh_sec),
+                idle_timeout_sec=max(30.0, args.idle_timeout_sec),
             )
         )
         return

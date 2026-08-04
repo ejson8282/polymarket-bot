@@ -13,7 +13,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PREDICTFUN_REQUIRE_RELEASE=1
 EnvironmentFile=/home/ubuntu/predictfun-runtime/release.env
 ExecStartPre=/home/ubuntu/.venv2/bin/python /home/ubuntu/predictfun-releases/current/platforms/predictfun/maker/release_guard.py /home/ubuntu/predictfun-releases/current
-ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.predictfun.ws_watch --config /home/ubuntu/predictfun-runtime/config.mainnet.json --discover 20 --forever --refresh-sec 300
+ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.predictfun.ws_watch --config /home/ubuntu/predictfun-runtime/config.mainnet.json --discover 20 --forever --refresh-sec 300 --idle-timeout-sec 900
 Restart=always
 RestartSec=2
 NoNewPrivileges=true
