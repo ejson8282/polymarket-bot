@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import websockets
+from websockets.exceptions import ConnectionClosedOK
 
 
 DEFAULT_UPSTREAM_URL = "wss://ws.predict.fun/ws"
@@ -111,12 +112,12 @@ def server_message_is_allowed(raw: str | bytes) -> bool:
 async def connect_upstream(upstream_url: str, api_key: str):
     headers = {"x-api-key": api_key}
     try:
+        # Predict's application heartbeat is authoritative; protocol pings caused false timeouts.
         return await websockets.connect(
             upstream_url,
             additional_headers=headers,
             proxy=None,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=None,
             close_timeout=5,
             max_size=8 * 1024 * 1024,
         )
@@ -125,8 +126,7 @@ async def connect_upstream(upstream_url: str, api_key: str):
             upstream_url,
             extra_headers=headers,
             proxy=None,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=None,
             close_timeout=5,
             max_size=8 * 1024 * 1024,
         )
@@ -277,6 +277,8 @@ async def relay_connection(
                 exception = task.exception()
                 if exception is not None:
                     raise exception
+    except ConnectionClosedOK:
+        pass
     except RelayProtocolError as exc:
         await _send_protocol_error(client, str(exc))
         await client.close(code=1011, reason="relay_configuration_error")

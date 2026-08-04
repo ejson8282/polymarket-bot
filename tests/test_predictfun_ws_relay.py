@@ -35,6 +35,8 @@ def test_upstream_websocket_bypasses_system_proxy(
     assert result is sentinel
     assert calls[0][0] == "wss://ws.predict.fun/ws"
     assert calls[0][1]["proxy"] is None
+    assert calls[0][1]["ping_interval"] is None
+    assert "ping_timeout" not in calls[0][1]
 
 
 @pytest.mark.parametrize(

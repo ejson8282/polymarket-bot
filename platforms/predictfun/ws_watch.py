@@ -6,6 +6,7 @@ import json
 import os
 import random
 import sys
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -85,6 +86,8 @@ async def watch_orderbooks(
     initial_market_statuses: dict[str, dict[str, Any]] | None = None,
     session_number: int = 1,
     reconnect_count: int = 0,
+    market_refresher: Callable[[], Awaitable[list[PredictMarket]]] | None = None,
+    refresh_sec: float = 0,
 ) -> dict[str, Any]:
     allowed_market_ids = {str(value) for value in market_ids}
     market_statuses = {
@@ -103,6 +106,11 @@ async def watch_orderbooks(
         "last_connected": False,
         "session_number": session_number,
         "reconnect_count": reconnect_count,
+        "refresh_count": 0,
+        "discovery_failure_count": 0,
+        "consecutive_discovery_failures": 0,
+        "discovery_error": "",
+        "last_discovery_at": _utc_now(),
         "completed": False,
         "error": "",
         "messages": [],
@@ -141,11 +149,98 @@ async def watch_orderbooks(
                 await ws.send(json.dumps({"method": "subscribe", "requestId": request_id, "params": [topic]}))
                 request_id += 1
 
+            active_market_ids = {str(value) for value in market_ids}
+            last_message_monotonic = time.monotonic()
+            next_refresh_monotonic = (
+                last_message_monotonic + refresh_sec
+                if market_refresher is not None and refresh_sec > 0
+                else 0.0
+            )
             while True:
+                # Refresh subscriptions on the live socket without masking real message silence.
+                now_monotonic = time.monotonic()
+                receive_timeout: float | None = None
                 if timeout_sec > 0:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout_sec)
-                else:
-                    raw = await ws.recv()
+                    receive_timeout = max(
+                        0.01,
+                        last_message_monotonic + timeout_sec - now_monotonic,
+                    )
+                if next_refresh_monotonic > 0:
+                    until_refresh = max(0.01, next_refresh_monotonic - now_monotonic)
+                    receive_timeout = (
+                        until_refresh
+                        if receive_timeout is None
+                        else min(receive_timeout, until_refresh)
+                    )
+                try:
+                    if receive_timeout is None:
+                        raw = await ws.recv()
+                    else:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=receive_timeout)
+                except asyncio.TimeoutError:
+                    now_monotonic = time.monotonic()
+                    if (
+                        timeout_sec > 0
+                        and now_monotonic - last_message_monotonic >= timeout_sec
+                    ):
+                        raise
+                    if (
+                        market_refresher is None
+                        or next_refresh_monotonic <= 0
+                        or now_monotonic < next_refresh_monotonic
+                    ):
+                        raise
+                    try:
+                        refreshed_markets = await market_refresher()
+                        refreshed_market_ids = [market.id for market in refreshed_markets]
+                        if not refreshed_market_ids:
+                            raise RuntimeError("no eligible Predict.fun markets discovered")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        state["discovery_failure_count"] += 1
+                        state["consecutive_discovery_failures"] += 1
+                        state["discovery_error"] = f"{exc.__class__.__name__}: {exc}"
+                        state["ts"] = _utc_now()
+                        retry_sec = min(
+                            refresh_sec,
+                            max(
+                                5.0,
+                                float(2 ** min(state["consecutive_discovery_failures"], 5)),
+                            ),
+                        )
+                        next_refresh_monotonic = time.monotonic() + retry_sec
+                        last_state_write_monotonic = _write_state_if_due(
+                            state_path,
+                            state,
+                            last_state_write_monotonic,
+                            force=True,
+                        )
+                        continue
+
+                    request_id = await _sync_market_subscriptions(
+                        ws,
+                        state,
+                        market_ids=refreshed_market_ids,
+                        market_statuses=_market_status_snapshot(refreshed_markets),
+                        request_id=request_id,
+                    )
+                    active_market_ids = {str(value) for value in refreshed_market_ids}
+                    state["refresh_count"] += 1
+                    state["consecutive_discovery_failures"] = 0
+                    state["discovery_error"] = ""
+                    state["last_discovery_at"] = _utc_now()
+                    state["ts"] = state["last_discovery_at"]
+                    next_refresh_monotonic = time.monotonic() + refresh_sec
+                    last_state_write_monotonic = _write_state_if_due(
+                        state_path,
+                        state,
+                        last_state_write_monotonic,
+                        force=True,
+                    )
+                    continue
+
+                last_message_monotonic = time.monotonic()
                 msg = json.loads(raw)
                 received += 1
 
@@ -154,11 +249,13 @@ async def watch_orderbooks(
                     await ws.send(json.dumps({"method": "heartbeat", "data": msg.get("data")}))
                     state["last_heartbeat_at"] = _utc_now()
                 elif topic:
-                    try:
-                        _apply_market_message(state, msg, sentinel=sentinel, now=time.time())
-                    except ValueError as exc:
-                        market_id = topic.rsplit("/", 1)[-1]
-                        state["orderbook_errors"][market_id] = str(exc)
+                    message_market_id = topic.rsplit("/", 1)[-1] if "/" in topic else ""
+                    if not message_market_id or message_market_id in active_market_ids:
+                        try:
+                            _apply_market_message(state, msg, sentinel=sentinel, now=time.time())
+                            _prune_market_state(state, active_market_ids)
+                        except ValueError as exc:
+                            state["orderbook_errors"][message_market_id] = str(exc)
 
                 compact = {
                     "ts": _utc_now(),
@@ -223,15 +320,19 @@ async def watch_orderbooks_forever(
     session_number = 0
     reconnect_count = 0
     consecutive_failures = 0
+
+    async def refresh_markets() -> list[PredictMarket]:
+        return await asyncio.to_thread(
+            discover_markets,
+            client,
+            cfg,
+            discover_limit,
+        )
+
     while True:
         session_number += 1
         try:
-            markets = await asyncio.to_thread(
-                discover_markets,
-                client,
-                cfg,
-                discover_limit,
-            )
+            markets = await refresh_markets()
             market_ids = [market.id for market in markets]
             if not market_ids:
                 raise RuntimeError("no eligible Predict.fun markets discovered")
@@ -242,7 +343,7 @@ async def watch_orderbooks_forever(
                 state_path=state_path,
                 max_messages=0,
                 timeout_sec=max(30.0, refresh_sec + 30.0),
-                max_runtime_sec=max(30.0, refresh_sec),
+                max_runtime_sec=0,
                 initial_market_statuses=_market_status_snapshot(markets),
                 sentinel_config=(
                     cfg.get("liquidity_sentinel")
@@ -251,6 +352,8 @@ async def watch_orderbooks_forever(
                 ),
                 session_number=session_number,
                 reconnect_count=reconnect_count,
+                market_refresher=refresh_markets,
+                refresh_sec=max(30.0, refresh_sec),
             )
             if state.get("error"):
                 consecutive_failures += 1
@@ -340,6 +443,79 @@ def _market_topics(market_ids: list[int]) -> list[str]:
             )
         )
     return topics
+
+
+MARKET_STATE_FIELDS = (
+    "orderbooks",
+    "orderbook_updated_at",
+    "orderbook_upstream_updated_at_ms",
+    "orderbook_latency_ms",
+    "orderbook_errors",
+    "trading_statuses",
+    "market_statuses",
+    "liquidity",
+    "liquidity_alerts",
+)
+
+
+def _prune_market_state(state: dict[str, Any], market_ids: set[str]) -> None:
+    for field in MARKET_STATE_FIELDS:
+        values = state.get(field)
+        if not isinstance(values, dict):
+            state[field] = {}
+            continue
+        state[field] = {
+            str(market_id): value
+            for market_id, value in values.items()
+            if str(market_id) in market_ids
+        }
+
+
+async def _sync_market_subscriptions(
+    websocket: Any,
+    state: dict[str, Any],
+    *,
+    market_ids: list[int],
+    market_statuses: dict[str, dict[str, Any]],
+    request_id: int,
+) -> int:
+    normalized_ids = list(dict.fromkeys(int(value) for value in market_ids if int(value) > 0))
+    old_ids = {int(value) for value in state.get("market_ids", []) if int(value) > 0}
+    new_ids = set(normalized_ids)
+    removed_ids = sorted(old_ids - new_ids)
+    added_ids = sorted(new_ids - old_ids)
+
+    for topic in _market_topics(removed_ids):
+        await websocket.send(
+            json.dumps(
+                {"method": "unsubscribe", "requestId": request_id, "params": [topic]}
+            )
+        )
+        request_id += 1
+    for topic in _market_topics(added_ids):
+        await websocket.send(
+            json.dumps(
+                {"method": "subscribe", "requestId": request_id, "params": [topic]}
+            )
+        )
+        request_id += 1
+
+    state["market_ids"] = normalized_ids
+    state["subscribed_topics"] = _market_topics(normalized_ids)
+    active_ids = {str(value) for value in normalized_ids}
+    _prune_market_state(state, active_ids)
+    current_statuses = state["market_statuses"]
+    for market_id, row in market_statuses.items():
+        market_key = str(market_id)
+        if market_key not in active_ids or not isinstance(row, dict):
+            continue
+        current_statuses.setdefault(market_key, dict(row))
+    state["last_subscription_refresh"] = {
+        "at": _utc_now(),
+        "added_market_ids": added_ids,
+        "removed_market_ids": removed_ids,
+    }
+    return request_id
 
 
 def _topic_market_id(topic: str, expected_prefix: str) -> int:
