@@ -1,8 +1,10 @@
 # Predict.fun Dry-Run Deployment
 
 This deployment is intentionally separate from every Polymarket service and
-release path. It controls only `predictfun-ws.service`,
-`predictfun-dryrun.service`, and `predictfun-dryrun.timer`.
+release path. The VPS wrapper controls only `predictfun-ws.service`,
+`predictfun-dryrun.service`, and `predictfun-dryrun.timer`. The Mac mini
+wrapper atomically controls the Predict.fun account API proxy and public-data
+WebSocket relay LaunchAgents.
 
 ## Market-data path
 
@@ -22,8 +24,9 @@ book ordering, trading status, and market status before a book can be quoted.
 
 ## Host profiles
 
-The same reviewed commit is deployed to both hosts, but each host gets one
-explicit account identity:
+The same reviewed commit is deployed to both hosts. Each host has a conservative
+single-account default, while the release wrapper can pin up to ten explicit
+account aliases when more accounts have been enrolled on the Mac mini:
 
 | Profile | Host | Account | Deployment lock |
 | --- | --- | --- | --- |
@@ -31,8 +34,20 @@ explicit account identity:
 | `vps2` | VPS2 | `account_02` | `vps2-production-deploy.lock` |
 
 An unknown or omitted profile fails closed. Runtime config generation pins
-`accounts.ids` to the profile account and activation requires that exact
-account's Mac mini auth check to pass.
+`accounts.ids` to the exact ordered account set and activation requires every
+account's Mac mini auth check to pass. Public market data and the WS relay are
+shared; balances, positions, managed orders, signing and submission remain
+account-scoped.
+
+To bind more than the default account, pass the same explicit list to both
+`prepare` and `activate`, for example:
+
+```bash
+--account-ids account_01,account_03,account_04
+```
+
+The wrapper rejects duplicate/invalid aliases and more than ten accounts. It
+does not create accounts or copy credentials.
 
 ## Production paths
 
@@ -42,22 +57,24 @@ account's Mac mini auth check to pass.
 - Mutable runtime: `/home/ubuntu/predictfun-runtime`
 - Host-global deployment lock under `/home/ubuntu/latitude-runtime/locks/`
 
-Mac mini relay paths:
+Mac mini service paths:
 
 - Bare source: `~/repos/predictfun.git`
 - Immutable releases: `~/predictfun-ws-releases/<full-sha>`
 - Current link: `~/predictfun-ws-releases/current`
 - Mutable runtime: `~/predictfun-ws-runtime`
-- LaunchAgent: `~/Library/LaunchAgents/ai.codex.predictfun-ws-relay.plist`
+- API LaunchAgent: `~/Library/LaunchAgents/ai.codex.predictfun-api-proxy.plist`
+- WS LaunchAgent: `~/Library/LaunchAgents/ai.codex.predictfun-ws-relay.plist`
 - Existing secret: `~/.macmini-secrets/predictfun.env`
 
-No private key or API key is stored in these paths. The mainnet config talks to
-the Mac mini Predict API proxy over Tailscale.
+No private key or API key is copied into a release, plist, VPS, or Git. Both
+Mac services read the existing mode-0600 secret file at runtime. The mainnet
+config talks to the Mac mini Predict API proxy over Tailscale.
 
 ## Fixed release sequence
 
 After the reviewed PR is merged, mirror the exact GitHub `main` commit into the
-dedicated Predict bare repositories. Deploy and accept the Mac mini relay
+dedicated Predict bare repositories. Deploy and accept both Mac mini services
 first:
 
 ```bash
@@ -75,10 +92,11 @@ TARGET=<40-character-merged-sha>
   --authorization-id <recorded-user-authorization>
 ```
 
-For later relay releases, replace `none` with its exact current SHA. Relay
-activation succeeds only after launchd reports it running and a real public
-market subscription passes. A failure restores the previous link and
-LaunchAgent.
+For later Mac-service releases, replace `none` with their exact current SHA.
+Activation starts and probes the account API proxy first, requiring at least
+one ready account and an exact release-SHA match. It then requires the WS relay
+to complete a real public-market subscription. Any failure restores the
+previous link and both LaunchAgents as one unit.
 
 Then prepare and activate VPS1:
 
@@ -88,11 +106,13 @@ TARGET=<40-character-merged-sha>
 sudo /home/ubuntu/.venv2/bin/python \
   /path/to/reviewed/deploy_release.py prepare \
   --profile vps1 \
+  --account-ids account_01 \
   --target-sha "$TARGET"
 
 sudo /home/ubuntu/.venv2/bin/python \
   /path/to/reviewed/deploy_release.py activate \
   --profile vps1 \
+  --account-ids account_01 \
   --target-sha "$TARGET" \
   --expected-current none \
   --confirm DEPLOY_PREDICTFUN_DRYRUN \

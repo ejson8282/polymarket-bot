@@ -1,0 +1,929 @@
+from __future__ import annotations
+
+from decimal import Decimal
+import importlib.util
+import json
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+from platforms.predictfun.maker.capital import build_account_capital_rows
+from platforms.predictfun.maker.execution_gate import resolve_execution_gate
+from platforms.predictfun.maker.executor import (
+    AccountBalance,
+    AccountPosition,
+    ExecutableOrder,
+    ExecutionResult,
+    LiveOrder,
+    MultiAccountExecutor,
+    PredictFunLiveExecutor,
+)
+from platforms.predictfun.maker.intents import _configured_accounts, utc_now
+from platforms.predictfun.maker.intents import build_intents_from_plans
+from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.risk import evaluate_risk
+from platforms.predictfun.maker.runner import (
+    _apply_manual_order_constraints,
+    _cancel_managed_on_shutdown,
+    _sync_managed_live_orders,
+    run_loop,
+)
+from platforms.predictfun.maker.status import build_status_snapshot
+
+
+def _live_cfg() -> dict[str, Any]:
+    return {
+        "environment": "mainnet",
+        "execution": {"mode": "live"},
+        "accounts": {"ids": ["account_01"]},
+        "simulation": {"enabled": False},
+    }
+
+
+def _live_env() -> dict[str, str]:
+    sha = "a" * 40
+    return {
+        "PREDICTFUN_LIVE_TRADING": "1",
+        "PREDICTFUN_LIVE_CONFIRM": "ENABLE_PREDICTFUN_LIVE",
+        "PREDICTFUN_LIVE_RELEASE_SHA": sha,
+        "PREDICTFUN_LIVE_ACCOUNT_IDS": "account_01",
+    }
+
+
+def test_live_execution_gate_requires_exact_release_account_set_and_no_simulation() -> None:
+    release = {"release_sha": "a" * 40, "release_required": True}
+    gate = resolve_execution_gate(_live_cfg(), environ=_live_env(), release=release)
+    assert gate.allowed is True
+    assert gate.effective_mode == "live"
+
+    wrong_accounts = {**_live_env(), "PREDICTFUN_LIVE_ACCOUNT_IDS": "account_02"}
+    gate = resolve_execution_gate(
+        _live_cfg(), environ=wrong_accounts, release=release
+    )
+    assert gate.allowed is False
+    assert "live_account_set_mismatch" in gate.blocks
+
+    cfg = _live_cfg()
+    cfg["simulation"] = {"enabled": True}
+    gate = resolve_execution_gate(cfg, environ=_live_env(), release=release)
+    assert "live_requires_simulation_disabled" in gate.blocks
+
+
+def test_live_capital_never_invents_fallback_equity() -> None:
+    rows = build_account_capital_rows(
+        ["account_01"],
+        balances=[],
+        positions=[],
+        fallback_equity=Decimal("100"),
+        allow_fallback=False,
+    )
+    assert rows == [
+        {
+            "account_id": "account_01",
+            "enabled": False,
+            "quote_enabled": False,
+            "equity": "0",
+            "available_cash": "0",
+            "capital_profile": "unavailable",
+            "capital_source": "missing",
+            "disabled_reason": "equity_unavailable",
+            "reserve": "0",
+            "max_account_notional": "0",
+            "max_account_market_notional": "0",
+            "max_order_notional": "0",
+            "max_markets": 0,
+            "inventory_warning": "0",
+            "daily_loss_stop": "0",
+        }
+    ]
+    assert _configured_accounts({"ids": rows, "max_active_accounts": 1}) == []
+    assert build_intents_from_plans(
+        [
+            {
+                "can_quote": True,
+                "market": {"id": 42},
+                "yes_quotes": [
+                    {
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.4",
+                        "size": "2",
+                    }
+                ],
+            }
+        ],
+        accounts_config={"ids": rows, "max_active_accounts": 1},
+    ) == []
+
+
+def test_capital_quotes_are_capped_by_observed_available_cash() -> None:
+    rows = build_account_capital_rows(
+        ["account_01"],
+        balances=[
+            AccountBalance(
+                asset="USDT",
+                available=Decimal("5"),
+                total=Decimal("5"),
+                account_id="account_01",
+            )
+        ],
+        positions=[
+            AccountPosition(
+                market_id=42,
+                outcome="YES",
+                size=Decimal("100"),
+                avg_price=Decimal("0.5"),
+                mark_price=Decimal("0.5"),
+                account_id="account_01",
+                value_usd=Decimal("50"),
+            )
+        ],
+        allow_fallback=False,
+    )
+    assert rows[0]["enabled"] is True
+    assert rows[0]["capital_source"] == "observed"
+    assert Decimal(rows[0]["max_account_notional"]) <= Decimal("5")
+
+
+def test_position_only_account_keeps_exit_order_limit_without_quoting() -> None:
+    rows = build_account_capital_rows(
+        ["account_01"],
+        balances=[
+            AccountBalance(
+                asset="USDT",
+                available=Decimal("0"),
+                total=Decimal("0"),
+                account_id="account_01",
+            )
+        ],
+        positions=[
+            AccountPosition(
+                market_id=42,
+                outcome="YES",
+                size=Decimal("100"),
+                avg_price=Decimal("0.5"),
+                mark_price=Decimal("0.5"),
+                account_id="account_01",
+                value_usd=Decimal("100"),
+            )
+        ],
+        allow_fallback=False,
+    )
+
+    assert rows[0]["enabled"] is True
+    assert rows[0]["quote_enabled"] is False
+    assert rows[0]["max_account_notional"] == "0"
+    assert Decimal(rows[0]["max_order_notional"]) > 0
+
+
+def test_multi_account_executor_applies_observed_account_order_limits() -> None:
+    first = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    second = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_02",
+        max_order_notional=Decimal("8"),
+    )
+    executor = MultiAccountExecutor(
+        {"account_01": first, "account_02": second}
+    )
+
+    executor.set_order_notional_limits(
+        {"account_01": Decimal("15"), "account_02": Decimal("5")}
+    )
+
+    assert first.max_order_notional == Decimal("15")
+    assert second.max_order_notional == Decimal("5")
+
+
+def test_live_inventory_is_used_by_risk_instead_of_simulation() -> None:
+    risk = evaluate_risk(
+        cfg={
+            "risk": {
+                "max_plan_state_age_sec": 180,
+                "max_market_position_size": "1",
+                "max_account_market_position_size": "1",
+            }
+        },
+        plan_state={"ts": utc_now()},
+        intents_state={"summary": {}, "intents": []},
+        runner_state={"error_count": 0},
+        ws_state={},
+        simulation_state={"positions": []},
+        kill_switch_state={},
+        inventory_state={
+            "positions": [
+                {
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "size": "2",
+                    "value_usd": "1",
+                }
+            ]
+        },
+        inventory_source="live",
+    )
+    assert risk["summary"]["position_source"] == "live"
+    assert risk["summary"]["live_positions"] == 1
+    assert risk["summary"]["sim_positions"] == 0
+    assert any(
+        row["name"].startswith("live_position_")
+        and row["status"] == "BLOCK"
+        for row in risk["checks"]
+    )
+
+
+def test_account_inventory_and_unrealized_loss_limits_are_aggregated() -> None:
+    risk = evaluate_risk(
+        cfg={
+            "accounts": {
+                "ids": [
+                    {
+                        "account_id": "account_01",
+                        "inventory_warning": "10",
+                        "daily_loss_stop": "3",
+                    }
+                ]
+            },
+            "risk": {"max_plan_state_age_sec": 180},
+        },
+        plan_state={"ts": utc_now()},
+        intents_state={"summary": {}, "intents": []},
+        runner_state={"error_count": 0},
+        ws_state={},
+        simulation_state={},
+        kill_switch_state={},
+        inventory_state={
+            "positions": [
+                {
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "size": "2",
+                    "value_usd": "6",
+                    "pnl_usd": "-2",
+                },
+                {
+                    "account_id": "account_01",
+                    "market_id": 43,
+                    "outcome": "NO",
+                    "size": "2",
+                    "value_usd": "6",
+                    "pnl_usd": "-2",
+                },
+            ]
+        },
+        inventory_source="live",
+    )
+    checks = {row["name"]: row for row in risk["checks"]}
+    assert checks["account_position_value_account_01"]["value"] == "12"
+    assert checks["account_position_value_account_01"]["status"] == "BLOCK"
+    assert checks["account_unrealized_loss_account_01"]["value"] == "4"
+    assert checks["account_unrealized_loss_account_01"]["status"] == "BLOCK"
+    assert risk["execution_mode"] == "reduce_only"
+
+
+def test_inventory_exit_is_split_by_account_order_limit() -> None:
+    intents = build_intents_from_plans(
+        [
+            {
+                "can_quote": False,
+                "best_yes_bid": "0.4",
+                "best_yes_ask": "0.6",
+                "market": {
+                    "id": 42,
+                    "status": "REGISTERED",
+                    "trading_status": "OPEN",
+                    "decimal_precision": 2,
+                    "yes_token_id": "yes-token",
+                    "no_token_id": "no-token",
+                },
+            }
+        ],
+        accounts_config={
+            "ids": [
+                {
+                    "account_id": "account_01",
+                    "quote_enabled": False,
+                    "max_order_notional": "8",
+                }
+            ]
+        },
+        inventory_positions=[
+            {
+                "account_id": "account_01",
+                "market_id": 42,
+                "outcome": "YES",
+                "size": "100",
+            }
+        ],
+    )
+    assert len(intents) == 1
+    assert intents[0].purpose == "inventory_exit"
+    assert intents[0].side == "SELL"
+    assert intents[0].notional <= Decimal("8")
+
+
+class _AccountExecutor:
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        self.created: list[ExecutableOrder] = []
+        self.cancelled: list[str] = []
+        self.resolved: LiveOrder | None = None
+
+    def create(self, order: ExecutableOrder) -> ExecutionResult:
+        self.created.append(order)
+        return ExecutionResult(
+            intent_id=order.intent_id,
+            account_id=self.account_id,
+            action="create",
+            ok=True,
+            message="ok",
+            order_id=f"order:{self.account_id}",
+            status="open",
+        )
+
+    def cancel(
+        self, order_id: str, *, intent_id: str = "", account_id: str = ""
+    ) -> ExecutionResult:
+        assert account_id == self.account_id
+        self.cancelled.append(order_id)
+        return ExecutionResult(
+            intent_id=intent_id,
+            account_id=account_id,
+            action="cancel",
+            ok=True,
+            message="ok",
+            order_id=order_id,
+            status="cancelled",
+        )
+
+    def get_order(
+        self, order_id: str, *, account_id: str = ""
+    ) -> LiveOrder | None:
+        assert account_id == self.account_id
+        return self.resolved
+
+    def list_orders(self) -> list[LiveOrder]:
+        return []
+
+    def list_balances(self) -> list[AccountBalance]:
+        return []
+
+    def list_positions(self) -> list[AccountPosition]:
+        return []
+
+    def capabilities(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "live_order_submit": True,
+            "live_order_cancel": True,
+            "live_order_read": True,
+            "live_balance_read": True,
+            "live_position_read": True,
+        }
+
+
+def _order(account_id: str) -> ExecutableOrder:
+    return ExecutableOrder(
+        intent_id=f"intent:{account_id}",
+        account_id=account_id,
+        market_id=42,
+        outcome="YES",
+        side="BUY",
+        price=Decimal("0.4"),
+        size=Decimal("2"),
+        token_id="42",
+    )
+
+
+def test_multi_account_executor_never_cross_routes_private_actions() -> None:
+    first = _AccountExecutor("account_01")
+    second = _AccountExecutor("account_02")
+    executor = MultiAccountExecutor(
+        {"account_01": first, "account_02": second}  # type: ignore[arg-type]
+    )
+    assert executor.create(_order("account_02")).ok is True
+    assert first.created == []
+    assert [row.account_id for row in second.created] == ["account_02"]
+
+    assert executor.cancel("hash-1", account_id="account_01").ok is True
+    assert first.cancelled == ["hash-1"]
+    assert second.cancelled == []
+    assert executor.cancel("hash-2", account_id="missing").ok is False
+
+
+def test_missing_managed_order_is_resolved_without_adopting_manual_orders() -> None:
+    registry = ManagedOrderRegistry()
+    created = _order("account_01")
+    registry.record_create(
+        created,
+        ExecutionResult(
+            intent_id=created.intent_id,
+            account_id=created.account_id,
+            action="create",
+            ok=True,
+            message="ok",
+            order_id="managed-hash",
+            status="open",
+        ),
+    )
+    executor = _AccountExecutor("account_01")
+    executor.resolved = LiveOrder(
+        order_id="managed-hash",
+        intent_id="",
+        market_id=42,
+        outcome="YES",
+        side="BUY",
+        price=Decimal("0.4"),
+        size=Decimal("2"),
+        filled_size=Decimal("2"),
+        status="filled",
+        account_id="account_01",
+    )
+    _sync_managed_live_orders(registry, [], executor)
+    assert registry.active() == []
+
+    manual = LiveOrder(
+        order_id="manual-hash",
+        intent_id="",
+        market_id=42,
+        outcome="NO",
+        side="BUY",
+        price=Decimal("0.6"),
+        size=Decimal("1"),
+        filled_size=Decimal("0"),
+        status="open",
+        account_id="account_01",
+    )
+    registry.sync_live_orders([manual])
+    assert registry.owns_order_id("manual-hash") is False
+
+
+def test_live_shutdown_cancels_only_engine_owned_orders(tmp_path: Path) -> None:
+    order = _order("account_01")
+    registry = ManagedOrderRegistry()
+    registry.record_create(
+        order,
+        ExecutionResult(
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+            action="create",
+            ok=True,
+            message="ok",
+            order_id="managed-hash",
+            status="open",
+        ),
+    )
+    report_path = tmp_path / "execution.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "mode": "live",
+                "managed_orders": registry.to_state(),
+                "manual_order_ids": ["manual-hash"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    account_executor = _AccountExecutor("account_01")
+    executor = MultiAccountExecutor(
+        {"account_01": account_executor}  # type: ignore[arg-type]
+    )
+
+    report = _cancel_managed_on_shutdown(report_path, executor)
+
+    assert account_executor.cancelled == ["managed-hash"]
+    assert report["mode"] == "live_cancel_only"
+    assert report["reason"] == "runner_shutdown"
+    assert report["summary"] == {
+        "actions": 1,
+        "create": 0,
+        "cancel": 1,
+        "failed": 0,
+        "blocked": 1,
+    }
+
+
+def test_manual_orders_reserve_cash_and_block_duplicate_position_exit() -> None:
+    managed = _order("account_01")
+    registry = ManagedOrderRegistry()
+    registry.record_create(
+        managed,
+        ExecutionResult(
+            intent_id=managed.intent_id,
+            account_id=managed.account_id,
+            action="create",
+            ok=True,
+            message="ok",
+            order_id="managed-buy",
+            status="open",
+        ),
+    )
+    live_orders = [
+        LiveOrder(
+            order_id="managed-buy",
+            intent_id="",
+            market_id=42,
+            outcome="YES",
+            side="BUY",
+            price=Decimal("0.4"),
+            size=Decimal("2"),
+            filled_size=Decimal("0"),
+            status="open",
+            account_id="account_01",
+        ),
+        LiveOrder(
+            order_id="manual-buy",
+            intent_id="",
+            market_id=43,
+            outcome="YES",
+            side="BUY",
+            price=Decimal("0.5"),
+            size=Decimal("10"),
+            filled_size=Decimal("2"),
+            status="open",
+            account_id="account_01",
+        ),
+        LiveOrder(
+            order_id="manual-sell",
+            intent_id="",
+            market_id=42,
+            outcome="YES",
+            side="SELL",
+            price=Decimal("0.6"),
+            size=Decimal("3"),
+            filled_size=Decimal("0"),
+            status="open",
+            account_id="account_01",
+        ),
+    ]
+    positions = [
+        AccountPosition(
+            market_id=42,
+            outcome="YES",
+            size=Decimal("3"),
+            avg_price=Decimal("0.4"),
+            mark_price=Decimal("0.5"),
+            account_id="account_01",
+            value_usd=Decimal("1.5"),
+        ),
+        AccountPosition(
+            market_id=44,
+            outcome="YES",
+            size=Decimal("2"),
+            avg_price=Decimal("0.4"),
+            mark_price=Decimal("0.5"),
+            account_id="account_01",
+            value_usd=Decimal("1"),
+        ),
+    ]
+
+    balances, exit_positions, summary = _apply_manual_order_constraints(
+        balances=[
+            AccountBalance(
+                asset="USDT",
+                available=Decimal("100"),
+                total=Decimal("100"),
+                account_id="account_01",
+            )
+        ],
+        positions=positions,
+        live_orders=live_orders,
+        registry=registry,
+    )
+
+    assert balances[0].available == Decimal("96")
+    assert [row.market_id for row in exit_positions] == [44]
+    assert summary == {
+        "account_01": {
+            "manual_open_orders": 2,
+            "manual_buy_reserved_notional": "4.0",
+            "manual_sell_blocked_markets": [42],
+        }
+    }
+
+
+def test_blocked_live_gate_never_constructs_live_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = {
+        **_live_cfg(),
+        "base_url": "http://127.0.0.1:9",
+        "signer": {"enabled": False},
+        "risk": {"max_plan_state_age_sec": 180},
+        "data": {"require_ws_for_quotes": False},
+        "output": {
+            "state_path": "plan.json",
+            "intents_path": "intents.json",
+            "execution_report_path": "report.json",
+            "runner_state_path": "runner.json",
+            "ws_state_path": "ws.json",
+            "simulation_state_path": "simulation.json",
+            "risk_state_path": "risk.json",
+            "kill_switch_path": "kill.json",
+            "research_state_path": "research.json",
+            "status_path": "status.json",
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.load_config", lambda _path: cfg
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.run_once",
+        lambda *_args, **_kwargs: {"ts": utc_now(), "plans": []},
+    )
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("blocked live gate constructed a live executor")
+
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner._live_executor", forbidden
+    )
+    for name in (
+        "PREDICTFUN_LIVE_TRADING",
+        "PREDICTFUN_LIVE_CONFIRM",
+        "PREDICTFUN_LIVE_RELEASE_SHA",
+        "PREDICTFUN_LIVE_ACCOUNT_IDS",
+        "PREDICTFUN_REQUIRE_RELEASE",
+        "PREDICTFUN_RELEASE_SHA",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    state = run_loop(config_path=config_path, interval_sec=1, once=True)
+    assert state["mode"] == "blocked"
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert report["mode"] == "risk_blocked"
+    assert report["summary"]["actions"] == 0
+
+
+def test_live_status_never_presents_stale_simulation_as_active() -> None:
+    status = build_status_snapshot(
+        cfg={
+            "accounts": {"ids": ["account_01"]},
+            "simulation": {"enabled": False},
+        },
+        runner_state={"mode": "live", "requested_mode": "live"},
+        plan_state={},
+        intents_state={},
+        execution_state={},
+        risk_state={},
+        simulation_state={
+            "summary": {"fills_total": 99, "unrealized_pnl": "10"},
+            "active_orders": [{"intent_id": "old-sim"}],
+            "positions": [{"market_id": 42, "size": "10"}],
+        },
+        research_state={},
+        ws_state={},
+    )
+    assert status["overview"]["simulated_active_orders"] == 0
+    assert status["overview"]["simulated_positions"] == 0
+    assert status["overview"]["simulated_fills"] == 0
+    assert status["capabilities"]["simulated_fills"] is False
+    assert status["simulated_active_orders"] == []
+    assert status["simulated_positions"] == []
+
+
+def _load_proxy_module() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "deploy/mac-mini/predictfun_api_proxy.py"
+    spec = importlib.util.spec_from_file_location(
+        "predictfun_api_proxy_under_test", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proxy_env(max_order_notional: str = "8") -> dict[str, str]:
+    return {
+        "PREDICTFUN_ACCOUNT_KEYS_JSON": json.dumps(
+            {
+                "account_01": {
+                    "api_key": "not-logged",
+                    "private_key": "not-used",
+                    "wallet_address": "0x0000000000000000000000000000000000000001",
+                    "max_order_notional_usdc": max_order_notional,
+                }
+            }
+        )
+    }
+
+
+def _proxy_order_body() -> dict[str, object]:
+    return {
+        "submit": True,
+        "confirm": "SUBMIT_PREDICTFUN_ORDER",
+        "idempotency_key": "intent-1",
+        "intent_id": "intent-1",
+        "market_id": 42,
+        "token_id": "123",
+        "side": "BUY",
+        "price": "0.4",
+        "size": "2",
+        "is_post_only": True,
+        "reserved_balance_policy": "REJECT_MARKET_ORDER",
+        "self_trade_prevention": "CANCEL_MAKER",
+        "max_notional_usdc": "8",
+    }
+
+
+def test_proxy_idempotency_replays_same_payload_and_rejects_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    upstream_calls: list[str] = []
+
+    def signed_payload(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "order": {
+                "side": 0,
+                "makerAmount": str(8 * 10**17),
+                "takerAmount": str(2 * 10**18),
+                "maker": "0x0000000000000000000000000000000000000001",
+            },
+            "signed_order": {"signature": "present"},
+            "amounts": {"pricePerShare": str(4 * 10**17)},
+            "order_hash": "0x" + "1" * 64,
+            "signer_mode": "predict_account",
+        }
+
+    def upstream(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
+        upstream_calls.append("submit")
+        return 201, {
+            "success": True,
+            "data": {"orderHash": "0x" + "1" * 64},
+        }
+
+    monkeypatch.setattr(proxy, "_signed_order_payload", signed_payload)
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+
+    first = proxy.submit_order(_proxy_env(), "account_01", _proxy_order_body())
+    second = proxy.submit_order(_proxy_env(), "account_01", _proxy_order_body())
+    changed = _proxy_order_body()
+    changed["price"] = "0.5"
+    conflict = proxy.submit_order(_proxy_env(), "account_01", changed)
+
+    assert first["ok"] is True
+    assert second["idempotent_replay"] is True
+    assert conflict == {
+        "ok": False,
+        "error": "idempotency_key_payload_mismatch",
+        "alias": "account_01",
+    }
+    assert upstream_calls == ["submit"]
+
+
+def test_proxy_failed_retry_reuses_expiration_and_order_hash_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    expirations: list[str] = []
+
+    def signed_payload(_env: Any, _alias: str, body: dict[str, Any]) -> dict[str, Any]:
+        expirations.append(str(body["expiration"]))
+        return {
+            "order": {
+                "side": 0,
+                "makerAmount": str(8 * 10**17),
+                "takerAmount": str(2 * 10**18),
+                "maker": "0x0000000000000000000000000000000000000001",
+                "expiration": str(body["expiration"]),
+            },
+            "signed_order": {"signature": "present"},
+            "amounts": {"pricePerShare": str(4 * 10**17)},
+            "order_hash": "0x" + "3" * 64,
+            "signer_mode": "predict_account",
+        }
+
+    monkeypatch.setattr(proxy, "_signed_order_payload", signed_payload)
+    monkeypatch.setattr(
+        proxy,
+        "_authenticated_request",
+        lambda *_args, **_kwargs: (
+            503,
+            {"success": False, "error": "upstream_unavailable"},
+        ),
+    )
+
+    first = proxy.submit_order(_proxy_env(), "account_01", _proxy_order_body())
+    second = proxy.submit_order(_proxy_env(), "account_01", _proxy_order_body())
+
+    assert first["ok"] is False
+    assert second["ok"] is False
+    assert len(expirations) == 2
+    assert expirations[0] == expirations[1]
+
+
+def test_proxy_network_failure_persists_pending_order_for_safe_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    expirations: list[str] = []
+    upstream_calls = 0
+
+    def signed_payload(
+        _env: Any, _alias: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        expirations.append(str(body["expiration"]))
+        return {
+            "order": {
+                "side": 0,
+                "makerAmount": str(8 * 10**17),
+                "takerAmount": str(2 * 10**18),
+                "maker": "0x0000000000000000000000000000000000000001",
+                "expiration": str(body["expiration"]),
+            },
+            "signed_order": {"signature": "present"},
+            "amounts": {"pricePerShare": str(4 * 10**17)},
+            "order_hash": "0x" + "4" * 64,
+            "signer_mode": "predict_account",
+        }
+
+    def upstream(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
+        nonlocal upstream_calls
+        upstream_calls += 1
+        if upstream_calls == 1:
+            raise TimeoutError("response lost")
+        return 201, {
+            "success": True,
+            "data": {"orderHash": "0x" + "4" * 64},
+        }
+
+    monkeypatch.setattr(proxy, "_signed_order_payload", signed_payload)
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+
+    with pytest.raises(TimeoutError, match="response lost"):
+        proxy.submit_order(_proxy_env(), "account_01", _proxy_order_body())
+    pending = json.loads((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    pending_row = next(iter(pending["orders"].values()))
+    assert pending_row["error"] == "submission_pending"
+    assert pending_row["order_hash"] == "0x" + "4" * 64
+
+    result = proxy.submit_order(
+        _proxy_env(), "account_01", _proxy_order_body()
+    )
+
+    assert result["ok"] is True
+    assert expirations[0] == expirations[1]
+    assert upstream_calls == 2
+
+
+def test_proxy_enforces_mac_side_order_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    body = _proxy_order_body()
+    body["size"] = "40"
+
+    monkeypatch.setattr(
+        proxy,
+        "_signed_order_payload",
+        lambda *_args, **_kwargs: {
+            "order": {
+                "side": 0,
+                "makerAmount": str(16 * 10**18),
+                "takerAmount": str(40 * 10**18),
+                "maker": "0x0000000000000000000000000000000000000001",
+            },
+            "signed_order": {"signature": "present"},
+            "amounts": {"pricePerShare": str(4 * 10**17)},
+            "order_hash": "0x" + "2" * 64,
+            "signer_mode": "predict_account",
+        },
+    )
+    monkeypatch.setattr(
+        proxy,
+        "_authenticated_request",
+        lambda *_args, **_kwargs: pytest.fail("oversized order reached upstream"),
+    )
+
+    result = proxy.submit_order(_proxy_env("8"), "account_01", body)
+    assert result["ok"] is False
+    assert result["error"] == "max_notional_exceeded"
+    assert result["max_notional_usdc"] == "8"
+
+
+@pytest.mark.parametrize("price", ["0", "1", "NaN", "Infinity"])
+def test_proxy_rejects_invalid_binary_prices(price: str) -> None:
+    proxy = _load_proxy_module()
+    body = _proxy_order_body()
+    body["price"] = price
+    with pytest.raises(ValueError):
+        proxy._build_order(
+            {},
+            "0x0000000000000000000000000000000000000001",
+            body,
+        )

@@ -108,6 +108,7 @@ def _paths(
     *,
     profile: str = "vps1",
     account_id: str = "account_01",
+    account_ids: tuple[str, ...] = (),
 ) -> tuple[DeploymentPaths, str]:
     source, sha = _source_repo(tmp_path)
     bare = tmp_path / "predictfun.git"
@@ -120,6 +121,7 @@ def _paths(
     paths = DeploymentPaths(
         profile=profile,
         account_id=account_id,
+        account_ids=account_ids,
         bare_repo=bare,
         release_root=tmp_path / "releases",
         current_link=tmp_path / "releases/current",
@@ -244,7 +246,10 @@ class SystemdRunner(CommandRunner):
                         "project": "predictfun",
                         "deployment": {
                             "profile": config["deployment"]["profile"],
-                            "account_id": account_ids[0],
+                            "account_id": (
+                                account_ids[0] if len(account_ids) == 1 else ""
+                            ),
+                            "account_ids": account_ids,
                             "release_sha": self.sha,
                             "mode": "dry_run",
                         },
@@ -366,6 +371,7 @@ def test_activate_runs_one_dry_cycle_without_polymarket_controls(
     assert config["deployment"] == {
         "profile": "vps1",
         "account_id": "account_01",
+        "account_ids": ["account_01"],
     }
     assert config["accounts"]["ids"] == ["account_01"]
     assert config["accounts"]["max_active_accounts"] == 1
@@ -414,9 +420,11 @@ def test_profiles_pin_independent_accounts_and_locks() -> None:
 
     assert vps1.profile == "vps1"
     assert vps1.account_id == "account_01"
+    assert vps1.account_ids == ("account_01",)
     assert vps1.lock_file.name == "vps1-production-deploy.lock"
     assert vps2.profile == "vps2"
     assert vps2.account_id == "account_02"
+    assert vps2.account_ids == ("account_02",)
     assert vps2.lock_file.name == "vps2-production-deploy.lock"
     with pytest.raises(DeploymentError, match="unsupported"):
         DeploymentPaths.for_profile("vps3")
@@ -443,11 +451,44 @@ def test_vps2_activation_writes_only_account_02(tmp_path: Path) -> None:
     assert config["deployment"] == {
         "profile": "vps2",
         "account_id": "account_02",
+        "account_ids": ["account_02"],
     }
     assert config["accounts"]["ids"] == ["account_02"]
     assert "account_01" not in json.dumps(config["accounts"])
     assert result["profile"] == "vps2"
     assert result["runner"]["account_ids"] == ["account_02"]
+
+
+def test_activation_can_pin_multiple_isolated_accounts_to_one_host(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(
+        tmp_path,
+        account_ids=("account_01", "account_03"),
+    )
+    prepare_release(paths, CommandRunner(), sha)
+
+    result = activate_release(
+        paths,
+        SystemdRunner(paths, sha),
+        target_sha=sha,
+        expected_current="none",
+        confirm=CONFIRMATION,
+        authorization_id="test-multi-account-authorization",
+    )
+
+    config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+    assert config["deployment"] == {
+        "profile": "vps1",
+        "account_id": "",
+        "account_ids": ["account_01", "account_03"],
+    }
+    assert config["accounts"]["ids"] == ["account_01", "account_03"]
+    assert config["accounts"]["max_active_accounts"] == 2
+    assert config["risk"]["max_active_accounts"] == 2
+    assert result["account_id"] == ""
+    assert result["account_ids"] == ["account_01", "account_03"]
+    assert result["runner"]["account_ids"] == ["account_01", "account_03"]
 
 
 def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:

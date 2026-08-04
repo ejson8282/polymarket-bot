@@ -880,22 +880,32 @@ def test_normal_reconcile_ignores_cancel_for_unmanaged_manual_order() -> None:
     assert report["summary"]["actions"] == 0
 
 
-def test_continuous_live_executor_fails_closed_without_balance_contract() -> None:
+def test_live_executor_enforces_account_and_order_notional_boundary() -> None:
     executor = PredictFunLiveExecutor(
         signer_url="http://signer.invalid",
         account_id="account_01",
+        max_order_notional=Decimal("1"),
     )
     order = ExecutableOrder(
         intent_id="not-submitted",
-        account_id="account_01",
+        account_id="account_02",
         market_id=42,
         outcome="YES",
         side="BUY",
         price=Decimal("0.4"),
         size=Decimal("1"),
     )
-    assert executor.list_balances() == []
     assert executor.create(order).ok is False
+
+    oversized = ExecutableOrder(
+        **{
+            **order.__dict__,
+            "account_id": "account_01",
+            "price": Decimal("0.6"),
+            "size": Decimal("2"),
+        }
+    )
+    assert executor.create(oversized).ok is False
 
 
 def test_exposure_limit_enters_reduce_only_and_preserves_exit_path() -> None:
@@ -1005,7 +1015,7 @@ def test_exposure_limit_enters_reduce_only_and_preserves_exit_path() -> None:
     )
     assert executor.cancelled == [("official-maker", "old-maker", "account_01")]
     assert [order.intent_id for order in executor.created] == ["position-exit"]
-    assert report["mode"] == "reduce_only"
+    assert report["mode"] == "dry_run_reduce_only"
 
 
 def test_inventory_exit_notional_does_not_consume_buy_risk_budget() -> None:

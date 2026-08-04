@@ -62,6 +62,9 @@ def _paths(tmp_path: Path) -> tuple[RelayDeploymentPaths, str]:
         launch_agent=(
             home / "Library/LaunchAgents/ai.codex.predictfun-ws-relay.plist"
         ),
+        api_launch_agent=(
+            home / "Library/LaunchAgents/ai.codex.predictfun-api-proxy.plist"
+        ),
         secret_file=home / ".macmini-secrets/predictfun.env",
         python=Path(sys.executable),
         rest_proxy_url="http://127.0.0.1:8791",
@@ -127,7 +130,7 @@ def test_prepare_builds_minimal_immutable_mac_relay(tmp_path: Path) -> None:
     release = paths.release_root / sha
 
     assert result["status"] == "prepared"
-    assert verify_release(release, sha)["artifact"] == "predictfun-ws-relay"
+    assert verify_release(release, sha)["artifact"] == "predictfun-mac-services"
     assert not (release / "platforms/polymarket").exists()
     assert set(ARCHIVE_PATHS) == {
         path.relative_to(release).as_posix()
@@ -173,6 +176,11 @@ def test_activate_renders_launch_agent_and_probes_public_market(
         expected_current="none",
         confirm=CONFIRMATION,
         authorization_id="test-authorization",
+        api_probe=lambda _url: {
+            "ok": True,
+            "accounts_ready": 1,
+            "release_sha": sha,
+        },
         discover_market=lambda _url: 58416,
         relay_probe=lambda _url, market_id: {
             "ok": True,
@@ -184,10 +192,16 @@ def test_activate_renders_launch_agent_and_probes_public_market(
     assert result["status"] == "activated"
     assert paths.current_link.resolve() == paths.release_root / sha
     plist = paths.launch_agent.read_text(encoding="utf-8")
+    api_plist = paths.api_launch_agent.read_text(encoding="utf-8")
     assert str(paths.python) in plist
     assert str(paths.current_link) in plist
     assert "__PREDICTFUN_" not in plist
     assert "PREDICTFUN_API_KEY" not in plist
+    assert str(paths.python) in api_plist
+    assert str(paths.current_link) in api_plist
+    assert "__PREDICTFUN_" not in api_plist
+    assert "PREDICTFUN_API_KEY" not in api_plist
+    assert sha in api_plist
     rendered_calls = "\n".join(" ".join(call) for call in runner.calls)
     assert "launchctl bootstrap" in rendered_calls
     assert "launchctl kickstart -k" in rendered_calls
@@ -212,6 +226,11 @@ def test_activate_waits_for_launch_agent_to_reach_running(
         expected_current="none",
         confirm=CONFIRMATION,
         authorization_id="test-delayed-launch",
+        api_probe=lambda _url: {
+            "ok": True,
+            "accounts_ready": 1,
+            "release_sha": sha,
+        },
         discover_market=lambda _url: 58416,
         relay_probe=lambda _url, market_id: {
             "ok": True,
@@ -222,7 +241,7 @@ def test_activate_waits_for_launch_agent_to_reach_running(
     assert result["status"] == "activated"
     assert len(
         [call for call in runner.calls if call[:2] == ("launchctl", "print")]
-    ) == 3
+    ) == 4
 
 
 def test_failed_probe_restores_prior_launch_agent(
@@ -232,6 +251,9 @@ def test_failed_probe_restores_prior_launch_agent(
     paths, sha = _prepare(tmp_path)
     paths.launch_agent.parent.mkdir(parents=True, exist_ok=True)
     paths.launch_agent.write_text("legacy relay plist\n", encoding="utf-8")
+    paths.api_launch_agent.write_text(
+        "legacy api plist\n", encoding="utf-8"
+    )
     monkeypatch.setattr(
         "platforms.predictfun.deploy_ws_relay.time.sleep",
         lambda _seconds: None,
@@ -245,6 +267,11 @@ def test_failed_probe_restores_prior_launch_agent(
             expected_current="none",
             confirm=CONFIRMATION,
             authorization_id="test-failure",
+            api_probe=lambda _url: {
+                "ok": True,
+                "accounts_ready": 1,
+                "release_sha": sha,
+            },
             discover_market=lambda _url: 58416,
             relay_probe=lambda _url, _market_id: (_ for _ in ()).throw(
                 RuntimeError("upstream rejected")
@@ -253,6 +280,54 @@ def test_failed_probe_restores_prior_launch_agent(
 
     assert not paths.current_link.exists()
     assert paths.launch_agent.read_text(encoding="utf-8") == "legacy relay plist\n"
+    assert (
+        paths.api_launch_agent.read_text(encoding="utf-8")
+        == "legacy api plist\n"
+    )
+
+
+def test_api_release_mismatch_restores_both_launch_agents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, sha = _prepare(tmp_path)
+    paths.launch_agent.parent.mkdir(parents=True, exist_ok=True)
+    paths.launch_agent.write_text("legacy relay plist\n", encoding="utf-8")
+    paths.api_launch_agent.write_text(
+        "legacy api plist\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.deploy_ws_relay.time.sleep",
+        lambda _seconds: None,
+    )
+
+    with pytest.raises(RelayDeploymentError, match="previous state restored"):
+        activate_release(
+            paths,
+            LaunchctlRunner(),
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="test-api-sha-mismatch",
+            api_probe=lambda _url: {
+                "ok": True,
+                "accounts_ready": 1,
+                "release_sha": "f" * 40,
+            },
+            discover_market=lambda _url: pytest.fail(
+                "WS discovery ran after API release mismatch"
+            ),
+            relay_probe=lambda _url, _market_id: pytest.fail(
+                "WS probe ran after API release mismatch"
+            ),
+        )
+
+    assert not paths.current_link.exists()
+    assert paths.launch_agent.read_text(encoding="utf-8") == "legacy relay plist\n"
+    assert (
+        paths.api_launch_agent.read_text(encoding="utf-8")
+        == "legacy api plist\n"
+    )
 
 
 def test_relay_activation_rejects_insecure_secret_permissions(
@@ -269,6 +344,11 @@ def test_relay_activation_rejects_insecure_secret_permissions(
             expected_current="none",
             confirm=CONFIRMATION,
             authorization_id="test-insecure-secret",
+            api_probe=lambda _url: {
+                "ok": True,
+                "accounts_ready": 1,
+                "release_sha": sha,
+            },
             discover_market=lambda _url: 58416,
             relay_probe=lambda _url, _market_id: {"ok": True},
         )

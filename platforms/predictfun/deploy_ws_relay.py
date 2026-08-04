@@ -1,4 +1,4 @@
-"""Exact-SHA Mac mini deployment for the Predict.fun public-data WS relay."""
+"""Exact-SHA Mac mini deployment for Predict.fun API and WS services."""
 
 from __future__ import annotations
 
@@ -25,8 +25,9 @@ from platforms.predictfun.ws_relay import probe_relay
 
 
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
-ARTIFACT = "predictfun-ws-relay"
+ARTIFACT = "predictfun-mac-services"
 LABEL = "ai.codex.predictfun-ws-relay"
+API_LABEL = "ai.codex.predictfun-api-proxy"
 CONFIRMATION = "DEPLOY_PREDICTFUN_WS_RELAY"
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 ARCHIVE_PATHS = (
@@ -34,6 +35,8 @@ ARCHIVE_PATHS = (
     "platforms/predictfun/__init__.py",
     "platforms/predictfun/deploy_ws_relay.py",
     "platforms/predictfun/ws_relay.py",
+    "deploy/mac-mini/predictfun_api_proxy.py",
+    "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist",
     "deploy/mac-mini/ai.codex.predictfun-ws-relay.plist",
 )
 
@@ -52,6 +55,10 @@ class RelayDeploymentPaths:
     launch_agent: Path = (
         Path.home()
         / "Library/LaunchAgents/ai.codex.predictfun-ws-relay.plist"
+    )
+    api_launch_agent: Path = (
+        Path.home()
+        / "Library/LaunchAgents/ai.codex.predictfun-api-proxy.plist"
     )
     secret_file: Path = Path.home() / ".macmini-secrets/predictfun.env"
     python: Path = (
@@ -343,7 +350,9 @@ def prepare_release(
             (
                 str(paths.python),
                 "-c",
-                "import ast,pathlib; ast.parse(pathlib.Path('platforms/predictfun/ws_relay.py').read_text())",
+                "import ast,pathlib; "
+                "ast.parse(pathlib.Path('platforms/predictfun/ws_relay.py').read_text()); "
+                "ast.parse(pathlib.Path('deploy/mac-mini/predictfun_api_proxy.py').read_text())",
             ),
             cwd=temporary,
         )
@@ -436,6 +445,30 @@ def discover_probe_market(rest_proxy_url: str, timeout_sec: float = 10.0) -> int
     return market_id
 
 
+def probe_api_proxy(rest_proxy_url: str, timeout_sec: float = 10.0) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{rest_proxy_url.rstrip('/')}/health",
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise RelayDeploymentError("Predict.fun API proxy health check failed")
+    accounts = payload.get("accounts")
+    accounts = accounts if isinstance(accounts, dict) else {}
+    ready = int(accounts.get("ready") or 0)
+    if ready <= 0:
+        raise RelayDeploymentError("Predict.fun API proxy has no ready account")
+    return {
+        "ok": True,
+        "project": payload.get("project"),
+        "mode": payload.get("mode"),
+        "release_sha": payload.get("release_sha"),
+        "accounts_configured": int(accounts.get("configured") or 0),
+        "accounts_ready": ready,
+    }
+
+
 def run_relay_probe(ws_url: str, market_id: int) -> dict[str, Any]:
     return asyncio.run(probe_relay(ws_url, market_id, timeout_sec=10.0))
 
@@ -448,6 +481,7 @@ def activate_release(
     expected_current: str,
     confirm: str,
     authorization_id: str,
+    api_probe: Callable[[str], dict[str, Any]] = probe_api_proxy,
     discover_market: Callable[[str], int] = discover_probe_market,
     relay_probe: Callable[[str, int], dict[str, Any]] = run_relay_probe,
 ) -> dict[str, Any]:
@@ -468,28 +502,50 @@ def activate_release(
     release = paths.release_root / target_sha
     verify_release(release, target_sha)
     _validate_secret_file(paths.secret_file)
-    runner.run((str(paths.python), "-c", "import websockets"))
+    runner.run(
+        (
+            str(paths.python),
+            "-c",
+            "import eth_account,predict_sdk,web3,websockets",
+        )
+    )
 
     plist_source = (
         release / "deploy/mac-mini/ai.codex.predictfun-ws-relay.plist"
     )
+    api_plist_source = (
+        release / "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist"
+    )
     plist_template = plist_source.read_text(encoding="utf-8")
+    api_plist_template = api_plist_source.read_text(encoding="utf-8")
     template_values = {
         "__PREDICTFUN_PYTHON__": str(paths.python),
         "__PREDICTFUN_CURRENT__": str(paths.current_link),
         "__PREDICTFUN_HOME__": str(paths.launch_agent.parents[2]),
     }
     missing_placeholders = [
-        key for key in template_values if key not in plist_template
+        key
+        for key in template_values
+        if key not in plist_template or key not in api_plist_template
     ]
     if missing_placeholders:
         raise RelayDeploymentError(
             f"relay launch agent template missing: {missing_placeholders}"
         )
     plist_text = plist_template
+    api_plist_text = api_plist_template
     for placeholder, value in template_values.items():
         plist_text = plist_text.replace(placeholder, value)
+        api_plist_text = api_plist_text.replace(placeholder, value)
+    if "__PREDICTFUN_RELEASE_SHA__" not in api_plist_text:
+        raise RelayDeploymentError(
+            "API proxy launch agent is missing release SHA placeholder"
+        )
+    api_plist_text = api_plist_text.replace(
+        "__PREDICTFUN_RELEASE_SHA__", target_sha
+    )
     plist_content = plist_text.encode("utf-8")
+    api_plist_content = api_plist_text.encode("utf-8")
     required = (
         LABEL,
         str(paths.python),
@@ -502,8 +558,24 @@ def activate_release(
         raise RelayDeploymentError(
             f"relay launch agent is invalid: missing={missing}"
         )
+    api_required = (
+        API_LABEL,
+        str(paths.python),
+        str(
+            paths.current_link / "deploy/mac-mini/predictfun_api_proxy.py"
+        ),
+        "100.91.159.54",
+        "8791",
+        target_sha,
+    )
+    api_missing = [value for value in api_required if value not in api_plist_text]
+    if api_missing or "PREDICTFUN_API_KEY" in api_plist_text:
+        raise RelayDeploymentError(
+            f"API proxy launch agent is invalid: missing={api_missing}"
+        )
 
     snapshot = _snapshot(paths.launch_agent)
+    api_snapshot = _snapshot(paths.api_launch_agent)
     previous_target = (
         paths.current_link.resolve(strict=True)
         if previous_sha is not None
@@ -511,11 +583,46 @@ def activate_release(
     )
     domain = f"gui/{paths.uid}"
     service = f"{domain}/{LABEL}"
+    api_service = f"{domain}/{API_LABEL}"
     try:
         runner.run(("launchctl", "bootout", service), check=False)
+        runner.run(("launchctl", "bootout", api_service), check=False)
         _atomic_symlink(paths.current_link, release)
         _atomic_write(paths.launch_agent, plist_content, 0o644)
+        _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
         runner.run(("plutil", "-lint", str(paths.launch_agent)))
+        runner.run(("plutil", "-lint", str(paths.api_launch_agent)))
+        runner.run(
+            ("launchctl", "bootstrap", domain, str(paths.api_launch_agent))
+        )
+        runner.run(("launchctl", "kickstart", "-k", api_service))
+        api_service_state = ""
+        for attempt in range(10):
+            api_service_state = runner.run(("launchctl", "print", api_service))
+            if "state = running" in api_service_state:
+                break
+            if attempt < 9:
+                time.sleep(0.25)
+        if "state = running" not in api_service_state:
+            raise RelayDeploymentError("API proxy launch agent is not running")
+        api_probe_result: dict[str, Any] | None = None
+        api_probe_error = ""
+        for attempt in range(10):
+            try:
+                api_probe_result = api_probe(paths.rest_proxy_url)
+                break
+            except Exception as exc:
+                api_probe_error = f"{type(exc).__name__}: {exc}"
+                if attempt < 9:
+                    time.sleep(1)
+        if (
+            not isinstance(api_probe_result, dict)
+            or api_probe_result.get("ok") is not True
+            or api_probe_result.get("release_sha") != target_sha
+        ):
+            raise RelayDeploymentError(
+                f"API proxy health probe failed: {api_probe_error}"
+            )
         runner.run(("launchctl", "bootstrap", domain, str(paths.launch_agent)))
         runner.run(("launchctl", "kickstart", "-k", service))
         service_state = ""
@@ -549,11 +656,14 @@ def activate_release(
             "previous_sha": previous_sha,
             "authorization_id": authorization_id,
             "service": LABEL,
+            "api_service": API_LABEL,
+            "api_probe": api_probe_result,
             "market_id": market_id,
             "probe": probe_result,
         }
     except Exception as exc:
         runner.run(("launchctl", "bootout", service), check=False)
+        runner.run(("launchctl", "bootout", api_service), check=False)
         if previous_target is None:
             try:
                 paths.current_link.unlink()
@@ -562,6 +672,21 @@ def activate_release(
         else:
             _atomic_symlink(paths.current_link, previous_target)
         _restore(paths.launch_agent, snapshot)
+        _restore(paths.api_launch_agent, api_snapshot)
+        if api_snapshot.content is not None:
+            runner.run(
+                (
+                    "launchctl",
+                    "bootstrap",
+                    domain,
+                    str(paths.api_launch_agent),
+                ),
+                check=False,
+            )
+            runner.run(
+                ("launchctl", "kickstart", "-k", api_service),
+                check=False,
+            )
         if snapshot.content is not None:
             runner.run(
                 ("launchctl", "bootstrap", domain, str(paths.launch_agent)),
@@ -581,11 +706,17 @@ def status(
     runner: CommandRunner,
 ) -> dict[str, Any]:
     service = f"gui/{paths.uid}/{LABEL}"
+    api_service = f"gui/{paths.uid}/{API_LABEL}"
     output = runner.run(("launchctl", "print", service), check=False)
+    api_output = runner.run(
+        ("launchctl", "print", api_service), check=False
+    )
     return {
         "current_sha": _current_sha(paths),
         "service": LABEL,
         "running": "state = running" in output,
+        "api_service": API_LABEL,
+        "api_running": "state = running" in api_output,
         "secret_present": paths.secret_file.is_file(),
     }
 
@@ -619,7 +750,7 @@ def execute(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Deploy the exact Predict.fun public-data WS relay on Mac mini."
+        description="Deploy exact Predict.fun API and WS services on Mac mini."
     )
     parser.add_argument("action", choices=("status", "prepare", "activate"))
     parser.add_argument("--target-sha", default="")

@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from platforms.predictfun.maker.executor import ExecutableOrder, ExecutionResult
+from platforms.predictfun.maker.executor import (
+    ExecutableOrder,
+    ExecutionResult,
+    LiveOrder,
+)
 from platforms.predictfun.maker.intents import utc_now
 
 
@@ -105,6 +109,28 @@ class ManagedOrderRegistry:
                 "updated_at": now,
             }
         )
+
+    def sync_live_orders(self, live_orders: list[LiveOrder]) -> None:
+        """Refresh engine-owned rows without adopting manual website orders."""
+
+        live_by_id = {
+            order.order_id: order for order in live_orders if order.order_id
+        }
+        now = utc_now()
+        for order_id, managed in list(self._orders.items()):
+            live = live_by_id.get(order_id)
+            if live is None:
+                continue
+            if live.account_id and live.account_id != managed.account_id:
+                continue
+            status = str(live.status or managed.status).lower()
+            self._orders[order_id] = ManagedOrder(
+                **{
+                    **asdict(managed),
+                    "status": status,
+                    "updated_at": now,
+                }
+            )
 
     def owns_order_id(self, order_id: str) -> bool:
         return str(order_id or "") in self._orders
