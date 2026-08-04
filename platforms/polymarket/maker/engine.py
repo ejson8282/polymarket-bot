@@ -1204,6 +1204,11 @@ class PolyLPSMulti:
             redis_url=os.getenv("POLY_REDIS_URL", "").strip() or str(bus_cfg.get("redis_url", "")).strip(),
             enabled=bool(bus_cfg.get("enabled", False)),
         )
+        self._runtime_mode = "single"
+        self._runtime_host_id = ""
+        self._routing_roster_sha256 = ""
+        self._routing_account_count = 1
+        self._local_account_count = 1
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -9062,6 +9067,13 @@ class PolyLPSMulti:
                     "release_required": os.getenv(
                         "POLYMARKET_REQUIRE_RELEASE", ""
                     ).strip().lower() in {"1", "true", "yes", "on"},
+                    "runtime": {
+                        "mode": self._runtime_mode,
+                        "host_id": self._runtime_host_id or None,
+                        "routing_roster_sha256": self._routing_roster_sha256 or None,
+                        "routing_account_count": self._routing_account_count,
+                        "local_account_count": self._local_account_count,
+                    },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,

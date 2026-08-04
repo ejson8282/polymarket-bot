@@ -30,6 +30,7 @@ Usage in dashboard:
 
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ _STATE_KEY = f"{_CHANNEL_PREFIX}:state"
 _STATE_TS_KEY = f"{_CHANNEL_PREFIX}:state:ts"
 _HISTORY_KEY = f"{_CHANNEL_PREFIX}:history"
 _HISTORY_MAX_LEN = 500  # keep last 500 events in Redis list
+_STATE_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
 
 
 class EventBus:
@@ -54,6 +56,7 @@ class EventBus:
         enabled: bool = True,
         connect_timeout: float = 3.0,
         history_max_len: int = _HISTORY_MAX_LEN,
+        state_namespace: str = "",
     ):
         self._redis_url = redis_url.strip()
         self._enabled = enabled and bool(self._redis_url)
@@ -68,6 +71,18 @@ class EventBus:
         self._max_backoff: float = 30.0
         self._publish_count: int = 0
         self._publish_errors: int = 0
+        self._state_key = _STATE_KEY
+        self._state_ts_key = _STATE_TS_KEY
+        self.set_state_namespace(state_namespace)
+
+    def set_state_namespace(self, namespace: str = "") -> None:
+        """Select an isolated state key while leaving the shared event stream intact."""
+        normalized = str(namespace or "").strip()
+        if normalized and not _STATE_NAMESPACE_RE.fullmatch(normalized):
+            raise ValueError(f"invalid event-bus state namespace: {namespace!r}")
+        suffix = f":{normalized}" if normalized else ""
+        self._state_key = f"{_STATE_KEY}{suffix}"
+        self._state_ts_key = f"{_STATE_TS_KEY}{suffix}"
 
     @property
     def is_enabled(self) -> bool:
@@ -179,8 +194,8 @@ class EventBus:
             now = time.time()
             state_json = json.dumps(state, default=str)
             pipe = self._client.pipeline(transaction=False)
-            pipe.set(_STATE_KEY, state_json)
-            pipe.set(_STATE_TS_KEY, str(now))
+            pipe.set(self._state_key, state_json)
+            pipe.set(self._state_ts_key, str(now))
             pipe.execute()
             return True
         except Exception as e:
@@ -193,7 +208,7 @@ class EventBus:
         if not self._ensure_connection():
             return None
         try:
-            raw = self._client.get(_STATE_KEY)
+            raw = self._client.get(self._state_key)
             if raw:
                 return json.loads(raw)
             return None

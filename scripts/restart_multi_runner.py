@@ -1,8 +1,7 @@
-"""One-shot safe restart: per-account cancel_all → kill multi_runner → spawn new.
+"""Legacy one-shot restart helper for local multi_runner development.
 
-Mirrors dashboard/app.py::stop_multi_runner + start_multi_runner. Uses the
-same signer/ClobClient path to first cancel every account's open orders,
-then hard-kills the engine and launches a fresh multi_runner process.
+Before stopping, it cancels maker BUY orders and preserves all SELL exits.
+Production Linux hosts use systemd and the immutable multi-account drop-in.
 """
 
 import json
@@ -32,8 +31,12 @@ from platforms.polymarket.maker.remote_signer import (
 def build_client(cfg_path: Path):
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     acc = cfg.get("account", {})
-    url = str(acc.get("signer_server_url", "")).strip()
-    token = str(acc.get("signer_token", "")).strip()
+    url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip() or str(
+        acc.get("signer_server_url", "")
+    ).strip()
+    token = os.getenv("SIGNER_TOKEN", "").strip() or str(
+        acc.get("signer_token", "")
+    ).strip()
     if not url or not token:
         return None, f"{cfg_path.name}: no signer"
     host = cfg.get("rest_base_url", "https://clob.polymarket.com").rstrip("/")
@@ -53,6 +56,17 @@ def build_client(cfg_path: Path):
     return client, None
 
 
+def _live_buy_order_ids(orders):
+    terminal = {"cancelled", "canceled", "filled", "matched", "closed", "expired"}
+    return [
+        str(order.get("id") or order.get("orderID") or "")
+        for order in orders
+        if str(order.get("status") or "open").strip().lower() not in terminal
+        and str(order.get("side") or "").strip().upper() == "BUY"
+        and (order.get("id") or order.get("orderID"))
+    ]
+
+
 def cancel_for_each_account():
     summary = []
     for i in range(1, 31):
@@ -64,15 +78,21 @@ def cancel_for_each_account():
             if err:
                 summary.append((i, "skip", err))
                 continue
-            client.cancel_all()
-            summary.append((i, "ok", ""))
+            order_ids = _live_buy_order_ids(client.get_open_orders())
+            if order_ids:
+                client.cancel_orders(order_ids)
+            remaining = _live_buy_order_ids(client.get_open_orders())
+            if remaining:
+                summary.append((i, "fail", f"{len(remaining)} maker BUY order(s) remain"))
+            else:
+                summary.append((i, "ok", f"cancelled={len(order_ids)}; SELL exits preserved"))
         except Exception as e:
             summary.append((i, "fail", f"{type(e).__name__}: {str(e)[:60]}"))
     return summary
 
 
 def stop():
-    print("Cancelling open orders per account …")
+    print("Cancelling maker BUY orders per account; preserving SELL exits …")
     for acc, status, note in cancel_for_each_account():
         print(f"  account {acc}: {status}  {note}")
     if PID_FILE.exists():
