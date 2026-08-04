@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import time
 
+import pytest
+
 
 MAKER_DIR = Path(__file__).resolve().parents[1] / "platforms" / "polymarket" / "maker"
 sys.path.insert(0, str(MAKER_DIR))
@@ -1986,3 +1988,28 @@ def test_deactivate_market_disables_config_and_removes_current_runtime(tmp_path)
     assert all(market["enabled"] is False for market in config["markets"])
     assert removed == [("101", "deactivated:sponsored_guard:test")]
     assert engine.market_cfg == {}
+
+
+def test_shutdown_cancels_maker_buys_through_exit_preserving_path():
+    class Engine:
+        def __init__(self):
+            self.called = 0
+
+        async def _cancel_all_except_exit(self):
+            self.called += 1
+            return True
+
+    engine = Engine()
+
+    asyncio.run(engine_module._cancel_maker_orders_for_shutdown(engine))
+
+    assert engine.called == 1
+
+
+def test_shutdown_fails_when_maker_order_cancellation_is_unverified():
+    class Engine:
+        async def _cancel_all_except_exit(self):
+            return False
+
+    with pytest.raises(RuntimeError, match="was not verified"):
+        asyncio.run(engine_module._cancel_maker_orders_for_shutdown(Engine()))
