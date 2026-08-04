@@ -76,6 +76,7 @@ class DeploymentRequest:
     confirm: str = ""
     authorization_id: str = ""
     profile_name: str = "vps1"
+    allow_inactive_current: bool = False
 
 
 def deployment_paths_for_profile(profile_name: str) -> DeploymentPaths:
@@ -357,6 +358,14 @@ def _require_service_active(runner: CommandRunner) -> None:
         raise DeploymentError(f"{SERVICE_NAME} is not active") from exc
     if status != "active":
         raise DeploymentError(f"{SERVICE_NAME} is not active: {status}")
+
+
+def _service_is_active(runner: CommandRunner) -> bool:
+    try:
+        status = runner.run(("systemctl", "is-active", SERVICE_NAME))
+    except subprocess.CalledProcessError:
+        return False
+    return status == "active"
 
 
 def _require_signer_ready(
@@ -653,6 +662,7 @@ def _validate_request(request: DeploymentRequest) -> DeploymentRequest:
         confirm=request.confirm,
         authorization_id=authorization_id,
         profile_name=profile_name,
+        allow_inactive_current=bool(request.allow_inactive_current),
     )
 
 
@@ -786,8 +796,18 @@ def _activate_release(
             f"current release changed: expected {request.expected_current_sha}, "
             f"found {previous_sha}"
         )
-    _require_paused(paths, previous_sha)
-    _require_service_active(runner)
+    service_was_active = _service_is_active(runner)
+    if service_was_active:
+        _require_paused(paths, previous_sha)
+    elif not request.allow_inactive_current:
+        raise DeploymentError(
+            f"{SERVICE_NAME} is inactive; pass --allow-inactive-current "
+            "only for an explicitly authorized cold activation"
+        )
+    elif not paths.pause_flag.is_file():
+        raise DeploymentError(
+            f"inactive activation requires the pause flag: {paths.pause_flag}"
+        )
     _require_drop_in(paths)
 
     audit_path = _audit_dir(paths, request.target_sha)
@@ -802,6 +822,7 @@ def _activate_release(
         "action": request.action,
         "started_at": _iso_now(),
         "lock_file": str(paths.lock_file),
+        "activation_mode": "restart" if service_was_active else "inactive_start",
     }
     _write_audit(audit_path, dict(base_audit, status="preflight"))
     try:
@@ -831,10 +852,18 @@ def _activate_release(
             mode=0o600,
         )
         _atomic_symlink(paths.current_link, release_dir)
-        _require_paused(paths, previous_sha)
-        previous_state_marker = _state_file_marker(paths.state_file)
+        if service_was_active:
+            _require_paused(paths, previous_sha)
+        elif not paths.pause_flag.is_file():
+            raise DeploymentError("pause flag disappeared during inactive activation")
+        previous_state_marker = (
+            _state_file_marker(paths.state_file)
+            if paths.state_file.is_file()
+            else None
+        )
         restart_requested_at = _utc_now()
-        runner.run(("sudo", "-n", "systemctl", "restart", SERVICE_NAME))
+        service_action = "restart" if service_was_active else "start"
+        runner.run(("sudo", "-n", "systemctl", service_action, SERVICE_NAME))
         _require_service_active(runner)
         state = _wait_for_engine_state(
             paths,
@@ -870,17 +899,24 @@ def _activate_release(
             else:
                 _atomic_write(paths.release_env, old_env, mode=0o600)
             _atomic_symlink(paths.current_link, paths.release_root / previous_sha)
-            previous_state_marker = _state_file_marker(paths.state_file)
-            rollback_requested_at = _utc_now()
-            runner.run(("sudo", "-n", "systemctl", "restart", SERVICE_NAME))
-            _require_service_active(runner)
-            _wait_for_engine_state(
-                paths,
-                runner,
-                previous_sha,
-                observed_after=rollback_requested_at,
-                previous_state_marker=previous_state_marker,
-            )
+            if service_was_active:
+                previous_state_marker = _state_file_marker(paths.state_file)
+                rollback_requested_at = _utc_now()
+                runner.run(("sudo", "-n", "systemctl", "restart", SERVICE_NAME))
+                _require_service_active(runner)
+                _wait_for_engine_state(
+                    paths,
+                    runner,
+                    previous_sha,
+                    observed_after=rollback_requested_at,
+                    previous_state_marker=previous_state_marker,
+                )
+            else:
+                runner.run(("sudo", "-n", "systemctl", "stop", SERVICE_NAME))
+                if _service_is_active(runner):
+                    raise DeploymentError(
+                        "failed inactive activation left the service active"
+                    )
         except Exception as exc:
             rollback_error = str(exc)
         result = dict(
@@ -1003,6 +1039,14 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="User authorization/audit identifier; required for activate or rollback.",
     )
+    parser.add_argument(
+        "--allow-inactive-current",
+        action="store_true",
+        help=(
+            "Allow an explicitly authorized cold activation when the current "
+            "service is inactive and the account pause flag exists."
+        ),
+    )
     return parser
 
 
@@ -1015,6 +1059,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         confirm=args.confirm,
         authorization_id=args.authorization_id,
         profile_name=args.profile,
+        allow_inactive_current=args.allow_inactive_current,
     )
     try:
         result = execute(

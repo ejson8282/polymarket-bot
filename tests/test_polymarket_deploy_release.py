@@ -230,11 +230,32 @@ class SystemctlRunner(CommandRunner):
         paths: DeploymentPaths,
         target_sha: str,
         fail_first_restart: bool = False,
+        initially_active: bool = True,
+        fail_first_start: bool = False,
     ):
         self.paths = paths
         self.target_sha = target_sha
         self.fail_first_restart = fail_first_restart
+        self.fail_first_start = fail_first_start
+        self.active = initially_active
         self.restart_count = 0
+        self.start_count = 0
+        self.stop_count = 0
+
+    def _write_state(self, release_sha: str) -> None:
+        self.paths.state_file.write_text(
+            json.dumps(
+                {
+                    "release_sha": release_sha,
+                    "release_required": True,
+                    "paused": True,
+                    "quotes_sent": 0,
+                    "fills_seen": 0,
+                    "ts": "2099-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def run(
         self,
@@ -245,6 +266,8 @@ class SystemctlRunner(CommandRunner):
     ) -> str:
         normalized = tuple(str(arg) for arg in args)
         if normalized == ("systemctl", "is-active", "polymarket-engine.service"):
+            if not self.active:
+                raise subprocess.CalledProcessError(3, normalized)
             return "active"
         if normalized == (
             "sudo",
@@ -256,20 +279,32 @@ class SystemctlRunner(CommandRunner):
             self.restart_count += 1
             if self.fail_first_restart and self.restart_count == 1:
                 raise subprocess.CalledProcessError(1, normalized)
+            self.active = True
             release_sha = self.target_sha if self.restart_count == 1 else OLD_SHA
-            self.paths.state_file.write_text(
-                json.dumps(
-                    {
-                        "release_sha": release_sha,
-                        "release_required": True,
-                        "paused": True,
-                        "quotes_sent": 0,
-                        "fills_seen": 0,
-                        "ts": "2099-01-01T00:00:00Z",
-                    }
-                ),
-                encoding="utf-8",
-            )
+            self._write_state(release_sha)
+            return ""
+        if normalized == (
+            "sudo",
+            "-n",
+            "systemctl",
+            "start",
+            "polymarket-engine.service",
+        ):
+            self.start_count += 1
+            if self.fail_first_start and self.start_count == 1:
+                raise subprocess.CalledProcessError(1, normalized)
+            self.active = True
+            self._write_state(self.target_sha)
+            return ""
+        if normalized == (
+            "sudo",
+            "-n",
+            "systemctl",
+            "stop",
+            "polymarket-engine.service",
+        ):
+            self.stop_count += 1
+            self.active = False
             return ""
         return super().run(args, cwd=cwd, env=env)
 
@@ -705,6 +740,108 @@ def test_activate_switches_exact_release_and_keeps_engine_paused(
     )
     assert runner.restart_count == 1
     assert result["signer_preflight"]["status"] == "ok"
+
+
+def test_inactive_activation_requires_explicit_cold_start_flag(
+    tmp_path,
+    monkeypatch,
+):
+    paths, _source, target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(
+        paths=paths,
+        target_sha=target_sha,
+        initially_active=False,
+    )
+    _mock_clock_and_signer(monkeypatch)
+
+    with pytest.raises(DeploymentError, match="allow-inactive-current"):
+        execute(
+            DeploymentRequest(
+                action="activate",
+                target_sha=target_sha,
+                expected_current_sha=OLD_SHA,
+                confirm=f"ACTIVATE:{target_sha}",
+                authorization_id="test-cold-authorization",
+            ),
+            paths=paths,
+            runner=runner,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+    assert runner.start_count == 0
+    assert paths.current_link.resolve().name == OLD_SHA
+
+
+def test_inactive_activation_starts_target_without_restarting_old_service(
+    tmp_path,
+    monkeypatch,
+):
+    paths, _source, target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(
+        paths=paths,
+        target_sha=target_sha,
+        initially_active=False,
+    )
+    _mock_clock_and_signer(monkeypatch)
+
+    result = execute(
+        DeploymentRequest(
+            action="activate",
+            target_sha=target_sha,
+            expected_current_sha=OLD_SHA,
+            confirm=f"ACTIVATE:{target_sha}",
+            authorization_id="test-cold-authorization",
+            allow_inactive_current=True,
+        ),
+        paths=paths,
+        runner=runner,
+        tests=("tests/test_release_smoke.py",),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["activation_mode"] == "inactive_start"
+    assert runner.start_count == 1
+    assert runner.restart_count == 0
+    assert runner.active is True
+    assert paths.current_link.resolve().name == target_sha
+
+
+def test_failed_inactive_activation_restores_old_release_and_stays_stopped(
+    tmp_path,
+    monkeypatch,
+):
+    paths, _source, target_sha = _paths(tmp_path)
+    runner = SystemctlRunner(
+        paths=paths,
+        target_sha=target_sha,
+        initially_active=False,
+        fail_first_start=True,
+    )
+    _mock_clock_and_signer(monkeypatch)
+
+    with pytest.raises(DeploymentError, match="previous release was restored"):
+        execute(
+            DeploymentRequest(
+                action="activate",
+                target_sha=target_sha,
+                expected_current_sha=OLD_SHA,
+                confirm=f"ACTIVATE:{target_sha}",
+                authorization_id="test-cold-authorization",
+                allow_inactive_current=True,
+            ),
+            paths=paths,
+            runner=runner,
+            tests=("tests/test_release_smoke.py",),
+        )
+
+    assert runner.restart_count == 0
+    assert runner.start_count == 1
+    assert runner.stop_count == 1
+    assert runner.active is False
+    assert paths.current_link.resolve().name == OLD_SHA
+    assert paths.release_env.read_text(encoding="utf-8") == (
+        f"POLYMARKET_RELEASE_SHA={OLD_SHA}\n"
+    )
 
 
 def test_signer_preflight_failure_leaves_current_service_untouched(
