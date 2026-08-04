@@ -9271,6 +9271,16 @@ class PolyLPSMulti:
         self.send_discord(message)
 
 
+async def _cancel_maker_orders_for_shutdown(engine) -> None:
+    """Cancel maker BUYs after workers stop while preserving every SELL exit."""
+    verified = await asyncio.wait_for(
+        engine._cancel_all_except_exit(),
+        timeout=20.0,
+    )
+    if not verified:
+        raise RuntimeError("maker-order cancellation was not verified")
+
+
 async def _main_with_shutdown(_cfg):
     import signal
     engine = PolyLPSMulti(config_path=_cfg)
@@ -9292,29 +9302,47 @@ async def _main_with_shutdown(_cfg):
 
     run_task = asyncio.create_task(engine.run())
     wait_task = asyncio.create_task(shutdown_evt.wait())
+    failure = None
+    shutdown_verified = False
     try:
-        await asyncio.wait({run_task, wait_task}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            {run_task, wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if run_task in done and not shutdown_evt.is_set():
+            try:
+                run_task.result()
+            except BaseException as exc:
+                failure = RuntimeError(f"engine worker failed: {exc}")
+                failure.__cause__ = exc
+            else:
+                failure = RuntimeError("engine worker exited unexpectedly")
     finally:
-        if shutdown_evt.is_set():
-            client = getattr(engine, "client", None)
-            if client is not None:
+        engine._running = False
+        for task in (run_task, wait_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(run_task, wait_task, return_exceptions=True)
+
+        client = getattr(engine, "client", None)
+        if client is not None:
+            try:
+                await _cancel_maker_orders_for_shutdown(engine)
+                shutdown_verified = True
                 try:
-                    await asyncio.wait_for(asyncio.to_thread(client.cancel_all), timeout=15.0)
-                    _sib = getattr(engine, "_sibling_registry", None)
-                    if _sib is not None:
-                        _sib.clear_funder(getattr(engine, "_funder_lc", ""))
-                    try: log("[shutdown] cancel_all completed")
-                    except Exception: pass
-                except Exception as e:
-                    try: log(f"[shutdown] cancel_all error: {e}")
-                    except Exception: pass
-        for t in (run_task, wait_task):
-            if not t.done():
-                t.cancel()
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
+                    log("[shutdown] maker BUYs cancelled; SELL exits preserved")
+                except Exception:
                     pass
+            except Exception as exc:
+                try:
+                    log(f"[shutdown] maker-order cancellation failed: {exc}")
+                except Exception:
+                    pass
+
+    if client is not None and not shutdown_verified:
+        raise RuntimeError("shutdown could not verify maker-order cancellation")
+    if failure is not None:
+        raise failure
 
 
 if __name__ == "__main__":
