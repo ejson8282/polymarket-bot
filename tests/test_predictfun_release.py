@@ -586,6 +586,7 @@ def test_systemd_units_are_predict_only_and_release_guarded() -> None:
     assert "Persistent=true" in timer
     assert "platforms.predictfun.ws_watch" in ws_service
     assert "--forever" in ws_service
+    assert "--idle-timeout-sec 900" in ws_service
     assert "PREDICTFUN_API_KEY" not in ws_service
     combined = service + timer + ws_service
     assert "/home/ubuntu/polymarket-bot" not in combined

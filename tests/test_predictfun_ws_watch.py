@@ -219,3 +219,60 @@ def test_subscription_transport_failure_is_published_as_disconnected(
 
     assert state["connected"] is False
     assert state["error"] == "ConnectionError: relay send failed"
+
+
+def test_forever_uses_heartbeat_safe_idle_timeout_and_settles_before_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    sleep_delays: list[float] = []
+
+    monkeypatch.setattr(
+        ws_watch,
+        "discover_markets",
+        lambda *_args, **_kwargs: [_market(1)],
+    )
+
+    async def fake_watch_orderbooks(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {"error": ""}
+        raise asyncio.CancelledError
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(ws_watch, "watch_orderbooks", fake_watch_orderbooks)
+    monkeypatch.setattr(ws_watch.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            ws_watch.watch_orderbooks_forever(
+                client=object(),
+                cfg={},
+                ws_url="ws://relay.test",
+                api_key="",
+                state_path=tmp_path / "ws-state.json",
+                discover_limit=20,
+                refresh_sec=300,
+                idle_timeout_sec=330,
+            )
+        )
+
+    assert calls[0]["timeout_sec"] == 900
+    assert calls[0]["session_number"] == 1
+    assert calls[0]["reconnect_count"] == 0
+    assert calls[1]["session_number"] == 2
+    assert calls[1]["reconnect_count"] == 1
+    assert sleep_delays == [ws_watch.RECONNECT_SETTLE_SEC]
+
+
+def test_forever_idle_timeout_scales_with_refresh_window() -> None:
+    assert (
+        ws_watch._forever_idle_timeout_sec(
+            refresh_sec=600,
+            configured_sec=900,
+        )
+        == 1800
+    )
