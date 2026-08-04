@@ -44,13 +44,18 @@ positions, and exits remain account-local.
 All exclusive accounts in one group must use the same market universe. Do not
 enable exclusive allocation for a group whose generated configs diverge.
 
+## Multi-host runtime
+
+The reviewed host-routing design, roster format, first-cutover procedure, and
+state contract are documented in `README_MULTI_ACCOUNT_RUNTIME.md`.
+
 ## Current safety boundary
 
 - Automatic top-up and automatic withdrawal are rejected by config validation.
 - `pause_equity_usdc` and `daily_loss_limit_usdc` are recorded thresholds only;
   this phase does not enforce them yet. State output marks
   `guardrails_enforced: false`.
-- Production currently launches one `engine.py` process with `config_1.json`.
-  Switching production to `multi_runner.py` is a separate reviewed release.
+- Production currently launches one `engine.py` process per VPS. Switching to
+  `multi_runner.py` remains a separate reviewed and explicitly approved cutover.
 - The first multi-account cutover must cancel existing maker quotes, start
   paused, verify every signer/account mapping, and only then resume quoting.

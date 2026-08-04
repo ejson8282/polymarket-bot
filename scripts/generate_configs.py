@@ -3,24 +3,25 @@ Generate config_1.json … config_N.json for multi-account runs.
 
 Input
 -----
-A JSON roster describing one entry per account. Defaults to
+A non-secret JSON roster describing one entry per account. Defaults to
 `scripts/accounts.json`:
 
-    [
-      {
-        "funder": "0xAAAA...",
-        "clash_port": 7901
-      },
-      {
-        "funder": "0xBBBB...",
-        "clash_port": 7902
-      }
-    ]
+    {
+      "schema_version": 1,
+      "accounts": [
+        {
+          "account_index": 1,
+          "host_id": "vps1",
+          "funder": "0xAAAA...",
+          "clash_port": 7901
+        }
+      ]
+    }
 
-You can also set `signer_server_url` / `signer_token` per account to
-override the base. Optional `lp_account` metadata configures an account's LP
-type, principal, and shared allocation without storing any secret. Everything
-else (markets, ws_url, rest_base_url) is inherited from the base config.
+Optional `lp_account` metadata configures an account's LP type, principal, and
+shared allocation. Signer tokens and private credentials are rejected; they
+must come from the host environment. Everything else (markets, ws_url,
+rest_base_url) is inherited from the base config.
 
 Output
 ------
@@ -47,8 +48,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from platforms.polymarket.maker.account_profiles import (  # noqa: E402
-    parse_lp_account_profile,
+from platforms.polymarket.maker.account_roster import (  # noqa: E402
+    local_runtime_accounts,
+    parse_runtime_roster,
+    roster_hosts,
+    routing_roster_sha256,
 )
 
 DEFAULT_BASE = REPO_ROOT / "platforms" / "polymarket" / "maker" / "config.json"
@@ -66,44 +70,11 @@ def _load_json(path: Path) -> dict | list:
 
 
 def _validate_roster(roster: object) -> list[dict]:
-    if not isinstance(roster, list) or not roster:
-        sys.exit("ERROR: roster must be a non-empty JSON array")
-    if len(roster) > 30:
-        sys.exit(f"ERROR: roster has {len(roster)} accounts; multi_runner caps at 30")
-    ports_seen: dict[int, int] = {}
-    funders_seen: dict[str, int] = {}
-    account_ids_seen: dict[str, int] = {}
-    for i, entry in enumerate(roster, start=1):
-        if not isinstance(entry, dict):
-            sys.exit(f"ERROR: roster entry {i} must be an object")
-        funder = str(entry.get("funder", "")).strip()
-        port = entry.get("clash_port")
-        if not funder.startswith("0x") or len(funder) != 42:
-            sys.exit(f"ERROR: roster entry {i}: funder must be a 0x… 42-char address (got {funder!r})")
-        if not isinstance(port, int) or not (1024 <= port <= 65535):
-            sys.exit(f"ERROR: roster entry {i}: clash_port must be an int 1024–65535 (got {port!r})")
-        if port in ports_seen:
-            sys.exit(f"ERROR: clash_port {port} used by both account {ports_seen[port]} and {i}")
-        if funder.lower() in funders_seen:
-            sys.exit(f"ERROR: funder {funder} used by both account {funders_seen[funder.lower()]} and {i}")
-        lp_account = entry.get("lp_account")
-        if lp_account is not None and not isinstance(lp_account, dict):
-            sys.exit(f"ERROR: roster entry {i}: lp_account must be an object")
-        if lp_account is not None:
-            try:
-                profile = parse_lp_account_profile({"lp_account": lp_account}, i)
-            except ValueError as exc:
-                sys.exit(f"ERROR: roster entry {i}: {exc}")
-            account_key = profile.account_id.casefold()
-            if account_key in account_ids_seen:
-                sys.exit(
-                    f"ERROR: lp_account.account_id {profile.account_id!r} used by "
-                    f"both account {account_ids_seen[account_key]} and {i}"
-                )
-            account_ids_seen[account_key] = i
-        ports_seen[port] = i
-        funders_seen[funder.lower()] = i
-    return roster  # type: ignore[return-value]
+    try:
+        accounts = parse_runtime_roster(roster)
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
+    return [account.generation_entry() for account in accounts]
 
 
 def _build_proxy_pool(clash_host: str, port: int) -> dict:
@@ -117,22 +88,38 @@ def _build_proxy_pool(clash_host: str, port: int) -> dict:
     }
 
 
-def _render(base: dict, entry: dict, clash_host: str) -> dict:
+def _render(
+    base: dict,
+    entry: dict,
+    clash_host: str,
+    *,
+    roster_sha256: str | None = None,
+) -> dict:
     out = copy.deepcopy(base)
     account = dict(out.get("account") or {})
-    # Keep existing signer_server_url / signer_token from base unless overridden
     account["funder"] = entry["funder"]
-    # A blank private_key is the expected state for remote-signer mode; the
-    # signer holds all keys on the Mac Mini.
+    # Generated configs are non-secret. Runtime authentication comes from the
+    # host environment; private keys remain on the Mac mini signer.
     account["private_key"] = "REDACTED"
-    if "signer_server_url" in entry:
-        account["signer_server_url"] = entry["signer_server_url"]
-    if "signer_token" in entry:
-        account["signer_token"] = entry["signer_token"]
+    for secret_field in (
+        "api_key",
+        "api_passphrase",
+        "api_secret",
+        "signer_token",
+    ):
+        account.pop(secret_field, None)
     out["account"] = account
     if "lp_account" in entry:
         # LP metadata is intentionally non-sensitive and account-local.
         out["lp_account"] = copy.deepcopy(entry["lp_account"])
+    else:
+        out.pop("lp_account", None)
+    if roster_sha256:
+        out["runtime_account"] = {
+            "account_index": int(entry["account_index"]),
+            "host_id": str(entry["host_id"]),
+            "routing_roster_sha256": roster_sha256,
+        }
     out["proxy_pool"] = _build_proxy_pool(clash_host, entry["clash_port"])
     return out
 
@@ -143,6 +130,11 @@ def main() -> None:
     ap.add_argument("--base", default=str(DEFAULT_BASE), help=f"Base config to clone (default: {DEFAULT_BASE})")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR})")
     ap.add_argument("--clash-host", default="127.0.0.1", help="Host for the Clash listeners (default: 127.0.0.1)")
+    ap.add_argument(
+        "--host-id",
+        default="",
+        help="Generate only accounts assigned to this host (required for multi-host rosters)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Print what would be written without touching disk")
     args = ap.parse_args()
 
@@ -153,18 +145,41 @@ def main() -> None:
     base = _load_json(base_path)
     if not isinstance(base, dict):
         sys.exit(f"ERROR: base {base_path} must be a JSON object")
-    roster = _validate_roster(_load_json(roster_path))
+    try:
+        accounts = parse_runtime_roster(_load_json(roster_path))
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
+
+    requested_host = args.host_id.strip().lower()
+    hosts = roster_hosts(accounts)
+    if requested_host:
+        host_id = requested_host
+    elif len(hosts) == 1:
+        host_id = hosts[0]
+    else:
+        sys.exit(
+            "ERROR: --host-id is required when the roster contains multiple hosts: "
+            + ", ".join(hosts)
+        )
+    local_accounts = local_runtime_accounts(accounts, host_id)
+    if not local_accounts:
+        sys.exit(f"ERROR: roster has no enabled accounts for host {host_id!r}")
+    roster_sha = routing_roster_sha256(accounts)
 
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Base:   {base_path}")
-    print(f"Roster: {roster_path}  ({len(roster)} account(s))")
+    print(f"Roster: {roster_path}  ({len(accounts)} global account(s))")
+    print(f"Host:   {host_id}  ({len(local_accounts)} local account(s))")
+    print(f"Route:  {roster_sha}")
     print(f"Output: {out_dir}")
     print()
 
-    for idx, entry in enumerate(roster, start=1):
-        cfg = _render(base, entry, args.clash_host)
+    for account in local_accounts:
+        idx = account.account_index
+        entry = account.generation_entry()
+        cfg = _render(base, entry, args.clash_host, roster_sha256=roster_sha)
         out_path = out_dir / f"config_{idx}.json"
         funder = entry["funder"]
         port = entry["clash_port"]
@@ -187,7 +202,7 @@ def main() -> None:
     if args.dry_run:
         print("\n(dry-run — no files written)")
     else:
-        print(f"\nDone. multi_runner.py will now pick up {len(roster)} account(s).")
+        print(f"\nDone. multi_runner.py will pick up {len(local_accounts)} account(s) on {host_id}.")
 
 
 if __name__ == "__main__":
