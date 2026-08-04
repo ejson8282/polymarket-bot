@@ -18,8 +18,9 @@ A JSON roster describing one entry per account. Defaults to
     ]
 
 You can also set `signer_server_url` / `signer_token` per account to
-override the base. Everything else (markets, ws_url, rest_base_url) is
-inherited from the base config.
+override the base. Optional `lp_account` metadata configures an account's LP
+type, principal, and shared allocation without storing any secret. Everything
+else (markets, ws_url, rest_base_url) is inherited from the base config.
 
 Output
 ------
@@ -44,6 +45,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from platforms.polymarket.maker.account_profiles import (  # noqa: E402
+    parse_lp_account_profile,
+)
+
 DEFAULT_BASE = REPO_ROOT / "platforms" / "polymarket" / "maker" / "config.json"
 DEFAULT_ROSTER = REPO_ROOT / "scripts" / "accounts.json"
 DEFAULT_OUT_DIR = DEFAULT_BASE.parent
@@ -65,6 +72,7 @@ def _validate_roster(roster: object) -> list[dict]:
         sys.exit(f"ERROR: roster has {len(roster)} accounts; multi_runner caps at 30")
     ports_seen: dict[int, int] = {}
     funders_seen: dict[str, int] = {}
+    account_ids_seen: dict[str, int] = {}
     for i, entry in enumerate(roster, start=1):
         if not isinstance(entry, dict):
             sys.exit(f"ERROR: roster entry {i} must be an object")
@@ -78,6 +86,21 @@ def _validate_roster(roster: object) -> list[dict]:
             sys.exit(f"ERROR: clash_port {port} used by both account {ports_seen[port]} and {i}")
         if funder.lower() in funders_seen:
             sys.exit(f"ERROR: funder {funder} used by both account {funders_seen[funder.lower()]} and {i}")
+        lp_account = entry.get("lp_account")
+        if lp_account is not None and not isinstance(lp_account, dict):
+            sys.exit(f"ERROR: roster entry {i}: lp_account must be an object")
+        if lp_account is not None:
+            try:
+                profile = parse_lp_account_profile({"lp_account": lp_account}, i)
+            except ValueError as exc:
+                sys.exit(f"ERROR: roster entry {i}: {exc}")
+            account_key = profile.account_id.casefold()
+            if account_key in account_ids_seen:
+                sys.exit(
+                    f"ERROR: lp_account.account_id {profile.account_id!r} used by "
+                    f"both account {account_ids_seen[account_key]} and {i}"
+                )
+            account_ids_seen[account_key] = i
         ports_seen[port] = i
         funders_seen[funder.lower()] = i
     return roster  # type: ignore[return-value]
@@ -107,6 +130,9 @@ def _render(base: dict, entry: dict, clash_host: str) -> dict:
     if "signer_token" in entry:
         account["signer_token"] = entry["signer_token"]
     out["account"] = account
+    if "lp_account" in entry:
+        # LP metadata is intentionally non-sensitive and account-local.
+        out["lp_account"] = copy.deepcopy(entry["lp_account"])
     out["proxy_pool"] = _build_proxy_pool(clash_host, entry["clash_port"])
     return out
 

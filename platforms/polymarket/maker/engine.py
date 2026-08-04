@@ -32,6 +32,18 @@ from event_bus import EventBus
 from cross_side_sentinel import CrossSideSentinel
 from sibling_registry import SiblingOrderRegistry, resolve_conflict
 try:
+    from .account_profiles import (
+        LPAccountProfile,
+        parse_lp_account_profile,
+        shared_event_owner,
+    )
+except ImportError:
+    from account_profiles import (
+        LPAccountProfile,
+        parse_lp_account_profile,
+        shared_event_owner,
+    )
+try:
     from .sponsored_guard import SponsoredRiskGuard
 except ImportError:
     from sponsored_guard import SponsoredRiskGuard
@@ -494,6 +506,19 @@ class PolyLPSMulti:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        _cfg_stem = cfg_path.stem
+        self._account_idx = (
+            int(_cfg_stem[7:])
+            if _cfg_stem.startswith("config_") and _cfg_stem[7:].isdigit()
+            else 0
+        )
+        self.lp_account_profile: LPAccountProfile = parse_lp_account_profile(
+            self.cfg,
+            self._account_idx or 1,
+        )
+        self._shared_account_profiles: Dict[int, LPAccountProfile] = {
+            self._account_idx or 1: self.lp_account_profile
+        }
         _init_proxy_settings(self.cfg)
 
         account = self.cfg.get("account", {})
@@ -1056,12 +1081,10 @@ class PolyLPSMulti:
         self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 3))
         _maker_dir = Path(config_path).resolve().parent
         _cfg_stem = Path(config_path).stem  # "config", "config_1", "config_2", ...
-        if _cfg_stem.startswith("config_") and _cfg_stem[7:].isdigit():
-            _state_fname = f"engine_state_{_cfg_stem[7:]}.json"
-            self._account_idx: int = int(_cfg_stem[7:])
+        if self._account_idx:
+            _state_fname = f"engine_state_{self._account_idx}.json"
         else:
             _state_fname = "engine_state.json"
-            self._account_idx = 0
         self._state_path: Path = _maker_dir.parent.parent.parent / "data" / _state_fname
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         # Pause flag file — touched by dashboard to pause quoting on this account
@@ -4635,6 +4658,17 @@ class PolyLPSMulti:
 
     # # Share-based sizing for Q_min optimization
 
+    def _lp_effective_available(
+        self,
+        available: Optional[Decimal],
+    ) -> Optional[Decimal]:
+        if available is None:
+            return None
+        profile = getattr(self, "lp_account_profile", None)
+        if profile is None:
+            return available
+        return profile.effective_available(available)
+
     async def _compute_target_shares(
         self,
         token_id: str,
@@ -4654,7 +4688,9 @@ class PolyLPSMulti:
         if rewards_min <= 0:
             rewards_min = Decimal(str(self.min_order_size))
 
-        avail = await self._get_collateral_available()
+        avail = self._lp_effective_available(
+            await self._get_collateral_available()
+        )
         if avail is None or avail <= 0:
             return Decimal("0"), Decimal("0"), "no_balance"
 
@@ -7140,6 +7176,15 @@ class PolyLPSMulti:
 
     async def update_and_quote_market(self, token_id: str) -> None:
         self._ensure_runtime_token_state(token_id, reason="quote_loop")
+        mcfg = self._get_mcfg(token_id)
+        owner = shared_event_owner(
+            self._account_idx or 1,
+            token_id,
+            mcfg,
+            self._shared_account_profiles,
+        )
+        if owner != (self._account_idx or 1):
+            return
         lock = self._event_locks[token_id]
         async with lock:
             now_ts = time.time()
@@ -8539,7 +8584,9 @@ class PolyLPSMulti:
         prev_balance: Optional[Decimal] = None
         while self._running:
             try:
-                avail = await self._get_collateral_available(force_refresh=True)
+                avail = self._lp_effective_available(
+                    await self._get_collateral_available(force_refresh=True)
+                )
                 if avail is not None and prev_balance is not None:
                     change = avail - prev_balance
                     drop = prev_balance - avail
@@ -9005,7 +9052,12 @@ class PolyLPSMulti:
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
-                    "account_id": f"pm-account-{self._account_idx or 1}",
+                    "account_id": (
+                        self.lp_account_profile.account_id
+                        if self.lp_account_profile.managed
+                        else f"pm-account-{self._account_idx or 1}"
+                    ),
+                    "lp_account": self.lp_account_profile.public_dict(),
                     "release_sha": os.getenv("POLYMARKET_RELEASE_SHA") or None,
                     "release_required": os.getenv(
                         "POLYMARKET_REQUIRE_RELEASE", ""

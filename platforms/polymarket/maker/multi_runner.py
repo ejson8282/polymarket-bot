@@ -31,6 +31,10 @@ _MAKER_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_MAKER_DIR))
 
 from engine import PolyLPSMulti, log  # noqa: E402
+from account_profiles import (  # noqa: E402
+    LPAccountProfile,
+    validate_shared_allocation,
+)
 from release_guard import verify_release  # noqa: E402
 from sibling_registry import SiblingOrderRegistry  # noqa: E402
 
@@ -198,10 +202,12 @@ async def multi_run(config_dir: Path) -> None:
 
     # Initialize engines
     engines: List[Tuple[int, PolyLPSMulti]] = []
+    profiles: Dict[int, LPAccountProfile] = {}
     for idx, cfg_path in config_files:
         try:
             eng = PolyLPSMulti(config_path=str(cfg_path))
             engines.append((idx, eng))
+            profiles[idx] = eng.lp_account_profile
             log(f"[multi] account {idx}: initialized ({len(eng.market_cfg)} markets)")
         except Exception as e:
             log(f"[multi] account {idx}: init failed — {e}")
@@ -210,12 +216,26 @@ async def multi_run(config_dir: Path) -> None:
         log("[multi] no accounts could be initialized — exiting")
         return
 
+    markets_by_account = {
+        idx: {**eng.market_cfg, **eng._night_market_cfg}
+        for idx, eng in engines
+    }
+    validate_shared_allocation(profiles, markets_by_account)
+
     # 施工包04:跨账号自成交防线——单实例注册表注入全部 engine
     # (与 _shared_book_cache 同款 setter 注入;engine 默认自建的空实例被覆盖)
     sibling_registry = SiblingOrderRegistry()
     for _, eng in engines:
         eng._sibling_registry = sibling_registry
+        eng._shared_account_profiles = profiles
     log(f"[multi] sibling order registry shared across {len(engines)} account(s)")
+    managed_profiles = [profile for profile in profiles.values() if profile.managed]
+    if managed_profiles:
+        summary = ", ".join(
+            f"{profile.account_id}=${profile.target_principal_usdc}"
+            for profile in sorted(managed_profiles, key=lambda item: item.account_index)
+        )
+        log(f"[multi] LP account profiles: {summary}")
 
     # Collect all unique token IDs across all accounts
     all_token_ids = list({

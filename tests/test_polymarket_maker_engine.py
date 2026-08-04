@@ -10,6 +10,7 @@ MAKER_DIR = Path(__file__).resolve().parents[1] / "platforms" / "polymarket" / "
 sys.path.insert(0, str(MAKER_DIR))
 
 import engine as engine_module  # noqa: E402
+from account_profiles import parse_lp_account_profile  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
@@ -150,6 +151,60 @@ def test_quote_target_never_exceeds_available_budget():
     )
 
     assert target == Decimal("210")
+    assert warning == ""
+
+
+def test_managed_lp_account_caps_live_quote_capital_at_its_principal():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile(
+        {
+            "lp_account": {
+                "profile_type": "aggressive",
+                "target_principal_usdc": 50,
+            }
+        },
+        3,
+    )
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("1000")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(
+        engine._compute_target_shares("101", budget_pct=Decimal("0.95"))
+    )
+
+    assert (bid, ask) == (Decimal("47"), Decimal("47"))
+    assert warning == ""
+
+
+def test_legacy_lp_account_still_uses_full_live_balance():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("1000")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(
+        engine._compute_target_shares("101", budget_pct=Decimal("0.95"))
+    )
+
+    assert (bid, ask) == (Decimal("950"), Decimal("950"))
     assert warning == ""
 
 
@@ -1349,6 +1404,52 @@ def test_balance_change_rebalances_without_position_scan_or_global_cancel(monkey
     assert published[1][0] == "balance_drop"
     assert published[1][1]["drop"] == "50"
     assert resized == [(Decimal("100"), Decimal("50"))]
+
+
+def test_managed_balance_change_above_principal_does_not_rebalance(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine.lp_account_profile = parse_lp_account_profile(
+        {
+            "lp_account": {
+                "profile_type": "aggressive",
+                "target_principal_usdc": 50,
+            }
+        },
+        1,
+    )
+    balances = iter([Decimal("1000"), Decimal("900")])
+    published = []
+    resized = []
+
+    async def available(force_refresh=False):
+        return next(balances)
+
+    async def resize(previous, current):
+        resized.append((previous, current))
+
+    sleep_calls = 0
+
+    async def no_wait(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            engine._running = False
+
+    class EventBus:
+        def publish(self, event, payload):
+            published.append((event, payload))
+
+    engine._get_collateral_available = available
+    engine._rebalance_quotes_after_balance_change = resize
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine._event_bus = EventBus()
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
+
+    asyncio.run(engine._balance_drop_watch())
+
+    assert published == []
+    assert resized == []
 
 
 def test_missing_exit_order_with_inventory_stays_pending():
