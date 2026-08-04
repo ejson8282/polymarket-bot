@@ -1,4 +1,6 @@
 from decimal import Decimal
+import json
+from pathlib import Path
 
 import pytest
 
@@ -89,3 +91,17 @@ def test_disabled_account_is_excluded_from_runtime_routing() -> None:
 
     assert roster_hosts(accounts) == ("vps1",)
     assert set(routing_profiles(accounts)) == {1}
+
+
+def test_example_preserves_existing_account_host_ownership() -> None:
+    root = Path(__file__).resolve().parents[1]
+    payload = json.loads(
+        (root / "scripts" / "accounts.example.json").read_text(encoding="utf-8")
+    )
+    accounts = parse_runtime_roster(payload)
+    by_index = {account.account_index: account for account in accounts}
+
+    assert by_index[1].host_id == "vps1"
+    assert by_index[2].host_id == "vps2"
+    assert len(local_runtime_accounts(accounts, "vps1")) == 5
+    assert len(local_runtime_accounts(accounts, "vps2")) == 5
