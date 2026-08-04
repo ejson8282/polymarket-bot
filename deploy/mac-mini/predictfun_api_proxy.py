@@ -210,6 +210,33 @@ def _order_request_fingerprint(body: dict[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _require_maker_order_safety(body: dict[str, object]) -> tuple[str, str]:
+    post_only_value = (
+        body.get("is_post_only")
+        if body.get("is_post_only") is not None
+        else body.get("isPostOnly")
+    )
+    if post_only_value is None or not _bool_value(post_only_value):
+        raise ValueError("post_only_required")
+
+    reserved_balance_policy = str(
+        body.get("reserved_balance_policy")
+        or body.get("reservedBalancePolicy")
+        or ""
+    )
+    if reserved_balance_policy != "REJECT_MARKET_ORDER":
+        raise ValueError("reserved_balance_policy_required")
+
+    self_trade_prevention = str(
+        body.get("self_trade_prevention")
+        or body.get("selfTradePrevention")
+        or ""
+    )
+    if self_trade_prevention != "CANCEL_MAKER":
+        raise ValueError("self_trade_prevention_required")
+    return reserved_balance_policy, self_trade_prevention
+
+
 def _json_obj(raw: str) -> dict[str, object]:
     if not raw:
         return {}
@@ -943,6 +970,9 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
     account_row = _account_row(env, alias)
     if not account_row:
         return {"ok": False, "error": "account_alias_not_found", "alias": alias}
+    reserved_balance_policy, self_trade_prevention = (
+        _require_maker_order_safety(body)
+    )
     ledger_key = _idempotency_key(alias, body)
     request_fingerprint = _order_request_fingerprint(body)
     previous: object = None
@@ -1017,34 +1047,9 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
             "pricePerShare": str(payload["amounts"]["pricePerShare"]),
             "strategy": "LIMIT",
         }
-        post_only_value = (
-            body.get("is_post_only")
-            if body.get("is_post_only") is not None
-            else body.get("isPostOnly")
-        )
-        is_post_only = (
-            True if post_only_value is None else _bool_value(post_only_value)
-        )
-        if is_post_only:
-            data["isPostOnly"] = True
-        reserved_balance_policy = str(
-            body.get("reserved_balance_policy")
-            or body.get("reservedBalancePolicy")
-            or ""
-        )
-        if reserved_balance_policy not in {"", "REJECT_MARKET_ORDER"}:
-            raise ValueError("reserved_balance_policy_invalid")
-        if reserved_balance_policy:
-            data["reservedBalancePolicy"] = reserved_balance_policy
-        self_trade_prevention = str(
-            body.get("self_trade_prevention")
-            or body.get("selfTradePrevention")
-            or ""
-        )
-        if self_trade_prevention not in {"", "CANCEL_MAKER"}:
-            raise ValueError("self_trade_prevention_invalid")
-        if self_trade_prevention:
-            data["selfTradePrevention"] = self_trade_prevention
+        data["isPostOnly"] = True
+        data["reservedBalancePolicy"] = reserved_balance_policy
+        data["selfTradePrevention"] = self_trade_prevention
         resolved_expiration = str(
             order.get("expiration")
             or signed_body.get("expiration")

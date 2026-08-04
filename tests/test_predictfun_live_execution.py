@@ -916,6 +916,55 @@ def test_proxy_enforces_mac_side_order_limit(
     assert result["max_notional_usdc"] == "8"
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("is_post_only", False, "post_only_required"),
+        ("is_post_only", None, "post_only_required"),
+        (
+            "reserved_balance_policy",
+            "",
+            "reserved_balance_policy_required",
+        ),
+        (
+            "reserved_balance_policy",
+            "ALLOW_MARKET_ORDER",
+            "reserved_balance_policy_required",
+        ),
+        (
+            "self_trade_prevention",
+            "",
+            "self_trade_prevention_required",
+        ),
+        (
+            "self_trade_prevention",
+            "NONE",
+            "self_trade_prevention_required",
+        ),
+    ],
+)
+def test_proxy_requires_all_maker_safety_fields_before_signing(
+    field: str,
+    value: object,
+    error: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _load_proxy_module()
+    body = _proxy_order_body()
+    if value is None:
+        body.pop(field)
+    else:
+        body[field] = value
+    monkeypatch.setattr(
+        proxy,
+        "_signed_order_payload",
+        lambda *_args, **_kwargs: pytest.fail("unsafe order reached signing"),
+    )
+
+    with pytest.raises(ValueError, match=error):
+        proxy.submit_order(_proxy_env(), "account_01", body)
+
+
 @pytest.mark.parametrize("price", ["0", "1", "NaN", "Infinity"])
 def test_proxy_rejects_invalid_binary_prices(price: str) -> None:
     proxy = _load_proxy_module()
