@@ -1,8 +1,8 @@
 [
-  { "funder": "0xREPLACE_WITH_FUNDER_1", "clash_port": 7901 },
-  { "funder": "0xREPLACE_WITH_FUNDER_2", "clash_port": 7902 },
-  { "funder": "0xREPLACE_WITH_FUNDER_3", "clash_port": 7903 },
-  { "funder": "0xREPLACE_WITH_FUNDER_4", "clash_port": 7904 },
+  { "funder": "0xREPLACE_WITH_FUNDER_1", "clash_port": 7901, "lp_account": { "account_id": "aggressive_50", "profile_type": "aggressive", "strategy_group": "aggressive", "target_principal_usdc": 50, "allocation_mode": "exclusive" } },
+  { "funder": "0xREPLACE_WITH_FUNDER_2", "clash_port": 7902, "lp_account": { "account_id": "aggressive_100", "profile_type": "aggressive", "strategy_group": "aggressive", "target_principal_usdc": 100, "allocation_mode": "exclusive" } },
+  { "funder": "0xREPLACE_WITH_FUNDER_3", "clash_port": 7903, "lp_account": { "account_id": "aggressive_150", "profile_type": "aggressive", "strategy_group": "aggressive", "target_principal_usdc": 150, "allocation_mode": "exclusive" } },
+  { "funder": "0xREPLACE_WITH_FUNDER_4", "clash_port": 7904, "lp_account": { "account_id": "aggressive_200", "profile_type": "aggressive", "strategy_group": "aggressive", "target_principal_usdc": 200, "allocation_mode": "exclusive" } },
   { "funder": "0xREPLACE_WITH_FUNDER_5", "clash_port": 7905 },
   { "funder": "0xREPLACE_WITH_FUNDER_6", "clash_port": 7906 },
   { "funder": "0xREPLACE_WITH_FUNDER_7", "clash_port": 7907 },
