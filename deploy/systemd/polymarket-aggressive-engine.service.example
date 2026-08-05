@@ -1,0 +1,24 @@
+[Unit]
+Description=Polymarket aggressive LP isolated multi-account engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-aggressive-runtime
+Environment=POLYMARKET_REQUIRE_RELEASE=1
+Environment=POLYMARKET_RUNTIME_SCOPE=aggressive
+Environment=POLYMARKET_RUNTIME_ROOT=/home/ubuntu/polymarket-aggressive-runtime
+EnvironmentFile=/home/ubuntu/polymarket-aggressive-runtime/env/release.env
+EnvironmentFile=/home/ubuntu/polymarket-aggressive-runtime/env/runtime.env
+ExecStartPre=/home/ubuntu/polymarket-aggressive-venv/bin/python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/release_guard.py /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/multi_runner.py
+ExecStart=/home/ubuntu/polymarket-aggressive-venv/bin/python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/multi_runner.py --config-dir /home/ubuntu/polymarket-aggressive-runtime/platforms/polymarket/maker --roster /home/ubuntu/polymarket-aggressive-runtime/accounts.runtime.json --host-id ${POLYMARKET_HOST_ID} --data-dir /home/ubuntu/polymarket-aggressive-runtime/data --runtime-scope aggressive --runtime-root /home/ubuntu/polymarket-aggressive-runtime --expected-signer-url ${POLYMARKET_EXPECTED_SIGNER_URL} --require-paused --expected-roster-sha256 ${POLYMARKET_EXPECTED_ROSTER_SHA256} --expected-market-sha256 ${POLYMARKET_EXPECTED_MARKET_SHA256}
+Restart=no
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

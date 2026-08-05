@@ -53,6 +53,7 @@ from platforms.polymarket.maker.account_roster import (  # noqa: E402
     local_runtime_accounts,
     market_universe_sha256,
     parse_runtime_roster,
+    runtime_roster_scope,
     roster_hosts,
     routing_roster_sha256,
 )
@@ -100,6 +101,7 @@ def _render(
     clash_host: str,
     *,
     roster_sha256: str | None = None,
+    runtime_scope: str = "",
 ) -> dict:
     out = copy.deepcopy(base)
     account = dict(out.get("account") or {})
@@ -128,6 +130,8 @@ def _render(
             "routing_roster_sha256": roster_sha256,
             "market_universe_sha256": market_universe_sha256(out),
         }
+        if runtime_scope:
+            out["runtime_account"]["runtime_scope"] = runtime_scope
     out["proxy_pool"] = _build_proxy_pool(clash_host, entry["clash_port"])
     return out
 
@@ -158,8 +162,10 @@ def main() -> None:
     base = _load_json(base_path)
     if not isinstance(base, dict):
         sys.exit(f"ERROR: base {base_path} must be a JSON object")
+    roster_payload = _load_json(roster_path)
     try:
-        accounts = parse_runtime_roster(_load_json(roster_path))
+        accounts = parse_runtime_roster(roster_payload)
+        runtime_scope = runtime_roster_scope(roster_payload)
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
 
@@ -187,7 +193,7 @@ def main() -> None:
     local_accounts = local_runtime_accounts(accounts, host_id)
     if not local_accounts:
         sys.exit(f"ERROR: roster has no enabled accounts for host {host_id!r}")
-    roster_sha = routing_roster_sha256(accounts)
+    roster_sha = routing_roster_sha256(accounts, runtime_scope)
 
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -196,13 +202,20 @@ def main() -> None:
     print(f"Roster: {roster_path}  ({len(accounts)} global account(s))")
     print(f"Host:   {host_id}  ({len(local_accounts)} local account(s))")
     print(f"Route:  {roster_sha}")
+    print(f"Scope:  {runtime_scope or 'legacy'}")
     print(f"Output: {out_dir}")
     print()
 
     for account in local_accounts:
         idx = account.account_index
         entry = account.generation_entry()
-        cfg = _render(base, entry, args.clash_host, roster_sha256=roster_sha)
+        cfg = _render(
+            base,
+            entry,
+            args.clash_host,
+            roster_sha256=roster_sha,
+            runtime_scope=runtime_scope,
+        )
         out_path = out_dir / f"config_{idx}.json"
         funder = entry["funder"]
         port = entry["clash_port"]

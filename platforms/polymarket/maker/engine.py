@@ -1205,6 +1205,7 @@ class PolyLPSMulti:
             enabled=bool(bus_cfg.get("enabled", False)),
         )
         self._runtime_mode = "single"
+        self._runtime_scope = ""
         self._runtime_host_id = ""
         self._routing_roster_sha256 = ""
         self._routing_market_universe_sha256 = ""
@@ -9166,6 +9167,7 @@ class PolyLPSMulti:
                     ).strip().lower() in {"1", "true", "yes", "on"},
                     "runtime": {
                         "mode": self._runtime_mode,
+                        "scope": self._runtime_scope or None,
                         "host_id": self._runtime_host_id or None,
                         "routing_roster_sha256": self._routing_roster_sha256 or None,
                         "market_universe_sha256": self._routing_market_universe_sha256 or None,

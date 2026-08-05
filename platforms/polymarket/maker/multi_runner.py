@@ -44,6 +44,7 @@ if __package__:  # noqa: E402
     from .account_roster import (
         RuntimeAccount,
         load_runtime_roster,
+        load_runtime_roster_scope,
         local_runtime_accounts,
         market_universe_sha256,
         roster_hosts,
@@ -62,6 +63,7 @@ else:  # direct script execution
     from account_roster import (
         RuntimeAccount,
         load_runtime_roster,
+        load_runtime_roster_scope,
         local_runtime_accounts,
         market_universe_sha256,
         roster_hosts,
@@ -246,6 +248,8 @@ def _verify_roster_config(
     account: RuntimeAccount,
     path: Path,
     roster_sha256: str,
+    runtime_scope: str = "",
+    expected_signer_url: str = "",
 ) -> str:
     payload = _read_config(path)
     actual_funder = str((payload.get("account") or {}).get("funder") or "").strip()
@@ -269,6 +273,8 @@ def _verify_roster_config(
         "routing_roster_sha256": roster_sha256,
         "market_universe_sha256": market_sha,
     }
+    if runtime_scope:
+        expected_runtime["runtime_scope"] = runtime_scope
     if runtime != expected_runtime:
         raise ValueError(
             f"{path.name} runtime_account metadata is stale; regenerate it from the roster"
@@ -291,7 +297,32 @@ def _verify_roster_config(
         raise ValueError(
             f"{path.name} proxy port does not match roster account {account.account_index}"
         )
+    if expected_signer_url:
+        actual_signer_url = str(
+            (payload.get("account") or {}).get("signer_server_url") or ""
+        ).strip().rstrip("/")
+        if actual_signer_url != expected_signer_url.strip().rstrip("/"):
+            raise ValueError(
+                f"{path.name} signer URL does not match the isolated runtime"
+            )
     return market_sha
+
+
+def _require_isolated_runtime_paths(
+    runtime_root: Path,
+    paths: Sequence[tuple[str, Path]],
+) -> None:
+    root = runtime_root.resolve()
+    if root == Path(root.anchor):
+        raise ValueError("isolated runtime root cannot be the filesystem root")
+    for label, path in paths:
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"isolated {label} must live below runtime root {root}: {resolved}"
+            ) from exc
 
 
 def _require_pause_flags(
@@ -397,6 +428,9 @@ async def multi_run(
     validate_only: bool = False,
     expected_roster_sha256: str = "",
     expected_market_sha256: str = "",
+    runtime_scope: str = "",
+    runtime_root: Optional[Path] = None,
+    expected_signer_url: str = "",
 ) -> None:
     """Run every local account as one fail-closed process.
 
@@ -409,7 +443,7 @@ async def multi_run(
         if data_dir is not None
         else config_dir.parent.parent.parent / "data"
     )
-    resolved_data_dir.mkdir(parents=True, exist_ok=True)
+    requested_scope = str(runtime_scope or "").strip().lower()
 
     accounts: tuple[RuntimeAccount, ...] = ()
     route_sha = ""
@@ -419,8 +453,58 @@ async def multi_run(
     local_market_sha = ""
 
     if roster_path is not None:
-        accounts = load_runtime_roster(roster_path.resolve())
+        resolved_roster_path = roster_path.resolve()
+        accounts = load_runtime_roster(resolved_roster_path)
+        roster_scope = load_runtime_roster_scope(resolved_roster_path)
+        if roster_scope != requested_scope:
+            raise ValueError(
+                "runtime scope mismatch: "
+                f"roster={roster_scope or 'legacy'} requested={requested_scope or 'legacy'}"
+            )
         resolved_host_id = _resolve_host_id(accounts, resolved_host_id)
+        if requested_scope == "aggressive":
+            if runtime_root is None:
+                raise ValueError("aggressive runtime requires --runtime-root")
+            if not require_paused:
+                raise ValueError("aggressive runtime must start with --require-paused")
+            if not expected_signer_url.strip():
+                raise ValueError("aggressive runtime requires --expected-signer-url")
+            environment_signer_url = os.getenv("POLY_SIGNER_SERVER_URL", "").strip()
+            if (
+                not environment_signer_url
+                or environment_signer_url.rstrip("/")
+                != expected_signer_url.strip().rstrip("/")
+            ):
+                raise ValueError(
+                    "aggressive runtime POLY_SIGNER_SERVER_URL must exactly match "
+                    "--expected-signer-url"
+                )
+            if not resolved_host_id.startswith("aggressive-"):
+                raise ValueError(
+                    "aggressive runtime host ids must start with 'aggressive-'"
+                )
+            _require_isolated_runtime_paths(
+                runtime_root,
+                (
+                    ("config directory", config_dir),
+                    ("data directory", resolved_data_dir),
+                    ("roster", resolved_roster_path),
+                ),
+            )
+            invalid_profiles = [
+                account.account_index
+                for account in accounts
+                if account.enabled
+                and (
+                    not account.profile.managed
+                    or account.profile.profile_type != "aggressive"
+                )
+            ]
+            if invalid_profiles:
+                raise ValueError(
+                    "aggressive runtime contains non-aggressive accounts: "
+                    + ", ".join(map(str, invalid_profiles))
+                )
         if len(roster_hosts(accounts)) > 1 and (
             not expected_roster_sha256.strip()
             or not expected_market_sha256.strip()
@@ -429,7 +513,7 @@ async def multi_run(
                 "multi-host roster mode requires --expected-roster-sha256 and "
                 "--expected-market-sha256"
             )
-        route_sha = routing_roster_sha256(accounts)
+        route_sha = routing_roster_sha256(accounts, requested_scope)
         roster_rows = _roster_config_files(config_dir, accounts, resolved_host_id)
         if require_paused:
             _require_pause_flags(
@@ -438,7 +522,15 @@ async def multi_run(
             )
         market_shas: set[str] = set()
         for account, path in roster_rows:
-            market_shas.add(_verify_roster_config(account, path, route_sha))
+            market_shas.add(
+                _verify_roster_config(
+                    account,
+                    path,
+                    route_sha,
+                    requested_scope,
+                    expected_signer_url,
+                )
+            )
             config_files.append((account.account_index, path))
             log(f"[multi] host={resolved_host_id} selected {path.name}")
         if len(market_shas) != 1:
@@ -454,6 +546,8 @@ async def multi_run(
             local_market_sha,
         )
     else:
+        if requested_scope or runtime_root is not None or expected_signer_url:
+            raise ValueError("isolated runtime options require --roster mode")
         if expected_roster_sha256 or expected_market_sha256:
             raise ValueError("expected routing digests require --roster mode")
         config_files = _legacy_config_files(config_dir)
@@ -465,6 +559,7 @@ async def multi_run(
 
     if not config_files:
         raise ValueError(f"no local config_N.json files found in {config_dir}")
+    resolved_data_dir.mkdir(parents=True, exist_ok=True)
 
     log(
         f"[multi] initializing {len(config_files)} local account(s)"
@@ -512,12 +607,14 @@ async def multi_run(
         eng._sibling_registry = sibling_registry
         eng._shared_account_profiles = global_profiles
         eng._runtime_mode = "multi_roster" if roster_path is not None else "multi_legacy"
+        eng._runtime_scope = requested_scope
         eng._runtime_host_id = resolved_host_id
         eng._routing_roster_sha256 = route_sha
         eng._routing_market_universe_sha256 = local_market_sha
         eng._routing_account_count = len(global_profiles)
         eng._local_account_count = len(engines)
         eng._runtime_market_updates_enabled = roster_path is None
+        eng._event_bus.set_runtime_namespace(requested_scope)
         eng._event_bus.set_state_namespace(f"account:{eng._account_idx}")
     log(f"[multi] sibling order registry shared across {len(engines)} local account(s)")
 
@@ -680,6 +777,21 @@ def main() -> None:
         default=os.getenv("POLYMARKET_EXPECTED_MARKET_SHA256", ""),
         help="Fail closed unless the market universe matches this reviewed SHA256",
     )
+    parser.add_argument(
+        "--runtime-scope",
+        default=os.getenv("POLYMARKET_RUNTIME_SCOPE", ""),
+        help="Isolated runtime scope declared by the roster",
+    )
+    parser.add_argument(
+        "--runtime-root",
+        default=os.getenv("POLYMARKET_RUNTIME_ROOT", ""),
+        help="Filesystem root that must contain all isolated runtime inputs and state",
+    )
+    parser.add_argument(
+        "--expected-signer-url",
+        default=os.getenv("POLYMARKET_EXPECTED_SIGNER_URL", ""),
+        help="Fail closed unless every generated config uses this signer service",
+    )
     args = parser.parse_args()
     config_dir = Path(args.config_dir).resolve()
     log(f"[multi] config dir: {config_dir}")
@@ -693,6 +805,9 @@ def main() -> None:
             validate_only=args.validate_only,
             expected_roster_sha256=args.expected_roster_sha256,
             expected_market_sha256=args.expected_market_sha256,
+            runtime_scope=args.runtime_scope,
+            runtime_root=Path(args.runtime_root).resolve() if args.runtime_root else None,
+            expected_signer_url=args.expected_signer_url,
         )
     )
 

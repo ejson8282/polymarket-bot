@@ -4,6 +4,10 @@ This runtime allows one global account roster to be split across VPS1 and
 VPS2. The roster is non-secret. Private keys remain on the Mac mini signer and
 the signer token is supplied through the host environment.
 
+This document describes the normal multi-host runtime. The aggressive LP
+domain uses a separate roster, signer, service, data root, and Redis namespace;
+see `README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
+
 ## Routing model
 
 - Every account has one immutable global `account_index` and one `host_id`.
@@ -104,8 +108,9 @@ an error instead of claiming a clean stop.
 
 Each account continues to write `data/engine_state_N.json`. The state contains
 `runtime.mode`, `host_id`, global/local account counts, and the roster SHA.
-Redis state is namespaced as `polymarket:state:account:N`; the shared event
-stream remains unchanged.
+Redis state is namespaced as `polymarket:state:account:N`; the normal runtime
+event stream remains unchanged. Isolated runtimes namespace events, history,
+and state under `polymarket:<runtime_scope>:*`.
 
 ## Current boundary
 

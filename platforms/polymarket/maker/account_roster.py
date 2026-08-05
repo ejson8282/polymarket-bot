@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - direct script execution
 
 MAX_ACCOUNTS = 30
 _HOST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_RUNTIME_SCOPE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _SECRET_FIELDS = frozenset(
     {
@@ -125,7 +126,7 @@ def _find_secret_field(value: object, path: str = "roster") -> str | None:
 
 def _account_rows(raw: object) -> list[object]:
     if isinstance(raw, Mapping):
-        unknown = set(raw) - {"schema_version", "accounts"}
+        unknown = set(raw) - {"schema_version", "runtime_scope", "accounts"}
         if unknown:
             raise ValueError(
                 "roster object has unsupported fields: " + ", ".join(sorted(map(str, unknown)))
@@ -140,11 +141,22 @@ def _account_rows(raw: object) -> list[object]:
     return list(raw)
 
 
+def runtime_roster_scope(raw: object) -> str:
+    """Return the optional isolation scope declared by a roster."""
+    if not isinstance(raw, Mapping):
+        return ""
+    scope = str(raw.get("runtime_scope") or "").strip().lower()
+    if scope and not _RUNTIME_SCOPE_RE.fullmatch(scope):
+        raise ValueError(f"roster.runtime_scope is invalid: {scope!r}")
+    return scope
+
+
 def parse_runtime_roster(
     raw: object,
     *,
     default_host_id: str = "local",
 ) -> tuple[RuntimeAccount, ...]:
+    runtime_roster_scope(raw)
     secret_path = _find_secret_field(raw)
     if secret_path:
         raise ValueError(f"non-secret roster must not contain {secret_path}")
@@ -255,6 +267,16 @@ def load_runtime_roster(
     return parse_runtime_roster(raw, default_host_id=default_host_id)
 
 
+def load_runtime_roster_scope(path: Path) -> str:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"roster file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"roster is not valid JSON: {path}: {exc}") from exc
+    return runtime_roster_scope(raw)
+
+
 def roster_hosts(accounts: Sequence[RuntimeAccount]) -> tuple[str, ...]:
     return tuple(sorted({account.host_id for account in accounts if account.enabled}))
 
@@ -281,8 +303,18 @@ def routing_profiles(
     }
 
 
-def routing_roster_sha256(accounts: Sequence[RuntimeAccount]) -> str:
-    payload = [account.routing_dict() for account in sorted(accounts, key=lambda item: item.account_index)]
+def routing_roster_sha256(
+    accounts: Sequence[RuntimeAccount],
+    runtime_scope: str = "",
+) -> str:
+    scope = str(runtime_scope or "").strip().lower()
+    if scope and not _RUNTIME_SCOPE_RE.fullmatch(scope):
+        raise ValueError(f"runtime scope is invalid: {scope!r}")
+    rows = [
+        account.routing_dict()
+        for account in sorted(accounts, key=lambda item: item.account_index)
+    ]
+    payload: object = {"runtime_scope": scope, "accounts": rows} if scope else rows
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

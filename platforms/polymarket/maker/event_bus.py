@@ -45,6 +45,7 @@ _STATE_TS_KEY = f"{_CHANNEL_PREFIX}:state:ts"
 _HISTORY_KEY = f"{_CHANNEL_PREFIX}:history"
 _HISTORY_MAX_LEN = 500  # keep last 500 events in Redis list
 _STATE_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
+_RUNTIME_NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 class EventBus:
@@ -57,6 +58,7 @@ class EventBus:
         connect_timeout: float = 3.0,
         history_max_len: int = _HISTORY_MAX_LEN,
         state_namespace: str = "",
+        runtime_namespace: str = "",
     ):
         self._redis_url = redis_url.strip()
         self._enabled = enabled and bool(self._redis_url)
@@ -71,18 +73,41 @@ class EventBus:
         self._max_backoff: float = 30.0
         self._publish_count: int = 0
         self._publish_errors: int = 0
+        self._runtime_namespace = ""
+        self._state_namespace = ""
+        self._events_channel = _EVENTS_CHANNEL
+        self._history_key = _HISTORY_KEY
         self._state_key = _STATE_KEY
         self._state_ts_key = _STATE_TS_KEY
+        self.set_runtime_namespace(runtime_namespace)
         self.set_state_namespace(state_namespace)
 
+    def set_runtime_namespace(self, namespace: str = "") -> None:
+        """Isolate events, history, and state for one runtime domain."""
+        normalized = str(namespace or "").strip().lower()
+        if normalized and not _RUNTIME_NAMESPACE_RE.fullmatch(normalized):
+            raise ValueError(f"invalid event-bus runtime namespace: {namespace!r}")
+        self._runtime_namespace = normalized
+        prefix = _CHANNEL_PREFIX + (f":{normalized}" if normalized else "")
+        self._events_channel = f"{prefix}:events"
+        self._history_key = f"{prefix}:history"
+        self._refresh_state_keys()
+
+    def _refresh_state_keys(self) -> None:
+        prefix = _CHANNEL_PREFIX + (
+            f":{self._runtime_namespace}" if self._runtime_namespace else ""
+        )
+        suffix = f":{self._state_namespace}" if self._state_namespace else ""
+        self._state_key = f"{prefix}:state{suffix}"
+        self._state_ts_key = f"{prefix}:state:ts{suffix}"
+
     def set_state_namespace(self, namespace: str = "") -> None:
-        """Select an isolated state key while leaving the shared event stream intact."""
+        """Select an account-local state key inside the active runtime scope."""
         normalized = str(namespace or "").strip()
         if normalized and not _STATE_NAMESPACE_RE.fullmatch(normalized):
             raise ValueError(f"invalid event-bus state namespace: {namespace!r}")
-        suffix = f":{normalized}" if normalized else ""
-        self._state_key = f"{_STATE_KEY}{suffix}"
-        self._state_ts_key = f"{_STATE_TS_KEY}{suffix}"
+        self._state_namespace = normalized
+        self._refresh_state_keys()
 
     @property
     def is_enabled(self) -> bool:
@@ -168,11 +193,11 @@ class EventBus:
         try:
             pipe = self._client.pipeline(transaction=False)
             # Publish to both the general channel and the type-specific channel
-            pipe.publish(_EVENTS_CHANNEL, event_json)
-            pipe.publish(f"{_EVENTS_CHANNEL}:{event_type}", event_json)
+            pipe.publish(self._events_channel, event_json)
+            pipe.publish(f"{self._events_channel}:{event_type}", event_json)
             # Append to history list (capped)
-            pipe.lpush(_HISTORY_KEY, event_json)
-            pipe.ltrim(_HISTORY_KEY, 0, self._history_max_len - 1)
+            pipe.lpush(self._history_key, event_json)
+            pipe.ltrim(self._history_key, 0, self._history_max_len - 1)
             pipe.execute()
             self._publish_count += 1
             return True
@@ -222,7 +247,7 @@ class EventBus:
         if not self._ensure_connection():
             return []
         try:
-            items = self._client.lrange(_HISTORY_KEY, 0, count - 1)
+            items = self._client.lrange(self._history_key, 0, count - 1)
             return [json.loads(item) for item in items]
         except Exception as e:
             logger.debug(f"[event-bus] get_history error: {e}")
@@ -246,9 +271,9 @@ class EventBus:
             import redis
             pubsub = self._client.pubsub()
             if event_types:
-                channels = [f"{_EVENTS_CHANNEL}:{t}" for t in event_types]
+                channels = [f"{self._events_channel}:{t}" for t in event_types]
             else:
-                channels = [_EVENTS_CHANNEL]
+                channels = [self._events_channel]
             pubsub.subscribe(*channels)
 
             for message in pubsub.listen():
