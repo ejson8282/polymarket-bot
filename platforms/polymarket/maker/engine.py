@@ -6354,12 +6354,51 @@ class PolyLPSMulti:
             "token_id": token_id, "reason": reason,
             "size": str(matched_size), "price": str(matched_price),
         })
-        # Event-level handling: cancel orders to stop bleeding, but do NOT set global cooldown.
-        # global_cooldown is reserved for true system-level risk (WS down, poll degraded, etc.).
-        try:
-            await self._cancel_all_except_exit()
-        except Exception as _ce:
-            log(f"[risk] fill cancel warn: {_ce}")
+        # Keep unrelated markets quoting when the account retains the configured
+        # collateral floor. Unknown/thin collateral falls back to the original
+        # account-wide BUY cancellation before the event-level halt below.
+        event_scoped_halt = False
+        collateral_available: Optional[Decimal] = None
+        if self.runtime_floor_usdc > 0:
+            try:
+                collateral_available = await self._get_collateral_available(
+                    force_refresh=True,
+                )
+            except Exception as balance_error:
+                log(
+                    f"[risk] fill balance refresh failed token={token_id} "
+                    f"err={balance_error}; using global BUY cancel"
+                )
+            event_scoped_halt = (
+                collateral_available is not None
+                and collateral_available >= self.runtime_floor_usdc
+            )
+
+        if event_scoped_halt:
+            log(
+                f"[risk] fill event-scoped halt token={token_id} "
+                f"available={collateral_available} "
+                f"floor={self.runtime_floor_usdc}; unrelated markets stay live"
+            )
+        else:
+            balance_reason = (
+                "disabled"
+                if self.runtime_floor_usdc <= 0
+                else "unknown"
+                if collateral_available is None
+                else f"below_floor:{collateral_available}"
+            )
+            log(
+                f"[risk] fill global BUY cancel token={token_id} "
+                f"balance={balance_reason} floor={self.runtime_floor_usdc}"
+            )
+            try:
+                await self._cancel_all_except_exit()
+            except Exception as _ce:
+                log(f"[risk] fill cancel warn: {_ce}")
+
+        # Event-level handling always freezes the filled token and its YES/NO
+        # pair. global_cooldown remains reserved for system-level risk.
         await self._request_event_halt(
             token_id,
             EVENT_HALTED_ON_FILL,

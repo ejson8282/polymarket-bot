@@ -1032,6 +1032,156 @@ def test_confirmed_fill_signal_keeps_dedup_and_exit_ownership():
         assert engine._allow_signal("101", f"blocked-{state}") is False
 
 
+def _fill_halt_policy_engine(
+    collateral_available: Decimal | None,
+    runtime_floor_usdc: Decimal = Decimal("100"),
+    balance_error: Exception | None = None,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.runtime_floor_usdc = runtime_floor_usdc
+    engine._market_snapshots = {}
+    engine.market_states = {}
+    engine._event_bus = _RecordingEventBus()
+    calls = {
+        "global_cancel": 0,
+        "halt": [],
+        "parent_watch": [],
+        "spawned": [],
+        "balance_refresh": [],
+    }
+
+    async def available(force_refresh=False):
+        calls["balance_refresh"].append(force_refresh)
+        if balance_error is not None:
+            raise balance_error
+        return collateral_available
+
+    async def global_cancel():
+        calls["global_cancel"] += 1
+        return True
+
+    async def event_halt(
+        token_id,
+        final_state,
+        reason,
+        matched_size=None,
+        matched_price=None,
+        halt_key="t_fill_seen",
+    ):
+        calls["halt"].append(
+            (
+                token_id,
+                final_state,
+                reason,
+                matched_size,
+                matched_price,
+                halt_key,
+            )
+        )
+
+    async def parent_watch(token_id, reason, primary_decision):
+        calls["parent_watch"].append((token_id, reason, primary_decision))
+
+    def spawn(coro, *, name):
+        calls["spawned"].append(name)
+        coro.close()
+
+    engine._get_collateral_available = available
+    engine._cancel_all_except_exit = global_cancel
+    engine._request_event_halt = event_halt
+    engine._enter_parent_event_shock_watch = parent_watch
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine._format_fill_alert = lambda *_args, **_kwargs: "fill"
+    return engine, calls
+
+
+def test_fill_with_collateral_floor_halts_only_filled_event():
+    engine, calls = _fill_halt_policy_engine(Decimal("765.54"))
+
+    asyncio.run(
+        engine._trigger_event_offline(
+            "101",
+            "test_fill",
+            matched_size=Decimal("10"),
+            matched_price=Decimal("0.50"),
+        )
+    )
+
+    assert calls["balance_refresh"] == [True]
+    assert calls["global_cancel"] == 0
+    assert calls["halt"] == [
+        (
+            "101",
+            EVENT_HALTED_ON_FILL,
+            "test_fill",
+            Decimal("10"),
+            Decimal("0.50"),
+            "t_fill_seen",
+        )
+    ]
+    assert calls["parent_watch"] == [
+        ("101", "fill:test_fill", "skip")
+    ]
+    assert calls["spawned"] == ["attempt_exit_sell:101"]
+
+
+@pytest.mark.parametrize(
+    ("collateral_available", "runtime_floor_usdc", "refresh_expected"),
+    [
+        (Decimal("99.99"), Decimal("100"), True),
+        (None, Decimal("100"), True),
+        (Decimal("1000"), Decimal("0"), False),
+    ],
+)
+def test_fill_uses_global_cancel_when_event_scoped_halt_is_not_safe(
+    collateral_available,
+    runtime_floor_usdc,
+    refresh_expected,
+):
+    engine, calls = _fill_halt_policy_engine(
+        collateral_available,
+        runtime_floor_usdc,
+    )
+
+    asyncio.run(
+        engine._trigger_event_offline(
+            "101",
+            "test_fill",
+            matched_size=Decimal("10"),
+            matched_price=Decimal("0.50"),
+        )
+    )
+
+    assert calls["balance_refresh"] == (
+        [True] if refresh_expected else []
+    )
+    assert calls["global_cancel"] == 1
+    assert len(calls["halt"]) == 1
+    assert calls["spawned"] == ["attempt_exit_sell:101"]
+
+
+def test_fill_balance_refresh_exception_falls_back_to_global_cancel():
+    engine, calls = _fill_halt_policy_engine(
+        Decimal("1000"),
+        balance_error=RuntimeError("balance API unavailable"),
+    )
+
+    asyncio.run(
+        engine._trigger_event_offline(
+            "101",
+            "test_fill",
+            matched_size=Decimal("10"),
+            matched_price=Decimal("0.50"),
+        )
+    )
+
+    assert calls["balance_refresh"] == [True]
+    assert calls["global_cancel"] == 1
+    assert len(calls["halt"]) == 1
+    assert calls["spawned"] == ["attempt_exit_sell:101"]
+
+
 def test_exit_does_not_place_sell_when_buy_cancellation_is_unconfirmed(
     monkeypatch,
 ):
