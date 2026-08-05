@@ -100,9 +100,24 @@ python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/
 
 This isolation layer does not authorize deployment, service restart, signer
 changes, funding, withdrawal, order placement, or removal of pause flags.
-Daily-loss and pause-equity values are still recorded rather than enforced, so
-the aggressive runtime must remain paused until an enforcement change is
-separately reviewed, merged, deployed, and verified.
+Daily-loss and pause-equity values are enforced by an account-local guard loop:
+
+- total equity = CLOB collateral balance + official Data API position value;
+- the daily baseline rolls at Beijing 08:00 and persists across restarts;
+- stale equity data fails closed after 90 seconds by default;
+- a breach creates `.account_N.aggressive_guardrail`, creates the normal pause
+  flag, cancels maker orders, and preserves active exit SELL orders;
+- the latch survives restarts and day changes.
+
+The operator must review the account before resetting it. To request a reset,
+create `.account_N.aggressive_guardrail_reset` in the isolated aggressive data
+directory. The engine only clears the latch and pause flag when fresh total
+equity is above `pause_equity_usdc`; the new daily-loss baseline becomes that
+fresh equity. A rejected reset request is removed and must be requested again.
+
+These guardrails do not authorize activation. The aggressive runtime remains
+paused until its isolation and guardrail PRs are reviewed, merged, deployed,
+and verified through a separate approved cutover.
 
 The existing VPS1/VPS2 normal LP services continue independently throughout
 that work.

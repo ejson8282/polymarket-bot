@@ -41,7 +41,7 @@ def test_aggressive_profile_derives_guardrails_from_any_principal(
     assert profile.pause_equity_usdc == Decimal(pause)
     assert profile.daily_loss_limit_usdc == Decimal(daily_loss)
     assert profile.sweep_above_usdc == Decimal(str(principal))
-    assert profile.public_dict()["guardrails_enforced"] is False
+    assert profile.public_dict()["guardrails_enforced"] is True
 
 
 def test_profile_principal_is_not_limited_to_presets() -> None:
