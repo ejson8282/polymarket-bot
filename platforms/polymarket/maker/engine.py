@@ -47,6 +47,10 @@ try:
     from .sponsored_guard import SponsoredRiskGuard
 except ImportError:
     from sponsored_guard import SponsoredRiskGuard
+try:
+    from .aggressive_guardrails import AggressiveGuardrailState
+except ImportError:
+    from aggressive_guardrails import AggressiveGuardrailState
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -1092,6 +1096,41 @@ class PolyLPSMulti:
         # paused state and resumes quoting when the file is removed.
         self._pause_flag_path: Path = self._state_path.parent / f".account_{self._account_idx}.paused"
         self._was_paused: bool = False
+        _guard_cfg = self.cfg.get("aggressive_guardrails", {}) or {}
+        self._aggressive_guardrails_enabled = bool(
+            self.lp_account_profile.managed
+            and self.lp_account_profile.profile_type == "aggressive"
+        )
+        self._aggressive_guardrail_interval_sec = max(
+            5.0, float(_guard_cfg.get("check_interval_sec", 15.0))
+        )
+        self._aggressive_guardrail_stale_after_sec = max(
+            self._aggressive_guardrail_interval_sec,
+            float(_guard_cfg.get("stale_after_sec", 90.0)),
+        )
+        self._aggressive_guardrail_cutoff_hour = int(
+            _guard_cfg.get("risk_day_cutoff_hour_cst", 8)
+        )
+        if not 0 <= self._aggressive_guardrail_cutoff_hour <= 23:
+            raise ValueError("aggressive_guardrails.risk_day_cutoff_hour_cst must be 0..23")
+        self._aggressive_guardrail_state_path = (
+            self._state_path.parent
+            / f"aggressive_guardrail_state_{self._account_idx or 1}.json"
+        )
+        self._aggressive_guardrail_latch_path = (
+            self._state_path.parent
+            / f".account_{self._account_idx or 1}.aggressive_guardrail"
+        )
+        self._aggressive_guardrail_reset_path = (
+            self._state_path.parent
+            / f".account_{self._account_idx or 1}.aggressive_guardrail_reset"
+        )
+        self._aggressive_guardrail_state = AggressiveGuardrailState.load(
+            self._aggressive_guardrail_state_path
+        )
+        self._aggressive_guardrail_cancel_complete = False
+        if self._aggressive_guardrail_latch_path.exists():
+            self._aggressive_guardrail_state.latched = True
         # Heartbeat file — touched every second by heartbeat_loop so the dashboard
         # can detect liveness across machines (PID check fails for rsynced state
         # from other VPS). Dashboard falls back to mtime > now-10s = alive.
@@ -6498,6 +6537,212 @@ class PolyLPSMulti:
             self._balance_cache = (None, now)
             return None
 
+    async def _get_collateral_balance(self) -> Decimal:
+        """Return wallet collateral balance without treating allowance as equity."""
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            token_id="",
+            signature_type=self.signature_type,
+        )
+        data = await asyncio.to_thread(self.client.get_balance_allowance, params)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid collateral response")
+        raw = data.get("balance")
+        if isinstance(raw, dict):
+            raw = raw.get("available") or raw.get("raw") or raw.get("value")
+        if raw is None:
+            raise RuntimeError("collateral balance missing")
+        balance = self._norm_usdc(Decimal(str(raw)))
+        if balance is None or not balance.is_finite() or balance < 0:
+            raise RuntimeError("invalid collateral balance")
+        return balance
+
+    async def _get_total_position_value(self) -> Decimal:
+        """Return official Data API mark value for every open account position."""
+        funder = self._funder_lc.strip()
+        if not re.fullmatch(r"0x[a-f0-9]{40}", funder):
+            raise RuntimeError("invalid funder for position value")
+        data_api = str(
+            self.cfg.get("data_api_url") or "https://data-api.polymarket.com"
+        ).rstrip("/")
+
+        def fetch() -> object:
+            response = requests.get(
+                f"{data_api}/value",
+                params={"user": funder},
+                timeout=8,
+                proxies=self._read_proxies_for_token(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+        payload = await asyncio.to_thread(fetch)
+        if not isinstance(payload, list):
+            raise RuntimeError("invalid position value response")
+        total = Decimal("0")
+        matched = False
+        for row in payload:
+            if not isinstance(row, dict):
+                raise RuntimeError("invalid position value row")
+            row_user = str(row.get("user") or "").strip().lower()
+            if row_user != funder:
+                continue
+            matched = True
+            value = Decimal(str(row.get("value", 0)))
+            if not value.is_finite() or value < 0:
+                raise RuntimeError("invalid position value")
+            total += value
+        if payload and not matched:
+            raise RuntimeError("position value user mismatch")
+        return total
+
+    async def _get_aggressive_equity_snapshot(self) -> tuple[Decimal, Decimal, Decimal]:
+        collateral, position_value = await asyncio.gather(
+            self._get_collateral_balance(),
+            self._get_total_position_value(),
+        )
+        return collateral + position_value, collateral, position_value
+
+    def _write_aggressive_guardrail_latch(self, reason: str, now: float) -> None:
+        payload = {
+            "account_index": self._account_idx or 1,
+            "account_id": self.lp_account_profile.account_id,
+            "reason": reason,
+            "triggered_at": now,
+        }
+        temporary = self._aggressive_guardrail_latch_path.with_name(
+            f".{self._aggressive_guardrail_latch_path.name}.tmp"
+        )
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self._aggressive_guardrail_latch_path)
+
+    async def _trigger_aggressive_guardrail(self, reason: str, now: float) -> None:
+        first_trigger = not self._aggressive_guardrail_latch_path.exists()
+        self._aggressive_guardrail_state.latch(reason, now)
+        self._write_aggressive_guardrail_latch(reason, now)
+        self._pause_flag_path.touch(exist_ok=True)
+        self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
+        canceled = self._aggressive_guardrail_cancel_complete
+        if not self._aggressive_guardrail_cancel_complete:
+            canceled = await self._cancel_all_except_exit()
+            self._aggressive_guardrail_cancel_complete = canceled
+        if first_trigger:
+            state = self._aggressive_guardrail_state
+            self._event_bus.publish(
+                "aggressive_guardrail_triggered",
+                {
+                    "account_index": self._account_idx or 1,
+                    "reason": reason,
+                    "equity_usdc": state.last_equity_usdc or None,
+                    "daily_loss_usdc": state.daily_loss_usdc,
+                    "maker_orders_canceled": canceled,
+                },
+            )
+            self.notify_discord(
+                "激进 LP 风控已暂停账户",
+                (
+                    f"原因：{reason}\n"
+                    f"总权益：${state.last_equity_usdc or '未知'}\n"
+                    f"当日损失：${state.daily_loss_usdc}\n"
+                    "做市单已撤销，退出 SELL 保留；需人工复位"
+                ),
+                "danger",
+            )
+
+    async def _reset_aggressive_guardrail(self) -> bool:
+        if not (
+            self._aggressive_guardrail_latch_path.exists()
+            or self._aggressive_guardrail_state.latched
+        ):
+            log("[aggressive-guardrail] reset ignored: account is not guard-latched")
+            return False
+        try:
+            equity, collateral, position_value = (
+                await self._get_aggressive_equity_snapshot()
+            )
+        except Exception as exc:
+            log(f"[aggressive-guardrail] reset rejected: equity unavailable: {exc}")
+            return False
+        if equity <= self.lp_account_profile.pause_equity_usdc:
+            log(
+                "[aggressive-guardrail] reset rejected: "
+                f"equity={equity} floor={self.lp_account_profile.pause_equity_usdc}"
+            )
+            return False
+        now = time.time()
+        self._aggressive_guardrail_state.reset(
+            equity=equity,
+            now=now,
+            cutoff_hour=self._aggressive_guardrail_cutoff_hour,
+            baseline_cap=self.lp_account_profile.target_principal_usdc,
+        )
+        self._aggressive_guardrail_state.last_collateral_usdc = str(collateral)
+        self._aggressive_guardrail_state.last_position_value_usdc = str(position_value)
+        self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
+        self._aggressive_guardrail_latch_path.unlink(missing_ok=True)
+        self._aggressive_guardrail_reset_path.unlink(missing_ok=True)
+        self._pause_flag_path.unlink(missing_ok=True)
+        self._aggressive_guardrail_cancel_complete = False
+        self._event_bus.publish(
+            "aggressive_guardrail_reset",
+            {"account_index": self._account_idx or 1, "equity_usdc": str(equity)},
+        )
+        self.notify_discord(
+            "激进 LP 风控已人工复位",
+            f"当前总权益：${equity}\n当日损失基线已重新建立",
+            "warning",
+        )
+        return True
+
+    async def aggressive_guardrail_loop(self) -> None:
+        """Enforce isolated aggressive-account equity and daily-loss limits."""
+        while self._running:
+            try:
+                if self._aggressive_guardrail_reset_path.exists():
+                    reset = await self._reset_aggressive_guardrail()
+                    if not reset:
+                        self._aggressive_guardrail_reset_path.unlink(missing_ok=True)
+
+                if (
+                    self._aggressive_guardrail_latch_path.exists()
+                    or self._aggressive_guardrail_state.latched
+                ):
+                    reason = self._aggressive_guardrail_state.reason or "persisted_latch"
+                    await self._trigger_aggressive_guardrail(reason, time.time())
+                else:
+                    now = time.time()
+                    try:
+                        equity, collateral, position_value = (
+                            await self._get_aggressive_equity_snapshot()
+                        )
+                        reason = self._aggressive_guardrail_state.observe(
+                            equity=equity,
+                            collateral=collateral,
+                            position_value=position_value,
+                            now=now,
+                            cutoff_hour=self._aggressive_guardrail_cutoff_hour,
+                            baseline_cap=self.lp_account_profile.target_principal_usdc,
+                            pause_equity=self.lp_account_profile.pause_equity_usdc,
+                            daily_loss_limit=self.lp_account_profile.daily_loss_limit_usdc,
+                        )
+                    except Exception as exc:
+                        log(f"[aggressive-guardrail] equity refresh failed: {exc}")
+                        reason = self._aggressive_guardrail_state.observe_failure(
+                            now=now,
+                            stale_after_sec=self._aggressive_guardrail_stale_after_sec,
+                        )
+                    self._aggressive_guardrail_state.save(
+                        self._aggressive_guardrail_state_path
+                    )
+                    if reason:
+                        await self._trigger_aggressive_guardrail(reason, now)
+            except Exception as exc:
+                log(f"[aggressive-guardrail] loop error: {exc}")
+            await asyncio.sleep(self._aggressive_guardrail_interval_sec)
+
     async def run(self) -> None:
         # Stamp this engine's account id into the per-task context so every
         # downstream log/notify call carries the [N号] prefix automatically.
@@ -6545,6 +6790,11 @@ class PolyLPSMulti:
                     f"{exc.__class__.__name__}: {exc}"
                 )
 
+        if self._aggressive_guardrails_enabled and self._runtime_scope != "aggressive":
+            raise RuntimeError(
+                "aggressive LP guardrails require runtime_scope=aggressive"
+            )
+
         tasks = [
             asyncio.create_task(self.book_loop(), name="book_loop"),
             asyncio.create_task(self._ws_market_watch(), name="market_ws_watch"),
@@ -6564,6 +6814,13 @@ class PolyLPSMulti:
                 name="eligibility_guard_loop",
             ),
         ]
+        if self._aggressive_guardrails_enabled:
+            tasks.append(
+                asyncio.create_task(
+                    self.aggressive_guardrail_loop(),
+                    name="aggressive_guardrail_loop",
+                )
+            )
         if self._sponsored_guard.enabled:
             tasks.append(
                 asyncio.create_task(
@@ -9161,6 +9418,14 @@ class PolyLPSMulti:
                         else f"pm-account-{self._account_idx or 1}"
                     ),
                     "lp_account": self.lp_account_profile.public_dict(),
+                    "aggressive_guardrails": {
+                        "enabled": self._aggressive_guardrails_enabled,
+                        "active": (
+                            self._aggressive_guardrails_enabled
+                            and self._runtime_scope == "aggressive"
+                        ),
+                        "state": self._aggressive_guardrail_state.public_dict(),
+                    },
                     "release_sha": os.getenv("POLYMARKET_RELEASE_SHA") or None,
                     "release_required": os.getenv(
                         "POLYMARKET_REQUIRE_RELEASE", ""

@@ -54,9 +54,15 @@ The completely separate aggressive operating domain is documented in
 ## Current safety boundary
 
 - Automatic top-up and automatic withdrawal are rejected by config validation.
-- `pause_equity_usdc` and `daily_loss_limit_usdc` are recorded thresholds only;
-  this phase does not enforce them yet. State output marks
-  `guardrails_enforced: false`.
+- Managed aggressive profiles enforce `pause_equity_usdc` and
+  `daily_loss_limit_usdc` only inside the isolated aggressive runtime. Total
+  equity is collateral plus the official Data API position value. A breach
+  creates an account-local persistent latch, pauses quoting, and cancels maker
+  orders while preserving exit SELLs.
+- The risk day resets at Beijing 08:00. A latched account never resumes merely
+  because the day changed or the process restarted; an operator must request a
+  healthy manual reset. Automatic top-up and automatic withdrawal remain
+  forbidden.
 - Production currently launches one `engine.py` process per VPS. Switching to
   `multi_runner.py` remains a separate reviewed and explicitly approved cutover.
 - The first multi-account cutover must cancel existing maker quotes, start

@@ -84,7 +84,9 @@ class LPAccountProfile:
             "auto_top_up": self.auto_top_up,
             "auto_sweep": self.auto_sweep,
             "sweep_policy": "manual",
-            "guardrails_enforced": False,
+            "guardrails_enforced": (
+                self.managed and self.profile_type == "aggressive"
+            ),
         }
 
 
