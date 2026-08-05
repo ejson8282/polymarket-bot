@@ -87,6 +87,14 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
     def fetch_percentages(client: int, _signature_type: int) -> dict:
         return percentages[client]
 
+    def fetch_pnl(client: int, _addresses: list, *, now: datetime) -> dict:
+        return {
+            "status": "ok",
+            "complete": True,
+            "realized_pnl_usd": float(client),
+            "updated_at": now.isoformat(),
+        }
+
     state = asyncio.run(
         rewards_live.refresh_rewards(
             rewards_live.discover_configs(config_dir),
@@ -96,6 +104,7 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
             fetch_daily=fetch_daily,
             fetch_rebate=fetch_rebate,
             fetch_percentages=fetch_percentages,
+            fetch_pnl=fetch_pnl,
         )
     )
 
@@ -115,6 +124,8 @@ def test_refresh_separates_live_day_and_finalized_history(tmp_path: Path) -> Non
         "condition-a": 62.5
     }
     assert state["successful_percentage_accounts"] == 2
+    assert state["successful_pnl_accounts"] == 2
+    assert state["accounts"]["1"]["pnl"]["realized_pnl_usd"] == 1.0
 
     cumulative = json.loads(
         (data_dir / "rewards_cumulative.json").read_text(encoding="utf-8")
