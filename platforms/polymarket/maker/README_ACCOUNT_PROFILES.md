@@ -48,6 +48,8 @@ enable exclusive allocation for a group whose generated configs diverge.
 
 The reviewed host-routing design, roster format, first-cutover procedure, and
 state contract are documented in `README_MULTI_ACCOUNT_RUNTIME.md`.
+The completely separate aggressive operating domain is documented in
+`README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
 
 ## Current safety boundary
 

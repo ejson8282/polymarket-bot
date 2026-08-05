@@ -292,6 +292,9 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
         def __init__(self):
             self.namespace = ""
 
+        def set_runtime_namespace(self, _namespace: str) -> None:
+            return None
+
         def set_state_namespace(self, namespace: str) -> None:
             self.namespace = namespace
 
@@ -378,6 +381,9 @@ def test_validate_only_initializes_accounts_without_starting_workers(
     built = []
 
     class Bus:
+        def set_runtime_namespace(self, _namespace: str) -> None:
+            return None
+
         def set_state_namespace(self, _namespace: str) -> None:
             return None
 
@@ -412,3 +418,163 @@ def test_validate_only_initializes_accounts_without_starting_workers(
 
     assert len(built) == 2
     assert all(engine._runtime_market_updates_enabled is False for engine in built)
+
+
+def test_aggressive_runtime_is_fully_isolated_and_starts_paused(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from platforms.polymarket.maker.account_profiles import parse_lp_account_profile
+    from platforms.polymarket.maker.account_roster import routing_roster_sha256
+
+    root = tmp_path / "aggressive-runtime"
+    config_dir = root / "platforms" / "polymarket" / "maker"
+    data_dir = root / "data"
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    rows = [_row(1, "aggressive-a", 7901), _row(2, "aggressive-b", 7901)]
+    roster_payload = {
+        "schema_version": 1,
+        "runtime_scope": "aggressive",
+        "accounts": rows,
+    }
+    roster_path = root / "accounts.runtime.json"
+    roster_path.write_text(json.dumps(roster_payload), encoding="utf-8")
+    accounts = parse_runtime_roster(roster_payload)
+    digest = routing_roster_sha256(accounts, "aggressive")
+    signer_url = "http://100.91.159.54:8421"
+    rendered = _render(
+        {
+            "account": {"signer_server_url": signer_url},
+            "markets": [{"token_id": "1"}],
+        },
+        accounts[0].generation_entry(),
+        "127.0.0.1",
+        roster_sha256=digest,
+        runtime_scope="aggressive",
+    )
+    (config_dir / "config_1.json").write_text(
+        json.dumps(rendered),
+        encoding="utf-8",
+    )
+    (data_dir / ".account_1.paused").touch()
+    monkeypatch.setenv("POLY_SIGNER_SERVER_URL", signer_url)
+
+    built = []
+
+    class Bus:
+        def __init__(self):
+            self.runtime_namespace = ""
+            self.state_namespace = ""
+
+        def set_runtime_namespace(self, namespace: str) -> None:
+            self.runtime_namespace = namespace
+
+        def set_state_namespace(self, namespace: str) -> None:
+            self.state_namespace = namespace
+
+    class Engine:
+        def __init__(self, config_path: str):
+            self._account_idx = 1
+            self.cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.lp_account_profile = parse_lp_account_profile(self.cfg, 1)
+            self.market_cfg = {"1": {}}
+            self._night_market_cfg = {}
+            self._event_bus = Bus()
+            self._state_path = data_dir / "engine_state_1.json"
+            built.append(self)
+
+        async def run(self) -> None:
+            raise AssertionError("validate-only must not start quote workers")
+
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.PolyLPSMulti",
+        Engine,
+    )
+
+    asyncio.run(
+        multi_run(
+            config_dir,
+            roster_path=roster_path,
+            host_id="aggressive-a",
+            data_dir=data_dir,
+            require_paused=True,
+            validate_only=True,
+            expected_roster_sha256=digest,
+            expected_market_sha256=market_universe_sha256(rendered),
+            runtime_scope="aggressive",
+            runtime_root=root,
+            expected_signer_url=signer_url,
+        )
+    )
+
+    assert len(built) == 1
+    assert built[0]._runtime_scope == "aggressive"
+    assert built[0]._runtime_host_id == "aggressive-a"
+    assert built[0]._event_bus.runtime_namespace == "aggressive"
+    assert built[0]._event_bus.state_namespace == "account:1"
+
+
+def test_aggressive_runtime_rejects_normal_host_or_signer_environment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    roster_path = tmp_path / "accounts.runtime.json"
+    roster_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runtime_scope": "aggressive",
+                "accounts": [_row(1, "vps1", 7901)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLY_SIGNER_SERVER_URL", "http://normal-signer:8420")
+
+    with pytest.raises(ValueError, match="POLY_SIGNER_SERVER_URL"):
+        asyncio.run(
+            multi_run(
+                tmp_path,
+                roster_path=roster_path,
+                host_id="vps1",
+                data_dir=tmp_path / "data",
+                require_paused=True,
+                runtime_scope="aggressive",
+                runtime_root=tmp_path,
+                expected_signer_url="http://aggressive-signer:8421",
+            )
+        )
+
+    monkeypatch.setenv("POLY_SIGNER_SERVER_URL", "http://aggressive-signer:8421")
+    with pytest.raises(ValueError, match="host ids must start with 'aggressive-'"):
+        asyncio.run(
+            multi_run(
+                tmp_path,
+                roster_path=roster_path,
+                host_id="vps1",
+                data_dir=tmp_path / "data",
+                require_paused=True,
+                runtime_scope="aggressive",
+                runtime_root=tmp_path,
+                expected_signer_url="http://aggressive-signer:8421",
+            )
+        )
+
+
+def test_aggressive_systemd_template_never_reuses_normal_runtime() -> None:
+    root = Path(__file__).resolve().parents[1]
+    unit = (
+        root / "deploy" / "systemd" / "polymarket-aggressive-engine.service.example"
+    ).read_text(encoding="utf-8")
+
+    assert "polymarket-engine.service" not in unit
+    assert "/home/ubuntu/polymarket-aggressive-runtime" in unit
+    assert "/home/ubuntu/polymarket-aggressive-releases/current" in unit
+    assert "/home/ubuntu/polymarket-aggressive-venv/bin/python" in unit
+    assert "--runtime-scope aggressive" in unit
+    assert "--require-paused" in unit
+    assert "--expected-signer-url" in unit
+    assert "/home/ubuntu/polymarket-bot" not in unit
+    assert "/home/ubuntu/polymarket-runtime" not in unit
+    assert "/home/ubuntu/.venv2" not in unit
