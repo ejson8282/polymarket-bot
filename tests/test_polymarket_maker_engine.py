@@ -411,6 +411,16 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
         raise AssertionError("ineligible market must not be hot-added")
 
 
+def test_runtime_dashboard_add_is_blocked_in_multi_account_roster_mode():
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_market_updates_enabled = False
+
+    with pytest.raises(ValueError, match="multi-account market coordinator"):
+        engine._runtime_add_from_command(
+            {"token_id": "101", "paired_token_id": "102"}
+        )
+
+
 def test_cancel_quotes_preserves_unregistered_sell_exit():
     engine = object.__new__(PolyLPSMulti)
     orders = [

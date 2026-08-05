@@ -1204,6 +1204,13 @@ class PolyLPSMulti:
             redis_url=os.getenv("POLY_REDIS_URL", "").strip() or str(bus_cfg.get("redis_url", "")).strip(),
             enabled=bool(bus_cfg.get("enabled", False)),
         )
+        self._runtime_mode = "single"
+        self._runtime_host_id = ""
+        self._routing_roster_sha256 = ""
+        self._routing_market_universe_sha256 = ""
+        self._routing_account_count = 1
+        self._local_account_count = 1
+        self._runtime_market_updates_enabled = True
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -5275,6 +5282,10 @@ class PolyLPSMulti:
         return state, candidates, age
 
     def _runtime_add_from_command(self, market: Dict[str, Any]) -> str:
+        if not getattr(self, "_runtime_market_updates_enabled", True):
+            raise ValueError(
+                "runtime market additions require the multi-account market coordinator"
+            )
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
         if not token_id.isdigit() or not paired_token_id.isdigit():
@@ -6521,18 +6532,24 @@ class PolyLPSMulti:
 
         # Auto-curator: always spawned; run() reads auto_curator.enabled from
         # config.json on each tick so the dashboard toggle takes effect live.
-        try:
+        if not self._runtime_market_updates_enabled:
+            log(
+                "[engine] auto_curator disabled: multi-account roster "
+                "requires coordinated market updates"
+            )
+        else:
             try:
-                from .auto_curator import AutoCurator, CURATOR_INTERVAL_SEC
-            except ImportError:
-                from auto_curator import AutoCurator, CURATOR_INTERVAL_SEC  # engine launched as top-level script
-            ac_cfg = self.cfg.get("auto_curator", {}) or {}
-            interval = float(ac_cfg.get("interval_sec", CURATOR_INTERVAL_SEC))
-            self._auto_curator = AutoCurator(self, interval_sec=interval)
-            tasks.append(asyncio.create_task(self._auto_curator.run(), name="auto_curator"))
-            log(f"[engine] auto_curator spawned (interval={interval:.0f}s, live-toggle via config)")
-        except Exception as e:
-            log(f"[engine] auto_curator spawn err: {e}")
+                try:
+                    from .auto_curator import AutoCurator, CURATOR_INTERVAL_SEC
+                except ImportError:
+                    from auto_curator import AutoCurator, CURATOR_INTERVAL_SEC  # engine launched as top-level script
+                ac_cfg = self.cfg.get("auto_curator", {}) or {}
+                interval = float(ac_cfg.get("interval_sec", CURATOR_INTERVAL_SEC))
+                self._auto_curator = AutoCurator(self, interval_sec=interval)
+                tasks.append(asyncio.create_task(self._auto_curator.run(), name="auto_curator"))
+                log(f"[engine] auto_curator spawned (interval={interval:.0f}s, live-toggle via config)")
+            except Exception as e:
+                log(f"[engine] auto_curator spawn err: {e}")
 
         # Shared book fetcher — only spawn if not already set externally
         # (multi_runner.py sets self._shared_book_cache before engine.run()).
@@ -9062,6 +9079,15 @@ class PolyLPSMulti:
                     "release_required": os.getenv(
                         "POLYMARKET_REQUIRE_RELEASE", ""
                     ).strip().lower() in {"1", "true", "yes", "on"},
+                    "runtime": {
+                        "mode": self._runtime_mode,
+                        "host_id": self._runtime_host_id or None,
+                        "routing_roster_sha256": self._routing_roster_sha256 or None,
+                        "market_universe_sha256": self._routing_market_universe_sha256 or None,
+                        "routing_account_count": self._routing_account_count,
+                        "local_account_count": self._local_account_count,
+                        "dynamic_market_updates": self._runtime_market_updates_enabled,
+                    },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,

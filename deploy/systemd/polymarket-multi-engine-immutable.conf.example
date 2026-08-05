@@ -1,0 +1,10 @@
+[Service]
+WorkingDirectory=/home/ubuntu/polymarket-bot/platforms/polymarket/maker
+Environment=POLYMARKET_REQUIRE_RELEASE=1
+EnvironmentFile=/home/ubuntu/polymarket-runtime/engine-release.env
+EnvironmentFile=/home/ubuntu/polymarket-runtime/multi-account-runtime.env
+ExecStartPre=/home/ubuntu/.venv2/bin/python /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/release_guard.py /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/multi_runner.py
+ExecStart=
+ExecStart=/home/ubuntu/.venv2/bin/python /home/ubuntu/polymarket-releases/current/platforms/polymarket/maker/multi_runner.py --config-dir /home/ubuntu/polymarket-bot/platforms/polymarket/maker --roster /home/ubuntu/polymarket-runtime/accounts.runtime.json --host-id ${POLYMARKET_HOST_ID} --data-dir /home/ubuntu/polymarket-bot/data --require-paused
+Restart=no
+TimeoutStopSec=45
