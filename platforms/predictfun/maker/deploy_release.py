@@ -538,7 +538,11 @@ def _validate_predict_only_unit(content: bytes, unit_kind: str) -> None:
             f"{unit_kind} crosses the Predict.fun boundary: {found}"
         )
     if unit_kind == "dry-run service unit":
-        required = ("platforms.predictfun.maker.runner", "--once")
+        required = (
+            "platforms.predictfun.maker.runner",
+            "Type=simple",
+            "Restart=on-failure",
+        )
     elif unit_kind == "dry-run timer unit":
         required = ("[Timer]", "OnUnitActiveSec=")
     elif unit_kind == "WebSocket service unit":
@@ -557,6 +561,10 @@ def _validate_predict_only_unit(content: bytes, unit_kind: str) -> None:
     if "PREDICTFUN_API_KEY" in text:
         raise DeploymentError(
             f"{unit_kind} must not load the Predict.fun API key on a VPS"
+        )
+    if unit_kind == "dry-run service unit" and "--once" in text:
+        raise DeploymentError(
+            "dry-run service unit must run continuously without --once"
         )
 
 
@@ -623,55 +631,64 @@ def _verify_runner_state(
     paths: DeploymentPaths,
     target_sha: str,
     observed_after: datetime,
+    *,
+    attempts: int = 60,
+    interval_sec: float = 1.0,
 ) -> dict[str, Any]:
-    try:
-        state = json.loads(paths.runner_state.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise DeploymentError(
-            f"Predict.fun runner state unavailable: {paths.runner_state}"
-        ) from exc
-    if not isinstance(state, dict):
-        raise DeploymentError("Predict.fun runner state must be a JSON object")
-    auth = state.get("last_auth_summary")
-    auth_rows = auth.get("accounts") if isinstance(auth, dict) else None
-    auth_account_ids = [
-        str(row.get("account_id") or "")
-        for row in auth_rows or []
-        if isinstance(row, dict)
-    ]
-    auth_accounts_ok = bool(auth_rows) and all(
-        isinstance(row, dict) and row.get("ok") is True
-        for row in auth_rows
-    )
+    last_failure = "state unavailable"
     expected_accounts = list(_deployment_account_ids(paths))
-    checks = {
-        "mode": state.get("mode") == "dry_run",
-        "release_sha": state.get("release_sha") == target_sha,
-        "release_required": state.get("release_required") is True,
-        "profile": state.get("deployment_profile") == paths.profile,
-        "account": state.get("account_ids") == expected_accounts,
-        "auth": (
-            isinstance(auth, dict)
-            and auth.get("enabled") is True
-            and auth.get("ok") is True
-            and auth_account_ids == expected_accounts
-            and auth_accounts_ok
-        ),
-        "cycle_count": int(state.get("cycle_count") or 0) >= 1,
-        "error_count": int(state.get("error_count") or 0) == 0,
-        "last_error": not str(state.get("last_error") or ""),
-        "fresh": _is_fresh_after(
-            state.get("last_cycle_finished_at"),
-            observed_after,
-        ),
-        "stopped": state.get("running") is False,
-    }
-    failed = sorted(name for name, passed in checks.items() if not passed)
-    if failed:
-        raise DeploymentError(
-            f"Predict.fun dry-run acceptance failed: {', '.join(failed)}"
-        )
-    return state
+    for attempt in range(max(1, attempts)):
+        try:
+            state = json.loads(paths.runner_state.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise DeploymentError(
+                    "Predict.fun runner state must be a JSON object"
+                )
+            auth = state.get("last_auth_summary")
+            auth_rows = auth.get("accounts") if isinstance(auth, dict) else None
+            auth_account_ids = [
+                str(row.get("account_id") or "")
+                for row in auth_rows or []
+                if isinstance(row, dict)
+            ]
+            auth_accounts_ok = bool(auth_rows) and all(
+                isinstance(row, dict) and row.get("ok") is True
+                for row in auth_rows
+            )
+            checks = {
+                "mode": state.get("mode") == "dry_run",
+                "release_sha": state.get("release_sha") == target_sha,
+                "release_required": state.get("release_required") is True,
+                "profile": state.get("deployment_profile") == paths.profile,
+                "account": state.get("account_ids") == expected_accounts,
+                "auth": (
+                    isinstance(auth, dict)
+                    and auth.get("enabled") is True
+                    and auth.get("ok") is True
+                    and auth_account_ids == expected_accounts
+                    and auth_accounts_ok
+                ),
+                "cycle_count": int(state.get("cycle_count") or 0) >= 1,
+                "error_count": int(state.get("error_count") or 0) == 0,
+                "last_error": not str(state.get("last_error") or ""),
+                "fresh": _is_fresh_after(
+                    state.get("last_cycle_finished_at"), observed_after
+                ),
+                "running": state.get("running") is True,
+            }
+            failed = sorted(
+                name for name, passed in checks.items() if not passed
+            )
+            if not failed:
+                return state
+            last_failure = ", ".join(failed)
+        except (DeploymentError, OSError, ValueError, json.JSONDecodeError) as exc:
+            last_failure = str(exc)
+        if attempt + 1 < max(1, attempts):
+            time.sleep(max(0.0, interval_sec))
+    raise DeploymentError(
+        f"Predict.fun continuous dry-run acceptance failed: {last_failure}"
+    )
 
 
 def _verify_ws_state(
@@ -851,6 +868,14 @@ def activate_release(
         ("systemctl", "is-active", paths.timer_name),
         check=False,
     ) == "active"
+    service_enabled = runner.run(
+        ("systemctl", "is-enabled", paths.service_name),
+        check=False,
+    ) == "enabled"
+    service_active = runner.run(
+        ("systemctl", "is-active", paths.service_name),
+        check=False,
+    ) == "active"
     ws_service_enabled = runner.run(
         ("systemctl", "is-enabled", paths.ws_service_name),
         check=False,
@@ -894,7 +919,12 @@ def activate_release(
                 "Predict.fun WebSocket service is not active after deployment"
             )
         ws_state = _verify_ws_state(paths, observed_after)
+        runner.run(("systemctl", "enable", paths.service_name))
         runner.run(("systemctl", "start", paths.service_name))
+        if runner.run(("systemctl", "is-active", paths.service_name)) != "active":
+            raise DeploymentError(
+                "Predict.fun continuous runner is not active after deployment"
+            )
         state = _verify_runner_state(paths, target_sha, observed_after)
         status_state = _verify_status_state(paths, target_sha, observed_after)
         status_health = (
@@ -907,9 +937,9 @@ def activate_release(
             if isinstance(status_state.get("deployment"), dict)
             else {}
         )
-        runner.run(("systemctl", "enable", "--now", paths.timer_name))
-        if runner.run(("systemctl", "is-active", paths.timer_name)) != "active":
-            raise DeploymentError("Predict.fun timer is not active after deployment")
+        runner.run(
+            ("systemctl", "disable", "--now", paths.timer_name), check=False
+        )
         return {
             "status": "activated",
             "target_sha": target_sha,
@@ -922,7 +952,8 @@ def activate_release(
             ),
             "account_ids": list(_deployment_account_ids(paths)),
             "authorization_id": authorization_id,
-            "timer": "active",
+            "timer": "disabled",
+            "runner_service": "active",
             "websocket": {
                 "active": True,
                 "connected": ws_state.get("connected"),
@@ -976,6 +1007,18 @@ def activate_release(
         else:
             runner.run(
                 ("systemctl", "disable", "--now", paths.timer_name),
+                check=False,
+            )
+        if service_enabled:
+            runner.run(
+                ("systemctl", "enable", "--now", paths.service_name),
+                check=False,
+            )
+        elif service_active:
+            runner.run(("systemctl", "start", paths.service_name), check=False)
+        else:
+            runner.run(
+                ("systemctl", "disable", "--now", paths.service_name),
                 check=False,
             )
         if ws_service_enabled:

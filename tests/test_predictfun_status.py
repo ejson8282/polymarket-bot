@@ -236,6 +236,60 @@ def test_isolated_book_error_is_attention_not_global_block() -> None:
     assert status["health"]["websocket"]["error_count"] == 1
 
 
+def test_failed_account_read_is_attention_and_not_presented_as_available() -> None:
+    now = _now()
+    status = build_status_snapshot(
+        cfg={
+            "accounts": {"ids": ["account_01"]},
+            "data": {"require_ws_for_quotes": True},
+        },
+        runner_state={
+            "mode": "dry_run",
+            "last_auth_summary": {
+                "enabled": True,
+                "ok": True,
+                "accounts": [{"account_id": "account_01", "ok": True}],
+            },
+            "capabilities": {
+                "live_balance_read": False,
+                "live_order_read": True,
+                "live_position_read": True,
+            },
+            "account_reads": {
+                "ts": now,
+                "accounts": {
+                    "account_01": {
+                        "orders": {"ok": True, "count": 0, "error": ""},
+                        "balances": {
+                            "ok": False,
+                            "count": 0,
+                            "error": "RuntimeError: unavailable",
+                        },
+                        "positions": {"ok": True, "count": 0, "error": ""},
+                    }
+                },
+            },
+        },
+        plan_state={},
+        intents_state={},
+        execution_state={},
+        risk_state={"status": "OK", "execution_mode": "normal"},
+        simulation_state={},
+        research_state={},
+        ws_state={
+            "connected": True,
+            "last_message_at": now,
+            "orderbooks": {"42": {"bids": [], "asks": []}},
+        },
+    )
+
+    assert status["health"]["status"] == "attention"
+    assert status["health"]["account_reads"]["ok"] is False
+    assert status["capabilities"]["live_balance_read"] is False
+    assert status["overview"]["live_balance"] == "0"
+    assert status["sources"]["account_reads"] == now
+
+
 def test_status_snapshot_is_json_safe_and_contains_no_secret_fields() -> None:
     encoded = json.dumps(_healthy_snapshot())
     lowered = encoded.lower()

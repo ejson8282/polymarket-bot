@@ -19,6 +19,7 @@ from platforms.predictfun.maker.executor import (
     LiveOrder,
     MultiAccountExecutor,
     PredictFunLiveExecutor,
+    PredictFunReadOnlyExecutor,
 )
 from platforms.predictfun.maker.intents import _configured_accounts, utc_now
 from platforms.predictfun.maker.intents import build_intents_from_plans
@@ -27,7 +28,9 @@ from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.runner import (
     _apply_manual_order_constraints,
     _cancel_managed_on_shutdown,
+    _runtime_read_capabilities,
     _sync_managed_live_orders,
+    _ws_quote_fingerprint,
     run_loop,
 )
 from platforms.predictfun.maker.status import build_status_snapshot
@@ -201,7 +204,10 @@ def test_multi_account_executor_applies_observed_account_order_limits() -> None:
     assert second.max_order_notional == Decimal("5")
 
 
-def test_live_inventory_is_used_by_risk_instead_of_simulation() -> None:
+@pytest.mark.parametrize("inventory_source", ["live", "live_read_only"])
+def test_live_inventory_is_used_by_risk_instead_of_simulation(
+    inventory_source: str,
+) -> None:
     risk = evaluate_risk(
         cfg={
             "risk": {
@@ -227,7 +233,7 @@ def test_live_inventory_is_used_by_risk_instead_of_simulation() -> None:
                 }
             ]
         },
-        inventory_source="live",
+        inventory_source=inventory_source,
     )
     assert risk["summary"]["position_source"] == "live"
     assert risk["summary"]["live_positions"] == 1
@@ -390,6 +396,11 @@ class _AccountExecutor:
         }
 
 
+class _FailingPositionExecutor(_AccountExecutor):
+    def list_positions(self) -> list[AccountPosition]:
+        raise RuntimeError("positions unavailable")
+
+
 def _order(account_id: str) -> ExecutableOrder:
     return ExecutableOrder(
         intent_id=f"intent:{account_id}",
@@ -417,6 +428,56 @@ def test_multi_account_executor_never_cross_routes_private_actions() -> None:
     assert first.cancelled == ["hash-1"]
     assert second.cancelled == []
     assert executor.cancel("hash-2", account_id="missing").ok is False
+
+
+def test_read_only_executor_hard_blocks_writes_and_keeps_reads() -> None:
+    underlying = _AccountExecutor("account_01")
+    reader = PredictFunReadOnlyExecutor(underlying)  # type: ignore[arg-type]
+
+    assert reader.create(_order("account_01")).ok is False
+    assert reader.cancel("hash-1", account_id="account_01").ok is False
+    assert underlying.created == []
+    assert underlying.cancelled == []
+    capabilities = reader.capabilities()
+    assert capabilities["ok"] is True
+    assert capabilities["live_order_submit"] is False
+    assert capabilities["live_order_cancel"] is False
+    assert capabilities["live_order_read"] is True
+
+
+def test_account_reads_fail_independently_and_never_report_false_zero() -> None:
+    executor = MultiAccountExecutor(
+        {
+            "account_01": _AccountExecutor("account_01"),
+            "account_02": _FailingPositionExecutor("account_02"),
+        },
+        required_capabilities=(
+            "live_order_read",
+            "live_balance_read",
+            "live_position_read",
+        ),
+    )
+
+    orders, balances, positions, read_state = executor.read_account_state()
+    assert orders == []
+    assert balances == []
+    assert positions == []
+    assert read_state["accounts"]["account_01"]["positions"]["ok"] is True
+    assert read_state["accounts"]["account_02"]["positions"] == {
+        "ok": False,
+        "count": 0,
+        "error": "RuntimeError: positions unavailable",
+    }
+
+    capabilities = _runtime_read_capabilities(
+        executor.capabilities(), read_state
+    )
+    assert capabilities["live_order_submit"] is False
+    assert capabilities["live_order_cancel"] is False
+    assert capabilities["live_order_read"] is True
+    assert capabilities["live_balance_read"] is True
+    assert capabilities["live_position_read"] is False
+    assert capabilities["ok"] is False
 
 
 def test_missing_managed_order_is_resolved_without_adopting_manual_orders() -> None:
@@ -663,6 +724,182 @@ def test_blocked_live_gate_never_constructs_live_executor(
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert report["mode"] == "risk_blocked"
     assert report["summary"]["actions"] == 0
+
+
+def test_dry_run_reads_real_account_state_without_enabling_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = utc_now()
+    cfg = {
+        "environment": "mainnet",
+        "base_url": "http://proxy.invalid",
+        "execution": {"mode": "dry_run"},
+        "accounts": {"ids": ["account_01"], "max_active_accounts": 1},
+        "runner": {"account_read_only_enabled": True},
+        "simulation": {"enabled": False},
+        "data": {"require_ws_for_quotes": False},
+        "risk": {"max_plan_state_age_sec": 180},
+        "output": {
+            "state_path": "plan.json",
+            "intents_path": "intents.json",
+            "execution_report_path": "report.json",
+            "runner_state_path": "runner.json",
+            "ws_state_path": "ws.json",
+            "simulation_state_path": "simulation.json",
+            "risk_state_path": "risk.json",
+            "kill_switch_path": "kill.json",
+            "research_state_path": "research.json",
+            "status_path": "status.json",
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    (tmp_path / "intents.json").write_text(
+        json.dumps({"ts": now, "intents": [], "summary": {}}),
+        encoding="utf-8",
+    )
+
+    class Reader:
+        def capabilities(self) -> dict[str, Any]:
+            account = {
+                "ok": True,
+                "live_order_submit": False,
+                "live_order_cancel": False,
+                "live_order_read": True,
+                "live_balance_read": True,
+                "live_position_read": True,
+                "read_only": True,
+            }
+            return {**account, "accounts": {"account_01": account}}
+
+        def read_account_state(self) -> tuple[Any, Any, Any, dict[str, Any]]:
+            return (
+                [],
+                [
+                    AccountBalance(
+                        asset="USDT",
+                        available=Decimal("12"),
+                        total=Decimal("12"),
+                        account_id="account_01",
+                    )
+                ],
+                [
+                    AccountPosition(
+                        market_id=42,
+                        outcome="YES",
+                        size=Decimal("2"),
+                        avg_price=Decimal("0.4"),
+                        mark_price=Decimal("0.5"),
+                        account_id="account_01",
+                        value_usd=Decimal("1"),
+                    )
+                ],
+                {
+                    "accounts": {
+                        "account_01": {
+                            name: {"ok": True, "count": count, "error": ""}
+                            for name, count in (
+                                ("orders", 0),
+                                ("balances", 1),
+                                ("positions", 1),
+                            )
+                        }
+                    }
+                },
+            )
+
+    observed: dict[str, Any] = {}
+
+    def fake_run_once(
+        _client: Any, cycle_cfg: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        observed["account"] = cycle_cfg["accounts"]["ids"][0]
+        observed["inventory"] = kwargs.get("inventory_positions")
+        return {
+            "ts": now,
+            "plans": [],
+            "auth": {
+                "enabled": True,
+                "ok": True,
+                "accounts": [{"account_id": "account_01", "ok": True}],
+            },
+        }
+
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.load_config", lambda _path: cfg
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner._read_only_executor",
+        lambda *_args, **_kwargs: Reader(),
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.run_once", fake_run_once
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.evaluate_risk",
+        lambda **_kwargs: {
+            "ts": now,
+            "status": "OK",
+            "execution_mode": "normal",
+            "summary": {},
+            "checks": [],
+        },
+    )
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.runner.build_research_state",
+        lambda _plan: {"ts": now, "summary": {}},
+    )
+
+    state = run_loop(config_path=config_path, interval_sec=1, once=True)
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+
+    assert state["mode"] == "dry_run"
+    assert state["capabilities"]["live_order_submit"] is False
+    assert state["capabilities"]["live_order_cancel"] is False
+    assert state["capabilities"]["live_balance_read"] is True
+    assert state["last_account_summary"]["balances"] == {"account_01": "12"}
+    assert observed["account"]["capital_source"] == "observed"
+    assert observed["inventory"][0]["market_id"] == 42
+    assert status["overview"]["live_balance"] == "12"
+    assert status["overview"]["live_positions"] == 1
+    assert status["capabilities"]["live_order_submit"] is False
+
+
+def test_ws_quote_fingerprint_wakes_only_for_material_book_or_status_change() -> None:
+    base = {
+        "last_message_at": "2026-08-05T00:00:00Z",
+        "orderbooks": {
+            "42": {
+                "bids": [["0.40", "10"], ["0.39", "20"]],
+                "asks": [["0.60", "10"]],
+                "updateTimestampMs": 1,
+            }
+        },
+        "trading_statuses": {"42": {"status": "OPEN"}},
+        "market_statuses": {"42": {"status": "REGISTERED"}},
+    }
+    heartbeat_only = {
+        **base,
+        "last_message_at": "2026-08-05T00:00:01Z",
+        "orderbooks": {
+            "42": {**base["orderbooks"]["42"], "updateTimestampMs": 2}
+        },
+    }
+    changed_depth = {
+        **base,
+        "orderbooks": {
+            "42": {**base["orderbooks"]["42"], "bids": [["0.40", "9"]]}
+        },
+    }
+    changed_status = {
+        **base,
+        "trading_statuses": {"42": {"status": "PAUSED"}},
+    }
+
+    fingerprint = _ws_quote_fingerprint(base)
+    assert _ws_quote_fingerprint(heartbeat_only) == fingerprint
+    assert _ws_quote_fingerprint(changed_depth) != fingerprint
+    assert _ws_quote_fingerprint(changed_status) != fingerprint
 
 
 def test_live_status_never_presents_stale_simulation_as_active() -> None:

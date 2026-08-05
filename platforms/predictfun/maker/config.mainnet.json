@@ -70,8 +70,10 @@
     "max_fill_size": "10"
   },
   "runner": {
+    "account_read_only_enabled": true,
     "interval_sec": 30,
-    "fast_requote_after_fill_sec": 2
+    "fast_requote_after_fill_sec": 2,
+    "ws_requote_min_interval_sec": 10
   },
   "output": {
     "state_path": "../../../data/predictfun_mainnet_state.json",

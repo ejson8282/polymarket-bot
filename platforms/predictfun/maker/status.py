@@ -85,12 +85,25 @@ def build_status_snapshot(
     execution_gate = _object(runner_state.get("execution_gate"))
     gate_blocked = bool(_list(execution_gate.get("blocks")))
     runner_error = str(runner_state.get("last_error") or "")
+    account_reads = _object(runner_state.get("account_reads"))
+    account_read_rows = _object(account_reads.get("accounts"))
+    account_read_errors = [
+        {
+            "account_id": str(account_id),
+            "source": source,
+            "error": str(read.get("error") or ""),
+        }
+        for account_id, raw_sources in account_read_rows.items()
+        if isinstance(raw_sources, dict)
+        for source, read in raw_sources.items()
+        if isinstance(read, dict) and read.get("ok") is not True
+    ]
     if gate_blocked or risk_blocked or (
         bool(data_cfg.get("require_ws_for_quotes"))
         and not ws_transport_healthy
     ):
         health_status = "blocked"
-    elif runner_error or not signer_ok or ws_error_count:
+    elif runner_error or not signer_ok or ws_error_count or account_read_errors:
         health_status = "attention"
     else:
         health_status = "healthy"
@@ -176,6 +189,11 @@ def build_status_snapshot(
                 "hard_blocked": risk_blocked,
             },
             "execution_gate": execution_gate,
+            "account_reads": {
+                "ok": bool(account_read_rows) and not account_read_errors,
+                "ts": str(account_reads.get("ts") or ""),
+                "errors": account_read_errors,
+            },
         },
         "overview": {
             "markets": len(plans),
@@ -254,6 +272,7 @@ def build_status_snapshot(
             "simulation": str(simulation_state.get("ts") or ""),
             "research": str(research_state.get("ts") or ""),
             "websocket": str(ws_state.get("ts") or ""),
+            "account_reads": str(account_reads.get("ts") or ""),
         },
     }
 
