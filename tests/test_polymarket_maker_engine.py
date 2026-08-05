@@ -1469,6 +1469,7 @@ def test_missing_exit_order_with_inventory_stays_pending():
     engine._running = True
     engine._unwind_check_interval_sec = 0
     engine._unwind_max_age_sec = 14_400
+    engine._exit_dust_threshold = 0.5
     engine._active_exit_orders = {"101": "exit-1"}
     engine._pending_unwinds = [
         {
@@ -1506,6 +1507,152 @@ def test_missing_exit_order_with_inventory_stays_pending():
     assert "101" not in engine._active_exit_orders
     assert states[-1][1] == EVENT_PENDING_MANUAL_EXIT
     assert notifications
+
+
+def test_missing_exit_order_with_dust_resumes_other_markets():
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._unwind_check_interval_sec = 0
+    engine._unwind_max_age_sec = 14_400
+    engine._exit_dust_threshold = 0.5
+    engine._active_exit_orders = {"101": "exit-1"}
+    engine._pending_unwinds = [
+        {
+            "token_id": "101",
+            "fill_price": 0.82,
+            "fill_size": 56_140.56,
+            "order_id": "exit-1",
+            "placed_at": 1,
+            "reason": "test",
+        }
+    ]
+    states = []
+    notifications = []
+    resumes = []
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    async def position(_token_id):
+        engine._running = False
+        return 0.004392
+
+    engine.client = Client()
+    engine._get_token_position = position
+    engine._set_event_state = lambda *args: states.append(args)
+    engine._notify_attention = lambda *args, **kwargs: notifications.append((args, kwargs))
+    engine._resume_halted_markets = lambda trigger: resumes.append(trigger)
+
+    asyncio.run(engine.unwind_tracking_loop())
+
+    assert engine._pending_unwinds == []
+    assert "101" not in engine._active_exit_orders
+    assert states == [("101", EVENT_PENDING_MANUAL_EXIT, "dust_position_after_unwind")]
+    assert resumes == ["unwind_dust_position"]
+    assert notifications[0][1]["position"] == "0.0044 份"
+    assert "其他市场已自动恢复" in notifications[0][1]["action"]
+
+
+def test_zero_position_clears_unwind_and_active_exit():
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._unwind_check_interval_sec = 0
+    engine._unwind_max_age_sec = 14_400
+    engine._exit_dust_threshold = 0.5
+    engine._active_exit_orders = {"101": "exit-1"}
+    engine._pending_unwinds = [
+        {
+            "token_id": "101",
+            "fill_price": 0.5,
+            "fill_size": 150,
+            "order_id": "exit-1",
+            "placed_at": 1,
+            "reason": "test",
+        }
+    ]
+    resumes = []
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    async def position(_token_id):
+        engine._running = False
+        return 0.0
+
+    engine.client = Client()
+    engine._get_token_position = position
+    engine._resume_halted_markets = lambda trigger: resumes.append(trigger)
+
+    asyncio.run(engine.unwind_tracking_loop())
+
+    assert engine._pending_unwinds == []
+    assert engine._active_exit_orders == {}
+    assert resumes == ["unwind_position_zero"]
+
+
+def test_unknown_unwind_position_does_not_resume():
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._unwind_check_interval_sec = 0
+    engine._unwind_max_age_sec = 14_400
+    engine._exit_dust_threshold = 0.5
+    engine._active_exit_orders = {"101": "exit-1"}
+    engine._pending_unwinds = [
+        {
+            "token_id": "101",
+            "fill_price": 0.5,
+            "fill_size": 150,
+            "order_id": "exit-1",
+            "placed_at": 1,
+            "reason": "test",
+        }
+    ]
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    async def position(_token_id):
+        engine._running = False
+        return -1.0
+
+    engine.client = Client()
+    engine._get_token_position = position
+    engine._set_event_state = lambda *_args: None
+    engine._notify_attention = lambda *_args, **_kwargs: None
+    engine._resume_halted_markets = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("unknown position must not resume")
+    )
+
+    asyncio.run(engine.unwind_tracking_loop())
+
+    assert len(engine._pending_unwinds) == 1
+    assert engine._pending_unwinds[0]["missing_order_alerted"] is True
+
+
+def test_top_leg_defense_skips_preempted_token_before_market_reads():
+    engine = object.__new__(PolyLPSMulti)
+    engine._top_leg_defense_active = set()
+    engine._top_leg_defense_pending = {}
+    engine._top_leg_defense_tasks = {}
+    engine._halt_preemption_reason = lambda _token_id: "fill:trade_match"
+    engine._defense_blocks_requote = lambda _token_id: False
+    engine._effective_snapshot_for_gate = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("preempted defense must not read market data")
+    )
+
+    asyncio.run(
+        engine._maybe_run_top_leg_defense(
+            "101",
+            "market_ws:price_change",
+            object(),
+        )
+    )
+
+    assert engine._top_leg_defense_active == set()
+    assert engine._top_leg_defense_tasks == {}
 
 
 def _paired_state_engine() -> PolyLPSMulti:
