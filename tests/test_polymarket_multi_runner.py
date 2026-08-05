@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from platforms.polymarket.maker.account_roster import parse_runtime_roster
+from platforms.polymarket.maker.account_roster import (
+    market_universe_sha256,
+    parse_runtime_roster,
+)
 
 try:
     import py_clob_client_v2  # noqa: F401
@@ -25,6 +28,7 @@ from platforms.polymarket.maker.multi_runner import (
     _resolve_host_id,
     _roster_config_files,
     _verify_roster_config,
+    _verify_expected_digest,
     multi_run,
 )
 from scripts.generate_configs import _render
@@ -72,10 +76,7 @@ def test_roster_config_selection_is_host_local_and_requires_every_config(tmp_pat
 
 
 def test_generated_config_must_match_roster_and_digest(tmp_path: Path) -> None:
-    from platforms.polymarket.maker.account_roster import (
-        market_universe_sha256,
-        routing_roster_sha256,
-    )
+    from platforms.polymarket.maker.account_roster import routing_roster_sha256
 
     accounts = parse_runtime_roster([_row(1, "vps1", 7901)])
     digest = routing_roster_sha256(accounts)
@@ -136,6 +137,35 @@ def test_require_paused_checks_every_local_account(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"\.account_2\.paused"):
         _require_pause_flags(tmp_path, [1, 2])
+
+
+def test_expected_digest_is_strict_and_fail_closed() -> None:
+    digest = "a" * 64
+    _verify_expected_digest("market universe", digest, digest)
+
+    with pytest.raises(ValueError, match="must be 64 hex"):
+        _verify_expected_digest("market universe", "abc", digest)
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        _verify_expected_digest("market universe", "b" * 64, digest)
+
+
+def test_multi_host_roster_requires_both_reviewed_digests(tmp_path: Path) -> None:
+    rows = [_row(1, "vps1", 7901), _row(2, "vps2", 7901)]
+    roster_path = tmp_path / "accounts.runtime.json"
+    roster_path.write_text(
+        json.dumps({"schema_version": 1, "accounts": rows}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires --expected-roster-sha256"):
+        asyncio.run(
+            multi_run(
+                tmp_path,
+                roster_path=roster_path,
+                host_id="vps1",
+                data_dir=tmp_path / "data",
+            )
+        )
 
 
 def test_roster_mode_rejects_different_local_market_universes(
@@ -304,6 +334,8 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
                 roster_path=roster_path,
                 host_id="vps1",
                 data_dir=tmp_path / "data",
+                expected_roster_sha256=digest,
+                expected_market_sha256=market_universe_sha256({}),
             )
         )
 

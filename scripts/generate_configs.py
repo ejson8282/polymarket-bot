@@ -33,6 +33,7 @@ Usage
     python scripts/generate_configs.py
     python scripts/generate_configs.py --roster scripts/accounts.json
     python scripts/generate_configs.py --base platforms/polymarket/maker/config.json
+    python scripts/generate_configs.py --market-universe /path/markets.runtime.json
     python scripts/generate_configs.py --out-dir platforms/polymarket/maker
     python scripts/generate_configs.py --dry-run
 """
@@ -54,6 +55,10 @@ from platforms.polymarket.maker.account_roster import (  # noqa: E402
     parse_runtime_roster,
     roster_hosts,
     routing_roster_sha256,
+)
+from platforms.polymarket.maker.market_universe import (  # noqa: E402
+    apply_market_universe,
+    load_json_object,
 )
 
 DEFAULT_BASE = REPO_ROOT / "platforms" / "polymarket" / "maker" / "config.json"
@@ -134,6 +139,11 @@ def main() -> None:
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR})")
     ap.add_argument("--clash-host", default="127.0.0.1", help="Host for the Clash listeners (default: 127.0.0.1)")
     ap.add_argument(
+        "--market-universe",
+        default="",
+        help="Reviewed market-universe JSON; required for multi-host rosters",
+    )
+    ap.add_argument(
         "--host-id",
         default="",
         help="Generate only accounts assigned to this host (required for multi-host rosters)",
@@ -155,6 +165,16 @@ def main() -> None:
 
     requested_host = args.host_id.strip().lower()
     hosts = roster_hosts(accounts)
+    if len(hosts) > 1 and not args.market_universe:
+        sys.exit("ERROR: --market-universe is required for a multi-host roster")
+    if args.market_universe:
+        try:
+            base = apply_market_universe(
+                base,
+                load_json_object(Path(args.market_universe).expanduser().resolve()),
+            )
+        except ValueError as exc:
+            sys.exit(f"ERROR: {exc}")
     if requested_host:
         host_id = requested_host
     elif len(hosts) == 1:

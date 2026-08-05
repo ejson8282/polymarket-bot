@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -309,6 +310,18 @@ def _require_pause_flags(
         )
 
 
+def _verify_expected_digest(name: str, expected: str, actual: str) -> None:
+    normalized = expected.strip().lower()
+    if not normalized:
+        return
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError(f"expected {name} SHA256 must be 64 hex characters")
+    if normalized != actual.lower():
+        raise ValueError(
+            f"{name} SHA256 mismatch: expected {normalized}, got {actual.lower()}"
+        )
+
+
 # ── Per-account wrapper ────────────────────────────────────────────────────────
 
 async def run_account(
@@ -382,6 +395,8 @@ async def multi_run(
     data_dir: Optional[Path] = None,
     require_paused: bool = False,
     validate_only: bool = False,
+    expected_roster_sha256: str = "",
+    expected_market_sha256: str = "",
 ) -> None:
     """Run every local account as one fail-closed process.
 
@@ -406,6 +421,14 @@ async def multi_run(
     if roster_path is not None:
         accounts = load_runtime_roster(roster_path.resolve())
         resolved_host_id = _resolve_host_id(accounts, resolved_host_id)
+        if len(roster_hosts(accounts)) > 1 and (
+            not expected_roster_sha256.strip()
+            or not expected_market_sha256.strip()
+        ):
+            raise ValueError(
+                "multi-host roster mode requires --expected-roster-sha256 and "
+                "--expected-market-sha256"
+            )
         route_sha = routing_roster_sha256(accounts)
         roster_rows = _roster_config_files(config_dir, accounts, resolved_host_id)
         if require_paused:
@@ -424,7 +447,15 @@ async def multi_run(
             )
         local_market_sha = next(iter(market_shas))
         global_profiles = routing_profiles(accounts)
+        _verify_expected_digest("roster", expected_roster_sha256, route_sha)
+        _verify_expected_digest(
+            "market universe",
+            expected_market_sha256,
+            local_market_sha,
+        )
     else:
+        if expected_roster_sha256 or expected_market_sha256:
+            raise ValueError("expected routing digests require --roster mode")
         config_files = _legacy_config_files(config_dir)
         if require_paused:
             _require_pause_flags(
@@ -639,6 +670,16 @@ def main() -> None:
         action="store_true",
         help="Initialize and validate every local account, then exit before starting workers",
     )
+    parser.add_argument(
+        "--expected-roster-sha256",
+        default=os.getenv("POLYMARKET_EXPECTED_ROSTER_SHA256", ""),
+        help="Fail closed unless the global roster matches this reviewed SHA256",
+    )
+    parser.add_argument(
+        "--expected-market-sha256",
+        default=os.getenv("POLYMARKET_EXPECTED_MARKET_SHA256", ""),
+        help="Fail closed unless the market universe matches this reviewed SHA256",
+    )
     args = parser.parse_args()
     config_dir = Path(args.config_dir).resolve()
     log(f"[multi] config dir: {config_dir}")
@@ -650,6 +691,8 @@ def main() -> None:
             data_dir=Path(args.data_dir).resolve() if args.data_dir else None,
             require_paused=args.require_paused,
             validate_only=args.validate_only,
+            expected_roster_sha256=args.expected_roster_sha256,
+            expected_market_sha256=args.expected_market_sha256,
         )
     )
 

@@ -25,10 +25,30 @@ Start from `scripts/accounts.example.json`, replace the public funder addresses,
 and store the real roster outside Git. It must not contain any private key,
 signer token, API credential, password, cookie, mnemonic, or webhook.
 
+First build one non-secret market universe. Exact duplicates are removed only
+when `--dedupe-exact` is explicit. Different rows for the same event stop the
+build unless a reviewed source is selected; identity and day/night conflicts
+always stop it.
+
+```bash
+python scripts/build_market_universe.py \
+  --source vps1=/tmp/config_1.json \
+  --source vps2=/tmp/config_2.json \
+  --prefer-source vps2 \
+  --dedupe-exact \
+  --output /home/ubuntu/polymarket-runtime/markets.runtime.json
+```
+
+The output contains market fields only. It does not copy account, proxy,
+signer, API, or webhook configuration from either source.
+`--prefer-source` is an explicit review decision for strategy-field conflicts;
+it never overrides token, pair, side, condition, or day/night identity conflicts.
+
 ```bash
 python scripts/generate_configs.py \
   --roster /home/ubuntu/polymarket-runtime/accounts.runtime.json \
   --base platforms/polymarket/maker/config.json \
+  --market-universe /home/ubuntu/polymarket-runtime/markets.runtime.json \
   --out-dir platforms/polymarket/maker \
   --host-id vps1
 ```
@@ -36,6 +56,7 @@ python scripts/generate_configs.py \
 Run the same command with `--host-id vps2` on VPS2. The generated
 `runtime_account.routing_roster_sha256` and
 `runtime_account.market_universe_sha256` must be identical on both hosts.
+Multi-host config generation fails when `--market-universe` is omitted.
 
 Before changing the service, run the signer-aware validation path while every
 local account is paused:
@@ -47,12 +68,17 @@ python platforms/polymarket/maker/multi_runner.py \
   --host-id vps1 \
   --data-dir /home/ubuntu/polymarket-bot/data \
   --require-paused \
-  --validate-only
+  --validate-only \
+  --expected-roster-sha256 "$POLYMARKET_EXPECTED_ROSTER_SHA256" \
+  --expected-market-sha256 "$POLYMARKET_EXPECTED_MARKET_SHA256"
 ```
 
 This initializes the signer and validates every local config, funder, LP
 profile, proxy port, data directory, roster digest, and market digest, then
 exits before any worker or quote loop starts.
+Both expected SHA values are mandatory when the roster spans multiple hosts,
+so each VPS fails closed if it was generated from a different roster or market
+file.
 
 ## First cutover
 
