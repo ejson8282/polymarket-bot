@@ -130,7 +130,7 @@ def _healthy_snapshot() -> dict:
 def test_status_contract_matches_poly_style_sections_without_claiming_live() -> None:
     status = _healthy_snapshot()
 
-    assert status["schema_version"] == 1
+    assert status["schema_version"] == 2
     assert status["deployment"]["profile"] == "vps1"
     assert status["deployment"]["account_id"] == "account_01"
     assert status["health"]["status"] == "healthy"
@@ -144,6 +144,10 @@ def test_status_contract_matches_poly_style_sections_without_claiming_live() -> 
         "simulated_fills": 2,
         "desired_notional": "8.00",
         "simulated_unrealized_pnl": "0.25",
+        "live_active_orders": 0,
+        "live_positions": 0,
+        "live_balance": "0",
+        "live_position_value": "0",
         "scanner_markets": 20,
         "scanner_tradable_now": 4,
         "scanner_watchlist": 6,
@@ -152,6 +156,7 @@ def test_status_contract_matches_poly_style_sections_without_claiming_live() -> 
     assert status["markets"][0]["no_label"] == "$140"
     assert status["capabilities"]["live_order_submit"] is False
     assert status["capabilities"]["live_order_cancel"] is False
+    assert status["capabilities"]["simulated_fills"] is True
 
 
 def test_required_ws_failure_is_visible_as_blocked() -> None:

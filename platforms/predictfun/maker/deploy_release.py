@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -28,6 +28,7 @@ from platforms.predictfun.maker.release_guard import (
 
 
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 CONFIRMATION = "DEPLOY_PREDICTFUN_DRYRUN"
 ARCHIVE_PATHS = (
     "platforms/__init__.py",
@@ -41,21 +42,21 @@ ARCHIVE_PATHS = (
 @dataclass(frozen=True)
 class DeploymentProfile:
     name: str
-    account_id: str
+    account_ids: tuple[str, ...]
     lock_file: Path
 
 
 DEPLOYMENT_PROFILES = {
     "vps1": DeploymentProfile(
         name="vps1",
-        account_id="account_01",
+        account_ids=("account_01",),
         lock_file=Path(
             "/home/ubuntu/latitude-runtime/locks/vps1-production-deploy.lock"
         ),
     ),
     "vps2": DeploymentProfile(
         name="vps2",
-        account_id="account_02",
+        account_ids=("account_02",),
         lock_file=Path(
             "/home/ubuntu/latitude-runtime/locks/vps2-production-deploy.lock"
         ),
@@ -71,6 +72,7 @@ class DeploymentError(RuntimeError):
 class DeploymentPaths:
     profile: str = "vps1"
     account_id: str = "account_01"
+    account_ids: tuple[str, ...] = ()
     bare_repo: Path = Path("/home/ubuntu/repos/predictfun.git")
     release_root: Path = Path("/home/ubuntu/predictfun-releases")
     current_link: Path = Path("/home/ubuntu/predictfun-releases/current")
@@ -120,7 +122,8 @@ class DeploymentPaths:
             )
         return cls(
             profile=profile.name,
-            account_id=profile.account_id,
+            account_id=profile.account_ids[0],
+            account_ids=profile.account_ids,
             lock_file=profile.lock_file,
         )
 
@@ -161,6 +164,27 @@ def _require_full_sha(value: str, label: str) -> str:
     if not FULL_SHA_RE.fullmatch(normalized):
         raise DeploymentError(f"{label} must be a full 40-character commit SHA")
     return normalized
+
+
+def _normalize_account_ids(values: Sequence[str]) -> tuple[str, ...]:
+    account_ids: list[str] = []
+    for value in values:
+        account_id = str(value or "").strip()
+        if not ACCOUNT_ID_RE.fullmatch(account_id):
+            raise DeploymentError(
+                f"invalid Predict.fun account alias: {account_id or '<empty>'}"
+            )
+        if account_id not in account_ids:
+            account_ids.append(account_id)
+    if not account_ids:
+        raise DeploymentError("at least one Predict.fun account alias is required")
+    if len(account_ids) > 10:
+        raise DeploymentError("Predict.fun deployment supports at most 10 accounts")
+    return tuple(account_ids)
+
+
+def _deployment_account_ids(paths: DeploymentPaths) -> tuple[str, ...]:
+    return _normalize_account_ids(paths.account_ids or (paths.account_id,))
 
 
 def _sha256(path: Path) -> str:
@@ -480,18 +504,20 @@ def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
     accounts = config.get("accounts")
     if not isinstance(accounts, dict):
         raise DeploymentError("Predict.fun mainnet config is missing accounts")
+    account_ids = list(_deployment_account_ids(paths))
     accounts["enabled"] = True
-    accounts["max_active_accounts"] = 1
-    accounts["ids"] = [paths.account_id]
+    accounts["max_active_accounts"] = len(account_ids)
+    accounts["ids"] = account_ids
     config["accounts"] = accounts
     risk = config.get("risk")
     if not isinstance(risk, dict):
         raise DeploymentError("Predict.fun mainnet config is missing risk")
-    risk["max_active_accounts"] = 1
+    risk["max_active_accounts"] = len(account_ids)
     config["risk"] = risk
     config["deployment"] = {
         "profile": paths.profile,
-        "account_id": paths.account_id,
+        "account_id": account_ids[0] if len(account_ids) == 1 else "",
+        "account_ids": account_ids,
     }
     return (json.dumps(config, indent=2) + "\n").encode("utf-8")
 
@@ -617,17 +643,18 @@ def _verify_runner_state(
         isinstance(row, dict) and row.get("ok") is True
         for row in auth_rows
     )
+    expected_accounts = list(_deployment_account_ids(paths))
     checks = {
         "mode": state.get("mode") == "dry_run",
         "release_sha": state.get("release_sha") == target_sha,
         "release_required": state.get("release_required") is True,
         "profile": state.get("deployment_profile") == paths.profile,
-        "account": state.get("account_ids") == [paths.account_id],
+        "account": state.get("account_ids") == expected_accounts,
         "auth": (
             isinstance(auth, dict)
             and auth.get("enabled") is True
             and auth.get("ok") is True
-            and auth_account_ids == [paths.account_id]
+            and auth_account_ids == expected_accounts
             and auth_accounts_ok
         ),
         "cycle_count": int(state.get("cycle_count") or 0) >= 1,
@@ -747,12 +774,19 @@ def _verify_status_state(
         if isinstance(state.get("health"), dict)
         else {}
     )
+    expected_accounts = list(_deployment_account_ids(paths))
+    expected_primary = (
+        expected_accounts[0] if len(expected_accounts) == 1 else ""
+    )
     checks = {
         "schema": int(state.get("schema_version") or 0) >= 1,
         "project": state.get("project") == "predictfun",
         "fresh": _is_fresh_after(state.get("ts"), observed_after),
         "profile": deployment.get("profile") == paths.profile,
-        "account": deployment.get("account_id") == paths.account_id,
+        "account": (
+            deployment.get("account_id") == expected_primary
+            and deployment.get("account_ids") == expected_accounts
+        ),
         "release": deployment.get("release_sha") == target_sha,
         "mode": deployment.get("mode") == "dry_run",
         "not_blocked": health.get("status") in {"healthy", "attention"},
@@ -881,7 +915,12 @@ def activate_release(
             "target_sha": target_sha,
             "previous_sha": previous_sha,
             "profile": paths.profile,
-            "account_id": paths.account_id,
+            "account_id": (
+                _deployment_account_ids(paths)[0]
+                if len(_deployment_account_ids(paths)) == 1
+                else ""
+            ),
+            "account_ids": list(_deployment_account_ids(paths)),
             "authorization_id": authorization_id,
             "timer": "active",
             "websocket": {
@@ -963,7 +1002,12 @@ def activate_release(
 def status(paths: DeploymentPaths, runner: CommandRunner) -> dict[str, Any]:
     return {
         "profile": paths.profile,
-        "account_id": paths.account_id,
+        "account_id": (
+            _deployment_account_ids(paths)[0]
+            if len(_deployment_account_ids(paths)) == 1
+            else ""
+        ),
+        "account_ids": list(_deployment_account_ids(paths)),
         "current_sha": _current_release_sha(paths),
         "timer_active": runner.run(
             ("systemctl", "is-active", paths.timer_name),
@@ -1028,10 +1072,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--expected-current", default="none")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--authorization-id", default="")
+    parser.add_argument(
+        "--account-ids",
+        default="",
+        help="Comma-separated account aliases for this host (maximum 10).",
+    )
     args = parser.parse_args(argv)
+    paths = DeploymentPaths.for_profile(args.profile)
+    if args.account_ids:
+        account_ids = _normalize_account_ids(args.account_ids.split(","))
+        paths = replace(
+            paths,
+            account_id=account_ids[0],
+            account_ids=account_ids,
+        )
     result = execute(
         args.action,
-        paths=DeploymentPaths.for_profile(args.profile),
+        paths=paths,
         runner=CommandRunner(),
         target_sha=args.target_sha,
         expected_current=args.expected_current,

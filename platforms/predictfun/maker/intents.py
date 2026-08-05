@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,9 @@ def build_intents_from_plans(
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
     accounts = _configured_accounts(accounts_config)
+    accounts_by_id = {
+        str(account["account_id"]): account for account in accounts
+    }
     configured_account_ids = {str(account["account_id"]) for account in accounts}
     assignment = _account_assignment(accounts_config)
     positions = _position_map(inventory_positions or [])
@@ -52,6 +55,7 @@ def build_intents_from_plans(
     planner = planner_config or {}
     reserved_notional_by_account: dict[str, Decimal] = {}
     reserved_notional_by_account_market: dict[tuple[str, int], Decimal] = {}
+    reserved_markets_by_account: dict[str, set[int]] = {}
     max_account_notional = _dec(planner.get("max_account_notional"))
     max_account_market_notional = _dec(planner.get("max_account_market_notional"))
     for plan_index, plan in enumerate(plans):
@@ -63,13 +67,27 @@ def build_intents_from_plans(
         fee_rate_bps = int(_dec(market.get("fee_rate_bps")))
         for account in _accounts_for_plan(accounts, plan_index, assignment):
             account_id = str(account["account_id"])
+            account_markets = reserved_markets_by_account.setdefault(
+                account_id, set()
+            )
+            max_markets = int(_dec(account.get("max_markets")))
+            if (
+                max_markets > 0
+                and market_id not in account_markets
+                and len(account_markets) >= max_markets
+            ):
+                continue
             halt_buys = _halt_market_buys_while_position(
                 positions,
                 account_id=account_id,
                 market_id=market_id,
                 inventory=inventory,
             )
-            if plan.get("can_quote") and not halt_buys:
+            if (
+                plan.get("can_quote")
+                and not halt_buys
+                and account.get("quote_enabled") is not False
+            ):
                 for quote in list(plan.get("yes_quotes") or []) + list(plan.get("no_quotes") or []):
                     outcome = str(quote.get("outcome") or "")
                     side = str(quote.get("side") or "")
@@ -99,25 +117,41 @@ def build_intents_from_plans(
                         token_id=_token_id_for_outcome(market, outcome),
                         fee_rate_bps=fee_rate_bps,
                     )
+                    intent = _cap_order_notional(
+                        intent,
+                        _dec(account.get("max_order_notional")),
+                    )
+                    if intent is None:
+                        continue
+                    account_notional_limit = _dec(
+                        account.get("max_account_notional")
+                    )
+                    if account_notional_limit <= 0:
+                        account_notional_limit = max_account_notional
+                    account_market_limit = _dec(
+                        account.get("max_account_market_notional")
+                    )
+                    if account_market_limit <= 0:
+                        account_market_limit = max_account_market_notional
                     if not _can_add_notional(
                         reserved_notional_by_account,
                         reserved_notional_by_account_market,
                         account_id=account_id,
                         market_id=market_id,
                         notional=intent.notional,
-                        max_account_notional=max_account_notional,
-                        max_account_market_notional=max_account_market_notional,
+                        max_account_notional=account_notional_limit,
+                        max_account_market_notional=account_market_limit,
                     ):
                         continue
                     intents.append(intent)
+                    account_markets.add(market_id)
                     _reserve_buy_inventory(reserved, intent)
                     _reserve_notional(reserved_notional_by_account, reserved_notional_by_account_market, intent)
 
         for account_id in _position_accounts_for_market(positions, market_id):
             if account_id not in configured_account_ids:
                 continue
-            intents.extend(
-                _inventory_exit_intents(
+            exit_intents = _inventory_exit_intents(
                     plan,
                     account_id=account_id,
                     market_id=market_id,
@@ -128,6 +162,18 @@ def build_intents_from_plans(
                     market_mode=market_mode,
                     fee_rate_bps=fee_rate_bps,
                 )
+            max_order_notional = _dec(
+                accounts_by_id.get(account_id, {}).get("max_order_notional")
+            )
+            intents.extend(
+                capped
+                for intent in exit_intents
+                if (
+                    capped := _cap_order_notional(
+                        intent, max_order_notional
+                    )
+                )
+                is not None
             )
     return intents
 
@@ -168,6 +214,7 @@ def build_intent_state(
     inventory_positions: list[dict[str, Any]] | None = None,
     inventory_config: dict[str, Any] | None = None,
     planner_config: dict[str, Any] | None = None,
+    mode: str = "dry_run",
 ) -> dict[str, Any]:
     intents = build_intents_from_plans(
         plans,
@@ -201,9 +248,9 @@ def build_intent_state(
         row = by_account.setdefault(account_id, {"desired": 0, "total_notional": Decimal("0")})
         row["desired"] += 1
         row["total_notional"] += _dec(item.get("notional"))
-        mode = str(item.get("market_mode") or "standard")
+        market_mode = str(item.get("market_mode") or "standard")
         mode_row = by_mode.setdefault(
-            mode,
+            market_mode,
             {"desired": 0, "buy": 0, "sell": 0, "total_notional": Decimal("0"), "buy_notional": Decimal("0")},
         )
         notional = _dec(item.get("notional"))
@@ -226,7 +273,7 @@ def build_intent_state(
     return {
         "ts": utc_now(),
         "environment": environment,
-        "mode": "dry_run",
+        "mode": mode,
         "summary": {
             "desired": len(desired),
             "create": len(creates),
@@ -317,13 +364,16 @@ def _intent(
 
 
 def _configured_accounts(raw: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
+    explicit_rows = False
     if isinstance(raw, list):
         rows = raw
+        explicit_rows = bool(rows)
         max_active = len(rows) or 1
     elif isinstance(raw, dict):
         if raw.get("enabled") is False:
-            return [{"account_id": "acct01"}]
+            return []
         rows = raw.get("ids") or raw.get("account_ids") or raw.get("accounts") or []
+        explicit_rows = bool(rows)
         max_active = int(_dec(raw.get("max_active_accounts"), "10") or Decimal("10"))
         if not rows:
             rows = [f"acct{i:02d}" for i in range(1, max_active + 1)]
@@ -335,6 +385,8 @@ def _configured_accounts(raw: dict[str, Any] | list[Any] | None) -> list[dict[st
     seen: set[str] = set()
     for item in rows:
         if isinstance(item, dict):
+            if item.get("enabled") is False:
+                continue
             account_id = str(item.get("account_id") or item.get("id") or item.get("name") or "").strip()
             payload = dict(item)
         else:
@@ -347,7 +399,9 @@ def _configured_accounts(raw: dict[str, Any] | list[Any] | None) -> list[dict[st
         seen.add(account_id)
         if len(accounts) >= max(1, max_active):
             break
-    return accounts or [{"account_id": "acct01"}]
+    if accounts or explicit_rows:
+        return accounts
+    return [{"account_id": "acct01"}]
 
 
 def _account_assignment(raw: dict[str, Any] | list[Any] | None) -> str:
@@ -359,6 +413,8 @@ def _account_assignment(raw: dict[str, Any] | list[Any] | None) -> str:
 
 
 def _accounts_for_plan(accounts: list[dict[str, Any]], plan_index: int, assignment: str) -> list[dict[str, Any]]:
+    if not accounts:
+        return []
     if assignment == "all":
         return accounts
     return [accounts[plan_index % len(accounts)]]
@@ -390,6 +446,34 @@ def _reserve_notional(
     by_account[intent.account_id] = by_account.get(intent.account_id, Decimal("0")) + intent.notional
     key = (intent.account_id, intent.market_id)
     by_account_market[key] = by_account_market.get(key, Decimal("0")) + intent.notional
+
+
+def _cap_order_notional(
+    intent: OrderIntent, max_order_notional: Decimal
+) -> OrderIntent | None:
+    if max_order_notional <= 0 or intent.notional <= max_order_notional:
+        return intent
+    if intent.price <= 0:
+        return None
+    size = (max_order_notional / intent.price).quantize(
+        Decimal("0.000001"), rounding=ROUND_DOWN
+    )
+    if size <= 0:
+        return None
+    return replace(
+        intent,
+        size=size,
+        notional=intent.price * size,
+        intent_id=stable_intent_id(
+            account_id=intent.account_id,
+            market_id=intent.market_id,
+            outcome=intent.outcome,
+            side=intent.side,
+            price=intent.price,
+            size=size,
+            purpose=intent.purpose,
+        ),
+    )
 
 
 def _position_map(positions: list[dict[str, Any]]) -> dict[tuple[str, int, str], Decimal]:

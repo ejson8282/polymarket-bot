@@ -58,6 +58,7 @@ def reconcile_once(
     *,
     executor: PredictFunExecutor | None = None,
     managed_state: dict[str, Any] | None = None,
+    mode: str = "dry_run",
 ) -> dict[str, Any]:
     executor = executor or DryRunExecutor()
     registry = ManagedOrderRegistry.from_state(managed_state)
@@ -83,7 +84,7 @@ def reconcile_once(
             results.append(asdict(result))
     return {
         "ts": utc_now(),
-        "mode": "dry_run",
+        "mode": mode,
         "source_ts": intents_state.get("ts"),
         "summary": {
             "actions": len(results),
@@ -102,6 +103,7 @@ def reconcile_cancel_only(
     executor: PredictFunExecutor | None = None,
     reason: str,
     risk_state: dict[str, Any] | None = None,
+    mode: str = "dry_run",
 ) -> dict[str, Any]:
     """Cancel engine-owned orders while keeping all create actions disabled."""
 
@@ -118,7 +120,9 @@ def reconcile_cancel_only(
         results.append(asdict(result))
     return {
         "ts": utc_now(),
-        "mode": "cancel_only" if results else "risk_blocked",
+        "mode": (
+            f"{mode}_cancel_only" if results else f"{mode}_risk_blocked"
+        ),
         "reason": reason,
         "summary": {
             "actions": len(results),
@@ -139,6 +143,7 @@ def reconcile_reduce_only(
     managed_state: dict[str, Any] | None,
     executor: PredictFunExecutor | None = None,
     risk_state: dict[str, Any] | None = None,
+    mode: str = "dry_run",
 ) -> dict[str, Any]:
     """Cancel maker quotes and allow only position-reducing exit intents."""
 
@@ -172,7 +177,7 @@ def reconcile_reduce_only(
 
     return {
         "ts": utc_now(),
-        "mode": "reduce_only",
+        "mode": f"{mode}_reduce_only",
         "source_ts": intents_state.get("ts"),
         "summary": {
             "actions": len(results),

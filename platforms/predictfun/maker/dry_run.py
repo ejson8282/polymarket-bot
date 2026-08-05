@@ -555,6 +555,8 @@ def _configured_account_ids(raw: dict[str, Any] | list[Any] | None) -> list[str]
     for item in rows:
         account_id = ""
         if isinstance(item, dict):
+            if item.get("enabled") is False:
+                continue
             account_id = str(item.get("account_id") or item.get("id") or item.get("name") or "").strip()
         else:
             account_id = str(item or "").strip()
@@ -608,6 +610,7 @@ def run_once(
     config_path: Path,
     previous_intents: list[dict[str, Any]] | None = None,
     inventory_positions: list[dict[str, Any]] | None = None,
+    execution_mode: str = "dry_run",
 ) -> dict[str, Any]:
     scan_cfg = cfg.get("scan") or {}
     strategy = cfg.get("strategy") or {}
@@ -798,6 +801,7 @@ def run_once(
                 "max_account_notional": risk.get("max_account_desired_notional"),
                 "max_account_market_notional": risk.get("max_account_market_desired_notional"),
             },
+            mode=execution_mode,
         )
         write_intent_state(intents_path, intent_state)
         state["intents"] = intent_state.get("summary", {})

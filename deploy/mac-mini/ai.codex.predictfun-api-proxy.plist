@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.codex.predictfun-api-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PREDICTFUN_PYTHON__</string>
+    <string>__PREDICTFUN_CURRENT__/deploy/mac-mini/predictfun_api_proxy.py</string>
+    <string>--host</string>
+    <string>100.91.159.54</string>
+    <string>--port</string>
+    <string>8791</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PREDICTFUN_CURRENT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PREDICTFUN_RELEASE_SHA</key>
+    <string>__PREDICTFUN_RELEASE_SHA__</string>
+    <key>PYTHONDONTWRITEBYTECODE</key>
+    <string>1</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>StandardOutPath</key>
+  <string>__PREDICTFUN_HOME__/Library/Logs/predictfun-api-proxy.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PREDICTFUN_HOME__/Library/Logs/predictfun-api-proxy.err.log</string>
+</dict>
+</plist>

@@ -161,6 +161,8 @@ def main() -> None:
         "is_neg_risk": bool(market.get("isNegRisk", False)),
         "is_yield_bearing": bool(market.get("isYieldBearing", False)),
         "is_post_only": True,
+        "reserved_balance_policy": "REJECT_MARKET_ORDER",
+        "self_trade_prevention": "CANCEL_MAKER",
         "max_notional_usdc": args.max_notional,
     }
     signer_cfg = cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}

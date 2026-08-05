@@ -5,8 +5,14 @@ from decimal import Decimal, InvalidOperation
 import math
 from typing import Any
 
+from platforms.predictfun.maker.executor import (
+    AccountBalance,
+    AccountPosition,
+    LiveOrder,
+)
 
-SCHEMA_VERSION = 1
+
+SCHEMA_VERSION = 2
 
 
 def build_status_snapshot(
@@ -20,6 +26,9 @@ def build_status_snapshot(
     simulation_state: dict[str, Any],
     research_state: dict[str, Any],
     ws_state: dict[str, Any],
+    live_orders: list[LiveOrder] | None = None,
+    live_balances: list[AccountBalance] | None = None,
+    live_positions: list[AccountPosition] | None = None,
 ) -> dict[str, Any]:
     deployment = _object(cfg.get("deployment"))
     data_cfg = _object(cfg.get("data"))
@@ -36,6 +45,11 @@ def build_status_snapshot(
         _action_row(row) for row in _rows(execution_state.get("results"))[-50:]
     ]
     risk_checks = [_risk_row(row) for row in _rows(risk_state.get("checks"))]
+    live_order_rows = [_live_order_row(row) for row in live_orders or []]
+    live_balance_rows = [_live_balance_row(row) for row in live_balances or []]
+    live_position_rows = [
+        _live_position_row(row) for row in live_positions or []
+    ]
 
     ws_max_age = float(data_cfg.get("ws_state_max_age_sec") or 30)
     ws_age = _age_sec(ws_state.get("last_message_at"))
@@ -68,8 +82,10 @@ def build_status_snapshot(
         and all(row["ok"] for row in auth_rows)
     )
     risk_blocked = risk_state.get("hard_blocked") is True
+    execution_gate = _object(runner_state.get("execution_gate"))
+    gate_blocked = bool(_list(execution_gate.get("blocks")))
     runner_error = str(runner_state.get("last_error") or "")
-    if risk_blocked or (
+    if gate_blocked or risk_blocked or (
         bool(data_cfg.get("require_ws_for_quotes"))
         and not ws_transport_healthy
     ):
@@ -82,6 +98,19 @@ def build_status_snapshot(
     intent_summary = _object(intents_state.get("summary"))
     simulation_summary = _object(simulation_state.get("summary"))
     research_summary = _object(research_state.get("summary"))
+    execution_mode = str(runner_state.get("mode") or "dry_run")
+    requested_mode = str(
+        runner_state.get("requested_mode") or execution_mode
+    )
+    simulation_cfg = _object(cfg.get("simulation"))
+    simulation_enabled = (
+        execution_mode == "dry_run" and simulation_cfg.get("enabled") is not False
+    )
+    if not simulation_enabled:
+        active_orders = []
+        positions = []
+        simulation_summary = {}
+    runtime_capabilities = _object(runner_state.get("capabilities"))
     latencies = sorted(
         number
         for value in _object(ws_state.get("orderbook_latency_ms")).values()
@@ -104,7 +133,9 @@ def build_status_snapshot(
             "account_ids": account_ids,
             "release_sha": str(runner_state.get("release_sha") or ""),
             "release_required": runner_state.get("release_required") is True,
-            "mode": "dry_run",
+            "mode": execution_mode,
+            "requested_mode": requested_mode,
+            "execution_gate": _object(runner_state.get("execution_gate")),
         },
         "health": {
             "status": health_status,
@@ -144,6 +175,7 @@ def build_status_snapshot(
                 "blocked": risk_state.get("blocked") is True,
                 "hard_blocked": risk_blocked,
             },
+            "execution_gate": execution_gate,
         },
         "overview": {
             "markets": len(plans),
@@ -156,6 +188,22 @@ def build_status_snapshot(
             "simulated_unrealized_pnl": _decimal_text(
                 simulation_summary.get("unrealized_pnl")
             ),
+            "live_active_orders": sum(
+                1 for row in live_order_rows if row["status"] == "open"
+            ),
+            "live_positions": len(live_position_rows),
+            "live_balance": _decimal_text(
+                sum(
+                    (Decimal(row["total"]) for row in live_balance_rows),
+                    Decimal("0"),
+                )
+            ),
+            "live_position_value": _decimal_text(
+                sum(
+                    (Decimal(row["value_usd"]) for row in live_position_rows),
+                    Decimal("0"),
+                )
+            ),
             "scanner_markets": _integer(research_summary.get("markets")),
             "scanner_tradable_now": _integer(
                 research_summary.get("tradable_now")
@@ -166,6 +214,17 @@ def build_status_snapshot(
         "desired_orders": desired_orders,
         "simulated_active_orders": active_orders,
         "simulated_positions": positions,
+        "live_orders": live_order_rows,
+        "live_balances": live_balance_rows,
+        "live_positions": live_position_rows,
+        "accounts": _account_rows(
+            account_ids=account_ids,
+            orders=live_order_rows,
+            balances=live_balance_rows,
+            positions=live_position_rows,
+            capital_profiles=_object(runner_state.get("capital_profiles")),
+            capabilities=_object(runtime_capabilities.get("accounts")),
+        ),
         "recent_actions": recent_actions,
         "risk_checks": risk_checks,
         "capabilities": {
@@ -173,11 +232,17 @@ def build_status_snapshot(
             "rest_market_scan": True,
             "account_auth_check": True,
             "dry_run_planning": True,
-            "simulated_fills": True,
-            "live_order_submit": False,
-            "live_order_cancel": False,
-            "live_balance_read": False,
-            "live_position_read": False,
+            "simulated_fills": simulation_enabled,
+            "live_order_submit": runtime_capabilities.get("live_order_submit")
+            is True,
+            "live_order_cancel": runtime_capabilities.get("live_order_cancel")
+            is True,
+            "live_order_read": runtime_capabilities.get("live_order_read")
+            is True,
+            "live_balance_read": runtime_capabilities.get("live_balance_read")
+            is True,
+            "live_position_read": runtime_capabilities.get("live_position_read")
+            is True,
             "live_fill_stream": False,
         },
         "sources": {
@@ -244,6 +309,104 @@ def _position_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _live_order_row(row: LiveOrder) -> dict[str, Any]:
+    return {
+        "order_id": row.order_id,
+        "external_order_id": row.external_order_id,
+        "intent_id": row.intent_id,
+        "account_id": row.account_id,
+        "market_id": row.market_id,
+        "outcome": row.outcome,
+        "side": row.side,
+        "price": _decimal_text(row.price),
+        "size": _decimal_text(row.size),
+        "filled_size": _decimal_text(row.filled_size),
+        "status": str(row.status or "").lower(),
+        "purpose": row.purpose,
+        "token_id": row.token_id,
+    }
+
+
+def _live_balance_row(row: AccountBalance) -> dict[str, Any]:
+    return {
+        "account_id": row.account_id,
+        "asset": row.asset,
+        "available": _decimal_text(row.available),
+        "total": _decimal_text(row.total),
+    }
+
+
+def _live_position_row(row: AccountPosition) -> dict[str, Any]:
+    return {
+        "account_id": row.account_id,
+        "market_id": row.market_id,
+        "outcome": row.outcome,
+        "size": _decimal_text(row.size),
+        "avg_price": _decimal_text(row.avg_price),
+        "mark_price": _decimal_text(row.mark_price),
+        "value_usd": _decimal_text(row.value_usd),
+        "pnl_usd": _decimal_text(row.pnl_usd),
+        "source": "live",
+    }
+
+
+def _account_rows(
+    *,
+    account_ids: list[str],
+    orders: list[dict[str, Any]],
+    balances: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+    capital_profiles: dict[str, Any],
+    capabilities: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for account_id in account_ids:
+        account_orders = [
+            row for row in orders if row.get("account_id") == account_id
+        ]
+        account_positions = [
+            row for row in positions if row.get("account_id") == account_id
+        ]
+        total = sum(
+            (
+                Decimal(str(row.get("total") or "0"))
+                for row in balances
+                if row.get("account_id") == account_id
+            ),
+            Decimal("0"),
+        )
+        position_value = sum(
+            (
+                Decimal(str(row.get("value_usd") or "0"))
+                for row in account_positions
+            ),
+            Decimal("0"),
+        )
+        position_pnl = sum(
+            (
+                Decimal(str(row.get("pnl_usd") or "0"))
+                for row in account_positions
+            ),
+            Decimal("0"),
+        )
+        rows.append(
+            {
+                "account_id": account_id,
+                "balance": _decimal_text(total),
+                "position_value": _decimal_text(position_value),
+                "equity": _decimal_text(total + position_value),
+                "position_pnl": _decimal_text(position_pnl),
+                "open_orders": sum(
+                    1 for row in account_orders if row.get("status") == "open"
+                ),
+                "positions": len(account_positions),
+                "capital": _object(capital_profiles.get(account_id)),
+                "capabilities": _object(capabilities.get(account_id)),
+            }
+        )
+    return rows
+
+
 def _action_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "intent_id": str(row.get("intent_id") or ""),
@@ -270,7 +433,22 @@ def _risk_row(row: dict[str, Any]) -> dict[str, Any]:
 def _configured_accounts(cfg: dict[str, Any]) -> list[str]:
     accounts = cfg.get("accounts")
     if isinstance(accounts, dict):
-        return [str(value) for value in _list(accounts.get("ids")) if str(value)]
+        rows: list[str] = []
+        for value in _list(accounts.get("ids")):
+            if isinstance(value, dict):
+                if value.get("enabled") is False:
+                    continue
+                account_id = str(
+                    value.get("account_id")
+                    or value.get("id")
+                    or value.get("name")
+                    or ""
+                ).strip()
+            else:
+                account_id = str(value or "").strip()
+            if account_id and account_id not in rows:
+                rows.append(account_id)
+        return rows
     return []
 
 

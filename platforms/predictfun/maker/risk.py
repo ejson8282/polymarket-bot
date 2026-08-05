@@ -40,6 +40,8 @@ def evaluate_risk(
     ws_state: dict[str, Any],
     simulation_state: dict[str, Any],
     kill_switch_state: dict[str, Any],
+    inventory_state: dict[str, Any] | None = None,
+    inventory_source: str = "simulation",
 ) -> dict[str, Any]:
     risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
     data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
@@ -94,6 +96,7 @@ def evaluate_risk(
     )
 
     account_cfg = cfg.get("accounts") if isinstance(cfg.get("accounts"), dict) else {}
+    account_limits = _account_limits(account_cfg)
     max_accounts = int(account_cfg.get("max_active_accounts") or risk_cfg.get("max_active_accounts") or 10)
     account_ids = sorted({_account_id(item) for item in all_intents})
     _check_limit(
@@ -113,21 +116,33 @@ def evaluate_risk(
         by_account[account_id] = by_account.get(account_id, Decimal("0")) + notional
         by_account_market[(account_id, market_id)] = by_account_market.get((account_id, market_id), Decimal("0")) + notional
     for account_id, value in sorted(by_account.items()):
+        account_limit = _dec(
+            account_limits.get(account_id, {}).get("max_account_notional")
+        )
+        if account_limit <= 0:
+            account_limit = max_account_notional
         _check_limit(
             checks,
             name=f"account_notional_{account_id}",
             value=value,
-            limit=max_account_notional,
+            limit=account_limit,
             block_scope="reduce_only",
         )
 
     max_account_market_notional = _dec(risk_cfg.get("max_account_market_desired_notional"), "40")
     for (account_id, market_id), value in sorted(by_account_market.items()):
+        account_market_limit = _dec(
+            account_limits.get(account_id, {}).get(
+                "max_account_market_notional"
+            )
+        )
+        if account_market_limit <= 0:
+            account_market_limit = max_account_market_notional
         _check_limit(
             checks,
             name=f"account_market_notional_{account_id}_{market_id}",
             value=value,
-            limit=max_account_market_notional,
+            limit=account_market_limit,
             block_scope="reduce_only",
         )
 
@@ -145,23 +160,72 @@ def evaluate_risk(
             block_scope="reduce_only",
         )
 
+    position_state = (
+        inventory_state if isinstance(inventory_state, dict) else simulation_state
+    )
+    position_rows = position_state.get("positions") or []
+    source = "live" if str(inventory_source).lower() == "live" else "simulation"
+    position_prefix = "live" if source == "live" else "sim"
     max_position = _dec(risk_cfg.get("max_market_position_size"), "100")
     max_account_position = _dec(risk_cfg.get("max_account_market_position_size"), str(max_position))
-    for pos in simulation_state.get("positions") or []:
+    position_value_by_account: dict[str, Decimal] = {}
+    position_pnl_by_account: dict[str, Decimal] = {}
+    for pos in position_rows:
         if isinstance(pos, dict):
             account_id = _account_id(pos)
+            position_value_by_account[account_id] = (
+                position_value_by_account.get(account_id, Decimal("0"))
+                + abs(_dec(pos.get("value_usd")))
+            )
+            position_pnl_by_account[account_id] = (
+                position_pnl_by_account.get(account_id, Decimal("0"))
+                + _dec(pos.get("pnl_usd"))
+            )
             _check_limit(
                 checks,
-                name=f"sim_position_{pos.get('market_id')}_{pos.get('outcome')}",
+                name=(
+                    f"{position_prefix}_position_"
+                    f"{pos.get('market_id')}_{pos.get('outcome')}"
+                ),
                 value=abs(_dec(pos.get("size"))),
                 limit=max_position,
                 block_scope="reduce_only",
             )
             _check_limit(
                 checks,
-                name=f"sim_account_position_{account_id}_{pos.get('market_id')}_{pos.get('outcome')}",
+                name=(
+                    f"{position_prefix}_account_position_{account_id}_"
+                    f"{pos.get('market_id')}_{pos.get('outcome')}"
+                ),
                 value=abs(_dec(pos.get("size"))),
                 limit=max_account_position,
+                block_scope="reduce_only",
+            )
+    for account_id in sorted(
+        set(position_value_by_account) | set(position_pnl_by_account)
+    ):
+        limits = account_limits.get(account_id, {})
+        inventory_warning = _dec(limits.get("inventory_warning"))
+        if inventory_warning > 0:
+            _check_limit(
+                checks,
+                name=f"account_position_value_{account_id}",
+                value=position_value_by_account.get(
+                    account_id, Decimal("0")
+                ),
+                limit=inventory_warning,
+                block_scope="reduce_only",
+            )
+        unrealized_loss_stop = _dec(limits.get("daily_loss_stop"))
+        if unrealized_loss_stop > 0:
+            _check_limit(
+                checks,
+                name=f"account_unrealized_loss_{account_id}",
+                value=max(
+                    Decimal("0"),
+                    -position_pnl_by_account.get(account_id, Decimal("0")),
+                ),
+                limit=unrealized_loss_stop,
                 block_scope="reduce_only",
             )
 
@@ -201,7 +265,10 @@ def evaluate_risk(
             "risk_increasing_notional": str(risk_increasing_notional),
             "buy_notional_by_mode": {mode: str(value) for mode, value in sorted(buy_notional_by_mode.items())},
             "active_accounts": len(account_ids),
-            "sim_positions": len(simulation_state.get("positions") or []),
+            "position_source": source,
+            "positions": len(position_rows),
+            "sim_positions": len(position_rows) if source == "simulation" else 0,
+            "live_positions": len(position_rows) if source == "live" else 0,
         },
         "checks": checks,
     }
@@ -237,6 +304,25 @@ def blocked_execution_report(
     if isinstance(managed_state, dict):
         report["managed_orders"] = managed_state
     return report
+
+
+def _account_limits(account_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = (
+        account_cfg.get("ids")
+        or account_cfg.get("account_ids")
+        or account_cfg.get("accounts")
+        or []
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        account_id = str(
+            row.get("account_id") or row.get("id") or ""
+        ).strip()
+        if account_id:
+            out[account_id] = row
+    return out
 
 
 def _check_bool(checks: list[dict[str, Any]], *, name: str, blocked: bool, detail: str = "") -> None:
