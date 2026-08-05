@@ -72,6 +72,15 @@ def test_conflicting_rows_require_a_reviewed_preferred_source() -> None:
     assert result.payload["markets"][0]["quote_size"] == 100
     assert result.payload["markets"][0]["question"] == "Q"
     assert result.conflicts_resolved == 1
+    assert result.conflicts_disabled == 0
+
+    disabled = build_market_universe(
+        [("vps1", vps1), ("vps2", vps2)],
+        prefer_source="vps2",
+        disable_conflicts=True,
+    )
+    assert disabled.payload["markets"][0]["enabled"] is False
+    assert disabled.conflicts_disabled == 1
 
 
 def test_identity_and_day_night_conflicts_always_fail() -> None:

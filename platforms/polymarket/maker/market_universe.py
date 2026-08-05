@@ -18,6 +18,7 @@ class MarketUniverseBuild:
     payload: dict[str, Any]
     exact_duplicates_removed: int
     conflicts_resolved: int
+    conflicts_disabled: int
 
 
 def load_json_object(path: Path) -> dict[str, Any]:
@@ -144,6 +145,7 @@ def build_market_universe(
     *,
     prefer_source: str = "",
     dedupe_exact: bool = False,
+    disable_conflicts: bool = False,
 ) -> MarketUniverseBuild:
     if not sources:
         raise ValueError("at least one market source is required")
@@ -164,6 +166,7 @@ def build_market_universe(
     combined: dict[str, tuple[str, str, dict[str, Any]]] = {}
     removed = 0
     resolved = 0
+    disabled_conflicts: set[str] = set()
     for label, payload in ordered_sources:
         normalized, source_removed = normalize_market_source(
             payload,
@@ -212,6 +215,16 @@ def build_market_universe(
                 resolved += 1
                 if label == preferred:
                     combined[event_key] = (label, section, row)
+                if disable_conflicts:
+                    selected_label, selected_section, selected_row = combined[event_key]
+                    disabled_row = dict(selected_row)
+                    disabled_row["enabled"] = False
+                    combined[event_key] = (
+                        selected_label,
+                        selected_section,
+                        disabled_row,
+                    )
+                    disabled_conflicts.add(event_key)
 
     output: dict[str, Any] = {
         "schema_version": 1,
@@ -222,6 +235,7 @@ def build_market_universe(
             "preferred_source": preferred or None,
             "exact_duplicates_removed": removed,
             "conflicts_resolved": resolved,
+            "conflicts_disabled": len(disabled_conflicts),
         },
     }
     for event_key in sorted(combined):
@@ -231,6 +245,7 @@ def build_market_universe(
         payload=output,
         exact_duplicates_removed=removed,
         conflicts_resolved=resolved,
+        conflicts_disabled=len(disabled_conflicts),
     )
 
 

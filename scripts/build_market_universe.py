@@ -45,6 +45,11 @@ def main() -> None:
         action="store_true",
         help="Remove byte-equivalent duplicate events while reporting the count",
     )
+    parser.add_argument(
+        "--disable-conflicts",
+        action="store_true",
+        help="Keep reviewed conflicts in the universe but mark them disabled",
+    )
     parser.add_argument("--output", required=True, help="Output market-universe JSON")
     parser.add_argument(
         "--dry-run",
@@ -62,6 +67,7 @@ def main() -> None:
             sources,
             prefer_source=args.prefer_source,
             dedupe_exact=args.dedupe_exact,
+            disable_conflicts=args.disable_conflicts,
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
@@ -73,6 +79,7 @@ def main() -> None:
     )
     print(f"Removed: {result.exact_duplicates_removed} exact duplicate(s)")
     print(f"Resolved: {result.conflicts_resolved} reviewed conflict(s)")
+    print(f"Disabled: {result.conflicts_disabled} conflicting event(s)")
     print(f"SHA256:  {digest}")
     if args.dry_run:
         print("Dry-run: no file written")

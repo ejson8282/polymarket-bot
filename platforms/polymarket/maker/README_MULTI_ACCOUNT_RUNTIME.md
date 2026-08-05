@@ -36,6 +36,7 @@ python scripts/build_market_universe.py \
   --source vps2=/tmp/config_2.json \
   --prefer-source vps2 \
   --dedupe-exact \
+  --disable-conflicts \
   --output /home/ubuntu/polymarket-runtime/markets.runtime.json
 ```
 
@@ -43,6 +44,8 @@ The output contains market fields only. It does not copy account, proxy,
 signer, API, or webhook configuration from either source.
 `--prefer-source` is an explicit review decision for strategy-field conflicts;
 it never overrides token, pair, side, condition, or day/night identity conflicts.
+`--disable-conflicts` keeps conflicting events visible but prevents them from
+quoting until a later eligibility review explicitly enables them.
 
 ```bash
 python scripts/generate_configs.py \
