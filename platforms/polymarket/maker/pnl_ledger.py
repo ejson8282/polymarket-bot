@@ -179,7 +179,11 @@ def _fee_details_by_market(
         except Exception:
             details[market] = "unavailable"
             continue
-        details[market] = info.get("fd") if isinstance(info, Mapping) else "unavailable"
+        details[market] = (
+            info.get("fd")
+            if isinstance(info, Mapping) and "fd" in info
+            else "unavailable"
+        )
     return details
 
 
@@ -351,14 +355,16 @@ def fetch_realized_pnl(
     now: Optional[datetime] = None,
 ) -> dict:
     """Fetch authenticated trades and return a read-only PnL snapshot."""
+    addresses = _account_addresses(account_addresses)
+    if not addresses:
+        raise ValueError("account-address-required")
     trades = client.get_trades()
-    fills = normalized_account_fills(
-        trades if isinstance(trades, list) else [],
-        account_addresses,
-    )
+    if not isinstance(trades, list):
+        raise TypeError("invalid-trades-payload")
+    fills = normalized_account_fills(trades, addresses)
     fees = _fee_details_by_market(client, fills)
     result = calculate_realized_pnl(fills, fees, now=now)
-    result["trade_count"] = len(trades) if isinstance(trades, list) else 0
+    result["trade_count"] = len(trades)
     result["fill_count"] = len(fills)
     result["updated_at"] = (
         now or datetime.now(timezone.utc)

@@ -227,3 +227,73 @@ def test_fetch_queries_market_fee_details_only_for_taker_fills() -> None:
     assert client.markets == ["condition-1"]
     assert result["complete"] is True
     assert result["realized_pnl_usd"] == 0.904
+
+
+def test_fetch_rejects_malformed_trade_payload_instead_of_reporting_zero() -> None:
+    class Client:
+        def get_trades(self):
+            return {"data": []}
+
+    try:
+        fetch_realized_pnl(Client(), [ADDRESS])
+    except TypeError as exc:
+        assert str(exc) == "invalid-trades-payload"
+    else:
+        raise AssertionError("malformed trades must fail closed")
+
+
+def test_fetch_requires_account_address_instead_of_reporting_zero() -> None:
+    class Client:
+        def get_trades(self):
+            raise AssertionError("must validate before requesting trades")
+
+    try:
+        fetch_realized_pnl(Client(), [])
+    except ValueError as exc:
+        assert str(exc) == "account-address-required"
+    else:
+        raise AssertionError("missing account identity must fail closed")
+
+
+def test_missing_fee_details_field_is_not_assumed_fee_free() -> None:
+    class Client:
+        def get_trades(self):
+            return [
+                {
+                    "id": "buy",
+                    "market": "condition-1",
+                    "asset_id": "asset-1",
+                    "side": "BUY",
+                    "size": "10",
+                    "price": "0.40",
+                    "status": "CONFIRMED",
+                    "match_time": "1785880000",
+                    "trader_side": "TAKER",
+                },
+                {
+                    "id": "sell",
+                    "market": "condition-1",
+                    "status": "CONFIRMED",
+                    "match_time": "1785880100",
+                    "trader_side": "MAKER",
+                    "maker_orders": [
+                        {
+                            "order_id": "ours",
+                            "maker_address": ADDRESS,
+                            "asset_id": "asset-1",
+                            "side": "SELL",
+                            "matched_amount": "10",
+                            "price": "0.50",
+                        }
+                    ],
+                },
+            ]
+
+        def get_clob_market_info(self, _market):
+            return {}
+
+    result = fetch_realized_pnl(Client(), [ADDRESS])
+
+    assert result["complete"] is False
+    assert result["fee_unverified_count"] == 1
+    assert result["realized_exits"][0]["net_pnl_usd"] is None
