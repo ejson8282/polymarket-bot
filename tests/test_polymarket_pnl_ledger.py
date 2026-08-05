@@ -297,3 +297,53 @@ def test_missing_fee_details_field_is_not_assumed_fee_free() -> None:
     assert result["complete"] is False
     assert result["fee_unverified_count"] == 1
     assert result["realized_exits"][0]["net_pnl_usd"] is None
+
+
+def test_full_market_metadata_without_fee_details_is_fee_free() -> None:
+    class Client:
+        def get_trades(self):
+            return [
+                {
+                    "id": "buy",
+                    "market": "fee-free-condition",
+                    "asset_id": "asset-1",
+                    "side": "BUY",
+                    "size": "10",
+                    "price": "0.40",
+                    "status": "CONFIRMED",
+                    "match_time": "1785880000",
+                    "trader_side": "TAKER",
+                    "fee_rate_bps": "0",
+                },
+                {
+                    "id": "sell",
+                    "market": "fee-free-condition",
+                    "status": "CONFIRMED",
+                    "match_time": "1785880100",
+                    "trader_side": "MAKER",
+                    "maker_orders": [
+                        {
+                            "order_id": "ours",
+                            "maker_address": ADDRESS,
+                            "asset_id": "asset-1",
+                            "side": "SELL",
+                            "matched_amount": "10",
+                            "price": "0.50",
+                        }
+                    ],
+                },
+            ]
+
+        def get_clob_market_info(self, _market):
+            return {
+                "mts": "0.01",
+                "mos": "5",
+                "t": [{"t": "asset-1", "o": "Yes"}],
+            }
+
+    result = fetch_realized_pnl(Client(), [ADDRESS])
+
+    assert result["complete"] is True
+    assert result["fee_unverified_count"] == 0
+    assert result["fees_usd"] == 0.0
+    assert result["realized_pnl_usd"] == 1.0

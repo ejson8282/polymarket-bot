@@ -179,11 +179,17 @@ def _fee_details_by_market(
         except Exception:
             details[market] = "unavailable"
             continue
-        details[market] = (
-            info.get("fd")
-            if isinstance(info, Mapping) and "fd" in info
-            else "unavailable"
-        )
+        if not isinstance(info, Mapping):
+            details[market] = "unavailable"
+        elif "fd" in info:
+            details[market] = info.get("fd")
+        elif {"mts", "mos", "t"}.issubset(info):
+            # The V2 API omits ``fd`` entirely for fee-free markets while
+            # still returning the normal market metadata.  This is distinct
+            # from an empty/malformed response, which remains unverifiable.
+            details[market] = None
+        else:
+            details[market] = "unavailable"
     return details
 
 
