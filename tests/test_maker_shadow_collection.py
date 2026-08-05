@@ -47,13 +47,17 @@ class MakerShadowCollectionTests(unittest.TestCase):
         self.assertIn("--interval-seconds 2", collector)
         self.assertNotIn("data/engine_state_1.json", collector)
 
-    def test_predictfun_timer_runs_the_dry_simulation_runner(self) -> None:
+    def test_predictfun_service_runs_the_continuous_dry_simulation_runner(
+        self,
+    ) -> None:
         root = Path(__file__).resolve().parents[1]
         unit = (
             root / "deploy" / "systemd" / "predictfun-dryrun.service"
         ).read_text(encoding="utf-8")
         self.assertIn("platforms.predictfun.maker.runner", unit)
-        self.assertIn("--once", unit)
+        self.assertIn("Type=simple", unit)
+        self.assertIn("Restart=on-failure", unit)
+        self.assertNotIn("--once", unit)
         self.assertNotIn("live_executor", unit.lower())
 
     def test_source_fingerprint_is_stable_across_input_order(self) -> None:

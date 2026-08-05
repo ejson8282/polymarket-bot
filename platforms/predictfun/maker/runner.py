@@ -31,6 +31,7 @@ from platforms.predictfun.maker.executor import (
     MultiAccountExecutor,
     PredictFunExecutor,
     PredictFunLiveExecutor,
+    PredictFunReadOnlyExecutor,
 )
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 from platforms.predictfun.maker.research import build_research_state
@@ -96,6 +97,96 @@ def _live_executor(
             for account_id in account_ids
         }
     )
+
+
+def _read_only_executor(
+    cfg: dict[str, Any], account_ids: list[str]
+) -> MultiAccountExecutor:
+    signer_cfg = (
+        cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}
+    )
+    strategy_cfg = (
+        cfg.get("strategy")
+        if isinstance(cfg.get("strategy"), dict)
+        else {}
+    )
+    base_url = str(
+        signer_cfg.get("base_url") or cfg.get("base_url") or ""
+    ).rstrip("/")
+    if not base_url:
+        raise ValueError("Predict.fun signer base URL is missing")
+    max_order_notional = Decimal(
+        str(strategy_cfg.get("max_order_notional") or "0")
+    )
+    timeout = float(signer_cfg.get("timeout_sec") or 20)
+    return MultiAccountExecutor(
+        {
+            account_id: PredictFunReadOnlyExecutor(
+                PredictFunLiveExecutor(
+                    signer_url=base_url,
+                    account_id=account_id,
+                    max_order_notional=max_order_notional,
+                    timeout=timeout,
+                )
+            )
+            for account_id in account_ids
+        },
+        required_capabilities=(
+            "live_order_read",
+            "live_balance_read",
+            "live_position_read",
+        ),
+    )
+
+
+def _runtime_read_capabilities(
+    base: Mapping[str, Any], read_state: Mapping[str, Any]
+) -> dict[str, Any]:
+    capabilities = deepcopy(dict(base))
+    accounts = (
+        read_state.get("accounts")
+        if isinstance(read_state.get("accounts"), dict)
+        else {}
+    )
+    capability_names = {
+        "orders": "live_order_read",
+        "balances": "live_balance_read",
+        "positions": "live_position_read",
+    }
+    account_capabilities = (
+        capabilities.get("accounts")
+        if isinstance(capabilities.get("accounts"), dict)
+        else {}
+    )
+    for account_id, account_reads in accounts.items():
+        reads = account_reads if isinstance(account_reads, dict) else {}
+        row = dict(
+            account_capabilities.get(account_id)
+            if isinstance(account_capabilities.get(account_id), dict)
+            else {}
+        )
+        for read_name, capability_name in capability_names.items():
+            read = reads.get(read_name)
+            row[capability_name] = (
+                isinstance(read, dict) and read.get("ok") is True
+            )
+        row["live_order_submit"] = False
+        row["live_order_cancel"] = False
+        row["read_only"] = True
+        account_capabilities[str(account_id)] = row
+    capabilities["accounts"] = account_capabilities
+    for capability_name in capability_names.values():
+        capabilities[capability_name] = bool(account_capabilities) and all(
+            isinstance(row, dict) and row.get(capability_name) is True
+            for row in account_capabilities.values()
+        )
+    capabilities["live_order_submit"] = False
+    capabilities["live_order_cancel"] = False
+    capabilities["ok"] = bool(account_capabilities) and all(
+        capabilities.get(name) is True for name in capability_names.values()
+    )
+    capabilities["read_only"] = True
+    return capabilities
 
 
 def _previous_intents_from_managed(
@@ -247,6 +338,49 @@ def _write_runner_state(path: Path, state: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _ws_quote_fingerprint(ws_state: Mapping[str, Any]) -> str:
+    orderbooks = (
+        ws_state.get("orderbooks")
+        if isinstance(ws_state.get("orderbooks"), dict)
+        else {}
+    )
+    trading_statuses = (
+        ws_state.get("trading_statuses")
+        if isinstance(ws_state.get("trading_statuses"), dict)
+        else {}
+    )
+    market_statuses = (
+        ws_state.get("market_statuses")
+        if isinstance(ws_state.get("market_statuses"), dict)
+        else {}
+    )
+    rows: dict[str, Any] = {}
+    for market_id, raw_book in sorted(orderbooks.items()):
+        book = raw_book if isinstance(raw_book, dict) else {}
+        bids = book.get("bids") if isinstance(book.get("bids"), list) else []
+        asks = book.get("asks") if isinstance(book.get("asks"), list) else []
+        trading = trading_statuses.get(market_id)
+        market = market_statuses.get(market_id)
+        rows[str(market_id)] = {
+            "bids": bids[:3],
+            "asks": asks[:3],
+            "trading": (
+                trading.get("status") if isinstance(trading, dict) else trading
+            ),
+            "market": (
+                market.get("status") if isinstance(market, dict) else market
+            ),
+        }
+    return json.dumps(rows, sort_keys=True, separators=(",", ":"))
+
+
+def _mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
 def run_loop(
     *,
     config_path: Path,
@@ -279,6 +413,7 @@ def run_loop(
         cfg, environ=os.environ, release=release_metadata
     )
     executor: PredictFunExecutor = DryRunExecutor()
+    account_reader: MultiAccountExecutor | None = None
     capabilities: dict[str, Any] = executor.capabilities()
     gate_state = gate.to_state()
     if gate.allowed and gate.effective_mode == "live":
@@ -299,6 +434,23 @@ def run_loop(
             gate_state["effective_mode"] = "blocked"
             executor = DryRunExecutor()
     effective_mode = str(gate_state.get("effective_mode") or "blocked")
+    runner_cfg = (
+        cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
+    )
+    if (
+        effective_mode == "dry_run"
+        and runner_cfg.get("account_read_only_enabled") is True
+    ):
+        try:
+            account_reader = _read_only_executor(cfg, account_ids)
+            capabilities = account_reader.capabilities()
+        except Exception as exc:
+            capabilities = {
+                **DryRunExecutor().capabilities(),
+                "ok": False,
+                "read_only": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
     state: dict[str, Any] = {
         "ts": _utc_now(),
         "started_at": _utc_now(),
@@ -328,6 +480,8 @@ def run_loop(
         "last_auth_summary": {},
         "last_account_summary": {},
         "capital_profiles": {},
+        "account_reads": {},
+        "last_wake_reason": "startup",
     }
     _write_runner_state(runner_state_path, state)
 
@@ -384,18 +538,47 @@ def run_loop(
                 )
                 inventory_positions = [asdict(row) for row in exit_positions]
             else:
-                live_orders = []
-                live_balances = []
-                live_positions = []
-                capital_balances = []
-                manual_order_constraints = {}
+                read_state: dict[str, Any] = {}
+                if account_reader is not None:
+                    (
+                        live_orders,
+                        live_balances,
+                        live_positions,
+                        read_state,
+                    ) = account_reader.read_account_state()
+                    read_state["ts"] = _utc_now()
+                    capabilities = _runtime_read_capabilities(
+                        capabilities, read_state
+                    )
+                    state["capabilities"] = capabilities
+                    state["account_reads"] = read_state
+                else:
+                    live_orders = []
+                    live_balances = []
+                    live_positions = []
+                    state["account_reads"] = {}
+                (
+                    capital_balances,
+                    exit_positions,
+                    manual_order_constraints,
+                ) = _apply_manual_order_constraints(
+                    balances=live_balances,
+                    positions=live_positions,
+                    live_orders=live_orders,
+                    registry=registry,
+                )
                 previous_intents = _previous_intents_from_simulation(
                     simulation_state
                 )
+                positions_ok = capabilities.get("live_position_read") is True
                 inventory_positions = (
-                    simulation_state.get("positions")
-                    if isinstance(simulation_state.get("positions"), list)
-                    else None
+                    [asdict(row) for row in exit_positions]
+                    if positions_ok
+                    else (
+                        simulation_state.get("positions")
+                        if isinstance(simulation_state.get("positions"), list)
+                        else None
+                    )
                 )
 
             capital_cfg = (
@@ -449,6 +632,7 @@ def run_loop(
                     row.account_id: str(row.total) for row in live_balances
                 },
                 "manual_order_constraints": manual_order_constraints,
+                "reads": state.get("account_reads") or {},
             }
 
             plan_state = run_once(
@@ -475,10 +659,20 @@ def run_loop(
                 inventory_state=(
                     {"positions": [asdict(row) for row in live_positions]}
                     if effective_mode == "live"
+                    or (
+                        effective_mode == "dry_run"
+                        and capabilities.get("live_position_read") is True
+                    )
                     else simulation_state
                 ),
                 inventory_source=(
-                    "live" if effective_mode == "live" else "simulation"
+                    "live"
+                    if effective_mode == "live"
+                    else (
+                        "live_read_only"
+                        if capabilities.get("live_position_read") is True
+                        else "simulation"
+                    )
                 ),
             )
             write_json(risk_state_path, risk_state)
@@ -602,11 +796,34 @@ def run_loop(
         slept = 0.0
         runner_cfg = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else {}
         fast_requote_sec = float(runner_cfg.get("fast_requote_after_fill_sec") or 2)
-        sleep_for = max(1.0, min(interval_sec, fast_requote_sec) if fast_requote else interval_sec)
+        ws_requote_sec = float(
+            runner_cfg.get("ws_requote_min_interval_sec") or 10
+        )
+        sleep_for = max(
+            1.0,
+            min(interval_sec, fast_requote_sec)
+            if fast_requote
+            else interval_sec,
+        )
+        baseline_mtime = _mtime_ns(ws_state_path)
+        baseline_fingerprint = _ws_quote_fingerprint(ws_state)
+        state["last_wake_reason"] = (
+            "simulated_fill" if fast_requote else "interval"
+        )
         while slept < sleep_for and not _STOP:
             step = min(1.0, sleep_for - slept)
             time.sleep(step)
             slept += step
+            if fast_requote or slept < max(1.0, ws_requote_sec):
+                continue
+            current_mtime = _mtime_ns(ws_state_path)
+            if current_mtime <= baseline_mtime:
+                continue
+            current_ws_state = load_json(ws_state_path)
+            baseline_mtime = current_mtime
+            if _ws_quote_fingerprint(current_ws_state) != baseline_fingerprint:
+                state["last_wake_reason"] = "ws_orderbook_change"
+                break
 
     if effective_mode == "live" and _STOP:
         try:

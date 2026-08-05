@@ -233,7 +233,7 @@ class SystemdRunner(CommandRunner):
                         "error_count": 1 if self.fail_cycle else 0,
                         "last_error": "upstream failed" if self.fail_cycle else "",
                         "last_cycle_finished_at": now,
-                        "running": False,
+                        "running": True,
                     }
                 ),
                 encoding="utf-8",
@@ -348,7 +348,7 @@ def test_prepare_builds_predict_only_immutable_release(tmp_path: Path) -> None:
     )["commit"] == sha
 
 
-def test_activate_runs_one_dry_cycle_without_polymarket_controls(
+def test_activate_starts_continuous_dry_run_without_polymarket_controls(
     tmp_path: Path,
 ) -> None:
     paths, sha = _paths(tmp_path)
@@ -393,10 +393,12 @@ def test_activate_runs_one_dry_cycle_without_polymarket_controls(
     service_start = runner.calls.index(
         ("systemctl", "start", "predictfun-dryrun.service")
     )
-    timer_enable = runner.calls.index(
-        ("systemctl", "enable", "--now", "predictfun-dryrun.timer")
+    timer_disable = runner.calls.index(
+        ("systemctl", "disable", "--now", "predictfun-dryrun.timer")
     )
-    assert ws_start < service_start < timer_enable
+    assert ws_start < service_start < timer_disable
+    assert result["runner_service"] == "active"
+    assert result["timer"] == "disabled"
     assert result["profile"] == "vps1"
     assert result["account_id"] == "account_01"
     assert result["runner"]["auth_ok"] is True
@@ -491,7 +493,10 @@ def test_activation_can_pin_multiple_isolated_accounts_to_one_host(
     assert result["runner"]["account_ids"] == ["account_01", "account_03"]
 
 
-def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
+def test_failed_cycle_restores_legacy_predict_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
     paths, sha = _paths(tmp_path)
     prepare_release(paths, CommandRunner(), sha)
     paths.service_unit.parent.mkdir(parents=True)
@@ -529,8 +534,9 @@ def test_failed_cycle_restores_legacy_predict_units(tmp_path: Path) -> None:
 
 
 def test_failed_account_auth_restores_previous_predict_state(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
     paths, sha = _paths(tmp_path)
     prepare_release(paths, CommandRunner(), sha)
     paths.service_unit.parent.mkdir(parents=True)
@@ -570,6 +576,7 @@ def test_failed_ws_acceptance_restores_previous_predict_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
     paths, sha = _paths(tmp_path)
     prepare_release(paths, CommandRunner(), sha)
     paths.service_unit.parent.mkdir(parents=True)
@@ -623,7 +630,9 @@ def test_systemd_units_are_predict_only_and_release_guarded() -> None:
     assert "/home/ubuntu/predictfun-runtime" in service
     assert "PREDICTFUN_REQUIRE_RELEASE=1" in service
     assert "release_guard.py" in service
-    assert "--once" in service
+    assert "--once" not in service
+    assert "Type=simple" in service
+    assert "Restart=on-failure" in service
     assert "Persistent=true" in timer
     assert "platforms.predictfun.ws_watch" in ws_service
     assert "--forever" in ws_service
@@ -642,6 +651,12 @@ def test_mainnet_ws_freshness_matches_heartbeat_and_refresh_windows() -> None:
         )
     )
     data = config["data"]
+    runner = config["runner"]
+
+    assert runner["account_read_only_enabled"] is True
+    assert runner["interval_sec"] == 30
+    assert runner["ws_requote_min_interval_sec"] == 10
+    assert runner["fast_requote_after_fill_sec"] == 2
 
     assert data["require_ws_for_quotes"] is True
     assert data["ws_state_max_age_sec"] >= 30

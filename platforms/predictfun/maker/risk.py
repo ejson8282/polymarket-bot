@@ -164,7 +164,11 @@ def evaluate_risk(
         inventory_state if isinstance(inventory_state, dict) else simulation_state
     )
     position_rows = position_state.get("positions") or []
-    source = "live" if str(inventory_source).lower() == "live" else "simulation"
+    source = (
+        "live"
+        if str(inventory_source).lower() in {"live", "live_read_only"}
+        else "simulation"
+    )
     position_prefix = "live" if source == "live" else "sim"
     max_position = _dec(risk_cfg.get("max_market_position_size"), "100")
     max_account_position = _dec(risk_cfg.get("max_account_market_position_size"), str(max_position))

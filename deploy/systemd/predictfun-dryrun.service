@@ -1,10 +1,10 @@
 [Unit]
-Description=Predict.fun immutable dry-run cycle (never submits live orders)
+Description=Predict.fun immutable continuous dry-run (never submits live orders)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/predictfun-releases/current
@@ -13,7 +13,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PREDICTFUN_REQUIRE_RELEASE=1
 EnvironmentFile=/home/ubuntu/predictfun-runtime/release.env
 ExecStartPre=/home/ubuntu/.venv2/bin/python /home/ubuntu/predictfun-releases/current/platforms/predictfun/maker/release_guard.py /home/ubuntu/predictfun-releases/current
-ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.predictfun.maker.runner --config /home/ubuntu/predictfun-runtime/config.mainnet.json --once
+ExecStart=/home/ubuntu/.venv2/bin/python -m platforms.predictfun.maker.runner --config /home/ubuntu/predictfun-runtime/config.mainnet.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
 NoNewPrivileges=true
 UMask=0077
 PrivateTmp=true
@@ -24,3 +27,6 @@ ReadWritePaths=/home/ubuntu/predictfun-runtime
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 StandardOutput=append:/home/ubuntu/predictfun-runtime/data/predictfun_dryrun.log
 StandardError=append:/home/ubuntu/predictfun-runtime/data/predictfun_dryrun.log
+
+[Install]
+WantedBy=multi-user.target

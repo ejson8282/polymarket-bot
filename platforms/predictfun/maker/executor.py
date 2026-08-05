@@ -423,11 +423,71 @@ class PredictFunLiveExecutor:
         )
 
 
+class PredictFunReadOnlyExecutor:
+    """Read account state through the proxy while hard-blocking all writes."""
+
+    def __init__(self, executor: PredictFunLiveExecutor) -> None:
+        self.executor = executor
+        self.account_id = executor.account_id
+
+    def create(self, order: ExecutableOrder) -> ExecutionResult:
+        return PredictFunLiveExecutor._error(
+            "create",
+            "read-only executor; live order submission disabled",
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+        )
+
+    def cancel(
+        self, order_id: str, *, intent_id: str = "", account_id: str = ""
+    ) -> ExecutionResult:
+        return PredictFunLiveExecutor._error(
+            "cancel",
+            "read-only executor; live order cancellation disabled",
+            intent_id=intent_id,
+            account_id=account_id or self.account_id,
+            order_id=order_id,
+        )
+
+    def list_orders(self) -> list[LiveOrder]:
+        return self.executor.list_orders()
+
+    def get_order(
+        self, order_id: str, *, account_id: str = ""
+    ) -> LiveOrder | None:
+        return self.executor.get_order(order_id, account_id=account_id)
+
+    def list_balances(self) -> list[AccountBalance]:
+        return self.executor.list_balances()
+
+    def list_positions(self) -> list[AccountPosition]:
+        return self.executor.list_positions()
+
+    def capabilities(self) -> dict[str, Any]:
+        capabilities = self.executor.capabilities()
+        required = (
+            "live_order_read",
+            "live_balance_read",
+            "live_position_read",
+        )
+        return {
+            **capabilities,
+            "ok": capabilities.get("ok") is True
+            and all(capabilities.get(name) is True for name in required),
+            "live_order_submit": False,
+            "live_order_cancel": False,
+            "read_only": True,
+        }
+
+
 class MultiAccountExecutor:
     """Routes private actions to isolated account adapters."""
 
     def __init__(
-        self, executors: Mapping[str, PredictFunLiveExecutor]
+        self,
+        executors: Mapping[str, PredictFunExecutor],
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
     ) -> None:
         self.executors = {
             str(account_id): executor
@@ -436,6 +496,13 @@ class MultiAccountExecutor:
         }
         if not self.executors:
             raise ValueError("at least one Predict.fun account executor is required")
+        self.required_capabilities = required_capabilities or (
+            "live_order_submit",
+            "live_order_cancel",
+            "live_order_read",
+            "live_balance_read",
+            "live_position_read",
+        )
 
     def create(self, order: ExecutableOrder) -> ExecutionResult:
         executor = self.executors.get(order.account_id)
@@ -455,7 +522,7 @@ class MultiAccountExecutor:
 
         for account_id, executor in self.executors.items():
             limit = _decimal(limits.get(account_id))
-            if limit > 0:
+            if limit > 0 and hasattr(executor, "max_order_notional"):
                 executor.max_order_notional = limit
 
     def cancel(
@@ -508,7 +575,7 @@ class MultiAccountExecutor:
             account_id: executor.capabilities()
             for account_id, executor in self.executors.items()
         }
-        required = (
+        capability_names = (
             "live_order_submit",
             "live_order_cancel",
             "live_order_read",
@@ -518,16 +585,59 @@ class MultiAccountExecutor:
         return {
             "ok": bool(accounts)
             and all(
-                all(row.get(name) is True for name in required)
+                row.get("ok") is True
+                and all(
+                    row.get(name) is True
+                    for name in self.required_capabilities
+                )
                 for row in accounts.values()
             ),
             "accounts": accounts,
             **{
                 name: bool(accounts)
                 and all(row.get(name) is True for row in accounts.values())
-                for name in required
+                for name in capability_names
             },
         }
+
+    def read_account_state(
+        self,
+    ) -> tuple[
+        list[LiveOrder],
+        list[AccountBalance],
+        list[AccountPosition],
+        dict[str, Any],
+    ]:
+        """Read each account independently so one endpoint cannot mask another."""
+
+        orders: list[LiveOrder] = []
+        balances: list[AccountBalance] = []
+        positions: list[AccountPosition] = []
+        accounts: dict[str, Any] = {}
+        readers = (
+            ("orders", "list_orders", orders),
+            ("balances", "list_balances", balances),
+            ("positions", "list_positions", positions),
+        )
+        for account_id, executor in self.executors.items():
+            account_state: dict[str, Any] = {}
+            for name, method_name, destination in readers:
+                try:
+                    rows = getattr(executor, method_name)()
+                    destination.extend(rows)
+                    account_state[name] = {
+                        "ok": True,
+                        "count": len(rows),
+                        "error": "",
+                    }
+                except Exception as exc:
+                    account_state[name] = {
+                        "ok": False,
+                        "count": 0,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+            accounts[account_id] = account_state
+        return orders, balances, positions, {"accounts": accounts}
 
 
 def _response_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
