@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 try:
+    from .pnl_ledger import fetch_realized_pnl
     from .reward_observer import refresh_observer_state
     from .rewards_snapshot import (
         _build_snapshot_client,
@@ -30,6 +31,7 @@ try:
         _save_state,
     )
 except ImportError:
+    from pnl_ledger import fetch_realized_pnl  # type: ignore
     from reward_observer import refresh_observer_state  # type: ignore
     from rewards_snapshot import (  # type: ignore
         _build_snapshot_client,
@@ -221,6 +223,7 @@ async def refresh_rewards(
     fetch_percentages: Callable[
         [Any, int], Dict[str, float]
     ] = _fetch_reward_percentages,
+    fetch_pnl: Callable[..., dict] = fetch_realized_pnl,
 ) -> dict:
     """Fetch live and finalized LP rewards plus maker rebates."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -251,6 +254,7 @@ async def refresh_rewards(
     successful_rewards = 0
     successful_rebates = 0
     successful_percentages = 0
+    successful_pnl = 0
 
     for account_idx, config_path in configs:
         account_key = str(account_idx)
@@ -269,6 +273,8 @@ async def refresh_rewards(
             "reward_status": "error",
             "rebate_status": "error",
             "percentage_status": "error",
+            "pnl_status": "error",
+            "pnl": prior.get("pnl") if isinstance(prior.get("pnl"), dict) else None,
             "reward_percentages": prior.get("reward_percentages") or {},
             "updated_at": prior.get("updated_at"),
             "error": "income APIs unavailable",
@@ -309,9 +315,11 @@ async def refresh_rewards(
         reward_error: Optional[str] = None
         rebate_error: Optional[str] = None
         percentage_error: Optional[str] = None
+        pnl_error: Optional[str] = None
         if client_error:
             reward_error = str(client_error).split(":", 1)[0]
             percentage_error = reward_error
+            pnl_error = reward_error
         else:
             try:
                 for day_key in _missing_finalized_dates(
@@ -355,6 +363,21 @@ async def refresh_rewards(
                 successful_percentages += 1
             except Exception as exc:
                 percentage_error = type(exc).__name__
+            try:
+                pnl = await asyncio.to_thread(
+                    fetch_pnl,
+                    client,
+                    [value for value in (address, maker_address) if value],
+                    now=now_utc,
+                )
+                if not isinstance(pnl, dict):
+                    raise TypeError("invalid-pnl-payload")
+                row["pnl"] = pnl
+                row["pnl_status"] = str(pnl.get("status") or "error")
+                if row["pnl_status"] in {"ok", "partial", "empty"}:
+                    successful_pnl += 1
+            except Exception as exc:
+                pnl_error = type(exc).__name__
 
         if maker_address:
             try:
@@ -437,6 +460,7 @@ async def refresh_rewards(
                 f"percentages:{percentage_error}"
                 if percentage_error else ""
             ),
+            f"pnl:{pnl_error}" if pnl_error else "",
         ]
         row["error"] = ";".join(value for value in errors if value) or None
 
@@ -503,6 +527,7 @@ async def refresh_rewards(
         "successful_reward_accounts": successful_rewards,
         "successful_rebate_accounts": successful_rebates,
         "successful_percentage_accounts": successful_percentages,
+        "successful_pnl_accounts": successful_pnl,
         "configured_accounts": len(live_accounts),
     }
 
