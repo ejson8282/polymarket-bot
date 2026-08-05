@@ -5748,7 +5748,11 @@ class PolyLPSMulti:
         if current_task is not None:
             self._top_leg_defense_tasks[token_id] = current_task
         try:
-            if self._event_blocks_quote(token_id) or self._defense_blocks_requote(token_id):
+            # Websocket updates can keep scheduling defense after a fill has
+            # already preempted this token. Skip that known-closed path before
+            # touching snapshots or order APIs; the exception handler below
+            # remains for a halt that races with an in-flight defense task.
+            if self._halt_preemption_reason(token_id) or self._defense_blocks_requote(token_id):
                 return
             snap = snapshot or self._market_snapshots.get(token_id)
             snap = self._effective_snapshot_for_gate(token_id, snap)
@@ -8819,8 +8823,8 @@ class PolyLPSMulti:
 
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
-        - If position is 0 — already sold (manually or filled), cancel residual order, remove.
-        - If the order is no longer in live orders — assume filled, remove.
+        - If position is zero or dust, cancel any residual order and resume unrelated markets.
+        - If the order is no longer live but material inventory remains, keep the halt.
         - If age > unwind_max_age_sec and still open — Discord alert for manual review.
         """
         while self._running:
@@ -8844,18 +8848,55 @@ class PolyLPSMulti:
                     placed_at = float(uw.get("placed_at") or 0)
                     age = now - placed_at
 
-                    # Check if position has been closed (manually sold or filled)
+                    # Treat exchange-defined dust as economic completion. A
+                    # negative value is the position API's error sentinel and
+                    # must never be interpreted as a closed position.
                     position = await self._get_token_position(token_id)
-                    if position == 0.0:
-                        # Position gone — cancel any residual sell order and clear
+                    position_is_known = position is not None and position >= 0
+                    position_is_dust = (
+                        position_is_known
+                        and position <= self._exit_dust_threshold
+                    )
+                    if position_is_dust:
+                        # Position is gone or too small to exit. Cancel any
+                        # residual SELL before releasing unrelated markets.
                         if oid and oid in live_ids:
                             try:
-                                await asyncio.to_thread(self.client.cancel, oid)
-                                log(f"[unwind] position=0, canceled residual order={oid}")
+                                await asyncio.to_thread(self.client.cancel_orders, [oid])
+                                self._invalidate_all_orders_cache()
+                                log(
+                                    f"[unwind] position={position}, "
+                                    f"canceled residual order={oid}"
+                                )
                             except Exception as ce:
                                 log(f"[unwind] cancel residual failed order={oid} err={ce}")
-                        log(f"[unwind] cleared token={token_id} position=0 age={age:.0f}s (manually sold or filled)")
-                        self._resume_halted_markets("unwind_position_zero")
+                                still_pending.append(uw)
+                                continue
+                        self._active_exit_orders.pop(token_id, None)
+                        if position > 0:
+                            self._set_event_state(
+                                token_id,
+                                EVENT_PENDING_MANUAL_EXIT,
+                                "dust_position_after_unwind",
+                            )
+                            log(
+                                f"[unwind] cleared dust token={token_id} "
+                                f"position={position} threshold={self._exit_dust_threshold} "
+                                f"age={age:.0f}s"
+                            )
+                            self._notify_attention(
+                                "退出后仅剩微量仓位",
+                                market=token_id,
+                                position=f"{float(position):,.4f} 份",
+                                action="该市场等待人工检查；其他市场已自动恢复挂单",
+                            )
+                            self._resume_halted_markets("unwind_dust_position")
+                        else:
+                            log(
+                                f"[unwind] cleared token={token_id} position=0 "
+                                f"age={age:.0f}s (manually sold or filled)"
+                            )
+                            self._resume_halted_markets("unwind_position_zero")
                         continue
 
                     if oid and oid not in live_ids:
@@ -8869,16 +8910,21 @@ class PolyLPSMulti:
                                 f"[unwind] order missing but position={position}; "
                                 f"keeping halt token={token_id} order_id={oid}"
                             )
-                            if position > 0:
+                            if position_is_known and position > 0:
                                 self._set_event_state(
                                     token_id,
                                     EVENT_PENDING_MANUAL_EXIT,
                                     "exit_order_missing_with_inventory",
                                 )
+                            position_display = (
+                                f"{float(position):,.4f} 份"
+                                if position_is_known
+                                else "读取失败"
+                            )
                             self._notify_attention(
                                 "退出单异常",
                                 market=token_id,
-                                position=f"{float(position):,.4f} 份",
+                                position=position_display,
                                 action="退出单已不在挂单中；账户保持暂停，等待重新提交退出单",
                             )
                         self._active_exit_orders.pop(token_id, None)
