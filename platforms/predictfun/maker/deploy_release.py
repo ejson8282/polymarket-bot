@@ -744,7 +744,7 @@ def _verify_ws_state(
                 "book_timestamps": timestamps_cover_books,
                 "market_statuses": statuses_cover_books,
                 "file_fresh": paths.ws_state.stat().st_mtime
-                >= observed_after.timestamp(),
+                >= observed_after.replace(microsecond=0).timestamp(),
                 "fresh": _is_fresh_after(
                     state.get("last_message_at"),
                     observed_after,
