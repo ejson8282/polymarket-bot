@@ -107,6 +107,7 @@ def test_fifo_realized_pnl_includes_entry_and_exit_taker_fees() -> None:
     assert result["complete"] is True
     assert result["fees_usd"] == 1.344
     assert result["realized_pnl_usd"] == 12.656
+    assert result["realized_pnl_24h_usd"] == 12.656
     assert result["realized_pnl_today_utc_usd"] == 12.656
     assert result["open_inventory_size"] == 0
     older, newer = reversed(result["realized_exits"])

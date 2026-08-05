@@ -195,6 +195,7 @@ def calculate_realized_pnl(
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     current_day = current.astimezone(timezone.utc).date()
+    cutoff_24h = int(current.timestamp()) - 86400
 
     lots: Dict[str, Deque[dict]] = defaultdict(deque)
     exits: List[dict] = []
@@ -204,6 +205,7 @@ def calculate_realized_pnl(
     total_fees = _ZERO
     verified_pnl = _ZERO
     today_verified_pnl = _ZERO
+    verified_pnl_24h = _ZERO
     fill_count = 0
 
     for fill in fills:
@@ -309,6 +311,8 @@ def calculate_realized_pnl(
         )
         if complete:
             verified_pnl += net
+            if epoch >= cutoff_24h:
+                verified_pnl_24h += net
             if datetime.fromtimestamp(epoch, timezone.utc).date() == current_day:
                 today_verified_pnl += net
 
@@ -327,6 +331,7 @@ def calculate_realized_pnl(
         "method": "confirmed_trades_fifo_v2_market_fees",
         "fee_rounding_decimals": 5,
         "realized_pnl_usd": _number(verified_pnl),
+        "realized_pnl_24h_usd": _number(verified_pnl_24h),
         "realized_pnl_today_utc_usd": _number(today_verified_pnl),
         "fees_usd": _number(total_fees),
         "verified_exit_count": len(verified),
