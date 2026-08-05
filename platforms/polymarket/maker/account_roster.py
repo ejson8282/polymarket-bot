@@ -90,11 +90,18 @@ class RuntimeAccount:
             "account_index": self.account_index,
             "host_id": self.host_id,
             "enabled": self.enabled,
+            "funder": self.funder.lower(),
+            "clash_port": self.clash_port,
             "account_id": self.profile.account_id,
+            "profile_enabled": self.profile.enabled,
             "profile_type": self.profile.profile_type,
             "strategy_group": self.profile.strategy_group,
             "target_principal_usdc": str(self.profile.target_principal_usdc),
+            "pause_equity_usdc": str(self.profile.pause_equity_usdc),
+            "daily_loss_limit_usdc": str(self.profile.daily_loss_limit_usdc),
             "allocation_mode": self.profile.allocation_mode,
+            "auto_top_up": self.profile.auto_top_up,
+            "auto_sweep": self.profile.auto_sweep,
         }
 
 
@@ -277,4 +284,39 @@ def routing_profiles(
 def routing_roster_sha256(accounts: Sequence[RuntimeAccount]) -> str:
     payload = [account.routing_dict() for account in sorted(accounts, key=lambda item: item.account_index)]
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def market_universe_sha256(config: Mapping[str, Any]) -> str:
+    """Hash the complete day/night market inputs, independent of list order."""
+    payload: dict[str, list[Mapping[str, Any]]] = {}
+    for section in ("markets", "night_markets"):
+        raw_rows = config.get(section, [])
+        if raw_rows is None:
+            raw_rows = []
+        if not isinstance(raw_rows, list):
+            raise ValueError(f"config.{section} must be an array")
+        rows: list[Mapping[str, Any]] = []
+        for ordinal, row in enumerate(raw_rows, start=1):
+            if not isinstance(row, Mapping):
+                raise ValueError(f"config.{section}[{ordinal}] must be an object")
+            rows.append(dict(row))
+        try:
+            payload[section] = sorted(
+                rows,
+                key=lambda row: json.dumps(
+                    row,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("market configuration must be JSON serializable") from exc
     return hashlib.sha256(encoded).hexdigest()

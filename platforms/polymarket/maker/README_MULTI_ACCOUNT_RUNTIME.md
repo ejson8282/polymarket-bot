@@ -15,6 +15,9 @@ the signer token is supplied through the host environment.
 - Splitting one event across accounts is not enabled by this runtime. Quote
   sizing and reward-efficiency research belongs to the aggressive LP policy,
   not the host-routing layer.
+- Automatic and dashboard-triggered market additions stay disabled in roster
+  mode until one reviewed coordinator can apply the same market universe to
+  both hosts. Static day/night session switching and safety removals remain.
 
 ## Generate host-local configs
 
@@ -31,7 +34,25 @@ python scripts/generate_configs.py \
 ```
 
 Run the same command with `--host-id vps2` on VPS2. The generated
-`runtime_account.routing_roster_sha256` must be identical on both hosts.
+`runtime_account.routing_roster_sha256` and
+`runtime_account.market_universe_sha256` must be identical on both hosts.
+
+Before changing the service, run the signer-aware validation path while every
+local account is paused:
+
+```bash
+python platforms/polymarket/maker/multi_runner.py \
+  --config-dir /home/ubuntu/polymarket-bot/platforms/polymarket/maker \
+  --roster /home/ubuntu/polymarket-runtime/accounts.runtime.json \
+  --host-id vps1 \
+  --data-dir /home/ubuntu/polymarket-bot/data \
+  --require-paused \
+  --validate-only
+```
+
+This initializes the signer and validates every local config, funder, LP
+profile, proxy port, data directory, roster digest, and market digest, then
+exits before any worker or quote loop starts.
 
 ## First cutover
 
@@ -42,7 +63,8 @@ Run the same command with `--host-id vps2` on VPS2. The generated
    signer initialization failure, or any account worker failure stops the
    entire local runner.
 5. Verify signer address, funder, account index, roster SHA, positions, and
-   open orders for every account while all accounts remain paused.
+   open orders for every account while all accounts remain paused. Compare the
+   market-universe SHA across VPS1 and VPS2 before removing any pause flag.
 6. Remove pause flags one account at a time only after explicit live approval.
 
 On SIGTERM/SIGINT the runner stops all workers, cancels maker BUY orders, and

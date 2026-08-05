@@ -72,7 +72,10 @@ def test_roster_config_selection_is_host_local_and_requires_every_config(tmp_pat
 
 
 def test_generated_config_must_match_roster_and_digest(tmp_path: Path) -> None:
-    from platforms.polymarket.maker.account_roster import routing_roster_sha256
+    from platforms.polymarket.maker.account_roster import (
+        market_universe_sha256,
+        routing_roster_sha256,
+    )
 
     accounts = parse_runtime_roster([_row(1, "vps1", 7901)])
     digest = routing_roster_sha256(accounts)
@@ -82,7 +85,8 @@ def test_generated_config_must_match_roster_and_digest(tmp_path: Path) -> None:
             "account": {
                 "signer_server_url": "http://signer.invalid",
                 "signer_token": "removed",
-            }
+            },
+            "markets": [{"token_id": "1", "paired_token_id": "2"}],
         },
         account.generation_entry(),
         "127.0.0.1",
@@ -94,8 +98,34 @@ def test_generated_config_must_match_roster_and_digest(tmp_path: Path) -> None:
     _verify_roster_config(account, path, digest)
     assert "signer_token" not in rendered["account"]
     assert rendered["account"]["private_key"] == "REDACTED"
+    assert rendered["runtime_account"]["clash_port"] == 7901
+    assert rendered["runtime_account"]["market_universe_sha256"] == market_universe_sha256(
+        rendered
+    )
 
     rendered["runtime_account"]["routing_roster_sha256"] = "stale"
+    path.write_text(json.dumps(rendered), encoding="utf-8")
+    with pytest.raises(ValueError, match="metadata is stale"):
+        _verify_roster_config(account, path, digest)
+
+    rendered = _render(
+        {"account": {}, "markets": [{"token_id": "1"}]},
+        account.generation_entry(),
+        "127.0.0.1",
+        roster_sha256=digest,
+    )
+    rendered["proxy_pool"]["items"][0]["url"] = "http://127.0.0.1:7999"
+    path.write_text(json.dumps(rendered), encoding="utf-8")
+    with pytest.raises(ValueError, match="proxy port does not match"):
+        _verify_roster_config(account, path, digest)
+
+    rendered = _render(
+        {"account": {}, "markets": [{"token_id": "1"}]},
+        account.generation_entry(),
+        "127.0.0.1",
+        roster_sha256=digest,
+    )
+    rendered["markets"].append({"token_id": "3"})
     path.write_text(json.dumps(rendered), encoding="utf-8")
     with pytest.raises(ValueError, match="metadata is stale"):
         _verify_roster_config(account, path, digest)
@@ -106,6 +136,53 @@ def test_require_paused_checks_every_local_account(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"\.account_2\.paused"):
         _require_pause_flags(tmp_path, [1, 2])
+
+
+def test_roster_mode_rejects_different_local_market_universes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from platforms.polymarket.maker.account_roster import routing_roster_sha256
+
+    rows = [_row(1, "vps1", 7901), _row(2, "vps1", 7902)]
+    accounts = parse_runtime_roster(rows)
+    digest = routing_roster_sha256(accounts)
+    roster_path = tmp_path / "accounts.runtime.json"
+    roster_path.write_text(
+        json.dumps({"schema_version": 1, "accounts": rows}),
+        encoding="utf-8",
+    )
+    for account in accounts:
+        rendered = _render(
+            {
+                "account": {},
+                "markets": [{"token_id": str(account.account_index)}],
+            },
+            account.generation_entry(),
+            "127.0.0.1",
+            roster_sha256=digest,
+        )
+        (tmp_path / f"config_{account.account_index}.json").write_text(
+            json.dumps(rendered),
+            encoding="utf-8",
+        )
+
+    constructed = []
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.PolyLPSMulti",
+        lambda config_path: constructed.append(config_path),
+    )
+
+    with pytest.raises(ValueError, match="different market universes"):
+        asyncio.run(
+            multi_run(
+                tmp_path,
+                roster_path=roster_path,
+                host_id="vps1",
+                data_dir=tmp_path / "data",
+            )
+        )
+    assert constructed == []
 
 
 def test_shutdown_cancels_maker_orders_and_preserves_exits() -> None:
@@ -140,6 +217,7 @@ def test_one_initialization_failure_prevents_all_workers(monkeypatch, tmp_path: 
             self.market_cfg = {}
             self._night_market_cfg = {}
             self.lp_account_profile = None
+            self._state_path = tmp_path / "data" / f"engine_state_{index}.json"
 
     monkeypatch.setattr(
         "platforms.polymarket.maker.multi_runner.PolyLPSMulti",
@@ -197,6 +275,7 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
             self._event_bus = Bus()
             self._running = True
             self.cancelled = False
+            self._state_path = tmp_path / "data" / f"engine_state_{self._account_idx}.json"
             built[self._account_idx] = self
 
         async def run(self) -> None:
@@ -231,5 +310,73 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
     assert set(built[1]._shared_account_profiles) == {1, 2, 6}
     assert built[1]._event_bus.namespace == "account:1"
     assert built[2]._event_bus.namespace == "account:2"
+    assert built[1]._runtime_market_updates_enabled is False
+    assert built[2]._runtime_market_updates_enabled is False
     assert built[1].cancelled is True
     assert built[2].cancelled is True
+
+
+def test_validate_only_initializes_accounts_without_starting_workers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from platforms.polymarket.maker.account_profiles import parse_lp_account_profile
+    from platforms.polymarket.maker.account_roster import routing_roster_sha256
+
+    rows = [_row(1, "vps1", 7901), _row(2, "vps1", 7902)]
+    accounts = parse_runtime_roster(rows)
+    digest = routing_roster_sha256(accounts)
+    roster_path = tmp_path / "accounts.runtime.json"
+    roster_path.write_text(
+        json.dumps({"schema_version": 1, "accounts": rows}),
+        encoding="utf-8",
+    )
+    for account in accounts:
+        rendered = _render(
+            {"account": {}, "markets": [{"token_id": "1"}]},
+            account.generation_entry(),
+            "127.0.0.1",
+            roster_sha256=digest,
+        )
+        (tmp_path / f"config_{account.account_index}.json").write_text(
+            json.dumps(rendered),
+            encoding="utf-8",
+        )
+
+    built = []
+
+    class Bus:
+        def set_state_namespace(self, _namespace: str) -> None:
+            return None
+
+    class Engine:
+        def __init__(self, config_path: str):
+            self._account_idx = int(Path(config_path).stem.split("_")[-1])
+            self.cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.lp_account_profile = parse_lp_account_profile(self.cfg, self._account_idx)
+            self.market_cfg = {"1": {}}
+            self._night_market_cfg = {}
+            self._event_bus = Bus()
+            self._state_path = tmp_path / "data" / f"engine_state_{self._account_idx}.json"
+            built.append(self)
+
+        async def run(self) -> None:
+            raise AssertionError("validate-only must not start account workers")
+
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.PolyLPSMulti",
+        Engine,
+    )
+
+    asyncio.run(
+        multi_run(
+            tmp_path,
+            roster_path=roster_path,
+            host_id="vps1",
+            data_dir=tmp_path / "data",
+            validate_only=True,
+        )
+    )
+
+    assert len(built) == 2
+    assert all(engine._runtime_market_updates_enabled is False for engine in built)

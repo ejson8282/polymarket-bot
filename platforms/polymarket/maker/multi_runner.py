@@ -27,6 +27,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 # Add maker dir to path for engine import
 _MAKER_DIR = Path(__file__).resolve().parent
@@ -43,6 +44,7 @@ if __package__:  # noqa: E402
         RuntimeAccount,
         load_runtime_roster,
         local_runtime_accounts,
+        market_universe_sha256,
         roster_hosts,
         routing_profiles,
         routing_roster_sha256,
@@ -60,6 +62,7 @@ else:  # direct script execution
         RuntimeAccount,
         load_runtime_roster,
         local_runtime_accounts,
+        market_universe_sha256,
         roster_hosts,
         routing_profiles,
         routing_roster_sha256,
@@ -242,7 +245,7 @@ def _verify_roster_config(
     account: RuntimeAccount,
     path: Path,
     roster_sha256: str,
-) -> None:
+) -> str:
     payload = _read_config(path)
     actual_funder = str((payload.get("account") or {}).get("funder") or "").strip()
     if actual_funder.casefold() != account.funder.casefold():
@@ -257,15 +260,37 @@ def _verify_roster_config(
         )
 
     runtime = payload.get("runtime_account")
+    market_sha = market_universe_sha256(payload)
     expected_runtime = {
         "account_index": account.account_index,
         "host_id": account.host_id,
+        "clash_port": account.clash_port,
         "routing_roster_sha256": roster_sha256,
+        "market_universe_sha256": market_sha,
     }
     if runtime != expected_runtime:
         raise ValueError(
             f"{path.name} runtime_account metadata is stale; regenerate it from the roster"
         )
+
+    proxy_pool = payload.get("proxy_pool")
+    proxy_items = proxy_pool.get("items") if isinstance(proxy_pool, dict) else None
+    enabled_items = [
+        item
+        for item in (proxy_items or [])
+        if isinstance(item, dict) and item.get("enabled", True)
+    ]
+    if len(enabled_items) != 1:
+        raise ValueError(f"{path.name} must contain exactly one enabled account proxy")
+    try:
+        proxy_port = urlparse(str(enabled_items[0].get("url") or "")).port
+    except ValueError as exc:
+        raise ValueError(f"{path.name} contains an invalid account proxy URL") from exc
+    if proxy_port != account.clash_port:
+        raise ValueError(
+            f"{path.name} proxy port does not match roster account {account.account_index}"
+        )
+    return market_sha
 
 
 def _require_pause_flags(
@@ -356,6 +381,7 @@ async def multi_run(
     host_id: str = "",
     data_dir: Optional[Path] = None,
     require_paused: bool = False,
+    validate_only: bool = False,
 ) -> None:
     """Run every local account as one fail-closed process.
 
@@ -375,6 +401,7 @@ async def multi_run(
     resolved_host_id = host_id.strip().lower()
     config_files: list[tuple[int, Path]] = []
     global_profiles: Dict[int, LPAccountProfile] = {}
+    local_market_sha = ""
 
     if roster_path is not None:
         accounts = load_runtime_roster(roster_path.resolve())
@@ -386,10 +413,16 @@ async def multi_run(
                 resolved_data_dir,
                 [account.account_index for account, _ in roster_rows],
             )
+        market_shas: set[str] = set()
         for account, path in roster_rows:
-            _verify_roster_config(account, path, route_sha)
+            market_shas.add(_verify_roster_config(account, path, route_sha))
             config_files.append((account.account_index, path))
             log(f"[multi] host={resolved_host_id} selected {path.name}")
+        if len(market_shas) != 1:
+            raise ValueError(
+                f"host {resolved_host_id!r} account configs have different market universes"
+            )
+        local_market_sha = next(iter(market_shas))
         global_profiles = routing_profiles(accounts)
     else:
         config_files = _legacy_config_files(config_dir)
@@ -423,6 +456,12 @@ async def multi_run(
                 )
             engines.append((idx, eng))
             local_profiles[idx] = eng.lp_account_profile
+            actual_data_dir = eng._state_path.parent.resolve()
+            if actual_data_dir != resolved_data_dir:
+                raise ValueError(
+                    f"{cfg_path.name} writes runtime state to {actual_data_dir}, "
+                    f"but --data-dir is {resolved_data_dir}"
+                )
             log(f"[multi] account {idx}: initialized ({len(eng.market_cfg)} markets)")
     except Exception as exc:
         log(f"[multi] initialization failed; no account will start: {exc}")
@@ -444,8 +483,10 @@ async def multi_run(
         eng._runtime_mode = "multi_roster" if roster_path is not None else "multi_legacy"
         eng._runtime_host_id = resolved_host_id
         eng._routing_roster_sha256 = route_sha
+        eng._routing_market_universe_sha256 = local_market_sha
         eng._routing_account_count = len(global_profiles)
         eng._local_account_count = len(engines)
+        eng._runtime_market_updates_enabled = roster_path is None
         eng._event_bus.set_state_namespace(f"account:{eng._account_idx}")
     log(f"[multi] sibling order registry shared across {len(engines)} local account(s)")
 
@@ -456,6 +497,14 @@ async def multi_run(
             for profile in sorted(managed_profiles, key=lambda item: item.account_index)
         )
         log(f"[multi] global LP routing profiles: {summary}")
+
+    if validate_only:
+        log(
+            f"[multi] validation complete: host={resolved_host_id or 'legacy'} "
+            f"local_accounts={len(engines)} roster_sha={route_sha or '-'} "
+            f"market_sha={local_market_sha or '-'}; no workers started"
+        )
+        return
 
     all_token_ids = {
         tid
@@ -585,6 +634,11 @@ def main() -> None:
         action="store_true",
         help="Fail before signer initialization unless every local account pause flag exists",
     )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Initialize and validate every local account, then exit before starting workers",
+    )
     args = parser.parse_args()
     config_dir = Path(args.config_dir).resolve()
     log(f"[multi] config dir: {config_dir}")
@@ -595,6 +649,7 @@ def main() -> None:
             host_id=args.host_id,
             data_dir=Path(args.data_dir).resolve() if args.data_dir else None,
             require_paused=args.require_paused,
+            validate_only=args.validate_only,
         )
     )
 

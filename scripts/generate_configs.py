@@ -50,6 +50,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from platforms.polymarket.maker.account_roster import (  # noqa: E402
     local_runtime_accounts,
+    market_universe_sha256,
     parse_runtime_roster,
     roster_hosts,
     routing_roster_sha256,
@@ -118,7 +119,9 @@ def _render(
         out["runtime_account"] = {
             "account_index": int(entry["account_index"]),
             "host_id": str(entry["host_id"]),
+            "clash_port": int(entry["clash_port"]),
             "routing_roster_sha256": roster_sha256,
+            "market_universe_sha256": market_universe_sha256(out),
         }
     out["proxy_pool"] = _build_proxy_pool(clash_host, entry["clash_port"])
     return out

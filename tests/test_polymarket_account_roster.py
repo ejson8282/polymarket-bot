@@ -6,6 +6,7 @@ import pytest
 
 from platforms.polymarket.maker.account_roster import (
     local_runtime_accounts,
+    market_universe_sha256,
     parse_runtime_roster,
     roster_hosts,
     routing_profiles,
@@ -53,6 +54,40 @@ def test_roster_digest_is_stable_across_input_order() -> None:
     second = parse_runtime_roster([_account(6, "vps2", 7901), _account(1, "vps1", 7901)])
 
     assert routing_roster_sha256(first) == routing_roster_sha256(second)
+
+
+def test_roster_digest_changes_for_runtime_sensitive_fields() -> None:
+    base = _account(1, "vps1", 7901)
+    baseline = routing_roster_sha256(parse_runtime_roster([base]))
+
+    changed_funder = _account(1, "vps1", 7901)
+    changed_funder["funder"] = "0x" + "f" * 40
+    changed_port = _account(1, "vps1", 7902)
+    changed_loss = _account(1, "vps1", 7901)
+    changed_loss["lp_account"]["daily_loss_limit_usdc"] = 7
+
+    assert routing_roster_sha256(parse_runtime_roster([changed_funder])) != baseline
+    assert routing_roster_sha256(parse_runtime_roster([changed_port])) != baseline
+    assert routing_roster_sha256(parse_runtime_roster([changed_loss])) != baseline
+
+
+def test_market_universe_digest_is_order_independent_and_change_sensitive() -> None:
+    first = {
+        "markets": [
+            {"token_id": "2", "paired_token_id": "20", "enabled": True},
+            {"token_id": "1", "paired_token_id": "10", "enabled": True},
+        ],
+        "night_markets": [{"token_id": "3", "risk": "low"}],
+    }
+    second = {
+        "markets": list(reversed(first["markets"])),
+        "night_markets": list(first["night_markets"]),
+    }
+    changed = json.loads(json.dumps(first))
+    changed["markets"][0]["enabled"] = False
+
+    assert market_universe_sha256(first) == market_universe_sha256(second)
+    assert market_universe_sha256(first) != market_universe_sha256(changed)
 
 
 def test_same_proxy_port_is_allowed_on_different_hosts() -> None:
