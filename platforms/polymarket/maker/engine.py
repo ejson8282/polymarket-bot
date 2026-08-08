@@ -2639,7 +2639,7 @@ class PolyLPSMulti:
             f"trigger={token_id} members={len(members)} "
             f"cooldown={self._parent_event_shock_cooldown_sec:.0f}s reason={reason}"
         )
-        self._notify_risk(
+        self._notify_status(
             "关联市场已暂停",
             parent_event=parent_event_id,
             trigger=token_id,
