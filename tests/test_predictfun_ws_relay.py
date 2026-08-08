@@ -459,6 +459,126 @@ def test_shared_upstream_keeps_socket_while_another_client_remains(tmp_path) -> 
     asyncio.run(scenario())
 
 
+def test_shared_upstream_replays_latest_topic_to_late_subscriber(tmp_path) -> None:
+    async def scenario() -> None:
+        secret_file = tmp_path / "predictfun.env"
+        secret_file.write_text("PREDICTFUN_API_KEY=fixture-key\n", encoding="utf-8")
+        upstream = FakeUpstream()
+
+        async def connector(_url: str, _api_key: str) -> FakeUpstream:
+            return upstream
+
+        relay = SharedUpstreamRelay(
+            upstream_url="wss://fixture.invalid/ws",
+            secret_file=secret_file,
+            connector=connector,
+        )
+        first = FakeRelaySocket()
+        late = FakeRelaySocket()
+        topic = "predictOrderbook/58416"
+        snapshot = {
+            "type": "M",
+            "topic": topic,
+            "data": {"sequence": 7},
+        }
+        try:
+            await relay.add_client(first)
+            await relay.handle_client_message(
+                first,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 1, "params": [topic]}
+                ),
+            )
+            await upstream.push(
+                {"type": "R", "requestId": 1, "success": True}
+            )
+            await upstream.push(snapshot)
+            await _settle()
+
+            await relay.add_client(late)
+            await relay.handle_client_message(
+                late,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 9, "params": [topic]}
+                ),
+            )
+
+            assert len(upstream.sent) == 1
+            assert _messages(late) == [
+                {"type": "R", "requestId": 9, "success": True},
+                snapshot,
+            ]
+        finally:
+            await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_shared_upstream_does_not_replay_across_upstream_generations(
+    tmp_path,
+) -> None:
+    async def scenario() -> None:
+        secret_file = tmp_path / "predictfun.env"
+        secret_file.write_text("PREDICTFUN_API_KEY=fixture-key\n", encoding="utf-8")
+        upstreams = [FakeUpstream(), FakeUpstream()]
+        connector_calls = 0
+
+        async def connector(_url: str, _api_key: str) -> FakeUpstream:
+            nonlocal connector_calls
+            upstream = upstreams[connector_calls]
+            connector_calls += 1
+            return upstream
+
+        relay = SharedUpstreamRelay(
+            upstream_url="wss://fixture.invalid/ws",
+            secret_file=secret_file,
+            connector=connector,
+        )
+        first = FakeRelaySocket()
+        second = FakeRelaySocket()
+        topic = "predictOrderbook/58416"
+        old_snapshot = {
+            "type": "M",
+            "topic": topic,
+            "data": {"sequence": 1},
+        }
+        try:
+            await relay.add_client(first)
+            await relay.handle_client_message(
+                first,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 1, "params": [topic]}
+                ),
+            )
+            await upstreams[0].push(
+                {"type": "R", "requestId": 1, "success": True}
+            )
+            await upstreams[0].push(old_snapshot)
+            await _settle()
+            await relay.remove_client(first)
+            await _settle()
+
+            await relay.add_client(second)
+            await relay.handle_client_message(
+                second,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 2, "params": [topic]}
+                ),
+            )
+            await upstreams[1].push(
+                {"type": "R", "requestId": 2, "success": True}
+            )
+            await _settle()
+
+            assert _messages(second) == [
+                {"type": "R", "requestId": 2, "success": True}
+            ]
+        finally:
+            await relay.close()
+
+    asyncio.run(scenario())
+
+
 def test_shared_upstream_unsubscribe_send_failure_is_reported(tmp_path) -> None:
     async def scenario() -> None:
         secret_file = tmp_path / "predictfun.env"
