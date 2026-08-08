@@ -45,6 +45,7 @@ import copy
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -65,6 +66,30 @@ from platforms.polymarket.maker.market_universe import (  # noqa: E402
 DEFAULT_BASE = REPO_ROOT / "platforms" / "polymarket" / "maker" / "config.json"
 DEFAULT_ROSTER = REPO_ROOT / "scripts" / "accounts.json"
 DEFAULT_OUT_DIR = DEFAULT_BASE.parent
+
+
+def _validate_signer_url(raw: str) -> str:
+    value = str(raw or "").strip().rstrip("/")
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("--signer-url must be an absolute http(s) URL") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in value)
+    ):
+        raise ValueError("--signer-url must be an absolute http(s) URL")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("--signer-url port is outside 1..65535")
+    return value
 
 
 def _load_json(path: Path) -> dict | list:
@@ -102,6 +127,7 @@ def _render(
     *,
     roster_sha256: str | None = None,
     runtime_scope: str = "",
+    signer_url: str = "",
 ) -> dict:
     out = copy.deepcopy(base)
     account = dict(out.get("account") or {})
@@ -116,6 +142,8 @@ def _render(
         "signer_token",
     ):
         account.pop(secret_field, None)
+    if signer_url:
+        account["signer_server_url"] = signer_url.rstrip("/")
     out["account"] = account
     if "lp_account" in entry:
         # LP metadata is intentionally non-sensitive and account-local.
@@ -152,6 +180,14 @@ def main() -> None:
         default="",
         help="Generate only accounts assigned to this host (required for multi-host rosters)",
     )
+    ap.add_argument(
+        "--signer-url",
+        default="",
+        help=(
+            "Non-secret signer endpoint embedded in generated configs. "
+            "Aggressive runtime generation should always set this explicitly."
+        ),
+    )
     ap.add_argument("--dry-run", action="store_true", help="Print what would be written without touching disk")
     args = ap.parse_args()
 
@@ -170,6 +206,10 @@ def main() -> None:
         sys.exit(f"ERROR: {exc}")
 
     requested_host = args.host_id.strip().lower()
+    try:
+        signer_url = _validate_signer_url(args.signer_url)
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
     hosts = roster_hosts(accounts)
     if len(hosts) > 1 and not args.market_universe:
         sys.exit("ERROR: --market-universe is required for a multi-host roster")
@@ -215,6 +255,7 @@ def main() -> None:
             args.clash_host,
             roster_sha256=roster_sha,
             runtime_scope=runtime_scope,
+            signer_url=signer_url,
         )
         out_path = out_dir / f"config_{idx}.json"
         funder = entry["funder"]

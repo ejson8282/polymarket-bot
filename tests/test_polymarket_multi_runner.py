@@ -575,6 +575,12 @@ def test_aggressive_systemd_template_never_reuses_normal_runtime() -> None:
     assert "--runtime-scope aggressive" in unit
     assert "--require-paused" in unit
     assert "--expected-signer-url" in unit
+    assert "polymarket-aggressive-redis.service" in unit
+    assert (
+        "release_guard.py "
+        "/home/ubuntu/polymarket-aggressive-releases/current/"
+        "platforms/polymarket/maker/engine.py"
+    ) in unit
     assert "/home/ubuntu/polymarket-bot" not in unit
     assert "/home/ubuntu/polymarket-runtime" not in unit
     assert "/home/ubuntu/.venv2" not in unit
