@@ -14,12 +14,15 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 import urllib.parse
 import urllib.request
+
+sys.dont_write_bytecode = True
 
 from platforms.predictfun.ws_relay import probe_relay
 

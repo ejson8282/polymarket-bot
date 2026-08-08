@@ -282,12 +282,16 @@ class SharedUpstreamRelay:
         self._next_request_id = 1
 
     async def add_client(self, client: Any) -> None:
-        await self._ensure_upstream()
-        async with self._state_lock:
-            self._clients.setdefault(client, set())
+        # Register while holding the connection lock so the last departing
+        # client cannot close the upstream between connect and registration.
+        async with self._connect_lock:
+            await self._ensure_upstream_locked()
+            async with self._state_lock:
+                self._clients.setdefault(client, set())
 
     async def remove_client(self, client: Any) -> None:
         controls: list[tuple[int, _PendingControl]] = []
+        reset_idle_upstream = False
         async with self._state_lock:
             removed_topics = self._clients.pop(client, set())
             for pending in self._pending_controls.values():
@@ -308,17 +312,27 @@ class SharedUpstreamRelay:
                     self._deferred_subscribe_acks[topic] = kept
                 else:
                     self._deferred_subscribe_acks.pop(topic, None)
-            for topic in removed_topics:
-                if self._topic_is_desired_locked(topic):
-                    continue
-                if self._pending_id_locked("subscribe", topic) is not None:
-                    continue
-                if self._pending_id_locked("unsubscribe", topic) is not None:
-                    continue
-                if topic in self._active_topics:
-                    controls.append(
-                        self._register_control_locked("unsubscribe", topic)
-                    )
+            reset_idle_upstream = not self._clients
+            if reset_idle_upstream:
+                self._active_topics.clear()
+                self._pending_controls.clear()
+                self._pending_by_topic.clear()
+                self._deferred_subscribe_acks.clear()
+            else:
+                for topic in removed_topics:
+                    if self._topic_is_desired_locked(topic):
+                        continue
+                    if self._pending_id_locked("subscribe", topic) is not None:
+                        continue
+                    if self._pending_id_locked("unsubscribe", topic) is not None:
+                        continue
+                    if topic in self._active_topics:
+                        controls.append(
+                            self._register_control_locked("unsubscribe", topic)
+                        )
+        if reset_idle_upstream:
+            await self._close_idle_upstream()
+            return
         for request_id, pending in controls:
             try:
                 await self._send_registered_control(request_id, pending)
@@ -449,17 +463,16 @@ class SharedUpstreamRelay:
             except Exception:
                 pass
 
-    async def _ensure_upstream(self) -> None:
-        async with self._connect_lock:
-            if self._upstream is not None:
-                return
-            api_key = load_api_key(self.secret_file)
-            upstream = await self.connector(self.upstream_url, api_key)
-            self._upstream = upstream
-            self._reader_task = asyncio.create_task(
-                self._read_upstream(upstream)
-            )
-            logging.info("Predict WS relay shared upstream connected")
+    async def _ensure_upstream_locked(self) -> None:
+        if self._upstream is not None:
+            return
+        api_key = load_api_key(self.secret_file)
+        upstream = await self.connector(self.upstream_url, api_key)
+        self._upstream = upstream
+        self._reader_task = asyncio.create_task(
+            self._read_upstream(upstream)
+        )
+        logging.info("Predict WS relay shared upstream connected")
 
     def _topic_is_desired_locked(self, topic: str) -> bool:
         return any(topic in topics for topics in self._clients.values())
@@ -530,9 +543,9 @@ class SharedUpstreamRelay:
                     pending.topic,
                     [],
                 )
-                recovered = [
+                deferred = [
                     acknowledgement
-                    for acknowledgement in recovered
+                    for acknowledgement in deferred
                     if pending.topic in self._clients.get(
                         acknowledgement[0],
                         set(),
@@ -554,6 +567,28 @@ class SharedUpstreamRelay:
                 await upstream.close()
             except Exception:
                 pass
+
+    async def _close_idle_upstream(self) -> None:
+        reader_task: asyncio.Task[None] | None = None
+        async with self._connect_lock:
+            async with self._state_lock:
+                if self._clients:
+                    return
+                upstream = self._upstream
+                reader_task = self._reader_task
+                self._upstream = None
+                self._reader_task = None
+                self._active_topics.clear()
+                self._pending_controls.clear()
+                self._pending_by_topic.clear()
+                self._deferred_subscribe_acks.clear()
+            if upstream is not None:
+                try:
+                    await upstream.close()
+                except Exception:
+                    pass
+        if reader_task is not None and reader_task is not asyncio.current_task():
+            await asyncio.gather(reader_task, return_exceptions=True)
 
     async def _send_upstream(self, message: dict[str, Any]) -> None:
         async with self._send_lock:
@@ -606,16 +641,25 @@ class SharedUpstreamRelay:
                 exc,
             )
         finally:
+            owns_upstream = False
+            clients: list[Any] = []
             async with self._connect_lock:
                 if self._upstream is upstream:
                     self._upstream = None
-            async with self._state_lock:
-                clients = list(self._clients)
-                self._clients.clear()
-                self._active_topics.clear()
-                self._pending_controls.clear()
-                self._pending_by_topic.clear()
-                self._deferred_subscribe_acks.clear()
+                    if self._reader_task is asyncio.current_task():
+                        self._reader_task = None
+                    owns_upstream = True
+                    # Clear the old generation before releasing the connection
+                    # lock. A new client cannot attach until this is complete.
+                    async with self._state_lock:
+                        clients = list(self._clients)
+                        self._clients.clear()
+                        self._active_topics.clear()
+                        self._pending_controls.clear()
+                        self._pending_by_topic.clear()
+                        self._deferred_subscribe_acks.clear()
+            if not owns_upstream:
+                return
             for client in clients:
                 try:
                     await client.close(
