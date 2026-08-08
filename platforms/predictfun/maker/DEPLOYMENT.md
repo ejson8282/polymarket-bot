@@ -19,8 +19,12 @@ Predict.fun WS -> Mac mini :8792 relay -> VPS watcher -> runtime JSON
 
 The relay rejects wallet topics, arbitrary methods, duplicate clients, and
 unknown client addresses. It never accepts an API key from a VPS and never
-returns one. The VPS watcher validates market IDs, timestamps, level ranges,
-book ordering, trading status, and market status before a book can be quoted.
+returns one. One authenticated upstream socket serves both VPS watchers; public
+topic subscriptions are deduplicated and each message is delivered only to the
+clients that requested that topic. If the shared upstream disconnects, every
+downstream is closed so each watcher reconnects fail-closed. The VPS watcher
+validates market IDs, timestamps, level ranges, book ordering, trading status,
+and market status before a book can be quoted.
 
 ## Host profiles
 
