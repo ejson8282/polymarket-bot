@@ -58,6 +58,22 @@ class FakeUpstream(FakeRelaySocket):
     async def fail(self, exc: BaseException) -> None:
         await self.incoming.put(exc)
 
+    async def close(
+        self,
+        *,
+        code: int | None = None,
+        reason: str = "",
+    ) -> None:
+        await super().close(code=code, reason=reason)
+        await self.incoming.put(_STOP)
+
+
+class FailUnsubscribeUpstream(FakeUpstream):
+    async def send(self, raw: str) -> None:
+        if json.loads(raw).get("method") == "unsubscribe":
+            raise ConnectionError("fixture send failed")
+        await super().send(raw)
+
 
 def _messages(socket: FakeRelaySocket) -> list[dict[str, object]]:
     return [json.loads(raw) for raw in socket.sent]
@@ -333,6 +349,162 @@ def test_shared_upstream_uses_one_heartbeat_ack_for_all_clients(tmp_path) -> Non
                 '{"method":"heartbeat","data":12345}',
             )
             assert len(upstream.sent) == 1
+        finally:
+            await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_shared_upstream_reopens_after_last_probe_client_leaves(tmp_path) -> None:
+    async def scenario() -> None:
+        secret_file = tmp_path / "predictfun.env"
+        secret_file.write_text("PREDICTFUN_API_KEY=fixture-key\n", encoding="utf-8")
+        upstreams = [FakeUpstream(), FakeUpstream()]
+        connector_calls: list[tuple[str, str]] = []
+
+        async def connector(url: str, api_key: str) -> FakeUpstream:
+            connector_calls.append((url, api_key))
+            return upstreams[len(connector_calls) - 1]
+
+        relay = SharedUpstreamRelay(
+            upstream_url="wss://fixture.invalid/ws",
+            secret_file=secret_file,
+            connector=connector,
+        )
+        probe = FakeRelaySocket()
+        real_client = FakeRelaySocket()
+        topic = "predictOrderbook/58416"
+        try:
+            await relay.add_client(probe)
+            await relay.handle_client_message(
+                probe,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 1, "params": [topic]}
+                ),
+            )
+            await upstreams[0].push(
+                {"type": "R", "requestId": 1, "success": True}
+            )
+            await _settle()
+            await relay.remove_client(probe)
+            await _settle()
+
+            assert upstreams[0].closed
+            assert connector_calls == [
+                ("wss://fixture.invalid/ws", "fixture-key")
+            ]
+
+            await relay.add_client(real_client)
+            await relay.handle_client_message(
+                real_client,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 9, "params": [topic]}
+                ),
+            )
+            assert connector_calls == [
+                ("wss://fixture.invalid/ws", "fixture-key"),
+                ("wss://fixture.invalid/ws", "fixture-key"),
+            ]
+            assert _messages(upstreams[1]) == [
+                {"method": "subscribe", "requestId": 2, "params": [topic]}
+            ]
+            await upstreams[1].push(
+                {"type": "R", "requestId": 2, "success": True}
+            )
+            await upstreams[1].push(
+                {"type": "M", "topic": topic, "data": {"sequence": 2}}
+            )
+            await _settle()
+            assert _messages(real_client)[-1] == {
+                "type": "M",
+                "topic": topic,
+                "data": {"sequence": 2},
+            }
+        finally:
+            await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_shared_upstream_keeps_socket_while_another_client_remains(tmp_path) -> None:
+    async def scenario() -> None:
+        secret_file = tmp_path / "predictfun.env"
+        secret_file.write_text("PREDICTFUN_API_KEY=fixture-key\n", encoding="utf-8")
+        upstream = FakeUpstream()
+        connector_calls = 0
+
+        async def connector(_url: str, _api_key: str) -> FakeUpstream:
+            nonlocal connector_calls
+            connector_calls += 1
+            return upstream
+
+        relay = SharedUpstreamRelay(
+            upstream_url="wss://fixture.invalid/ws",
+            secret_file=secret_file,
+            connector=connector,
+        )
+        first = FakeRelaySocket()
+        second = FakeRelaySocket()
+        try:
+            await relay.add_client(first)
+            await relay.add_client(second)
+            await relay.remove_client(first)
+            await _settle()
+
+            assert connector_calls == 1
+            assert upstream.closed == []
+        finally:
+            await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_shared_upstream_unsubscribe_send_failure_is_reported(tmp_path) -> None:
+    async def scenario() -> None:
+        secret_file = tmp_path / "predictfun.env"
+        secret_file.write_text("PREDICTFUN_API_KEY=fixture-key\n", encoding="utf-8")
+        upstream = FailUnsubscribeUpstream()
+
+        async def connector(_url: str, _api_key: str) -> FakeUpstream:
+            return upstream
+
+        relay = SharedUpstreamRelay(
+            upstream_url="wss://fixture.invalid/ws",
+            secret_file=secret_file,
+            connector=connector,
+        )
+        client = FakeRelaySocket()
+        topic = "predictOrderbook/58416"
+        try:
+            await relay.add_client(client)
+            await relay.handle_client_message(
+                client,
+                json.dumps(
+                    {"method": "subscribe", "requestId": 1, "params": [topic]}
+                ),
+            )
+            await upstream.push(
+                {"type": "R", "requestId": 1, "success": True}
+            )
+            await _settle()
+
+            with pytest.raises(ConnectionError, match="fixture send failed"):
+                await relay.handle_client_message(
+                    client,
+                    json.dumps(
+                        {
+                            "method": "unsubscribe",
+                            "requestId": 2,
+                            "params": [topic],
+                        }
+                    ),
+                )
+            assert _messages(client)[-1] == {
+                "type": "R",
+                "requestId": 2,
+                "success": False,
+                "error": {"code": "upstream_send_failed"},
+            }
         finally:
             await relay.close()
 

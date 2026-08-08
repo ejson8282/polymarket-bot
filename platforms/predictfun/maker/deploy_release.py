@@ -15,10 +15,13 @@ import pwd
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 from typing import Any, Iterator, Mapping, Optional, Sequence
+
+sys.dont_write_bytecode = True
 
 from platforms.predictfun.maker.release_guard import (
     ARTIFACT,

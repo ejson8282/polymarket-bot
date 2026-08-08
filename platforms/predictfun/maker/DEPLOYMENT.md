@@ -84,11 +84,11 @@ first:
 ```bash
 TARGET=<40-character-merged-sha>
 
-/path/to/reviewed/python \
+env PYTHONPATH=/path/to/reviewed /path/to/reviewed/python -B \
   /path/to/reviewed/platforms/predictfun/deploy_ws_relay.py prepare \
   --target-sha "$TARGET"
 
-/path/to/reviewed/python \
+env PYTHONPATH=/path/to/reviewed /path/to/reviewed/python -B \
   /path/to/reviewed/platforms/predictfun/deploy_ws_relay.py activate \
   --target-sha "$TARGET" \
   --expected-current none \
@@ -107,13 +107,13 @@ Then prepare and activate VPS1:
 ```bash
 TARGET=<40-character-merged-sha>
 
-sudo /home/ubuntu/.venv2/bin/python \
+sudo env PYTHONPATH=/path/to/reviewed /home/ubuntu/.venv2/bin/python -B \
   /path/to/reviewed/deploy_release.py prepare \
   --profile vps1 \
   --account-ids account_01 \
   --target-sha "$TARGET"
 
-sudo /home/ubuntu/.venv2/bin/python \
+sudo env PYTHONPATH=/path/to/reviewed /home/ubuntu/.venv2/bin/python -B \
   /path/to/reviewed/deploy_release.py activate \
   --profile vps1 \
   --account-ids account_01 \
