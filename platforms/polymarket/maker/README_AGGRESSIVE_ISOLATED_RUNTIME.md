@@ -121,3 +121,53 @@ and verified through a separate approved cutover.
 
 The existing VPS1/VPS2 normal LP services continue independently throughout
 that work.
+
+## Exact-SHA release workflow
+
+`deploy_aggressive_runtime.py` is the only supported release path for this
+runtime. It uses the same VPS-wide deployment lock as the normal LP deployment,
+but writes only the aggressive release, runtime, unit, Redis, and audit paths.
+
+The first account should be one independently funded 200 USDC account assigned
+to `aggressive-a`. Before activation, the operator stages these host-local
+inputs outside Git:
+
+- `accounts.runtime.json`: one public funder address and a managed aggressive
+  profile with `target_principal_usdc: 200`;
+- `markets.runtime.json`: a reviewed, non-secret market universe;
+- `env/runtime.env`: dedicated signer URL/token and the reviewed roster/market
+  digests;
+- `/home/ubuntu/polymarket-aggressive-venv`: a dedicated Python environment.
+
+The host must also provide executable `/usr/bin/redis-server` for the dedicated
+localhost `6380` service. Activation checks both the standalone Python
+environment and Redis binary before installing or starting either aggressive
+unit.
+
+The normal signer endpoint on port 8420 and normal Redis on port 6379 are
+rejected. The initial service activation is always paused and therefore cannot
+quote until the account mapping and public funder have been verified.
+
+Read-only plan:
+
+```bash
+python platforms/polymarket/maker/deploy_aggressive_runtime.py plan \
+  <full-sha> --profile aggressive-a --expected-current none
+```
+
+Prepare an immutable release without installing or starting a service:
+
+```bash
+python platforms/polymarket/maker/deploy_aggressive_runtime.py prepare \
+  <full-sha> --profile aggressive-a --expected-current none \
+  --confirm PREPARE-AGGRESSIVE:aggressive-a:<full-sha>
+```
+
+The separately authorized first activation uses
+`ACTIVATE-AGGRESSIVE:aggressive-a:<full-sha>` plus an audit authorization ID.
+It validates the dedicated Python environment, local proxy, signer mapping,
+roster and market digests, installs isolated systemd units, starts isolated
+Redis, starts the engine with every account pause flag present, and waits for a
+fresh paused state. If verification fails, the aggressive engine is stopped and
+the previous aggressive release/config is restored. The normal LP service is
+snapshotted before and after; any change fails the activation.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket aggressive LP isolated Redis
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/bin/redis-server --bind 127.0.0.1 --protected-mode yes --port 6380 --dir /home/ubuntu/polymarket-aggressive-runtime/redis --dbfilename aggressive.rdb --appendonly yes --appendfilename aggressive.aof --save 300 10
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/polymarket-aggressive-runtime/redis
+
+[Install]
+WantedBy=multi-user.target
