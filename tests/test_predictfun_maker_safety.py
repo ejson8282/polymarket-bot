@@ -540,6 +540,51 @@ def test_partial_fill_halts_replenishment_and_sizes_exit_to_position() -> None:
     assert exits[0]["size"] == "2.000000"
 
 
+def test_simulation_removes_planner_cancel_after_registry_restart() -> None:
+    stale_order = {
+        "intent_id": "stale-before-restart",
+        "account_id": "account_01",
+        "market_id": 42,
+        "outcome": "YES",
+        "side": "BUY",
+        "price": "0.40",
+        "size": "10",
+        "notional": "4",
+    }
+    kept_order = {
+        **stale_order,
+        "intent_id": "still-desired",
+        "price": "0.39",
+        "notional": "3.9",
+    }
+
+    simulation = update_simulation(
+        previous_state={"active_orders": [stale_order, kept_order]},
+        plan_state={"ts": "2026-08-08T00:00:00Z", "plans": []},
+        intents_state={
+            "ts": "2026-08-08T00:00:00Z",
+            "diff": {
+                "create": [],
+                "keep": [kept_order],
+                "cancel": [stale_order],
+            },
+            "intents": [kept_order],
+        },
+        execution_report={
+            "ts": "2026-08-08T00:00:00Z",
+            "mode": "dry_run",
+            "results": [],
+            "managed_orders": {},
+        },
+        max_fill_size=Decimal("10"),
+    )
+
+    assert [row["intent_id"] for row in simulation["active_orders"]] == [
+        "still-desired"
+    ]
+    assert simulation["summary"]["active_orders"] == 1
+
+
 def test_inventory_exit_survives_quote_liquidity_block() -> None:
     state = build_intent_state(
         environment="test",
