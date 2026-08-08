@@ -20,6 +20,7 @@ from deploy_aggressive_runtime import (  # noqa: E402
     AggressiveRequest,
     DeploymentError,
     _normalize_request,
+    _load_sanitized_base_config,
     _parse_env_file,
     _runtime_contract,
     _restore_optional_unit,
@@ -156,14 +157,14 @@ def test_generated_config_signer_url_validation_is_strict() -> None:
 def test_runtime_contract_binds_roster_market_signer_and_redis(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     release = paths.release_root / SHA
-    base_path = release / "platforms" / "polymarket" / "maker" / "config.json"
-    base_path.parent.mkdir(parents=True)
+    release.mkdir(parents=True)
+    paths.base_config.parent.mkdir(parents=True)
     base = {
-        "account": {"signer_server_url": "http://normal.invalid:8420"},
+        "account": {},
         "markets": [],
         "night_markets": [],
     }
-    base_path.write_text(json.dumps(base), encoding="utf-8")
+    paths.base_config.write_text(json.dumps(base), encoding="utf-8")
 
     paths.runtime_env.parent.mkdir(parents=True)
     roster = {
@@ -206,6 +207,35 @@ def test_runtime_contract_binds_roster_market_signer_and_redis(tmp_path: Path) -
     assert contract["roster_sha256"] == roster_sha
     assert contract["market_sha256"] == market_sha
     assert [row.account_index for row in contract["local_accounts"]] == [1]
+
+
+def test_sanitized_base_config_rejects_secrets_and_account_routes(tmp_path: Path) -> None:
+    path = tmp_path / "base.config.json"
+    for field, value in (
+        ("private_key", "0xsecret"),
+        ("signer_token", "secret"),
+        ("signer_server_url", "http://normal.invalid:8420"),
+        ("api_key", "secret"),
+        ("funder", "0x" + "1" * 40),
+    ):
+        path.write_text(
+            json.dumps({"account": {field: value}, "markets": [], "night_markets": []}),
+            encoding="utf-8",
+        )
+        with pytest.raises(DeploymentError, match="routing or secrets|must not pin"):
+            _load_sanitized_base_config(path)
+
+
+def test_sanitized_base_config_accepts_non_secret_strategy(tmp_path: Path) -> None:
+    path = tmp_path / "base.config.json"
+    payload = {
+        "account": {},
+        "markets": [],
+        "night_markets": [],
+        "strategy": {"post_only": True, "dual_side": True},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert _load_sanitized_base_config(path) == payload
 
 
 def test_runtime_contract_rejects_normal_signer_port(tmp_path: Path) -> None:
