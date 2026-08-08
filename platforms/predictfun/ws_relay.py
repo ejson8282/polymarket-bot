@@ -273,6 +273,7 @@ class SharedUpstreamRelay:
         self._reader_task: asyncio.Task[None] | None = None
         self._clients: dict[Any, set[str]] = {}
         self._active_topics: set[str] = set()
+        self._latest_messages: dict[str, str | bytes] = {}
         self._pending_controls: dict[int, _PendingControl] = {}
         self._pending_by_topic: dict[tuple[str, str], int] = {}
         self._deferred_subscribe_acks: dict[str, list[tuple[Any, int]]] = {}
@@ -315,6 +316,7 @@ class SharedUpstreamRelay:
             reset_idle_upstream = not self._clients
             if reset_idle_upstream:
                 self._active_topics.clear()
+                self._latest_messages.clear()
                 self._pending_controls.clear()
                 self._pending_by_topic.clear()
                 self._deferred_subscribe_acks.clear()
@@ -358,6 +360,7 @@ class SharedUpstreamRelay:
         topic = str(message["params"][0])
         control: tuple[int, _PendingControl] | None = None
         immediate: list[tuple[Any, int]] = []
+        active_subscription: tuple[Any, int, str] | None = None
         async with self._state_lock:
             if client not in self._clients:
                 raise RelayProtocolError("client_not_registered")
@@ -377,7 +380,7 @@ class SharedUpstreamRelay:
                         (client, request_id)
                     )
                 elif topic in self._active_topics:
-                    immediate.append((client, request_id))
+                    active_subscription = (client, request_id, topic)
                 elif pending_subscribe is not None:
                     pending_subscribe.acknowledgements.append(
                         (client, request_id)
@@ -434,6 +437,8 @@ class SharedUpstreamRelay:
                 else:
                     immediate.append((client, request_id))
         await self._send_results(immediate, success=True)
+        if active_subscription is not None:
+            await self._acknowledge_active_subscription(*active_subscription)
         if control is not None:
             await self._send_registered_control(*control)
 
@@ -442,6 +447,7 @@ class SharedUpstreamRelay:
             clients = list(self._clients)
             self._clients.clear()
             self._active_topics.clear()
+            self._latest_messages.clear()
             self._pending_controls.clear()
             self._pending_by_topic.clear()
             self._deferred_subscribe_acks.clear()
@@ -579,6 +585,7 @@ class SharedUpstreamRelay:
                 self._upstream = None
                 self._reader_task = None
                 self._active_topics.clear()
+                self._latest_messages.clear()
                 self._pending_controls.clear()
                 self._pending_by_topic.clear()
                 self._deferred_subscribe_acks.clear()
@@ -615,6 +622,7 @@ class SharedUpstreamRelay:
                         targets = list(self._clients)
                 elif ALLOWED_TOPIC.fullmatch(topic):
                     async with self._state_lock:
+                        self._latest_messages[topic] = raw
                         targets = [
                             client
                             for client, topics in self._clients.items()
@@ -655,6 +663,7 @@ class SharedUpstreamRelay:
                         clients = list(self._clients)
                         self._clients.clear()
                         self._active_topics.clear()
+                        self._latest_messages.clear()
                         self._pending_controls.clear()
                         self._pending_by_topic.clear()
                         self._deferred_subscribe_acks.clear()
@@ -700,10 +709,12 @@ class SharedUpstreamRelay:
                         )
                 else:
                     self._active_topics.discard(pending.topic)
+                    self._latest_messages.pop(pending.topic, None)
                     for client, _client_request_id in acknowledgements:
                         self._clients.get(client, set()).discard(pending.topic)
             elif success:
                 self._active_topics.discard(pending.topic)
+                self._latest_messages.pop(pending.topic, None)
                 deferred = self._deferred_subscribe_acks.pop(
                     pending.topic,
                     [],
@@ -745,6 +756,31 @@ class SharedUpstreamRelay:
             raise RelayProtocolError("upstream_unsubscribe_rejected")
         if follow_up is not None:
             await self._send_registered_control(*follow_up)
+
+    async def _acknowledge_active_subscription(
+        self,
+        client: Any,
+        request_id: int,
+        topic: str,
+    ) -> None:
+        failed = False
+        async with self._state_lock:
+            if (
+                client not in self._clients
+                or topic not in self._clients[client]
+                or topic not in self._active_topics
+            ):
+                failed = True
+            else:
+                try:
+                    await _send_subscription_result(client, request_id)
+                    cached = self._latest_messages.get(topic)
+                    if cached is not None:
+                        await client.send(cached)
+                except Exception:
+                    failed = True
+        if failed:
+            await self.remove_client(client)
 
     async def _send_results(
         self,
