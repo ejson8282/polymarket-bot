@@ -1937,6 +1937,10 @@ def _parent_event_guard_engine():
     )()
     engine.send_discord = lambda *_args, **_kwargs: None
     engine._notify_risk = lambda *_args, **_kwargs: None
+    engine._status_notifications = []
+    engine._notify_status = lambda title, **fields: engine._status_notifications.append(
+        (title, fields)
+    )
     canceled = []
 
     async def get_live_orders(token_id):
@@ -1979,6 +1983,18 @@ def test_parent_event_shock_cancels_all_related_conditions_once():
     )
     assert engine._parent_event_cooldown_until["fed"] > time.time() + 1700
     assert len(canceled) == 4
+    assert engine._status_notifications == [
+        (
+            "关联市场已暂停",
+            {
+                "parent_event": "fed",
+                "trigger": "101",
+                "markets": 4,
+                "cooldown_sec": 1800.0,
+                "reason": "bba_jump:test",
+            },
+        )
+    ]
 
 
 def test_fill_shock_leaves_primary_condition_to_fill_halt_path():
