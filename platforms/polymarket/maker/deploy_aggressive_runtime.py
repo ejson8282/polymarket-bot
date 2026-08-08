@@ -134,6 +134,10 @@ class AggressivePaths:
         return self.runtime_root / "accounts.runtime.json"
 
     @property
+    def base_config(self) -> Path:
+        return self.runtime_root / "base.config.json"
+
+    @property
     def market_universe(self) -> Path:
         return self.runtime_root / "markets.runtime.json"
 
@@ -201,6 +205,7 @@ def _validate_paths(paths: AggressivePaths) -> None:
         paths.release_root,
         paths.current_link,
         paths.runtime_root,
+        paths.base_config,
         paths.python,
         paths.unit_file,
         paths.redis_unit_file,
@@ -292,6 +297,31 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
     return values
 
 
+def _load_sanitized_base_config(path: Path) -> Dict[str, Any]:
+    base = _load_json(path, "aggressive base config")
+    account = base.get("account")
+    if not isinstance(account, dict):
+        raise DeploymentError("aggressive base config requires an account object")
+
+    forbidden = {
+        "api_key",
+        "api_passphrase",
+        "api_secret",
+        "private_key",
+        "signer_server_url",
+        "signer_token",
+    }
+    present = sorted(key for key in forbidden if str(account.get(key) or "").strip())
+    if present:
+        raise DeploymentError(
+            "aggressive base config contains account routing or secrets: "
+            + ", ".join(present)
+        )
+    if str(account.get("funder") or "").strip():
+        raise DeploymentError("aggressive base config must not pin an account funder")
+    return base
+
+
 def _runtime_contract(paths: AggressivePaths, release_dir: Path) -> Dict[str, Any]:
     env = _parse_env_file(paths.runtime_env)
     if env["POLYMARKET_HOST_ID"].strip().lower() != paths.profile_name:
@@ -326,10 +356,7 @@ def _runtime_contract(paths: AggressivePaths, release_dir: Path) -> Dict[str, An
     if not _SHA256_RE.fullmatch(expected_roster) or expected_roster != roster_sha:
         raise DeploymentError("reviewed aggressive roster digest does not match")
 
-    base = _load_json(
-        release_dir / "platforms" / "polymarket" / "maker" / "config.json",
-        "aggressive base config",
-    )
+    base = _load_sanitized_base_config(paths.base_config)
     market_payload = load_json_object(paths.market_universe)
     rendered_base = apply_market_universe(base, market_payload)
     market_sha = market_universe_sha256(rendered_base)
@@ -410,7 +437,7 @@ def _generate_configs(
                 "--roster",
                 str(paths.roster),
                 "--base",
-                str(release_dir / "platforms/polymarket/maker/config.json"),
+                str(paths.base_config),
                 "--market-universe",
                 str(paths.market_universe),
                 "--out-dir",

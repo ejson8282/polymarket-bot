@@ -134,6 +134,9 @@ inputs outside Git:
 
 - `accounts.runtime.json`: one public funder address and a managed aggressive
   profile with `target_principal_usdc: 200`;
+- `base.config.json`: the reviewed strategy/risk template with an empty
+  `account` object. It must not contain a funder, private key, signer URL/token,
+  or API credentials;
 - `markets.runtime.json`: a reviewed, non-secret market universe;
 - `env/runtime.env`: dedicated signer URL/token and the reviewed roster/market
   digests;
