@@ -1021,6 +1021,75 @@ def test_proxy_idempotency_replays_same_payload_and_rejects_mismatch(
     assert upstream_calls == ["submit"]
 
 
+def test_proxy_rejected_order_preserves_only_safe_upstream_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+
+    monkeypatch.setattr(
+        proxy,
+        "_signed_order_payload",
+        lambda *_args, **_kwargs: {
+            "order": {
+                "side": 0,
+                "makerAmount": str(8 * 10**17),
+                "takerAmount": str(2 * 10**18),
+                "maker": "0x0000000000000000000000000000000000000001",
+                "expiration": "2000000000",
+            },
+            "signed_order": {"signature": "must-not-leak"},
+            "amounts": {"pricePerShare": str(4 * 10**17)},
+            "order_hash": "0x" + "5" * 64,
+            "signer_mode": "predict_account",
+        },
+    )
+
+    def upstream(
+        _env: Any,
+        _alias: str,
+        path: str,
+        **_kwargs: Any,
+    ) -> tuple[int, dict[str, Any]]:
+        if path == "/v1/orders":
+            return 400, {
+                "success": False,
+                "error": "upstream_rejected",
+                "api_key": "must-not-leak",
+                "upstream": {
+                    "success": False,
+                    "code": "ORDER_SIZE_TOO_SMALL",
+                    "error": "invalid_order",
+                    "message": "Order size is below the market minimum",
+                    "private_key": "must-not-leak",
+                    "signature": "must-not-leak",
+                },
+            }
+        return 404, {"success": False, "error": "not_found"}
+
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+
+    result = proxy.submit_order(
+        _proxy_env(), "account_01", _proxy_order_body()
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == 400
+    assert result["error"] == "order_rejected"
+    assert result["upstream"] == {
+        "success": False,
+        "code": "ORDER_SIZE_TOO_SMALL",
+        "error": "invalid_order",
+        "message": "Order size is below the market minimum",
+    }
+    serialized = json.dumps(result)
+    assert "must-not-leak" not in serialized
+    ledger = json.loads((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    ledger_serialized = json.dumps(ledger)
+    assert "upstream" not in ledger_serialized
+    assert "must-not-leak" not in ledger_serialized
+
+
 def test_proxy_failed_retry_reuses_expiration_and_order_hash_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

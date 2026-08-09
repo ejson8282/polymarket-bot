@@ -331,7 +331,16 @@ def _extract_token(payload: dict[str, object]) -> str | None:
 def _safe_upstream_error(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {"body": str(payload)[:180]}
-    return {key: value for key, value in payload.items() if key in {"success", "code", "error", "message"}}
+    nested = payload.get("upstream")
+    if isinstance(nested, dict):
+        nested_safe = _safe_upstream_error(nested)
+        if nested_safe:
+            return nested_safe
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in {"success", "code", "error", "message"}
+    }
 
 
 def _format_token_amount(raw: int, decimals: int) -> str:
