@@ -1,0 +1,25 @@
+[Unit]
+Description=Polymarket aggressive LP isolated loopback proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-aggressive-runtime
+Environment=POLYMARKET_REQUIRE_RELEASE=1
+Environment=POLYMARKET_RUNTIME_SCOPE=aggressive
+EnvironmentFile=/home/ubuntu/polymarket-aggressive-runtime/env/release.env
+EnvironmentFile=/home/ubuntu/polymarket-aggressive-runtime/env/runtime.env
+ExecStartPre=/home/ubuntu/polymarket-aggressive-venv/bin/python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/release_guard.py /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/aggressive_proxy.py
+ExecStart=/home/ubuntu/polymarket-aggressive-venv/bin/python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/maker/aggressive_proxy.py --roster /home/ubuntu/polymarket-aggressive-runtime/accounts.runtime.json --host-id ${POLYMARKET_HOST_ID}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
