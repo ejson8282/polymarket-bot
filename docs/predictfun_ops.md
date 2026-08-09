@@ -175,15 +175,19 @@ depend on the executor protocol rather than Predict.fun SDK details. The live
 executor accepts only a signer URL and account alias; it must never accept or
 store an API key or private key on the VPS.
 
-`live_order_once.py` performs a fresh market check immediately before submit.
-It blocks if required status or execution-mode fields are missing, the market
-closed, the token disappeared, fee or market mode changed, the hard notional
-cap is absent/exceeded, or the post-only order would cross the fresh top of
-book.
+`live_order_once.py` is a canary tool, not a persistent order launcher. Live
+mode requires `--cancel-after` (the old `--remove-after` spelling is only a
+compatibility alias). Before submission it verifies that the signer has the
+configured minimum BNB balance for cancellation, then performs the fresh
+market, allowance, post-only and notional checks. After submission it calls
+the full `/cancel-orders` route and succeeds only when the BSC transaction
+receipt is mined successfully and the official account API no longer reports
+the order as open. Any failed preflight, submission or verified cancellation
+returns a non-zero process status.
 
-`remove-order-by-hash` is recorded as `off_book_only`. It is not a complete
-cancellation until a reviewed signer route performs and verifies the matching
-on-chain cancellation.
+The separate `remove-order-by-hash` route remains `off_book_only` and must not
+be used as proof of cancellation. A real canary still requires a distinct user
+authorization after the reviewed release has been deployed.
 
 Unified Dashboard code and service operations belong to `latitude-alpha`, not
 this repository.

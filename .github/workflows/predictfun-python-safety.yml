@@ -6,6 +6,8 @@ on:
       - "platforms/predictfun/**"
       - "tests/test_predictfun_*.py"
       - "deploy/systemd/predictfun-*"
+      - "deploy/mac-mini/predictfun_api_proxy.py"
+      - "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist"
       - "deploy/mac-mini/ai.codex.predictfun-ws-relay.plist"
       - "requirements.txt"
       - ".github/workflows/predictfun-python-safety.yml"
@@ -15,6 +17,8 @@ on:
       - "platforms/predictfun/**"
       - "tests/test_predictfun_*.py"
       - "deploy/systemd/predictfun-*"
+      - "deploy/mac-mini/predictfun_api_proxy.py"
+      - "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist"
       - "deploy/mac-mini/ai.codex.predictfun-ws-relay.plist"
       - "requirements.txt"
       - ".github/workflows/predictfun-python-safety.yml"
@@ -46,6 +50,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/test_predictfun_maker_safety.py
+          tests/test_predictfun_live_execution.py
           tests/test_predictfun_release.py
           tests/test_predictfun_status.py
           tests/test_predictfun_ws_watch.py
@@ -60,5 +65,7 @@ jobs:
           platforms/predictfun/ws_relay.py
           platforms/predictfun/ws_watch.py
           platforms/predictfun/maker/deploy_release.py
+          platforms/predictfun/maker/live_order_once.py
           platforms/predictfun/maker/runner.py
           platforms/predictfun/maker/status.py
+          deploy/mac-mini/predictfun_api_proxy.py

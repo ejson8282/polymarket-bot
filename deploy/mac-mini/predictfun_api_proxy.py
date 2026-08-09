@@ -1192,6 +1192,54 @@ def _receipt_summary(receipt: object) -> dict[str, object]:
     }
 
 
+def _cancel_gas_context(
+    env: dict[str, str], alias: str, min_gas_bnb_raw: object
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    context = _account_auth_context(env, alias)
+    rpc_url = str(
+        env.get("PREDICTFUN_BSC_RPC_URL")
+        or env.get("BSC_RPC_URL")
+        or env.get("BNB_RPC_URL")
+        or PREDICT_BSC_RPC_URL
+    )
+    from web3 import Web3
+
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+    if not w3.is_connected():
+        return None, {"ok": False, "error": "bsc_rpc_unavailable", "alias": alias}
+    gas_balance_wei = int(
+        w3.eth.get_balance(
+            Web3.to_checksum_address(str(context["eoa_address"]))
+        )
+    )
+    min_gas_bnb = Decimal(_canonical_decimal(min_gas_bnb_raw or "0.0001"))
+    if min_gas_bnb <= 0:
+        raise ValueError("min_gas_bnb_must_be_positive")
+    gas_balance_bnb = Decimal(gas_balance_wei) / Decimal(10**18)
+    result = {
+        "ok": gas_balance_bnb >= min_gas_bnb,
+        "alias": alias,
+        "gas_balance_bnb": _format_token_amount(gas_balance_wei, 18),
+        "min_gas_bnb": str(min_gas_bnb),
+        "error": (
+            "" if gas_balance_bnb >= min_gas_bnb else "insufficient_bnb_for_cancel"
+        ),
+    }
+    return (context if result["ok"] else None), result
+
+
+def _cancel_receipt_verified(summary: dict[str, object]) -> bool:
+    return (
+        summary.get("success") is True
+        and int(summary.get("receipt_status") or 0) == 1
+        and bool(
+            re.fullmatch(
+                r"0x[0-9a-fA-F]{64}", str(summary.get("tx_hash") or "")
+            )
+        )
+    )
+
+
 def cancel_orders_on_chain(
     env: dict[str, str], alias: str, body: dict[str, object]
 ) -> dict[str, object]:
@@ -1204,64 +1252,57 @@ def cancel_orders_on_chain(
             "error": "explicit_cancel_confirmation_required",
             "alias": alias,
         }
+    preflight_only = body.get("preflight_only") is True
     hashes_raw = body.get("hashes") or (
         [body.get("hash")] if body.get("hash") else []
     )
     hashes = [str(value) for value in hashes_raw if value]
-    if not hashes:
+    if preflight_only and hashes:
+        return {
+            "ok": False,
+            "error": "preflight_must_not_include_hashes",
+            "alias": alias,
+        }
+    if not preflight_only and not hashes:
         return {"ok": False, "error": "missing_hashes", "alias": alias}
     if len(hashes) > 100 or any(
         not re.fullmatch(r"0x[0-9a-fA-F]{64}", value) for value in hashes
     ):
         return {"ok": False, "error": "invalid_order_hash", "alias": alias}
 
-    try:
-        from predict_sdk import (
-            CancelOrdersOptions,
-            ChainId,
-            Order,
-            OrderBuilder,
-            OrderBuilderOptions,
-            Side,
-            SignatureType,
-        )
-    except ImportError:
-        return {
-            "ok": False,
-            "error": "predict_sdk_not_installed",
-            "alias": alias,
-        }
-
     with _account_lock(alias):
-        context = _account_auth_context(env, alias)
+        context, gas_preflight = _cancel_gas_context(
+            env, alias, body.get("min_gas_bnb") or "0.0001"
+        )
+        if not gas_preflight.get("ok") or context is None:
+            return gas_preflight
+        if preflight_only:
+            return {
+                **gas_preflight,
+                "preflight_only": True,
+                "on_chain_action": False,
+            }
+
+        try:
+            from predict_sdk import (
+                CancelOrdersOptions,
+                ChainId,
+                Order,
+                OrderBuilder,
+                OrderBuilderOptions,
+                Side,
+                SignatureType,
+            )
+        except ImportError:
+            return {
+                "ok": False,
+                "error": "predict_sdk_not_installed",
+                "alias": alias,
+            }
+
         expected_maker = str(
             context.get("predict_account") or context.get("eoa_address") or ""
         ).lower()
-        rpc_url = str(
-            env.get("PREDICTFUN_BSC_RPC_URL")
-            or env.get("BSC_RPC_URL")
-            or env.get("BNB_RPC_URL")
-            or PREDICT_BSC_RPC_URL
-        )
-        from web3 import Web3
-
-        w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
-        if not w3.is_connected():
-            return {"ok": False, "error": "bsc_rpc_unavailable", "alias": alias}
-        gas_balance_wei = int(
-            w3.eth.get_balance(
-                Web3.to_checksum_address(str(context["eoa_address"]))
-            )
-        )
-        min_gas_bnb = Decimal(str(body.get("min_gas_bnb") or "0.0001"))
-        if Decimal(gas_balance_wei) / Decimal(10**18) < min_gas_bnb:
-            return {
-                "ok": False,
-                "error": "insufficient_bnb_for_cancel",
-                "alias": alias,
-                "gas_balance_bnb": _format_token_amount(gas_balance_wei, 18),
-                "min_gas_bnb": str(min_gas_bnb),
-            }
 
         groups: dict[tuple[bool, bool], list[object]] = {}
         for order_hash in hashes:
@@ -1352,10 +1393,10 @@ def cancel_orders_on_chain(
                 **_receipt_summary(result.receipt),
             }
             transactions.append(summary)
-            if result.success is not True:
+            if not _cancel_receipt_verified(summary):
                 return {
                     "ok": False,
-                    "error": "on_chain_cancel_failed",
+                    "error": "on_chain_cancel_receipt_unverified",
                     "alias": alias,
                     "off_book_removed": True,
                     "transactions": transactions,
