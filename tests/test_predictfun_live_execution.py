@@ -1300,6 +1300,137 @@ def test_live_canary_refuses_submission_without_verified_cancel(
     assert "--live requires --cancel-after" in capsys.readouterr().err
 
 
+def test_live_canary_refuses_submission_without_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        live_order_once.sys,
+        "argv",
+        [
+            "live_order_once.py",
+            "--live",
+            "--cancel-after",
+            "--confirm",
+            "SUBMIT_PREDICTFUN_ORDER",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        live_order_once.main()
+
+    assert exc.value.code == 2
+    assert "--live requires --idempotency-key" in capsys.readouterr().err
+
+
+def test_live_canary_forwards_explicit_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    market = {
+        "id": 10835,
+        "title": "Canary market",
+        "feeRateBps": 200,
+        "isNegRisk": False,
+        "isYieldBearing": True,
+    }
+    outcome = {
+        "name": "Yes",
+        "onChainId": "123",
+        "bestBid": {"price": "0.052"},
+        "bestAsk": {"price": "0.053"},
+    }
+
+    class FakeClient:
+        def __init__(self, *, base_url: str) -> None:
+            assert base_url == "http://api"
+
+        def get_market(self, market_id: int) -> dict[str, Any]:
+            assert market_id == 10835
+            return {"data": market}
+
+    submitted: list[tuple[str, dict[str, Any], float]] = []
+
+    def post(
+        url: str, *, json: dict[str, Any], timeout: float
+    ) -> _CanaryResponse:
+        submitted.append((url, json, timeout))
+        return _CanaryResponse(
+            200,
+            {"ok": True, "order_hash": "0x" + "1" * 64},
+        )
+
+    monkeypatch.setattr(
+        live_order_once,
+        "load_config",
+        lambda _path: {
+            "base_url": "http://api",
+            "signer": {"base_url": "http://signer", "timeout_sec": 20},
+        },
+    )
+    monkeypatch.setattr(live_order_once, "PredictFunClient", FakeClient)
+    monkeypatch.setattr(
+        live_order_once,
+        "_pick_market",
+        lambda _client, _cfg, _market_id: market,
+    )
+    monkeypatch.setattr(
+        live_order_once,
+        "_pick_outcome",
+        lambda _market, _outcome_name: outcome,
+    )
+    monkeypatch.setattr(
+        live_order_once,
+        "_cancel_preflight",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        live_order_once,
+        "_allowance_preflight",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        live_order_once,
+        "validate_final_order",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(live_order_once.requests, "post", post)
+    monkeypatch.setattr(
+        live_order_once,
+        "_cancel_submitted_order",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        live_order_once.sys,
+        "argv",
+        [
+            "live_order_once.py",
+            "--market-id",
+            "10835",
+            "--outcome",
+            "YES",
+            "--size",
+            "1",
+            "--max-notional",
+            "0.10",
+            "--idempotency-key",
+            "canary-account01-20260809-01",
+            "--live",
+            "--cancel-after",
+            "--confirm",
+            "SUBMIT_PREDICTFUN_ORDER",
+        ],
+    )
+
+    assert live_order_once.main() == 0
+    assert len(submitted) == 1
+    url, body, timeout = submitted[0]
+    assert url == "http://signer/predictfun/accounts/account_01/submit-order"
+    assert timeout == 20
+    assert body["market_id"] == 10835
+    assert body["idempotency_key"] == "canary-account01-20260809-01"
+    assert body["intent_id"] == "canary-account01-20260809-01"
+
+
 def test_live_canary_failure_returns_nonzero(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
