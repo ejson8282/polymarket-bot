@@ -493,6 +493,9 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     if not engine.is_file() or not guard.is_file():
         raise DeploymentError("release is missing maker engine or release guard")
     artifacts = [engine]
+    multi_runner = release_dir / "platforms/polymarket/maker/multi_runner.py"
+    if multi_runner.is_file():
+        artifacts.append(multi_runner)
     aggressive_proxy = release_dir / "platforms/polymarket/maker/aggressive_proxy.py"
     if aggressive_proxy.is_file():
         artifacts.append(aggressive_proxy)
