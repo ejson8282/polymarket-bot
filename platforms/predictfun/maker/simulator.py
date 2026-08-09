@@ -51,9 +51,20 @@ def update_simulation(
         for row in execution_report.get("results") or []
         if isinstance(row, dict) and row.get("ok") and row.get("intent_id")
     }
-    for action, intent_id in successful:
-        if action == "cancel":
-            active_orders.pop(intent_id, None)
+    cancelled_intent_ids = {
+        intent_id for action, intent_id in successful if action == "cancel"
+    }
+    # The simulation state can survive a process or release restart while the
+    # dry-run managed-order registry does not. Planner cancels remain
+    # authoritative for virtual orders even when there is no registry entry to
+    # produce an execution result.
+    cancelled_intent_ids.update(
+        str(item.get("intent_id"))
+        for item in diff.get("cancel") or []
+        if isinstance(item, dict) and item.get("intent_id")
+    )
+    for intent_id in cancelled_intent_ids:
+        active_orders.pop(intent_id, None)
     for item in diff.get("create") or []:
         if (
             isinstance(item, dict)
