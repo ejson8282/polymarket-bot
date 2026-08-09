@@ -19,6 +19,9 @@ from platforms.predictfun.maker.validation import validate_final_order
 from platforms.predictfun.scanner import scan_markets
 
 
+IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
+
+
 def _dec(value: Any, default: str = "0") -> Decimal:
     try:
         return Decimal(str(value))
@@ -244,6 +247,11 @@ def main() -> int:
     parser.add_argument("--price", default="", help="Default auto-picks a non-crossing BUY price.")
     parser.add_argument("--size", default="1", help="Share quantity. Default 1 share.")
     parser.add_argument("--max-notional", default="1", help="Hard USDC notional cap for live submission.")
+    parser.add_argument(
+        "--idempotency-key",
+        default="",
+        help="Required stable operator-supplied key for a live canary and any retry.",
+    )
     parser.add_argument("--live", action="store_true", help="Actually submit the order.")
     parser.add_argument("--confirm", default="", help="Must be SUBMIT_PREDICTFUN_ORDER for live submission.")
     parser.add_argument(
@@ -267,6 +275,13 @@ def main() -> int:
         parser.error(
             "--live requires --cancel-after so the canary cannot leave an order open"
         )
+    idempotency_key = str(args.idempotency_key or "").strip()
+    if args.live and not idempotency_key:
+        parser.error("--live requires --idempotency-key")
+    if idempotency_key and not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
+        parser.error(
+            "--idempotency-key must be 1-160 characters using letters, digits, '.', '_', ':', or '-'"
+        )
 
     config_path = Path(args.config).resolve()
     cfg = load_config(config_path)
@@ -277,6 +292,7 @@ def main() -> int:
         raise RuntimeError("SELL requires explicit --price and existing position balance")
     price = _safe_buy_price(outcome, args.price) if args.side == "BUY" else args.price
     body = {
+        "market_id": int(market["id"]),
         "side": args.side,
         "token_id": str(outcome["onChainId"]),
         "price": price,
@@ -289,6 +305,9 @@ def main() -> int:
         "self_trade_prevention": "CANCEL_MAKER",
         "max_notional_usdc": args.max_notional,
     }
+    if idempotency_key:
+        body["idempotency_key"] = idempotency_key
+        body["intent_id"] = idempotency_key
     signer_cfg = cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}
     signer_url = str(
         signer_cfg.get("base_url") or cfg.get("base_url") or ""
