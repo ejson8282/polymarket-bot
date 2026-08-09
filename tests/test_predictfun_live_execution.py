@@ -23,6 +23,7 @@ from platforms.predictfun.maker.executor import (
 )
 from platforms.predictfun.maker.intents import _configured_accounts, utc_now
 from platforms.predictfun.maker.intents import build_intents_from_plans
+from platforms.predictfun.maker import live_order_once
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.runner import (
@@ -1151,6 +1152,213 @@ def test_proxy_enforces_mac_side_order_limit(
     assert result["ok"] is False
     assert result["error"] == "max_notional_exceeded"
     assert result["max_notional_usdc"] == "8"
+
+
+def test_proxy_cancel_preflight_checks_gas_without_order_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(
+        proxy,
+        "_cancel_gas_context",
+        lambda *_args, **_kwargs: (
+            {"eoa_address": "0x0000000000000000000000000000000000000001"},
+            {
+                "ok": True,
+                "alias": "account_01",
+                "gas_balance_bnb": "0.01",
+                "min_gas_bnb": "0.0001",
+                "error": "",
+            },
+        ),
+    )
+
+    result = proxy.cancel_orders_on_chain(
+        _proxy_env(),
+        "account_01",
+        {
+            "cancel": True,
+            "confirm": "CANCEL_PREDICTFUN_ORDERS",
+            "preflight_only": True,
+            "min_gas_bnb": "0.0001",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["preflight_only"] is True
+    assert result["on_chain_action"] is False
+    assert result["gas_balance_bnb"] == "0.01"
+
+
+def test_proxy_cancel_preflight_rejects_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(
+        proxy,
+        "_cancel_gas_context",
+        lambda *_args, **_kwargs: pytest.fail("unsafe preflight reached wallet"),
+    )
+
+    result = proxy.cancel_orders_on_chain(
+        _proxy_env(),
+        "account_01",
+        {
+            "cancel": True,
+            "confirm": "CANCEL_PREDICTFUN_ORDERS",
+            "preflight_only": True,
+            "hashes": ["0x" + "1" * 64],
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "preflight_must_not_include_hashes"
+
+
+def test_proxy_requires_successful_mined_cancel_receipt() -> None:
+    proxy = _load_proxy_module()
+    valid = {
+        "success": True,
+        "receipt_status": 1,
+        "tx_hash": "0x" + "1" * 64,
+    }
+    assert proxy._cancel_receipt_verified(valid) is True
+    assert proxy._cancel_receipt_verified({**valid, "receipt_status": 0}) is False
+    assert proxy._cancel_receipt_verified({**valid, "tx_hash": "0x123"}) is False
+
+
+class _CanaryResponse:
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+def test_live_canary_preflights_cancel_gas_before_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def post(url: str, *, json: dict[str, Any], timeout: float) -> _CanaryResponse:
+        assert timeout == 20
+        calls.append((url, json))
+        return _CanaryResponse(
+            200,
+            {
+                "ok": True,
+                "preflight_only": True,
+                "on_chain_action": False,
+                "gas_balance_bnb": "0.01",
+                "min_gas_bnb": "0.0001",
+            },
+        )
+
+    monkeypatch.setattr(live_order_once.requests, "post", post)
+
+    result = live_order_once._cancel_preflight(
+        signer_url="http://signer",
+        account="account_01",
+        timeout=20,
+        min_gas_bnb="0.0001",
+    )
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            "http://signer/predictfun/accounts/account_01/cancel-orders",
+            {
+                "cancel": True,
+                "confirm": "CANCEL_PREDICTFUN_ORDERS",
+                "preflight_only": True,
+                "min_gas_bnb": "0.0001",
+            },
+        )
+    ]
+
+
+def test_live_canary_refuses_submission_without_verified_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        live_order_once.sys,
+        "argv",
+        [
+            "live_order_once.py",
+            "--live",
+            "--confirm",
+            "SUBMIT_PREDICTFUN_ORDER",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        live_order_once.main()
+
+    assert exc.value.code == 2
+    assert "--live requires --cancel-after" in capsys.readouterr().err
+
+
+def test_live_canary_failure_returns_nonzero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert live_order_once._emit_result({"ok": False, "error": "cancel_failed"}) == 1
+    assert '"error": "cancel_failed"' in capsys.readouterr().out
+
+
+def test_live_canary_requires_verified_on_chain_cancel_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "ok": True,
+        "verified": True,
+        "on_chain_cancelled": True,
+        "off_book_removed": True,
+        "open_hashes": [],
+        "transactions": [
+            {
+                "success": True,
+                "receipt_status": 1,
+                "tx_hash": "0x" + "2" * 64,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        live_order_once.requests,
+        "post",
+        lambda *_args, **_kwargs: _CanaryResponse(200, payload),
+    )
+
+    result = live_order_once._cancel_submitted_order(
+        signer_url="http://signer",
+        account="account_01",
+        timeout=20,
+        order_hash="0x" + "1" * 64,
+        min_gas_bnb="0.0001",
+    )
+
+    assert result["ok"] is True
+    assert result["verified"] is True
+    assert result["receipts_verified"] is True
+
+    payload["transactions"][0]["receipt_status"] = 0
+    failed = live_order_once._cancel_submitted_order(
+        signer_url="http://signer",
+        account="account_01",
+        timeout=20,
+        order_hash="0x" + "1" * 64,
+        min_gas_bnb="0.0001",
+    )
+    assert failed["ok"] is False
+    assert failed["receipts_verified"] is False
+
+
+def test_live_canary_never_uses_off_book_only_remove_endpoint() -> None:
+    source = (
+        Path(live_order_once.__file__).read_text(encoding="utf-8")
+    )
+    assert "remove-order-by-hash" not in source
 
 
 @pytest.mark.parametrize(

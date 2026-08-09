@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
@@ -28,6 +29,11 @@ def _dec(value: Any, default: str = "0") -> Decimal:
 def _fmt(value: Decimal, places: int = 3) -> str:
     quant = Decimal(1).scaleb(-places)
     return str(value.quantize(quant, rounding=ROUND_DOWN).normalize())
+
+
+def _emit_result(result: dict[str, Any]) -> int:
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") is True else 1
 
 
 def _mode_key(*, is_neg_risk: bool, is_yield_bearing: bool) -> str:
@@ -75,6 +81,105 @@ def _allowance_preflight(
         "required_notional": str(required_notional),
         "spender": row.get("spender"),
         "error": "" if allowance >= required_notional else "collateral_allowance_too_low",
+    }
+
+
+def _cancel_preflight(
+    *, signer_url: str, account: str, timeout: float, min_gas_bnb: str
+) -> dict[str, Any]:
+    try:
+        resp = requests.post(
+            f"{signer_url}/predictfun/accounts/{account}/cancel-orders",
+            json={
+                "cancel": True,
+                "confirm": "CANCEL_PREDICTFUN_ORDERS",
+                "preflight_only": True,
+                "min_gas_bnb": min_gas_bnb,
+            },
+            timeout=timeout,
+        )
+        payload = resp.json()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "cancel_preflight_failed",
+            "detail": type(exc).__name__,
+        }
+    payload = payload if isinstance(payload, dict) else {}
+    ok = (
+        resp.status_code == 200
+        and payload.get("ok") is True
+        and payload.get("preflight_only") is True
+        and payload.get("on_chain_action") is False
+    )
+    return {
+        "ok": ok,
+        "status": resp.status_code,
+        "gas_balance_bnb": payload.get("gas_balance_bnb"),
+        "min_gas_bnb": payload.get("min_gas_bnb") or min_gas_bnb,
+        "error": "" if ok else str(payload.get("error") or "cancel_preflight_failed"),
+        "response": payload,
+    }
+
+
+def _cancel_submitted_order(
+    *,
+    signer_url: str,
+    account: str,
+    timeout: float,
+    order_hash: str,
+    min_gas_bnb: str,
+) -> dict[str, Any]:
+    try:
+        resp = requests.post(
+            f"{signer_url}/predictfun/accounts/{account}/cancel-orders",
+            json={
+                "cancel": True,
+                "confirm": "CANCEL_PREDICTFUN_ORDERS",
+                "hashes": [order_hash],
+                "min_gas_bnb": min_gas_bnb,
+            },
+            timeout=timeout,
+        )
+        payload = resp.json()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "verified_cancel_failed",
+            "detail": type(exc).__name__,
+        }
+    payload = payload if isinstance(payload, dict) else {}
+    transactions = payload.get("transactions")
+    transactions = transactions if isinstance(transactions, list) else []
+    receipts_verified = bool(transactions) and all(
+        isinstance(row, dict)
+        and row.get("success") is True
+        and int(row.get("receipt_status") or 0) == 1
+        and bool(
+            re.fullmatch(
+                r"0x[0-9a-fA-F]{64}", str(row.get("tx_hash") or "")
+            )
+        )
+        for row in transactions
+    )
+    ok = (
+        resp.status_code == 200
+        and payload.get("ok") is True
+        and payload.get("verified") is True
+        and payload.get("on_chain_cancelled") is True
+        and payload.get("off_book_removed") is True
+        and not payload.get("open_hashes")
+        and receipts_verified
+    )
+    return {
+        "ok": ok,
+        "status": resp.status_code,
+        "verified": payload.get("verified") is True,
+        "on_chain_cancelled": payload.get("on_chain_cancelled") is True,
+        "receipts_verified": receipts_verified,
+        "transactions": transactions,
+        "error": "" if ok else str(payload.get("error") or "verified_cancel_failed"),
+        "response": payload,
     }
 
 
@@ -129,7 +234,7 @@ def _safe_buy_price(outcome: dict[str, Any], explicit_price: str) -> str:
     return _fmt(max(floor, price), 3)
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Submit one tiny Predict.fun post-only order through Mac mini signer; default is preview only.")
     parser.add_argument("--config", default="platforms/predictfun/maker/config.mainnet.json")
     parser.add_argument("--account", default="account_01")
@@ -141,8 +246,27 @@ def main() -> None:
     parser.add_argument("--max-notional", default="1", help="Hard USDC notional cap for live submission.")
     parser.add_argument("--live", action="store_true", help="Actually submit the order.")
     parser.add_argument("--confirm", default="", help="Must be SUBMIT_PREDICTFUN_ORDER for live submission.")
-    parser.add_argument("--remove-after", action="store_true", help="After a successful submit, remove by order hash.")
+    parser.add_argument(
+        "--cancel-after",
+        action="store_true",
+        help="After submission, require a verified on-chain cancellation.",
+    )
+    parser.add_argument(
+        "--remove-after",
+        action="store_true",
+        help="Deprecated alias for --cancel-after; now performs full on-chain cancellation.",
+    )
+    parser.add_argument(
+        "--min-cancel-gas-bnb",
+        default="0.0001",
+        help="Minimum signer BNB balance required before live submission.",
+    )
     args = parser.parse_args()
+    cancel_after = bool(args.cancel_after or args.remove_after)
+    if args.live and not cancel_after:
+        parser.error(
+            "--live requires --cancel-after so the canary cannot leave an order open"
+        )
 
     config_path = Path(args.config).resolve()
     cfg = load_config(config_path)
@@ -166,24 +290,56 @@ def main() -> None:
         "max_notional_usdc": args.max_notional,
     }
     signer_cfg = cfg.get("signer") if isinstance(cfg.get("signer"), dict) else {}
-    signer_url = str(signer_cfg.get("base_url") or cfg.get("base_url") or "").rstrip("/")
+    signer_url = str(
+        signer_cfg.get("base_url") or cfg.get("base_url") or ""
+    ).rstrip("/")
     if not signer_url:
         raise RuntimeError("missing_signer_base_url")
     if args.live:
+        timeout = float(signer_cfg.get("timeout_sec") or 20)
+        cancel_preflight = _cancel_preflight(
+            signer_url=signer_url,
+            account=args.account,
+            timeout=timeout,
+            min_gas_bnb=args.min_cancel_gas_bnb,
+        )
+        if not cancel_preflight.get("ok"):
+            return _emit_result(
+                {
+                    "ok": False,
+                    "status": 0,
+                    "live": True,
+                    "market_id": market.get("id"),
+                    "market_title": market.get("title"),
+                    "outcome": outcome.get("name"),
+                    "side": args.side,
+                    "price": price,
+                    "size": args.size,
+                    "error": (
+                        cancel_preflight.get("error")
+                        or "cancel_preflight_failed"
+                    ),
+                    "cancel_preflight": cancel_preflight,
+                }
+            )
         mode_key = _mode_key(
             is_neg_risk=bool(market.get("isNegRisk", False)),
             is_yield_bearing=bool(market.get("isYieldBearing", False)),
         )
-        required_notional = _buy_notional_usdc(price, args.size) if args.side == "BUY" else Decimal("0")
+        required_notional = (
+            _buy_notional_usdc(price, args.size)
+            if args.side == "BUY"
+            else Decimal("0")
+        )
         allowance_check = _allowance_preflight(
             signer_url=signer_url,
             account=args.account,
-            timeout=float(signer_cfg.get("timeout_sec") or 20),
+            timeout=timeout,
             mode_key=mode_key,
             required_notional=required_notional,
         )
         if args.side == "BUY" and not allowance_check.get("ok"):
-            print(json.dumps(
+            return _emit_result(
                 {
                     "ok": False,
                     "status": 0,
@@ -196,14 +352,15 @@ def main() -> None:
                     "size": args.size,
                     "error": allowance_check.get("error") or "allowance_preflight_failed",
                     "allowance": allowance_check,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ))
-            return
+                }
+            )
         try:
             fresh_payload = client.get_market(int(market.get("id") or 0))
-            fresh_market = fresh_payload.get("data") if isinstance(fresh_payload.get("data"), dict) else {}
+            fresh_market = (
+                fresh_payload.get("data")
+                if isinstance(fresh_payload.get("data"), dict)
+                else {}
+            )
             final_preflight = validate_final_order(
                 original_market=market,
                 fresh_market=fresh_market,
@@ -214,9 +371,12 @@ def main() -> None:
                 max_notional=_dec(args.max_notional),
             )
         except Exception as exc:
-            final_preflight = {"ok": False, "reason": f"fresh_market_check_failed:{type(exc).__name__}"}
+            final_preflight = {
+                "ok": False,
+                "reason": f"fresh_market_check_failed:{type(exc).__name__}",
+            }
         if not final_preflight.get("ok"):
-            print(json.dumps(
+            return _emit_result(
                 {
                     "ok": False,
                     "status": 0,
@@ -229,11 +389,8 @@ def main() -> None:
                     "size": args.size,
                     "error": "final_preflight_blocked",
                     "final_preflight": final_preflight,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ))
-            return
+                }
+            )
         body["submit"] = True
         body["confirm"] = args.confirm
         endpoint = "submit-order"
@@ -259,20 +416,28 @@ def main() -> None:
     }
     if args.live:
         result["final_preflight"] = final_preflight
-    if args.live and args.remove_after and result["ok"] and payload.get("order_hash"):
-        remove_resp = requests.post(
-            f"{signer_url}/predictfun/accounts/{args.account}/remove-order-by-hash",
-            json={"remove": True, "confirm": "REMOVE_PREDICTFUN_ORDER", "hash": payload["order_hash"]},
-            timeout=float(signer_cfg.get("timeout_sec") or 20),
-        )
-        result["remove"] = {
-            "status": remove_resp.status_code,
-            "response": remove_resp.json(),
-            "scope": "off_book_only",
-            "onchain_cancel_verified": False,
-        }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+        result["cancel_preflight"] = cancel_preflight
+    if args.live and result["ok"]:
+        order_hash = str(payload.get("order_hash") or "")
+        if not order_hash:
+            result["ok"] = False
+            result["error"] = "missing_order_hash_for_verified_cancel"
+        else:
+            cancel_result = _cancel_submitted_order(
+                signer_url=signer_url,
+                account=args.account,
+                timeout=float(signer_cfg.get("timeout_sec") or 20),
+                order_hash=order_hash,
+                min_gas_bnb=args.min_cancel_gas_bnb,
+            )
+            result["cancel"] = cancel_result
+            if not cancel_result.get("ok"):
+                result["ok"] = False
+                result["error"] = (
+                    cancel_result.get("error") or "verified_cancel_failed"
+                )
+    return _emit_result(result)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
