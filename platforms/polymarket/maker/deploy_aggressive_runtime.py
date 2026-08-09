@@ -429,11 +429,18 @@ def _unit_contract(paths: AggressivePaths, release_dir: Path) -> None:
 
 
 def _tcp_ready(host: str, port: int, timeout_seconds: float = 2.0) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds):
-            return True
-    except OSError:
-        return False
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        remaining = deadline - time.monotonic()
+        connect_timeout = min(0.5, max(0.05, remaining))
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return True
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
 
 
 def _generate_configs(

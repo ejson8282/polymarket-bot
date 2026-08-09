@@ -25,6 +25,7 @@ from deploy_aggressive_runtime import (  # noqa: E402
     _runtime_contract,
     _restore_optional_unit,
     _restore_service_state,
+    _tcp_ready,
     ServiceState,
     _unit_contract,
     _validate_host_dependencies,
@@ -35,6 +36,14 @@ from scripts.generate_configs import _render, _validate_signer_url  # noqa: E402
 
 
 SHA = "a" * 40
+
+
+class _FakeConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
 
 
 def _account() -> dict:
@@ -51,6 +60,42 @@ def _account() -> dict:
             "allocation_mode": "exclusive",
         },
     }
+
+
+def test_tcp_ready_retries_during_service_startup(monkeypatch) -> None:
+    attempts = 0
+
+    def delayed_connection(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionRefusedError
+        return _FakeConnection()
+
+    monkeypatch.setattr(
+        "deploy_aggressive_runtime.socket.create_connection",
+        delayed_connection,
+    )
+
+    assert _tcp_ready("127.0.0.1", 7901, timeout_seconds=0.2) is True
+    assert attempts == 3
+
+
+def test_tcp_ready_stops_after_deadline(monkeypatch) -> None:
+    attempts = 0
+
+    def refused_connection(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(
+        "deploy_aggressive_runtime.socket.create_connection",
+        refused_connection,
+    )
+
+    assert _tcp_ready("127.0.0.1", 7901, timeout_seconds=0) is False
+    assert attempts == 1
 
 
 def _paths(tmp_path: Path) -> AggressivePaths:
