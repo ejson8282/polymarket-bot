@@ -15,7 +15,7 @@ def _truthy(value: str) -> bool:
 
 
 def verify_release(
-    engine_path: Path,
+    artifact_path: Path,
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[dict]:
     env = environ if environ is not None else os.environ
@@ -26,8 +26,8 @@ def verify_release(
     if len(expected_sha) != 40:
         raise RuntimeError("POLYMARKET_RELEASE_SHA must be a full 40-character commit")
 
-    resolved_engine = engine_path.resolve()
-    release_root = resolved_engine.parents[3]
+    resolved_artifact = artifact_path.resolve()
+    release_root = resolved_artifact.parents[3]
     manifest_path = release_root / ".release-manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -41,9 +41,32 @@ def verify_release(
     if release_root.name != expected_sha:
         raise RuntimeError("release directory does not match expected commit")
 
-    actual_hash = hashlib.sha256(resolved_engine.read_bytes()).hexdigest()
-    if manifest.get("engine_sha256") != actual_hash:
-        raise RuntimeError("release engine hash mismatch")
+    try:
+        relative_artifact = resolved_artifact.relative_to(release_root).as_posix()
+    except ValueError as exc:
+        raise RuntimeError("release artifact escaped release directory") from exc
+
+    artifact_hashes = manifest.get("artifacts_sha256")
+    expected_hash = (
+        artifact_hashes.get(relative_artifact)
+        if isinstance(artifact_hashes, dict)
+        else None
+    )
+    engine_artifact = "platforms/polymarket/maker/engine.py"
+    if expected_hash is None and relative_artifact == engine_artifact:
+        # Keep existing immutable releases valid for their engine entrypoint.
+        expected_hash = manifest.get("engine_sha256")
+    if not isinstance(expected_hash, str):
+        raise RuntimeError("release artifact is not authorized by manifest")
+
+    actual_hash = hashlib.sha256(resolved_artifact.read_bytes()).hexdigest()
+    if expected_hash != actual_hash:
+        message = (
+            "release engine hash mismatch"
+            if relative_artifact == engine_artifact
+            else "release artifact hash mismatch"
+        )
+        raise RuntimeError(message)
     return manifest
 
 

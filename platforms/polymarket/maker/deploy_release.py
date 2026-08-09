@@ -492,11 +492,19 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     guard = release_dir / "platforms/polymarket/maker/release_guard.py"
     if not engine.is_file() or not guard.is_file():
         raise DeploymentError("release is missing maker engine or release guard")
+    artifacts = [engine]
+    aggressive_proxy = release_dir / "platforms/polymarket/maker/aggressive_proxy.py"
+    if aggressive_proxy.is_file():
+        artifacts.append(aggressive_proxy)
     return {
         "source_repository": SOURCE_REPOSITORY,
         "commit": target_sha,
         "prepared_at": _iso_now(),
         "engine_sha256": _sha256(engine),
+        "artifacts_sha256": {
+            artifact.relative_to(release_dir).as_posix(): _sha256(artifact)
+            for artifact in artifacts
+        },
     }
 
 
@@ -511,6 +519,19 @@ def _verify_release_manifest(release_dir: Path, target_sha: str) -> Dict[str, An
     engine = release_dir / "platforms/polymarket/maker/engine.py"
     if manifest.get("engine_sha256") != _sha256(engine):
         raise DeploymentError("release manifest engine hash mismatch")
+    artifact_hashes = manifest.get("artifacts_sha256")
+    if not isinstance(artifact_hashes, dict):
+        raise DeploymentError("release manifest artifact hashes are missing")
+    for relative_path, expected_hash in artifact_hashes.items():
+        if not isinstance(relative_path, str) or not isinstance(expected_hash, str):
+            raise DeploymentError("release manifest artifact hash is invalid")
+        artifact = (release_dir / relative_path).resolve()
+        try:
+            artifact.relative_to(release_dir.resolve())
+        except ValueError as exc:
+            raise DeploymentError("release manifest artifact escaped release") from exc
+        if not artifact.is_file() or expected_hash != _sha256(artifact):
+            raise DeploymentError("release manifest artifact hash mismatch")
     return manifest
 
 
