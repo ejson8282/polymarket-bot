@@ -1,8 +1,8 @@
 [Unit]
 Description=Polymarket aggressive LP isolated multi-account engine
-After=network-online.target polymarket-aggressive-redis.service
+After=network-online.target polymarket-aggressive-redis.service polymarket-aggressive-proxy.service
 Wants=network-online.target
-Requires=polymarket-aggressive-redis.service
+Requires=polymarket-aggressive-redis.service polymarket-aggressive-proxy.service
 
 [Service]
 Type=simple

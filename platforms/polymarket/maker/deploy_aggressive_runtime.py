@@ -76,6 +76,7 @@ except ImportError:  # pragma: no cover - direct script execution
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
 SERVICE_NAME = "polymarket-aggressive-engine.service"
 REDIS_SERVICE_NAME = "polymarket-aggressive-redis.service"
+PROXY_SERVICE_NAME = "polymarket-aggressive-proxy.service"
 PROFILES = {
     "aggressive-a": "vps1-production-deploy.lock",
     "aggressive-b": "vps2-production-deploy.lock",
@@ -87,6 +88,7 @@ RELEASE_TESTS = (
     "tests/test_polymarket_multi_runner.py",
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_aggressive_deploy.py",
+    "tests/test_polymarket_aggressive_proxy.py",
 )
 REQUIRED_ENV_KEYS = (
     "POLYMARKET_HOST_ID",
@@ -114,6 +116,9 @@ class AggressivePaths:
     )
     redis_unit_file: Path = Path(
         "/etc/systemd/system/polymarket-aggressive-redis.service"
+    )
+    proxy_unit_file: Path = Path(
+        "/etc/systemd/system/polymarket-aggressive-proxy.service"
     )
     lock_root: Path = Path("/home/ubuntu/latitude-runtime/locks")
 
@@ -209,6 +214,7 @@ def _validate_paths(paths: AggressivePaths) -> None:
         paths.python,
         paths.unit_file,
         paths.redis_unit_file,
+        paths.proxy_unit_file,
     )
     if any("polymarket-aggressive" not in str(path) for path in required_aggressive):
         raise DeploymentError("aggressive deployment path escaped its isolated domain")
@@ -381,6 +387,9 @@ def _unit_contract(paths: AggressivePaths, release_dir: Path) -> None:
     redis_unit = (
         release_dir / "deploy" / "systemd" / f"{REDIS_SERVICE_NAME}.example"
     ).read_text(encoding="utf-8")
+    proxy_unit = (
+        release_dir / "deploy" / "systemd" / f"{PROXY_SERVICE_NAME}.example"
+    ).read_text(encoding="utf-8")
     required = (
         "Environment=POLYMARKET_REQUIRE_RELEASE=1",
         "Environment=POLYMARKET_RUNTIME_SCOPE=aggressive",
@@ -390,13 +399,21 @@ def _unit_contract(paths: AggressivePaths, release_dir: Path) -> None:
         str(paths.runtime_root),
         "--runtime-scope aggressive",
         "--require-paused",
-        f"Requires={REDIS_SERVICE_NAME}",
+        f"Requires={REDIS_SERVICE_NAME} {PROXY_SERVICE_NAME}",
     )
     missing = [item for item in required if item not in engine_unit]
     if missing:
         raise DeploymentError("aggressive engine unit is incomplete: " + ", ".join(missing))
     if "--port 6380" not in redis_unit or str(paths.redis_dir) not in redis_unit:
         raise DeploymentError("aggressive Redis unit is incomplete")
+    proxy_required = (
+        str(paths.current_link / "platforms/polymarket/maker/aggressive_proxy.py"),
+        str(paths.roster),
+        "--host-id ${POLYMARKET_HOST_ID}",
+    )
+    proxy_missing = [item for item in proxy_required if item not in proxy_unit]
+    if proxy_missing:
+        raise DeploymentError("aggressive proxy unit is incomplete: " + ", ".join(proxy_missing))
     forbidden = (
         "/home/ubuntu/polymarket-runtime",
         "/home/ubuntu/polymarket-releases",
@@ -405,7 +422,7 @@ def _unit_contract(paths: AggressivePaths, release_dir: Path) -> None:
         ":8420",
         "--port 6379",
     )
-    combined = engine_unit + "\n" + redis_unit
+    combined = engine_unit + "\n" + redis_unit + "\n" + proxy_unit
     present = [item for item in forbidden if item in combined]
     if present:
         raise DeploymentError("aggressive units reuse normal LP inputs: " + ", ".join(present))
@@ -702,18 +719,16 @@ def _activate(
     paths.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.redis_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     staging = _generate_configs(paths, runner, release_dir, contract)
-    try:
-        _validate_runtime(paths, runner, release_dir, staging, contract, request.target_sha)
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-
     service_before = _service_snapshot(runner, "polymarket-engine.service")
     aggressive_service_before = _service_state(runner, SERVICE_NAME)
     redis_service_before = _service_state(runner, REDIS_SERVICE_NAME)
+    proxy_service_before = _service_state(runner, PROXY_SERVICE_NAME)
     old_engine_unit = paths.unit_file.read_bytes() if paths.unit_file.exists() else None
     old_redis_unit = (
         paths.redis_unit_file.read_bytes() if paths.redis_unit_file.exists() else None
+    )
+    old_proxy_unit = (
+        paths.proxy_unit_file.read_bytes() if paths.proxy_unit_file.exists() else None
     )
     prior_config = paths.config_dir.with_name(f"maker.previous-{os.getpid()}")
     config_existed = paths.config_dir.exists()
@@ -749,11 +764,36 @@ def _activate(
                 "install",
                 "-m",
                 "0644",
+                str(release_dir / "deploy/systemd" / f"{PROXY_SERVICE_NAME}.example"),
+                str(paths.proxy_unit_file),
+            )
+        )
+        runner.run(
+            (
+                "sudo",
+                "-n",
+                "install",
+                "-m",
+                "0644",
                 str(release_dir / "deploy/systemd" / f"{SERVICE_NAME}.example"),
                 str(paths.unit_file),
             )
         )
         runner.run(("sudo", "-n", "systemctl", "daemon-reload"))
+        runner.run(("sudo", "-n", "systemctl", "enable", "--now", PROXY_SERVICE_NAME))
+        for account in contract["local_accounts"]:
+            if not _tcp_ready("127.0.0.1", account.clash_port, timeout_seconds=5.0):
+                raise DeploymentError(
+                    f"isolated aggressive proxy did not open port {account.clash_port}"
+                )
+        _validate_runtime(
+            paths,
+            runner,
+            release_dir,
+            paths.config_dir,
+            contract,
+            request.target_sha,
+        )
         runner.run(("sudo", "-n", "systemctl", "enable", "--now", REDIS_SERVICE_NAME))
         if not _tcp_ready("127.0.0.1", 6380, timeout_seconds=5.0):
             raise DeploymentError("isolated aggressive Redis did not open port 6380")
@@ -780,6 +820,7 @@ def _activate(
             "rollback_sha": prior_current,
             "service": SERVICE_NAME,
             "redis_service": REDIS_SERVICE_NAME,
+            "proxy_service": PROXY_SERVICE_NAME,
             "authorization_id": request.authorization_id,
             "paused": True,
             "local_accounts": [
@@ -802,6 +843,10 @@ def _activate(
             runner.run(("sudo", "-n", "systemctl", "stop", REDIS_SERVICE_NAME))
         except Exception as rollback_exc:
             rollback_errors.append(f"stop redis: {rollback_exc}")
+        try:
+            runner.run(("sudo", "-n", "systemctl", "stop", PROXY_SERVICE_NAME))
+        except Exception as rollback_exc:
+            rollback_errors.append(f"stop proxy: {rollback_exc}")
         try:
             if prior_current != "none":
                 _atomic_symlink(paths.current_link, paths.release_root / prior_current)
@@ -832,7 +877,18 @@ def _activate(
                 previous=old_engine_unit,
                 staging_root=paths.runtime_root,
             )
+            _restore_optional_unit(
+                runner,
+                destination=paths.proxy_unit_file,
+                previous=old_proxy_unit,
+                staging_root=paths.runtime_root,
+            )
             runner.run(("sudo", "-n", "systemctl", "daemon-reload"))
+            _restore_service_state(
+                runner,
+                PROXY_SERVICE_NAME,
+                proxy_service_before,
+            )
             _restore_service_state(
                 runner,
                 REDIS_SERVICE_NAME,
@@ -896,6 +952,7 @@ def execute(
             "current_sha": current,
             "service": SERVICE_NAME,
             "redis_service": REDIS_SERVICE_NAME,
+            "proxy_service": PROXY_SERVICE_NAME,
             "lock_file": str(selected.lock_file),
             "will_touch_normal_service": False,
             "will_start_orders": False,

@@ -65,6 +65,7 @@ def _paths(tmp_path: Path) -> AggressivePaths:
         python=tmp_path / "polymarket-aggressive-venv" / "bin" / "python",
         unit_file=tmp_path / "polymarket-aggressive-engine.service",
         redis_unit_file=tmp_path / "polymarket-aggressive-redis.service",
+        proxy_unit_file=tmp_path / "polymarket-aggressive-proxy.service",
         lock_root=tmp_path / "locks",
     )
 
@@ -266,6 +267,7 @@ def test_reviewed_units_are_isolated_and_guard_the_engine(tmp_path: Path) -> Non
     for name in (
         "polymarket-aggressive-engine.service.example",
         "polymarket-aggressive-redis.service.example",
+        "polymarket-aggressive-proxy.service.example",
     ):
         (unit_dir / name).write_text(
             (ROOT / "deploy" / "systemd" / name).read_text(encoding="utf-8"),
@@ -276,7 +278,10 @@ def test_reviewed_units_are_isolated_and_guard_the_engine(tmp_path: Path) -> Non
     engine_unit = (unit_dir / "polymarket-aggressive-engine.service.example").read_text()
     assert "release_guard.py" in engine_unit
     assert "maker/engine.py" in engine_unit
-    assert "Requires=polymarket-aggressive-redis.service" in engine_unit
+    assert (
+        "Requires=polymarket-aggressive-redis.service "
+        "polymarket-aggressive-proxy.service"
+    ) in engine_unit
 
 
 class _RecordingRunner:

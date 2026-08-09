@@ -17,6 +17,7 @@ The aggressive runtime has its own:
 - Mac mini signer process, account aliases, bearer token, and URL;
 - dedicated Redis process plus the `polymarket:aggressive:*` key/channel
   namespace;
+- loopback-only CONNECT proxy ports generated from the aggressive roster;
 - account roster, market universe, sibling-order registry, and allocation
   decisions.
 
@@ -144,8 +145,9 @@ inputs outside Git:
 
 The host must also provide executable `/usr/bin/redis-server` for the dedicated
 localhost `6380` service. Activation checks both the standalone Python
-environment and Redis binary before installing or starting either aggressive
-unit.
+environment and Redis binary before installing or starting the aggressive
+units. The release-managed proxy listens only on roster ports at `127.0.0.1`,
+accepts HTTPS CONNECT traffic only, and rejects non-public destinations.
 
 The normal signer endpoint on port 8420 and normal Redis on port 6379 are
 rejected. The initial service activation is always paused and therefore cannot
