@@ -616,6 +616,54 @@ def test_failed_ws_acceptance_restores_previous_predict_state(
     assert "systemctl start predictfun-dryrun.service" not in rendered_calls
 
 
+def test_ws_acceptance_waits_past_thirty_seconds_for_first_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _sha = _paths(tmp_path)
+    paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
+    observed_after = datetime.now(timezone.utc)
+    now_ms = int(observed_after.timestamp() * 1000)
+    state = {
+        "schema_version": 2,
+        "connected": True,
+        "error": "",
+        "market_ids": [58416],
+        "orderbooks": {
+            "58416": {
+                "marketId": 58416,
+                "updateTimestampMs": now_ms,
+                "bids": [["0.40", "10"]],
+                "asks": [["0.60", "10"]],
+            }
+        },
+        "orderbook_upstream_updated_at_ms": {"58416": now_ms},
+        "trading_statuses": {"58416": {"status": "OPEN"}},
+        "market_statuses": {"58416": {"status": "REGISTERED"}},
+        "last_message_at": None,
+    }
+    paths.ws_state.write_text(json.dumps(state), encoding="utf-8")
+    sleeps = 0
+
+    def publish_first_message(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 35:
+            state["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            paths.ws_state.write_text(json.dumps(state), encoding="utf-8")
+
+    monkeypatch.setattr(
+        deploy_release_module.time,
+        "sleep",
+        publish_first_message,
+    )
+
+    accepted = deploy_release_module._verify_ws_state(paths, observed_after)
+
+    assert accepted["last_message_at"]
+    assert sleeps == 35
+
+
 def test_systemd_units_are_predict_only_and_release_guarded() -> None:
     service = (ROOT / "deploy/systemd/predictfun-dryrun.service").read_text(
         encoding="utf-8"
