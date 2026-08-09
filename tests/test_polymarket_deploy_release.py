@@ -20,9 +20,11 @@ from deploy_release import (  # noqa: E402
     DeploymentError,
     DeploymentPaths,
     DeploymentRequest,
+    _manifest_for,
     _require_drop_in,
     _require_signer_ready,
     _state_file_marker,
+    _verify_release_manifest,
     _wait_for_engine_state,
     deployment_paths_for_profile,
     deployment_lock,
@@ -675,6 +677,32 @@ def test_prepare_rejects_missing_candidate_ref(tmp_path):
             paths=paths,
             tests=("tests/test_release_smoke.py",),
         )
+
+
+def test_release_manifest_authorizes_and_verifies_aggressive_proxy(tmp_path):
+    target_sha = "c" * 40
+    release = tmp_path / target_sha
+    maker = release / "platforms" / "polymarket" / "maker"
+    maker.mkdir(parents=True)
+    (maker / "engine.py").write_text("print('engine')\n", encoding="utf-8")
+    (maker / "release_guard.py").write_text("print('guard')\n", encoding="utf-8")
+    proxy = maker / "aggressive_proxy.py"
+    proxy.write_text("print('proxy')\n", encoding="utf-8")
+
+    manifest = _manifest_for(release, target_sha)
+    proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
+    assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
+        proxy.read_bytes()
+    ).hexdigest()
+    (release / ".release-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    assert _verify_release_manifest(release, target_sha) == manifest
+
+    proxy.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
 
 
 def test_prepare_rejects_non_fast_forward_candidate_downgrade(tmp_path):
