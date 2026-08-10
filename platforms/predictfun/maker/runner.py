@@ -597,7 +597,9 @@ def run_loop(
         registry = ManagedOrderRegistry.from_state(managed_state)
         try:
             cycle_cfg = deepcopy(cfg)
+            discarded_simulated_orders = 0
             if effective_mode == "live":
+                discarded_simulated_orders = registry.discard_simulated()
                 live_orders = executor.list_orders()
                 live_balances = executor.list_balances()
                 live_positions = executor.list_positions()
@@ -716,6 +718,7 @@ def run_loop(
                 },
                 "manual_order_constraints": manual_order_constraints,
                 "reads": state.get("account_reads") or {},
+                "discarded_simulated_orders": discarded_simulated_orders,
             }
 
             plan_state = run_once(

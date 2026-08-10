@@ -80,6 +80,10 @@ class DeploymentError(RuntimeError):
     """Raised when a Predict.fun deployment invariant is not satisfied."""
 
 
+class LiveCleanupError(DeploymentError):
+    """Raised when a stopped live runner cannot prove managed-order cleanup."""
+
+
 @dataclass(frozen=True)
 class DeploymentPaths:
     profile: str = "vps1"
@@ -98,6 +102,10 @@ class DeploymentPaths:
     runner_state: Path = Path(
         "/home/ubuntu/predictfun-runtime/data/"
         "predictfun_mainnet_runner_state.json"
+    )
+    execution_report: Path = Path(
+        "/home/ubuntu/predictfun-runtime/data/"
+        "predictfun_mainnet_execution_report.json"
     )
     ws_state: Path = Path(
         "/home/ubuntu/predictfun-runtime/data/"
@@ -732,6 +740,85 @@ def _is_fresh_after(value: Any, observed_after: datetime) -> bool:
     return parsed >= observed_after.replace(microsecond=0)
 
 
+def _runtime_execution_mode(paths: DeploymentPaths) -> str:
+    try:
+        config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+    except Exception:
+        config = {}
+    execution = config.get("execution") if isinstance(config, dict) else {}
+    mode = (
+        str(execution.get("mode") or "").strip().lower()
+        if isinstance(execution, dict)
+        else ""
+    )
+    if mode in EXECUTION_MODES:
+        return mode
+    try:
+        state = json.loads(paths.runner_state.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    mode = (
+        str(state.get("mode") or "").strip().lower()
+        if isinstance(state, dict)
+        else ""
+    )
+    return mode if mode in EXECUTION_MODES else ""
+
+
+def _verify_live_shutdown_cleanup(
+    paths: DeploymentPaths,
+    observed_after: datetime,
+) -> dict[str, Any]:
+    try:
+        report = json.loads(paths.execution_report.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise LiveCleanupError(
+            "Predict.fun live shutdown report is unavailable"
+        ) from exc
+    if not isinstance(report, dict):
+        raise LiveCleanupError(
+            "Predict.fun live shutdown report must be a JSON object"
+        )
+    summary = (
+        report.get("summary")
+        if isinstance(report.get("summary"), dict)
+        else {}
+    )
+    managed = (
+        report.get("managed_orders")
+        if isinstance(report.get("managed_orders"), dict)
+        else {}
+    )
+    managed_summary = (
+        managed.get("summary")
+        if isinstance(managed.get("summary"), dict)
+        else {}
+    )
+    try:
+        failed_actions = int(summary.get("failed") or 0)
+        active_orders = int(managed_summary.get("active") or 0)
+        report_mtime = paths.execution_report.stat().st_mtime
+    except (OSError, TypeError, ValueError) as exc:
+        raise LiveCleanupError(
+            "Predict.fun live shutdown report counters are invalid"
+        ) from exc
+    checks = {
+        "mode": report.get("mode") == "live_cancel_only",
+        "reason": report.get("reason") == "runner_shutdown",
+        "fresh": _is_fresh_after(report.get("ts"), observed_after),
+        "file_fresh": report_mtime >= observed_after.timestamp(),
+        "failed": failed_actions == 0,
+        "active": active_orders == 0,
+    }
+    failed = sorted(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise LiveCleanupError(
+            "Predict.fun live shutdown cleanup was not verified: "
+            + ", ".join(failed)
+        )
+    return report
+
+
 def _verify_runner_state(
     paths: DeploymentPaths,
     target_sha: str,
@@ -793,6 +880,11 @@ def _verify_runner_state(
                     if isinstance(state.get("execution_gate"), dict)
                     else {}
                 )
+                execution_summary = (
+                    state.get("last_execution_summary")
+                    if isinstance(state.get("last_execution_summary"), dict)
+                    else {}
+                )
                 checks.update(
                     {
                         "live_gate": (
@@ -803,6 +895,10 @@ def _verify_runner_state(
                         is True,
                         "live_cancel": capabilities.get("live_order_cancel")
                         is True,
+                        "execution_result": (
+                            bool(execution_summary)
+                            and int(execution_summary.get("failed") or 0) == 0
+                        ),
                     }
                 )
             failed = sorted(
@@ -980,6 +1076,7 @@ def activate_release(
     authorization_id: str,
 ) -> dict[str, Any]:
     target_sha = _require_full_sha(target_sha, "target SHA")
+    target_mode = _validate_execution_profile(paths)
     expected_confirmation = _expected_confirmation(paths)
     if confirm != expected_confirmation:
         raise DeploymentError(
@@ -1042,10 +1139,15 @@ def activate_release(
     previous_target = (
         paths.current_link.resolve(strict=True) if previous_sha is not None else None
     )
+    previous_mode = _runtime_execution_mode(paths)
+    runner_start_attempted = False
 
     try:
         runner.run(("systemctl", "stop", paths.timer_name), check=False)
+        previous_stop_started_at = datetime.now(timezone.utc)
         runner.run(("systemctl", "stop", paths.service_name), check=False)
+        if service_active and previous_mode == "live":
+            _verify_live_shutdown_cleanup(paths, previous_stop_started_at)
         runner.run(("systemctl", "stop", paths.ws_service_name), check=False)
         _atomic_symlink(paths.current_link, release)
         _atomic_write(
@@ -1075,6 +1177,7 @@ def activate_release(
             )
         ws_state = _verify_ws_state(paths, observed_after)
         runner.run(("systemctl", "enable", paths.service_name))
+        runner_start_attempted = True
         runner.run(("systemctl", "start", paths.service_name))
         if runner.run(("systemctl", "is-active", paths.service_name)) != "active":
             raise DeploymentError(
@@ -1140,8 +1243,39 @@ def activate_release(
         }
     except Exception as exc:
         runner.run(("systemctl", "stop", paths.timer_name), check=False)
+        failed_stop_started_at = datetime.now(timezone.utc)
         runner.run(("systemctl", "stop", paths.service_name), check=False)
         runner.run(("systemctl", "stop", paths.ws_service_name), check=False)
+        cleanup_error = exc if isinstance(exc, LiveCleanupError) else None
+        if (
+            cleanup_error is None
+            and target_mode == "live"
+            and runner_start_attempted
+        ):
+            try:
+                _verify_live_shutdown_cleanup(
+                    paths, failed_stop_started_at
+                )
+            except LiveCleanupError as cleanup_exc:
+                cleanup_error = cleanup_exc
+        if cleanup_error is not None:
+            runner.run(
+                ("systemctl", "disable", "--now", paths.timer_name),
+                check=False,
+            )
+            runner.run(
+                ("systemctl", "disable", "--now", paths.service_name),
+                check=False,
+            )
+            runner.run(
+                ("systemctl", "disable", "--now", paths.ws_service_name),
+                check=False,
+            )
+            raise DeploymentError(
+                "Predict.fun activation failed and live managed-order cleanup "
+                "was not verified; Predict services remain stopped and disabled "
+                f"for manual recovery: {cleanup_error}"
+            ) from exc
         if previous_target is None:
             try:
                 paths.current_link.unlink()

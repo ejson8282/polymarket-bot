@@ -133,6 +133,7 @@ def _paths(
         runtime_config=runtime / "config.mainnet.json",
         release_env=runtime / "release.env",
         runner_state=data / "predictfun_mainnet_runner_state.json",
+        execution_report=data / "predictfun_mainnet_execution_report.json",
         ws_state=data / "predictfun_mainnet_ws_state.json",
         status_state=data / "predictfun_mainnet_status.json",
         lock_file=lock,
@@ -152,11 +153,16 @@ class SystemdRunner(CommandRunner):
         *,
         fail_cycle: bool = False,
         auth_ok: bool = True,
+        execution_failed: bool = False,
+        shutdown_failed: bool = False,
     ) -> None:
         self.paths = paths
         self.sha = sha
         self.fail_cycle = fail_cycle
         self.auth_ok = auth_ok
+        self.execution_failed = execution_failed
+        self.shutdown_failed = shutdown_failed
+        self.service_started = False
         self.calls: list[tuple[str, ...]] = []
 
     def run(
@@ -173,6 +179,38 @@ class SystemdRunner(CommandRunner):
             return "enabled"
         if command[:2] == ("systemctl", "is-active"):
             return "active"
+        if command == ("systemctl", "stop", self.paths.service_name):
+            if self.service_started:
+                now = datetime.now(timezone.utc).isoformat()
+                self.paths.execution_report.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                self.paths.execution_report.write_text(
+                    json.dumps(
+                        {
+                            "ts": now,
+                            "mode": "live_cancel_only",
+                            "reason": "runner_shutdown",
+                            "summary": {
+                                "actions": 1,
+                                "create": 0,
+                                "cancel": 1,
+                                "failed": 1 if self.shutdown_failed else 0,
+                                "blocked": 1,
+                            },
+                            "managed_orders": {
+                                "summary": {
+                                    "tracked": 1,
+                                    "active": 1 if self.shutdown_failed else 0,
+                                    "inventory_exits": 0,
+                                },
+                                "orders": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            self.service_started = False
         if command == ("systemctl", "start", self.paths.ws_service_name):
             self.paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
@@ -209,6 +247,7 @@ class SystemdRunner(CommandRunner):
                 encoding="utf-8",
             )
         if command == ("systemctl", "start", self.paths.service_name):
+            self.service_started = True
             self.paths.runner_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
             config = json.loads(
@@ -250,6 +289,12 @@ class SystemdRunner(CommandRunner):
                         "cycle_count": 0 if self.fail_cycle else 1,
                         "error_count": 1 if self.fail_cycle else 0,
                         "last_error": "upstream failed" if self.fail_cycle else "",
+                        "last_execution_summary": {
+                            "actions": 1 if self.execution_failed else 0,
+                            "create": 1 if self.execution_failed else 0,
+                            "cancel": 0,
+                            "failed": 1 if self.execution_failed else 0,
+                        },
                         "last_cycle_finished_at": now,
                         "running": True,
                     }
@@ -695,6 +740,144 @@ def test_failed_account_auth_restores_previous_predict_state(
         paths.ws_service_unit.read_text(encoding="utf-8")
         == "legacy predict ws service\n"
     )
+
+
+def test_live_execution_failure_restores_previous_predict_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(paths, sha, execution_failed=True)
+
+    with pytest.raises(DeploymentError, match="previous Predict-only service state"):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="test-live-execution-failure",
+        )
+
+    assert not paths.current_link.exists()
+    assert (
+        "systemctl",
+        "stop",
+        paths.service_name,
+    ) in runner.calls
+    cleanup = json.loads(paths.execution_report.read_text(encoding="utf-8"))
+    assert cleanup["reason"] == "runner_shutdown"
+    assert cleanup["summary"]["failed"] == 0
+    assert cleanup["managed_orders"]["summary"]["active"] == 0
+
+
+def test_unverified_live_cleanup_leaves_predict_services_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(
+        paths,
+        sha,
+        execution_failed=True,
+        shutdown_failed=True,
+    )
+
+    with pytest.raises(
+        DeploymentError,
+        match="live managed-order cleanup was not verified",
+    ):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="test-live-cleanup-failure",
+        )
+
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.service_name,
+    ) in runner.calls
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.ws_service_name,
+    ) in runner.calls
+    cleanup = json.loads(paths.execution_report.read_text(encoding="utf-8"))
+    assert cleanup["summary"]["failed"] == 1
+    assert cleanup["managed_orders"]["summary"]["active"] == 1
+
+
+def test_replacing_live_release_requires_fresh_shutdown_cleanup(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(tmp_path, execution_mode="dry_run")
+    prepare_release(paths, CommandRunner(), sha)
+    paths.current_link.parent.mkdir(parents=True, exist_ok=True)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    paths.runtime_config.parent.mkdir(parents=True, exist_ok=True)
+    paths.runtime_config.write_text(
+        json.dumps({"execution": {"mode": "live"}}),
+        encoding="utf-8",
+    )
+    runner = SystemdRunner(paths, sha)
+
+    with pytest.raises(
+        DeploymentError,
+        match="live managed-order cleanup was not verified",
+    ):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current=sha,
+            confirm=CONFIRMATION,
+            authorization_id="test-replace-live-without-cleanup",
+        )
+
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.service_name,
+    ) in runner.calls
+
+
+def test_live_shutdown_cleanup_rejects_malformed_counters(
+    tmp_path: Path,
+) -> None:
+    paths, _sha = _paths(tmp_path, execution_mode="live")
+    observed_after = datetime.now(timezone.utc)
+    paths.execution_report.parent.mkdir(parents=True, exist_ok=True)
+    paths.execution_report.write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": "live_cancel_only",
+                "reason": "runner_shutdown",
+                "summary": {"failed": "invalid"},
+                "managed_orders": {"summary": {"active": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        deploy_release_module.LiveCleanupError,
+        match="counters are invalid",
+    ):
+        deploy_release_module._verify_live_shutdown_cleanup(
+            paths, observed_after
+        )
 
 
 def test_failed_ws_acceptance_restores_previous_predict_state(

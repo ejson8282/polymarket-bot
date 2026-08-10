@@ -888,6 +888,66 @@ def test_managed_registry_never_adopts_unseen_manual_order() -> None:
     assert registry.active() == []
 
 
+def test_live_registry_discards_only_dry_run_placeholders() -> None:
+    registry = ManagedOrderRegistry.from_state(
+        {
+            "orders": [
+                {
+                    "order_id": "dry:intent-simulated",
+                    "intent_id": "intent-simulated",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "purpose": "maker_quote",
+                    "status": "open",
+                },
+                {
+                    "order_id": "0xmanaged-live",
+                    "intent_id": "intent-live",
+                    "account_id": "account_01",
+                    "market_id": 43,
+                    "outcome": "NO",
+                    "side": "BUY",
+                    "purpose": "maker_quote",
+                    "status": "open",
+                },
+            ]
+        }
+    )
+
+    assert registry.discard_simulated() == 1
+    assert [row.order_id for row in registry.active()] == ["0xmanaged-live"]
+    assert registry.discard_simulated() == 0
+
+
+def test_live_cancel_only_never_sends_dry_run_placeholder() -> None:
+    executor = RecordingExecutor()
+    report = reconcile_cancel_only(
+        managed_state={
+            "orders": [
+                {
+                    "order_id": "dry:intent-simulated",
+                    "intent_id": "intent-simulated",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "purpose": "maker_quote",
+                    "status": "open",
+                }
+            ]
+        },
+        executor=executor,
+        reason="runner_shutdown",
+        mode="live",
+    )
+
+    assert executor.cancelled == []
+    assert report["mode"] == "live_risk_blocked"
+    assert report["managed_orders"]["summary"]["active"] == 0
+
+
 def test_risk_cancel_only_targets_managed_orders() -> None:
     registry = ManagedOrderRegistry()
     order = ExecutableOrder(
@@ -947,6 +1007,91 @@ def test_normal_reconcile_ignores_cancel_for_unmanaged_manual_order() -> None:
 
     assert executor.cancelled == []
     assert report["summary"]["actions"] == 0
+
+
+def test_normal_reconcile_suppresses_creates_when_cancel_fails() -> None:
+    class FailingCancelExecutor(RecordingExecutor):
+        def cancel(
+            self,
+            order_id: str,
+            *,
+            intent_id: str = "",
+            account_id: str = "",
+        ) -> ExecutionResult:
+            self.cancelled.append((order_id, intent_id, account_id))
+            return ExecutionResult(
+                intent_id=intent_id,
+                account_id=account_id,
+                action="cancel",
+                ok=False,
+                message="cancel failed",
+                order_id=order_id,
+                status="open",
+            )
+
+    registry = ManagedOrderRegistry()
+    existing = ExecutableOrder(
+        intent_id="intent-old",
+        account_id="account_01",
+        market_id=42,
+        outcome="YES",
+        side="BUY",
+        price=Decimal("0.40"),
+        size=Decimal("4"),
+    )
+    registry.record_create(
+        existing,
+        ExecutionResult(
+            intent_id=existing.intent_id,
+            account_id=existing.account_id,
+            action="create",
+            ok=True,
+            message="accepted",
+            order_id="managed-old",
+            status="open",
+        ),
+    )
+    executor = FailingCancelExecutor()
+    report = reconcile_once(
+        {
+            "diff": {
+                "cancel": [
+                    {
+                        "intent_id": existing.intent_id,
+                        "account_id": existing.account_id,
+                    }
+                ],
+                "create": [
+                    {
+                        "intent_id": "intent-new",
+                        "account_id": "account_01",
+                        "market_id": 42,
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.39",
+                        "size": "4.102564",
+                        "token_id": "yes-token",
+                    }
+                ],
+            }
+        },
+        executor=executor,
+        managed_state=registry.to_state(),
+        mode="live",
+    )
+
+    assert executor.cancelled == [
+        ("managed-old", "intent-old", "account_01")
+    ]
+    assert executor.created == []
+    assert report["summary"] == {
+        "actions": 1,
+        "create": 0,
+        "cancel": 1,
+        "failed": 1,
+        "create_suppressed": 1,
+    }
+    assert report["managed_orders"]["summary"]["active"] == 1
 
 
 def test_live_executor_enforces_account_and_order_notional_boundary() -> None:
@@ -1085,6 +1230,41 @@ def test_exposure_limit_enters_reduce_only_and_preserves_exit_path() -> None:
     assert executor.cancelled == [("official-maker", "old-maker", "account_01")]
     assert [order.intent_id for order in executor.created] == ["position-exit"]
     assert report["mode"] == "dry_run_reduce_only"
+
+    class FailingCancelExecutor(RecordingExecutor):
+        def cancel(
+            self,
+            order_id: str,
+            *,
+            intent_id: str = "",
+            account_id: str = "",
+        ) -> ExecutionResult:
+            self.cancelled.append((order_id, intent_id, account_id))
+            return ExecutionResult(
+                intent_id=intent_id,
+                account_id=account_id,
+                action="cancel",
+                ok=False,
+                message="cancel failed",
+                order_id=order_id,
+                status="open",
+            )
+
+    failing_executor = FailingCancelExecutor()
+    failed_report = reconcile_reduce_only(
+        intents,
+        managed_state=registry.to_state(),
+        executor=failing_executor,
+        risk_state=risk,
+        mode="live",
+    )
+    assert failing_executor.cancelled == [
+        ("official-maker", "old-maker", "account_01")
+    ]
+    assert failing_executor.created == []
+    assert failed_report["summary"]["failed"] == 1
+    assert failed_report["summary"]["create_suppressed"] == 1
+    assert failed_report["managed_orders"]["summary"]["active"] == 1
 
 
 def test_inventory_exit_notional_does_not_consume_buy_risk_budget() -> None:

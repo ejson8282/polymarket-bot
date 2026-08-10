@@ -53,6 +53,16 @@ def _to_order(item: dict[str, Any]) -> ExecutableOrder:
     )
 
 
+def _registry_for_mode(
+    managed_state: dict[str, Any] | None,
+    mode: str,
+) -> ManagedOrderRegistry:
+    registry = ManagedOrderRegistry.from_state(managed_state)
+    if str(mode or "").startswith("live"):
+        registry.discard_simulated()
+    return registry
+
+
 def reconcile_once(
     intents_state: dict[str, Any],
     *,
@@ -61,9 +71,10 @@ def reconcile_once(
     mode: str = "dry_run",
 ) -> dict[str, Any]:
     executor = executor or DryRunExecutor()
-    registry = ManagedOrderRegistry.from_state(managed_state)
+    registry = _registry_for_mode(managed_state, mode)
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
     results = []
+    cancel_failed = False
     for item in diff.get("cancel") or []:
         if isinstance(item, dict):
             intent_id = str(item.get("intent_id") or "")
@@ -76,12 +87,14 @@ def reconcile_once(
                 )
                 registry.record_cancel(managed.order_id, result)
                 results.append(asdict(result))
-    for item in diff.get("create") or []:
-        if isinstance(item, dict):
-            order = _to_order(item)
-            result = executor.create(order)
-            registry.record_create(order, result)
-            results.append(asdict(result))
+                cancel_failed = cancel_failed or not result.ok
+    if not cancel_failed:
+        for item in diff.get("create") or []:
+            if isinstance(item, dict):
+                order = _to_order(item)
+                result = executor.create(order)
+                registry.record_create(order, result)
+                results.append(asdict(result))
     return {
         "ts": utc_now(),
         "mode": mode,
@@ -91,6 +104,11 @@ def reconcile_once(
             "create": sum(1 for row in results if row.get("action") == "create"),
             "cancel": sum(1 for row in results if row.get("action") == "cancel"),
             "failed": sum(1 for row in results if not row.get("ok")),
+            "create_suppressed": (
+                sum(1 for item in diff.get("create") or [] if isinstance(item, dict))
+                if cancel_failed
+                else 0
+            ),
         },
         "results": results,
         "managed_orders": registry.to_state(),
@@ -108,7 +126,7 @@ def reconcile_cancel_only(
     """Cancel engine-owned orders while keeping all create actions disabled."""
 
     executor = executor or DryRunExecutor()
-    registry = ManagedOrderRegistry.from_state(managed_state)
+    registry = _registry_for_mode(managed_state, mode)
     results: list[dict[str, Any]] = []
     for managed in registry.active():
         result = executor.cancel(
@@ -148,13 +166,14 @@ def reconcile_reduce_only(
     """Cancel maker quotes and allow only position-reducing exit intents."""
 
     executor = executor or DryRunExecutor()
-    registry = ManagedOrderRegistry.from_state(managed_state)
+    registry = _registry_for_mode(managed_state, mode)
     desired_exit_ids = {
         str(item.get("intent_id") or "")
         for item in intents_state.get("intents") or []
         if isinstance(item, dict) and str(item.get("purpose") or "") == "inventory_exit"
     }
     results: list[dict[str, Any]] = []
+    cancel_failed = False
     for managed in registry.active():
         if managed.purpose == "inventory_exit" and managed.intent_id in desired_exit_ids:
             continue
@@ -165,15 +184,21 @@ def reconcile_reduce_only(
         )
         registry.record_cancel(managed.order_id, result)
         results.append(asdict(result))
+        cancel_failed = cancel_failed or not result.ok
 
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
-    for item in diff.get("create") or []:
-        if not isinstance(item, dict) or str(item.get("purpose") or "") != "inventory_exit":
-            continue
-        order = _to_order(item)
-        result = executor.create(order)
-        registry.record_create(order, result)
-        results.append(asdict(result))
+    exit_creates = [
+        item
+        for item in diff.get("create") or []
+        if isinstance(item, dict)
+        and str(item.get("purpose") or "") == "inventory_exit"
+    ]
+    if not cancel_failed:
+        for item in exit_creates:
+            order = _to_order(item)
+            result = executor.create(order)
+            registry.record_create(order, result)
+            results.append(asdict(result))
 
     return {
         "ts": utc_now(),
@@ -186,6 +211,7 @@ def reconcile_reduce_only(
             "failed": sum(1 for row in results if not row.get("ok")),
             "blocked": 0,
             "reduce_only": 1,
+            "create_suppressed": len(exit_creates) if cancel_failed else 0,
         },
         "results": results,
         "managed_orders": registry.to_state(),
