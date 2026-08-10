@@ -1,5 +1,5 @@
 [Unit]
-Description=Predict.fun immutable continuous dry-run (never submits live orders)
+Description=Predict.fun immutable continuous maker runner
 After=network-online.target
 Wants=network-online.target
 

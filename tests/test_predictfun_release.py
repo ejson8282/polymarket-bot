@@ -14,6 +14,7 @@ import pytest
 import platforms.predictfun.maker.deploy_release as deploy_release_module
 from platforms.predictfun.maker.deploy_release import (
     CONFIRMATION,
+    LIVE_CONFIRMATION,
     CommandRunner,
     DeploymentError,
     DeploymentPaths,
@@ -107,6 +108,7 @@ def _paths(
     tmp_path: Path,
     *,
     profile: str = "vps1",
+    execution_mode: str = "dry_run",
     account_id: str = "account_01",
     account_ids: tuple[str, ...] = (),
 ) -> tuple[DeploymentPaths, str]:
@@ -120,6 +122,7 @@ def _paths(
     lock.touch()
     paths = DeploymentPaths(
         profile=profile,
+        execution_mode=execution_mode,
         account_id=account_id,
         account_ids=account_ids,
         bare_repo=bare,
@@ -212,14 +215,27 @@ class SystemdRunner(CommandRunner):
                 self.paths.runtime_config.read_text(encoding="utf-8")
             )
             account_ids = list(config["accounts"]["ids"])
+            mode = str((config.get("execution") or {}).get("mode") or "dry_run")
+            live_enabled = mode == "live"
             self.paths.runner_state.write_text(
                 json.dumps(
                     {
-                        "mode": "dry_run",
+                        "mode": mode,
                         "release_sha": self.sha,
                         "release_required": True,
                         "deployment_profile": config["deployment"]["profile"],
                         "account_ids": account_ids,
+                        "execution_gate": {
+                            "requested_mode": mode,
+                            "effective_mode": mode,
+                            "allowed": True,
+                            "blocks": [],
+                            "account_ids": account_ids,
+                        },
+                        "capabilities": {
+                            "live_order_submit": live_enabled,
+                            "live_order_cancel": live_enabled,
+                        },
                         "last_auth_summary": {
                             "enabled": True,
                             "ok": self.auth_ok,
@@ -253,12 +269,12 @@ class SystemdRunner(CommandRunner):
                             ),
                             "account_ids": account_ids,
                             "release_sha": self.sha,
-                            "mode": "dry_run",
+                            "mode": mode,
                         },
                         "health": {"status": "healthy"},
                         "capabilities": {
-                            "live_order_submit": False,
-                            "live_order_cancel": False,
+                            "live_order_submit": live_enabled,
+                            "live_order_cancel": live_enabled,
                         },
                     }
                 ),
@@ -418,6 +434,111 @@ def test_activate_starts_continuous_dry_run_without_polymarket_controls(
         "last_data_at": result["websocket"]["last_data_at"],
         "last_rest_sync_at": None,
     }
+
+
+def test_activate_vps1_limited_live_writes_exact_caps_and_live_gate(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(paths, sha)
+
+    with pytest.raises(DeploymentError, match=LIVE_CONFIRMATION):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="wrong-mode-confirmation",
+        )
+
+    result = activate_release(
+        paths,
+        runner,
+        target_sha=sha,
+        expected_current="none",
+        confirm=LIVE_CONFIRMATION,
+        authorization_id="limited-live-test-authorization",
+    )
+
+    config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+    assert config["execution"] == {"mode": "live"}
+    assert config["simulation"]["enabled"] is False
+    assert config["deployment"] == {
+        "profile": "vps1",
+        "account_id": "account_01",
+        "account_ids": ["account_01"],
+        "safety_profile": "vps1_limited_live_v1",
+    }
+    assert config["scan"]["max_markets"] == 1
+    assert config["strategy"]["max_quote_levels"] == 1
+    assert config["strategy"]["min_order_notional"] == "0.90"
+    assert config["strategy"]["max_order_notional"] == "1.60"
+    assert config["strategy"]["resize_to_max_order_notional"] is True
+    assert config["inventory"]["halt_all_buys_while_any_position"] is True
+    assert (
+        config["inventory"]["halt_new_buys_while_manual_buy_orders"]
+        is True
+    )
+    assert {
+        key: config["risk"][key]
+        for key in (
+            "max_total_desired_notional",
+            "max_account_desired_notional",
+            "max_account_market_desired_notional",
+            "max_market_desired_notional",
+        )
+    } == {
+        "max_total_desired_notional": "1.60",
+        "max_account_desired_notional": "1.60",
+        "max_account_market_desired_notional": "1.60",
+        "max_market_desired_notional": "1.60",
+    }
+    assert config["risk"]["max_total_exposure_notional"] == "1.60"
+    assert paths.release_env.read_text(encoding="utf-8").splitlines() == [
+        f"PREDICTFUN_RELEASE_SHA={sha}",
+        "PREDICTFUN_LIVE_TRADING=1",
+        "PREDICTFUN_LIVE_CONFIRM=ENABLE_PREDICTFUN_LIVE",
+        f"PREDICTFUN_LIVE_RELEASE_SHA={sha}",
+        "PREDICTFUN_LIVE_ACCOUNT_IDS=account_01",
+    ]
+    assert result["execution_mode"] == "live"
+    assert result["runner"]["mode"] == "live"
+    assert result["status_snapshot"]["mode"] == "live"
+
+
+@pytest.mark.parametrize(
+    ("profile", "account_ids", "message"),
+    [
+        ("vps2", ("account_02",), "restricted to VPS1"),
+        ("vps1", ("account_01", "account_03"), "only account_01"),
+    ],
+)
+def test_limited_live_rejects_other_hosts_or_accounts(
+    tmp_path: Path,
+    profile: str,
+    account_ids: tuple[str, ...],
+    message: str,
+) -> None:
+    paths, sha = _paths(
+        tmp_path,
+        profile=profile,
+        execution_mode="live",
+        account_id=account_ids[0],
+        account_ids=account_ids,
+    )
+    prepare_release(paths, CommandRunner(), sha)
+
+    with pytest.raises(DeploymentError, match=message):
+        activate_release(
+            paths,
+            SystemdRunner(paths, sha),
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="invalid-limited-live-target",
+        )
 
 
 def test_profiles_pin_independent_accounts_and_locks() -> None:

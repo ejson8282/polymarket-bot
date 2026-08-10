@@ -233,6 +233,21 @@ def evaluate_risk(
                 block_scope="reduce_only",
             )
 
+    max_total_exposure = _dec(
+        risk_cfg.get("max_total_exposure_notional"), "0"
+    )
+    if max_total_exposure > 0:
+        _check_limit(
+            checks,
+            name="total_position_plus_buy_notional",
+            value=(
+                sum(position_value_by_account.values(), Decimal("0"))
+                + risk_increasing_notional
+            ),
+            limit=max_total_exposure,
+            block_scope="reduce_only",
+        )
+
     max_errors = int(risk_cfg.get("max_runner_errors") or 3)
     error_count = int(runner_state.get("error_count") or 0)
     checks.append(

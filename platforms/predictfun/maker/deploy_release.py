@@ -1,4 +1,4 @@
-"""Exact-SHA deployment wrapper for the Predict.fun dry-run service only."""
+"""Exact-SHA deployment wrapper for the Predict.fun continuous runner."""
 
 from __future__ import annotations
 
@@ -32,7 +32,15 @@ from platforms.predictfun.maker.release_guard import (
 
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
-CONFIRMATION = "DEPLOY_PREDICTFUN_DRYRUN"
+DRY_RUN_CONFIRMATION = "DEPLOY_PREDICTFUN_DRYRUN"
+LIVE_CONFIRMATION = "DEPLOY_PREDICTFUN_VPS1_LIMITED_LIVE"
+# Backwards-compatible name used by existing dry-run deployment callers.
+CONFIRMATION = DRY_RUN_CONFIRMATION
+EXECUTION_MODES = ("dry_run", "live")
+LIMITED_LIVE_PROFILE = "vps1_limited_live_v1"
+LIMITED_LIVE_ACCOUNT_IDS = ("account_01",)
+LIMITED_LIVE_MAX_MARKETS = 1
+LIMITED_LIVE_MAX_NOTIONAL = "1.60"
 WS_ACCEPTANCE_ATTEMPTS = 90
 ARCHIVE_PATHS = (
     "platforms/__init__.py",
@@ -75,6 +83,7 @@ class DeploymentError(RuntimeError):
 @dataclass(frozen=True)
 class DeploymentPaths:
     profile: str = "vps1"
+    execution_mode: str = "dry_run"
     account_id: str = "account_01"
     account_ids: tuple[str, ...] = ()
     bare_repo: Path = Path("/home/ubuntu/repos/predictfun.git")
@@ -117,7 +126,9 @@ class DeploymentPaths:
     service_user: str = "ubuntu"
 
     @classmethod
-    def for_profile(cls, name: str) -> "DeploymentPaths":
+    def for_profile(
+        cls, name: str, *, execution_mode: str = "dry_run"
+    ) -> "DeploymentPaths":
         normalized = str(name or "").strip().lower()
         profile = DEPLOYMENT_PROFILES.get(normalized)
         if profile is None:
@@ -126,6 +137,7 @@ class DeploymentPaths:
             )
         return cls(
             profile=profile.name,
+            execution_mode=_normalize_execution_mode(execution_mode),
             account_id=profile.account_ids[0],
             account_ids=profile.account_ids,
             lock_file=profile.lock_file,
@@ -170,6 +182,15 @@ def _require_full_sha(value: str, label: str) -> str:
     return normalized
 
 
+def _normalize_execution_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in EXECUTION_MODES:
+        raise DeploymentError(
+            f"unsupported Predict.fun execution mode: {value}"
+        )
+    return normalized
+
+
 def _normalize_account_ids(values: Sequence[str]) -> tuple[str, ...]:
     account_ids: list[str] = []
     for value in values:
@@ -189,6 +210,46 @@ def _normalize_account_ids(values: Sequence[str]) -> tuple[str, ...]:
 
 def _deployment_account_ids(paths: DeploymentPaths) -> tuple[str, ...]:
     return _normalize_account_ids(paths.account_ids or (paths.account_id,))
+
+
+def _validate_execution_profile(paths: DeploymentPaths) -> str:
+    mode = _normalize_execution_mode(paths.execution_mode)
+    if mode == "live":
+        account_ids = _deployment_account_ids(paths)
+        if paths.profile != "vps1":
+            raise DeploymentError(
+                "Predict.fun limited live mode is restricted to VPS1"
+            )
+        if account_ids != LIMITED_LIVE_ACCOUNT_IDS:
+            raise DeploymentError(
+                "Predict.fun limited live mode requires only account_01"
+            )
+    return mode
+
+
+def _expected_confirmation(paths: DeploymentPaths) -> str:
+    return (
+        LIVE_CONFIRMATION
+        if _validate_execution_profile(paths) == "live"
+        else DRY_RUN_CONFIRMATION
+    )
+
+
+def _release_environment_payload(
+    paths: DeploymentPaths, target_sha: str
+) -> bytes:
+    mode = _validate_execution_profile(paths)
+    lines = [f"PREDICTFUN_RELEASE_SHA={target_sha}"]
+    if mode == "live":
+        lines.extend(
+            (
+                "PREDICTFUN_LIVE_TRADING=1",
+                "PREDICTFUN_LIVE_CONFIRM=ENABLE_PREDICTFUN_LIVE",
+                f"PREDICTFUN_LIVE_RELEASE_SHA={target_sha}",
+                "PREDICTFUN_LIVE_ACCOUNT_IDS=account_01",
+            )
+        )
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def _sha256(path: Path) -> str:
@@ -488,6 +549,7 @@ def _require_expected_current(
 
 
 def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
+    execution_mode = _validate_execution_profile(paths)
     source = release / "platforms/predictfun/maker/config.mainnet.json"
     try:
         config = json.loads(source.read_text(encoding="utf-8"))
@@ -518,11 +580,46 @@ def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
         raise DeploymentError("Predict.fun mainnet config is missing risk")
     risk["max_active_accounts"] = len(account_ids)
     config["risk"] = risk
+    execution = config.get("execution")
+    execution = execution if isinstance(execution, dict) else {}
+    execution["mode"] = execution_mode
+    config["execution"] = execution
+    simulation = config.get("simulation")
+    simulation = simulation if isinstance(simulation, dict) else {}
+    simulation["enabled"] = execution_mode == "dry_run"
+    config["simulation"] = simulation
     config["deployment"] = {
         "profile": paths.profile,
         "account_id": account_ids[0] if len(account_ids) == 1 else "",
         "account_ids": account_ids,
     }
+    if execution_mode == "live":
+        scan = config.get("scan")
+        scan = scan if isinstance(scan, dict) else {}
+        scan["max_markets"] = LIMITED_LIVE_MAX_MARKETS
+        config["scan"] = scan
+        strategy = config.get("strategy")
+        strategy = strategy if isinstance(strategy, dict) else {}
+        strategy["max_quote_levels"] = 1
+        strategy["min_order_notional"] = "0.90"
+        strategy["max_order_notional"] = LIMITED_LIVE_MAX_NOTIONAL
+        strategy["resize_to_max_order_notional"] = True
+        config["strategy"] = strategy
+        inventory = config.get("inventory")
+        inventory = inventory if isinstance(inventory, dict) else {}
+        inventory["halt_all_buys_while_any_position"] = True
+        inventory["halt_new_buys_while_manual_buy_orders"] = True
+        config["inventory"] = inventory
+        for key in (
+            "max_total_desired_notional",
+            "max_account_desired_notional",
+            "max_account_market_desired_notional",
+            "max_market_desired_notional",
+        ):
+            risk[key] = LIMITED_LIVE_MAX_NOTIONAL
+        risk["max_total_exposure_notional"] = LIMITED_LIVE_MAX_NOTIONAL
+        config["risk"] = risk
+        config["deployment"]["safety_profile"] = LIMITED_LIVE_PROFILE
     return (json.dumps(config, indent=2) + "\n").encode("utf-8")
 
 
@@ -645,6 +742,7 @@ def _verify_runner_state(
 ) -> dict[str, Any]:
     last_failure = "state unavailable"
     expected_accounts = list(_deployment_account_ids(paths))
+    expected_mode = _validate_execution_profile(paths)
     for attempt in range(max(1, attempts)):
         try:
             state = json.loads(paths.runner_state.read_text(encoding="utf-8"))
@@ -664,7 +762,7 @@ def _verify_runner_state(
                 for row in auth_rows
             )
             checks = {
-                "mode": state.get("mode") == "dry_run",
+                "mode": state.get("mode") == expected_mode,
                 "release_sha": state.get("release_sha") == target_sha,
                 "release_required": state.get("release_required") is True,
                 "profile": state.get("deployment_profile") == paths.profile,
@@ -684,6 +782,29 @@ def _verify_runner_state(
                 ),
                 "running": state.get("running") is True,
             }
+            if expected_mode == "live":
+                capabilities = (
+                    state.get("capabilities")
+                    if isinstance(state.get("capabilities"), dict)
+                    else {}
+                )
+                execution_gate = (
+                    state.get("execution_gate")
+                    if isinstance(state.get("execution_gate"), dict)
+                    else {}
+                )
+                checks.update(
+                    {
+                        "live_gate": (
+                            execution_gate.get("allowed") is True
+                            and not list(execution_gate.get("blocks") or [])
+                        ),
+                        "live_submit": capabilities.get("live_order_submit")
+                        is True,
+                        "live_cancel": capabilities.get("live_order_cancel")
+                        is True,
+                    }
+                )
             failed = sorted(
                 name for name, passed in checks.items() if not passed
             )
@@ -820,6 +941,7 @@ def _verify_status_state(
         else {}
     )
     expected_accounts = list(_deployment_account_ids(paths))
+    expected_mode = _validate_execution_profile(paths)
     expected_primary = (
         expected_accounts[0] if len(expected_accounts) == 1 else ""
     )
@@ -833,10 +955,12 @@ def _verify_status_state(
             and deployment.get("account_ids") == expected_accounts
         ),
         "release": deployment.get("release_sha") == target_sha,
-        "mode": deployment.get("mode") == "dry_run",
+        "mode": deployment.get("mode") == expected_mode,
         "not_blocked": health.get("status") in {"healthy", "attention"},
-        "no_live_submit": capabilities.get("live_order_submit") is False,
-        "no_live_cancel": capabilities.get("live_order_cancel") is False,
+        "live_submit": capabilities.get("live_order_submit")
+        is (expected_mode == "live"),
+        "live_cancel": capabilities.get("live_order_cancel")
+        is (expected_mode == "live"),
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
     if failed:
@@ -856,8 +980,11 @@ def activate_release(
     authorization_id: str,
 ) -> dict[str, Any]:
     target_sha = _require_full_sha(target_sha, "target SHA")
-    if confirm != CONFIRMATION:
-        raise DeploymentError(f"confirmation must equal {CONFIRMATION}")
+    expected_confirmation = _expected_confirmation(paths)
+    if confirm != expected_confirmation:
+        raise DeploymentError(
+            f"confirmation must equal {expected_confirmation}"
+        )
     if not str(authorization_id or "").strip():
         raise DeploymentError("authorization ID is required")
     previous_sha = _require_expected_current(paths, expected_current)
@@ -923,7 +1050,7 @@ def activate_release(
         _atomic_symlink(paths.current_link, release)
         _atomic_write(
             paths.release_env,
-            f"PREDICTFUN_RELEASE_SHA={target_sha}\n".encode("utf-8"),
+            _release_environment_payload(paths, target_sha),
             0o444,
         )
         _atomic_write(
@@ -973,6 +1100,7 @@ def activate_release(
             "target_sha": target_sha,
             "previous_sha": previous_sha,
             "profile": paths.profile,
+            "execution_mode": _validate_execution_profile(paths),
             "account_id": (
                 _deployment_account_ids(paths)[0]
                 if len(_deployment_account_ids(paths)) == 1
@@ -1075,6 +1203,7 @@ def activate_release(
 def status(paths: DeploymentPaths, runner: CommandRunner) -> dict[str, Any]:
     return {
         "profile": paths.profile,
+        "execution_mode": _validate_execution_profile(paths),
         "account_id": (
             _deployment_account_ids(paths)[0]
             if len(_deployment_account_ids(paths)) == 1
@@ -1133,7 +1262,7 @@ def execute(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Prepare or activate an exact Predict.fun dry-run release."
+        description="Prepare or activate an exact Predict.fun runner release."
     )
     parser.add_argument("action", choices=("status", "prepare", "activate"))
     parser.add_argument(
@@ -1143,6 +1272,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--target-sha", default="")
     parser.add_argument("--expected-current", default="none")
+    parser.add_argument(
+        "--mode",
+        default="dry_run",
+        choices=EXECUTION_MODES,
+        help="Execution mode; live is restricted to the VPS1 limited profile.",
+    )
     parser.add_argument("--confirm", default="")
     parser.add_argument("--authorization-id", default="")
     parser.add_argument(
@@ -1151,7 +1286,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Comma-separated account aliases for this host (maximum 10).",
     )
     args = parser.parse_args(argv)
-    paths = DeploymentPaths.for_profile(args.profile)
+    paths = DeploymentPaths.for_profile(
+        args.profile, execution_mode=args.mode
+    )
     if args.account_ids:
         account_ids = _normalize_account_ids(args.account_ids.split(","))
         paths = replace(

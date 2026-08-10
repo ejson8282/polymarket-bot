@@ -106,6 +106,7 @@ def build_quote_plan(
     avoid_mid_band: bool = True,
     min_order_notional: Decimal = Decimal("0"),
     max_order_notional: Decimal = Decimal("0"),
+    resize_to_max_order_notional: bool = False,
     min_depth_notional: Decimal = Decimal("0"),
     min_depth_shares: Decimal = Decimal("0"),
     depth_levels: int = 3,
@@ -165,6 +166,7 @@ def build_quote_plan(
             ),
             min_order_notional=min_order_notional,
             max_order_notional=max_order_notional,
+            resize_to_max_order_notional=resize_to_max_order_notional,
         )
         return DryRunPlan(
             market=market,
@@ -222,34 +224,44 @@ def build_quote_plan(
             no_quotes=[],
         )
 
-    yes_quotes = _filter_quotes(_bid_ladder(
-        outcome="YES",
-        best_bid=best_yes_bid,
-        best_ask=best_yes_ask,
-        mid=mid,
-        tick=tick,
-        spread_threshold=market.spread_threshold,
-        quote_size=quote_size,
-        edge_ticks=edge_ticks,
-        backoff_ticks=backoff_ticks,
-        max_quote_levels=max_quote_levels,
-    ), min_order_notional=min_order_notional, max_order_notional=max_order_notional)
+    yes_quotes = _filter_quotes(
+        _bid_ladder(
+            outcome="YES",
+            best_bid=best_yes_bid,
+            best_ask=best_yes_ask,
+            mid=mid,
+            tick=tick,
+            spread_threshold=market.spread_threshold,
+            quote_size=quote_size,
+            edge_ticks=edge_ticks,
+            backoff_ticks=backoff_ticks,
+            max_quote_levels=max_quote_levels,
+        ),
+        min_order_notional=min_order_notional,
+        max_order_notional=max_order_notional,
+        resize_to_max_order_notional=resize_to_max_order_notional,
+    )
 
     no_best_bid = _round_price(Decimal("1") - best_yes_ask, tick)
     no_best_ask = _round_price(Decimal("1") - best_yes_bid, tick)
     no_mid = Decimal("1") - mid if mid > 0 else Decimal("0")
-    no_quotes = _filter_quotes(_bid_ladder(
-        outcome="NO",
-        best_bid=no_best_bid,
-        best_ask=no_best_ask,
-        mid=no_mid,
-        tick=tick,
-        spread_threshold=market.spread_threshold,
-        quote_size=quote_size,
-        edge_ticks=edge_ticks,
-        backoff_ticks=backoff_ticks,
-        max_quote_levels=max_quote_levels,
-    ), min_order_notional=min_order_notional, max_order_notional=max_order_notional)
+    no_quotes = _filter_quotes(
+        _bid_ladder(
+            outcome="NO",
+            best_bid=no_best_bid,
+            best_ask=no_best_ask,
+            mid=no_mid,
+            tick=tick,
+            spread_threshold=market.spread_threshold,
+            quote_size=quote_size,
+            edge_ticks=edge_ticks,
+            backoff_ticks=backoff_ticks,
+            max_quote_levels=max_quote_levels,
+        ),
+        min_order_notional=min_order_notional,
+        max_order_notional=max_order_notional,
+        resize_to_max_order_notional=resize_to_max_order_notional,
+    )
 
     return DryRunPlan(
         market=market,
@@ -310,6 +322,7 @@ def _filter_quotes(
     *,
     min_order_notional: Decimal,
     max_order_notional: Decimal,
+    resize_to_max_order_notional: bool = False,
 ) -> list[QuoteLevel]:
     out: list[QuoteLevel] = []
     for quote in quotes:
@@ -319,13 +332,25 @@ def _filter_quotes(
         notional = quote.notional
         reason = quote.reason
         if min_order_notional > 0 and notional < min_order_notional:
-            required_size = (min_order_notional / quote.price).quantize(Decimal("0.000001"), rounding=ROUND_UP)
+            required_size = (min_order_notional / quote.price).quantize(
+                Decimal("0.000001"), rounding=ROUND_UP
+            )
             if required_size > size:
                 size = required_size
                 notional = quote.price * size
                 reason = f"{reason} min_notional_adjusted={min_order_notional}"
         if max_order_notional > 0 and notional > max_order_notional:
-            continue
+            if not resize_to_max_order_notional:
+                continue
+            size = (max_order_notional / quote.price).quantize(
+                Decimal("0.000001"), rounding=ROUND_DOWN
+            )
+            notional = quote.price * size
+            reason = f"{reason} max_notional_adjusted={max_order_notional}"
+            if size <= 0 or (
+                min_order_notional > 0 and notional < min_order_notional
+            ):
+                continue
         out.append(
             QuoteLevel(
                 outcome=quote.outcome,
@@ -759,6 +784,9 @@ def run_once(
                 avoid_mid_band=strategy_profile == "conservative",
                 min_order_notional=as_decimal(strategy.get("min_order_notional"), "0"),
                 max_order_notional=as_decimal(strategy.get("max_order_notional"), "0"),
+                resize_to_max_order_notional=bool(
+                    strategy.get("resize_to_max_order_notional", False)
+                ),
                 min_depth_notional=as_decimal(liquidity_cfg.get("min_depth_notional"), "0"),
                 min_depth_shares=as_decimal(liquidity_cfg.get("min_depth_shares"), "0"),
                 depth_levels=int(liquidity_cfg.get("depth_levels") or 3),
