@@ -795,6 +795,7 @@ def _verify_live_shutdown_cleanup(
         else {}
     )
     try:
+        actions = int(summary.get("actions") or 0)
         failed_actions = int(summary.get("failed") or 0)
         active_orders = int(managed_summary.get("active") or 0)
         report_mtime = paths.execution_report.stat().st_mtime
@@ -802,8 +803,10 @@ def _verify_live_shutdown_cleanup(
         raise LiveCleanupError(
             "Predict.fun live shutdown report counters are invalid"
         ) from exc
+    report_mode = report.get("mode")
     checks = {
-        "mode": report.get("mode") == "live_cancel_only",
+        "mode": report_mode == "live_cancel_only"
+        or (report_mode == "live_risk_blocked" and actions == 0),
         "reason": report.get("reason") == "runner_shutdown",
         "fresh": _is_fresh_after(report.get("ts"), observed_after),
         "file_fresh": report_mtime >= observed_after.timestamp(),
