@@ -39,6 +39,7 @@ from platforms.predictfun.scanner import (
 from platforms.predictfun.ws_watch import (
     _apply_market_message,
     _market_status_snapshot,
+    _trading_status_snapshot,
     _write_state_if_due,
     normalize_orderbook_payload,
 )
@@ -348,12 +349,15 @@ def test_ws_book_requires_all_schema_v2_safety_statuses() -> None:
     assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
 
 
-def test_rest_discovery_seeds_ws_lifecycle_gate_until_change_event() -> None:
+def test_rest_discovery_seeds_ws_lifecycle_gates_until_change_events() -> None:
     market = _market()
-    statuses = _market_status_snapshot([market])
+    market_statuses = _market_status_snapshot([market])
+    trading_statuses = _trading_status_snapshot([market])
 
-    assert statuses["42"]["status"] == "OPEN"
-    assert statuses["42"]["source"] == "rest_discovery"
+    assert market_statuses["42"]["status"] == "OPEN"
+    assert market_statuses["42"]["source"] == "rest_discovery"
+    assert trading_statuses["42"]["status"] == "OPEN"
+    assert trading_statuses["42"]["source"] == "rest_discovery"
 
     state = {
         "orderbooks": {},
@@ -361,8 +365,8 @@ def test_rest_discovery_seeds_ws_lifecycle_gate_until_change_event() -> None:
         "orderbook_upstream_updated_at_ms": {},
         "orderbook_latency_ms": {},
         "orderbook_errors": {},
-        "trading_statuses": {},
-        "market_statuses": statuses,
+        "trading_statuses": trading_statuses,
+        "market_statuses": market_statuses,
         "liquidity": {},
         "liquidity_alerts": {},
     }
@@ -378,6 +382,23 @@ def test_rest_discovery_seeds_ws_lifecycle_gate_until_change_event() -> None:
 
     assert state["market_statuses"]["42"]["status"] == "CLOSED"
     assert "source" not in state["market_statuses"]["42"]
+
+    _apply_market_message(
+        state,
+        {
+            "topic": "predictTradingStatus/42",
+            "data": {
+                "marketId": 42,
+                "tradingStatus": "CANCEL_ONLY",
+                "tsMs": 124,
+            },
+        },
+        sentinel=LiquiditySentinel.from_config({"enabled": False}),
+        now=time.time(),
+    )
+
+    assert state["trading_statuses"]["42"]["status"] == "CANCEL_ONLY"
+    assert "source" not in state["trading_statuses"]["42"]
 
 
 def test_points_profile_allows_midpoint_without_hiding_risk_profile() -> None:
