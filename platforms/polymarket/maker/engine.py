@@ -1171,11 +1171,24 @@ class PolyLPSMulti:
         )
         self._eligibility_state: Dict[str, Dict[str, Any]] = {}
         eligibility_cfg = self.cfg.get("eligibility_guard", {}) or {}
+        aggressive_profile = self.lp_account_profile.profile_type == "aggressive"
         self._eligibility_check_interval_sec = max(
-            15.0, float(eligibility_cfg.get("check_interval_sec", 60.0))
+            15.0,
+            float(
+                eligibility_cfg.get(
+                    "check_interval_sec",
+                    60.0 if aggressive_profile else 300.0,
+                )
+            ),
         )
         self._eligibility_failure_threshold = max(
-            1, int(eligibility_cfg.get("failure_threshold", 2))
+            1,
+            int(
+                eligibility_cfg.get(
+                    "failure_threshold",
+                    2 if aggressive_profile else 3,
+                )
+            ),
         )
         self._eligibility_stale_after_sec = max(
             self._eligibility_check_interval_sec,
@@ -5618,9 +5631,10 @@ class PolyLPSMulti:
         """Keep dashboard-added markets useful without creating an all-off cliff.
 
         Fresh qualifying observations restore the configured budget tier.
-        Soft failures reduce the market to the high-risk budget tier; they do
-        not remove it. Hard market, sponsor and pre-start exits remain owned by
-        their dedicated safety guards.
+        Stable profiles retain and reduce soft failures. Aggressive profiles
+        withdraw both event legs after repeated or stale failures, then rely on
+        slow recovery before quoting again. Hard market, sponsor and pre-start
+        exits remain owned by their dedicated safety guards.
         """
         while self._running:
             try:
