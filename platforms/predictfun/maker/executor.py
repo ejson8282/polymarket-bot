@@ -212,7 +212,6 @@ class PredictFunLiveExecutor:
                     "is_neg_risk": order.is_neg_risk,
                     "is_yield_bearing": order.is_yield_bearing,
                     "is_post_only": True,
-                    "reserved_balance_policy": "REJECT_MARKET_ORDER",
                     "self_trade_prevention": "CANCEL_MAKER",
                     "max_notional_usdc": str(self.max_order_notional),
                 },
