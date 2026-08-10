@@ -14,8 +14,9 @@ from aggressive_guardrails import (  # noqa: E402
     AggressiveGuardrailState,
     risk_day_key,
 )
+from aggressive_recovery import evaluate_recovery_sample  # noqa: E402
 import engine as engine_module  # noqa: E402
-from engine import PolyLPSMulti  # noqa: E402
+from engine import EVENT_WATCH, PolyLPSMulti  # noqa: E402
 
 
 def test_risk_day_uses_beijing_0800_cutoff() -> None:
@@ -267,3 +268,132 @@ def test_position_value_accepts_only_the_configured_account(tmp_path, monkeypatc
     )
     with pytest.raises(RuntimeError, match="user mismatch"):
         asyncio.run(engine._get_total_position_value())
+
+
+def test_aggressive_recovery_requires_spaced_consecutive_healthy_samples() -> None:
+    first = evaluate_recovery_sample(
+        now=100,
+        timer_expired=True,
+        snapshot_fresh=True,
+        book_valid=True,
+        eligibility_ok=True,
+        last_sample_at=0,
+        good_samples=0,
+        required_samples=3,
+        sample_interval_sec=30,
+    )
+    too_soon = evaluate_recovery_sample(
+        now=110,
+        timer_expired=True,
+        snapshot_fresh=True,
+        book_valid=True,
+        eligibility_ok=True,
+        last_sample_at=100,
+        good_samples=first.good_samples,
+        required_samples=3,
+        sample_interval_sec=30,
+    )
+    second = evaluate_recovery_sample(
+        now=130,
+        timer_expired=True,
+        snapshot_fresh=True,
+        book_valid=True,
+        eligibility_ok=True,
+        last_sample_at=100,
+        good_samples=first.good_samples,
+        required_samples=3,
+        sample_interval_sec=30,
+    )
+    third = evaluate_recovery_sample(
+        now=160,
+        timer_expired=True,
+        snapshot_fresh=True,
+        book_valid=True,
+        eligibility_ok=True,
+        last_sample_at=130,
+        good_samples=second.good_samples,
+        required_samples=3,
+        sample_interval_sec=30,
+    )
+
+    assert first.good_samples == 1 and first.ready is False
+    assert too_soon.good_samples == 1 and too_soon.reason == "waiting_next_sample"
+    assert second.good_samples == 2 and second.ready is False
+    assert third.good_samples == 3 and third.ready is True
+
+
+@pytest.mark.parametrize(
+    ("snapshot_fresh", "book_valid", "eligibility_ok", "reason"),
+    [
+        (False, True, True, "snapshot_stale"),
+        (True, False, True, "book_invalid"),
+        (True, True, False, "eligibility_not_restored"),
+    ],
+)
+def test_aggressive_recovery_resets_on_any_bad_signal(
+    snapshot_fresh, book_valid, eligibility_ok, reason
+) -> None:
+    decision = evaluate_recovery_sample(
+        now=200,
+        timer_expired=True,
+        snapshot_fresh=snapshot_fresh,
+        book_valid=book_valid,
+        eligibility_ok=eligibility_ok,
+        last_sample_at=160,
+        good_samples=2,
+        required_samples=3,
+        sample_interval_sec=30,
+    )
+
+    assert decision.ready is False
+    assert decision.good_samples == 0
+    assert decision.reason == reason
+
+
+def test_stable_profile_preserves_timer_only_recovery() -> None:
+    engine = PolyLPSMulti.__new__(PolyLPSMulti)
+    engine._aggressive_recovery_enabled = False
+    engine._vol_check_recovery = lambda _token_id: True
+
+    assert engine._aggressive_recovery_ready("token-a") is True
+
+
+def test_aggressive_eligibility_withdrawal_holds_and_cancels_both_legs() -> None:
+    engine = PolyLPSMulti.__new__(PolyLPSMulti)
+    engine._event_states = {}
+    engine._volatility_tracker = {}
+    engine._event_bus = _EventBus()
+    cancelled = []
+
+    async def cancel(token_id: str, reason: str) -> bool:
+        cancelled.append((token_id, reason))
+        return True
+
+    engine._cancel_risk_buys = cancel
+    asyncio.run(
+        engine._hold_aggressive_ineligible_market(
+            "yes-token",
+            "no-token",
+            "eligibility_withdrawn",
+        )
+    )
+
+    assert engine._event_state_name("yes-token") == EVENT_WATCH
+    assert engine._event_state_name("no-token") == EVENT_WATCH
+    assert {row[0] for row in cancelled} == {"yes-token", "no-token"}
+    assert all(row[1].startswith("aggressive_eligibility:") for row in cancelled)
+
+
+def test_scoring_observer_selects_only_live_managed_buys() -> None:
+    engine = PolyLPSMulti.__new__(PolyLPSMulti)
+    engine._managed_buy_order_ids = {"managed-buy", "managed-sell", "closed-buy"}
+    orders = [
+        {"id": "managed-buy", "side": "BUY", "status": "LIVE"},
+        {"id": "managed-sell", "side": "SELL", "status": "LIVE"},
+        {"id": "external-buy", "side": "BUY", "status": "LIVE"},
+        {"id": "closed-buy", "side": "BUY", "status": "CANCELLED"},
+    ]
+
+    selected = engine._natural_managed_scoring_orders(orders)
+
+    assert [row["id"] for row in selected] == ["managed-buy"]

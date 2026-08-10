@@ -36,6 +36,8 @@ DEPLOYMENT_PROFILES = {"vps1": 1, "vps2": 2}
 RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
     "tests/test_polymarket_maker_engine.py",
+    "tests/test_polymarket_aggressive_guardrails.py",
+    "tests/test_polymarket_order_scoring_observer.py",
 )
 
 
@@ -502,6 +504,16 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     reward_observer = release_dir / "platforms/polymarket/maker/reward_observer.py"
     if reward_observer.is_file():
         artifacts.append(reward_observer)
+    order_scoring_observer = (
+        release_dir / "platforms/polymarket/maker/order_scoring_observer.py"
+    )
+    if order_scoring_observer.is_file():
+        artifacts.append(order_scoring_observer)
+    aggressive_recovery = (
+        release_dir / "platforms/polymarket/maker/aggressive_recovery.py"
+    )
+    if aggressive_recovery.is_file():
+        artifacts.append(aggressive_recovery)
     return {
         "source_repository": SOURCE_REPOSITORY,
         "commit": target_sha,
