@@ -499,6 +499,9 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     aggressive_proxy = release_dir / "platforms/polymarket/maker/aggressive_proxy.py"
     if aggressive_proxy.is_file():
         artifacts.append(aggressive_proxy)
+    reward_observer = release_dir / "platforms/polymarket/maker/reward_observer.py"
+    if reward_observer.is_file():
+        artifacts.append(reward_observer)
     return {
         "source_repository": SOURCE_REPOSITORY,
         "commit": target_sha,

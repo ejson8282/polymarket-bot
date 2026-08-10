@@ -24,6 +24,8 @@ def _release(tmp_path: Path):
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     multi_runner = engine.with_name("multi_runner.py")
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
+    reward_observer = engine.with_name("reward_observer.py")
+    reward_observer.write_text("print('observer')\n", encoding="utf-8")
     manifest = {
         "source_repository": "ejson8282/polymarket-bot",
         "commit": SHA,
@@ -37,6 +39,9 @@ def _release(tmp_path: Path):
             ).hexdigest(),
             "platforms/polymarket/maker/multi_runner.py": hashlib.sha256(
                 multi_runner.read_bytes()
+            ).hexdigest(),
+            "platforms/polymarket/maker/reward_observer.py": hashlib.sha256(
+                reward_observer.read_bytes()
             ).hexdigest(),
         },
     }
@@ -122,6 +127,34 @@ def test_release_guard_rejects_modified_multi_runner(tmp_path):
     with pytest.raises(RuntimeError, match="artifact hash mismatch"):
         verify_release(
             multi_runner,
+            {
+                "POLYMARKET_REQUIRE_RELEASE": "1",
+                "POLYMARKET_RELEASE_SHA": SHA,
+            },
+        )
+
+
+def test_release_guard_accepts_manifested_reward_observer(tmp_path):
+    engine, manifest = _release(tmp_path)
+    reward_observer = engine.with_name("reward_observer.py")
+
+    assert verify_release(
+        reward_observer,
+        {
+            "POLYMARKET_REQUIRE_RELEASE": "1",
+            "POLYMARKET_RELEASE_SHA": SHA,
+        },
+    ) == manifest
+
+
+def test_release_guard_rejects_modified_reward_observer(tmp_path):
+    engine, _manifest = _release(tmp_path)
+    reward_observer = engine.with_name("reward_observer.py")
+    reward_observer.write_text("print('modified')\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="artifact hash mismatch"):
+        verify_release(
+            reward_observer,
             {
                 "POLYMARKET_REQUIRE_RELEASE": "1",
                 "POLYMARKET_RELEASE_SHA": SHA,

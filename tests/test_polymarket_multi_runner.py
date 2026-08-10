@@ -23,6 +23,7 @@ except ModuleNotFoundError:
     sys.modules.setdefault("platforms.polymarket.maker.engine", engine_stub)
 
 from platforms.polymarket.maker.multi_runner import (
+    _aggressive_reward_observer_loop,
     _cancel_accounts_preserving_exits,
     _require_pause_flags,
     _resolve_host_id,
@@ -584,3 +585,41 @@ def test_aggressive_systemd_template_never_reuses_normal_runtime() -> None:
     assert "/home/ubuntu/polymarket-bot" not in unit
     assert "/home/ubuntu/polymarket-runtime" not in unit
     assert "/home/ubuntu/.venv2" not in unit
+
+
+def test_aggressive_reward_observer_uses_isolated_runtime_data(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "aggressive-runtime" / "data"
+    config_dir = tmp_path / "aggressive-runtime" / "maker"
+    calls = []
+
+    async def refresh(path: Path, config_dir: Path) -> str:
+        calls.append((path, config_dir))
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "reward_observer_state.json").write_text(
+            json.dumps({"generated_at": 1, "candidates": []}),
+            encoding="utf-8",
+        )
+        return "markets=12 ready=0"
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            _aggressive_reward_observer_loop(
+                data_dir,
+                config_dir,
+                refresh_once=refresh,
+            )
+        )
+        for _ in range(100):
+            if calls:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == [(data_dir, config_dir)]
+    assert (data_dir / "reward_observer_state.json").is_file()
