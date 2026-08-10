@@ -690,15 +690,21 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
     proxy = maker / "aggressive_proxy.py"
     proxy.write_text("print('proxy')\n", encoding="utf-8")
+    reward_observer = maker / "reward_observer.py"
+    reward_observer.write_text("print('observer')\n", encoding="utf-8")
 
     manifest = _manifest_for(release, target_sha)
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
     multi_runner_path = "platforms/polymarket/maker/multi_runner.py"
+    reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
     assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
         proxy.read_bytes()
     ).hexdigest()
     assert manifest["artifacts_sha256"][multi_runner_path] == hashlib.sha256(
         multi_runner.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts_sha256"][reward_observer_path] == hashlib.sha256(
+        reward_observer.read_bytes()
     ).hexdigest()
     (release / ".release-manifest.json").write_text(
         json.dumps(manifest),
@@ -712,6 +718,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
 
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     multi_runner.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    multi_runner.write_text("print('multi')\n", encoding="utf-8")
+    reward_observer.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
 

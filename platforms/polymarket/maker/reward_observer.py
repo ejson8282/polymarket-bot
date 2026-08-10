@@ -742,6 +742,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        from .release_guard import verify_release
+    except ImportError:
+        from release_guard import verify_release
+
+    verify_release(Path(__file__))
     args = _parser().parse_args()
     try:
         state = refresh_observer_state(

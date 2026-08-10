@@ -97,6 +97,29 @@ python /home/ubuntu/polymarket-aggressive-releases/current/platforms/polymarket/
   --expected-market-sha256 "$POLYMARKET_EXPECTED_MARKET_SHA256"
 ```
 
+## Isolated reward observation
+
+The aggressive runner refreshes public Gamma/CLOB reward observations into
+its own `data/reward_observer_state.json` and history file every five minutes.
+It does not read the normal LP runtime state and the observer never signs,
+posts, or cancels orders. Refresh failures are logged and retried without
+stopping the engine; stale observer data remains ineligible.
+
+Generate a review-only market-universe candidate with:
+
+```bash
+python platforms/polymarket/maker/aggressive_market_selector.py \
+  --observer /home/ubuntu/polymarket-aggressive-runtime/data/reward_observer_state.json \
+  --principal-usdc 200 \
+  --limit 1
+```
+
+Without `--output`, the command only prints JSON. Even with `--output`, it only
+writes a candidate document; it never changes the running config, restarts a
+service, removes a pause flag, or places an order. Selection fails closed for
+stale snapshots, live markets, unverified candidates, excessive fill risk,
+insufficient stability, or probe capital above the account tier.
+
 ## Activation boundary
 
 This isolation layer does not authorize deployment, service restart, signer

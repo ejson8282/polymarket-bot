@@ -416,6 +416,67 @@ async def _cancel_accounts_preserving_exits(
     return all(results)
 
 
+async def _run_aggressive_reward_observer_once(
+    data_dir: Path,
+    config_dir: Path,
+) -> str:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(_MAKER_DIR / "reward_observer.py"),
+        "--config-dir",
+        str(config_dir),
+        "--data-dir",
+        str(data_dir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=240.0)
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+        raise
+    except asyncio.TimeoutError:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        raise RuntimeError("reward observer refresh timed out")
+    message = output.decode("utf-8", errors="replace").strip()
+    if process.returncode != 0:
+        raise RuntimeError(message[:240] or "reward observer refresh failed")
+    return message
+
+
+async def _aggressive_reward_observer_loop(
+    data_dir: Path,
+    config_dir: Path,
+    *,
+    interval_sec: float = 300.0,
+    refresh_once=None,
+) -> None:
+    """Maintain an isolated, read-only reward snapshot for aggressive LP."""
+
+    refresh_fn = refresh_once or _run_aggressive_reward_observer_once
+    while True:
+        try:
+            message = await refresh_fn(data_dir, config_dir)
+            log(f"[aggressive-observer] {message or 'refresh complete'}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(
+                "[aggressive-observer] refresh failed: "
+                f"{type(exc).__name__}: {str(exc)[:160]}"
+            )
+        await asyncio.sleep(max(60.0, float(interval_sec)))
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 async def multi_run(
@@ -677,6 +738,16 @@ async def multi_run(
             name="shared_book_fetcher",
         )
     ]
+    if requested_scope == "aggressive":
+        worker_tasks.append(
+            asyncio.create_task(
+                _aggressive_reward_observer_loop(
+                    resolved_data_dir,
+                    config_dir,
+                ),
+                name="aggressive_reward_observer",
+            )
+        )
     cumulative_delay = 0.0
     for idx, eng in engines:
         worker_tasks.append(
