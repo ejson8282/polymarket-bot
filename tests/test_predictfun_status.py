@@ -117,6 +117,7 @@ def _healthy_snapshot() -> dict:
             "ts": now,
             "connected": True,
             "last_message_at": now,
+            "last_data_at": now,
             "session_number": 2,
             "reconnect_count": 1,
             "market_ids": [58416],
@@ -224,7 +225,8 @@ def test_isolated_book_error_is_attention_not_global_block() -> None:
         research_state={"summary": {}},
         ws_state={
             "connected": True,
-            "last_message_at": now,
+            "last_message_at": "2020-01-01T00:00:00Z",
+            "last_data_at": now,
             "orderbooks": {"42": {"bids": [], "asks": []}},
             "orderbook_errors": {"43": "orderbook_crossed"},
         },
@@ -234,6 +236,7 @@ def test_isolated_book_error_is_attention_not_global_block() -> None:
     assert status["health"]["websocket"]["transport_healthy"] is True
     assert status["health"]["websocket"]["healthy"] is False
     assert status["health"]["websocket"]["error_count"] == 1
+    assert status["health"]["websocket"]["last_data_at"] == now
 
 
 def test_failed_account_read_is_attention_and_not_presented_as_available() -> None:

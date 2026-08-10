@@ -52,10 +52,17 @@ def build_status_snapshot(
     ]
 
     ws_max_age = float(data_cfg.get("ws_state_max_age_sec") or 30)
-    ws_age = _age_sec(ws_state.get("last_message_at"))
+    ws_message_at = ws_state.get("last_message_at")
+    ws_message_age = _age_sec(ws_message_at)
+    ws_data_at = ws_state.get("last_data_at") or ws_message_at
+    ws_age = _age_sec(ws_data_at)
     ws_errors = _object(ws_state.get("orderbook_errors"))
+    ws_rest_errors = _object(ws_state.get("rest_orderbook_errors"))
     ws_error_count = sum(
         1 for value in ws_errors.values() if str(value or "")
+    )
+    ws_rest_error_count = sum(
+        1 for value in ws_rest_errors.values() if str(value or "")
     )
     ws_transport_healthy = (
         ws_state.get("connected") is True
@@ -103,7 +110,13 @@ def build_status_snapshot(
         and not ws_transport_healthy
     ):
         health_status = "blocked"
-    elif runner_error or not signer_ok or ws_error_count or account_read_errors:
+    elif (
+        runner_error
+        or not signer_ok
+        or ws_error_count
+        or ws_rest_error_count
+        or account_read_errors
+    ):
         health_status = "attention"
     else:
         health_status = "healthy"
@@ -168,15 +181,25 @@ def build_status_snapshot(
                 "healthy": ws_healthy,
                 "transport_healthy": ws_transport_healthy,
                 "connected": ws_state.get("connected") is True,
-                "last_message_at": str(ws_state.get("last_message_at") or ""),
-                "last_message_age_sec": ws_age,
+                "last_message_at": str(ws_message_at or ""),
+                "last_message_age_sec": ws_message_age,
+                "last_data_at": str(ws_data_at or ""),
+                "last_data_age_sec": ws_age,
+                "last_rest_sync_at": str(
+                    ws_state.get("last_rest_sync_at") or ""
+                ),
+                "rest_sync_count": _integer(ws_state.get("rest_sync_count")),
                 "max_age_sec": ws_max_age,
                 "session_number": _integer(ws_state.get("session_number")),
                 "reconnect_count": _integer(ws_state.get("reconnect_count")),
                 "market_count": len(_list(ws_state.get("market_ids"))),
                 "book_count": len(_object(ws_state.get("orderbooks"))),
                 "error_count": ws_error_count,
+                "rest_error_count": ws_rest_error_count,
                 "last_error": str(ws_state.get("error") or ""),
+                "last_rest_error": str(
+                    ws_state.get("rest_sync_error") or ""
+                ),
                 "max_latency_ms": max(latencies) if latencies else None,
             },
             "signer": {"ok": signer_ok, "accounts": auth_rows},

@@ -922,8 +922,9 @@ def _book_from_ws_state(
         return {}
     if int(ws_state.get("schema_version") or 0) >= 2 and upstream_ms <= 0:
         return {}
-    if upstream_ms > 0 and time.time() * 1000 - upstream_ms > max(0.0, max_age_sec) * 1000:
-        return {}
+    # Predict's updateTimestampMs is the last orderbook mutation time, not the
+    # time this snapshot was delivered. Local observation time above is the
+    # freshness gate; the upstream timestamp is retained for ordering only.
     trading = (
         ws_state.get("trading_statuses")
         if isinstance(ws_state.get("trading_statuses"), dict)
@@ -961,7 +962,15 @@ def _book_from_ws_state(
     )
     if str(errors.get(str(market_id)) or ""):
         return {}
-    return {"data": book, "_source": "ws"}
+    sources = (
+        ws_state.get("orderbook_sources")
+        if isinstance(ws_state.get("orderbook_sources"), dict)
+        else {}
+    )
+    return {
+        "data": book,
+        "_source": str(sources.get(str(market_id)) or "ws"),
+    }
 
 
 def _load_inventory_positions(config_path: Path, cfg: dict[str, Any]) -> list[dict[str, Any]]:
