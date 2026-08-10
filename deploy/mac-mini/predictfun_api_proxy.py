@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 import logging
@@ -1177,7 +1178,7 @@ def _order_status(payload: dict[str, object]) -> str:
 
 
 def _receipt_summary(receipt: object) -> dict[str, object]:
-    if not isinstance(receipt, dict):
+    if not isinstance(receipt, Mapping):
         return {}
     tx_hash = receipt.get("transactionHash")
     if isinstance(tx_hash, (bytes, bytearray)):

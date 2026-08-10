@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import UserDict
 from decimal import Decimal
 import importlib.util
 import json
@@ -1331,6 +1332,23 @@ def test_proxy_requires_successful_mined_cancel_receipt() -> None:
     assert proxy._cancel_receipt_verified(valid) is True
     assert proxy._cancel_receipt_verified({**valid, "receipt_status": 0}) is False
     assert proxy._cancel_receipt_verified({**valid, "tx_hash": "0x123"}) is False
+
+
+def test_proxy_receipt_summary_accepts_web3_mapping() -> None:
+    proxy = _load_proxy_module()
+    receipt = UserDict(
+        {
+            "transactionHash": bytes.fromhex("ab" * 32),
+            "blockNumber": 115071947,
+            "status": 1,
+        }
+    )
+
+    assert proxy._receipt_summary(receipt) == {
+        "tx_hash": "0x" + "ab" * 32,
+        "block_number": 115071947,
+        "receipt_status": 1,
+    }
 
 
 class _CanaryResponse:
