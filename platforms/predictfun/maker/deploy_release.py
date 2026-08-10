@@ -33,6 +33,7 @@ from platforms.predictfun.maker.release_guard import (
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 CONFIRMATION = "DEPLOY_PREDICTFUN_DRYRUN"
+WS_ACCEPTANCE_ATTEMPTS = 90
 ARCHIVE_PATHS = (
     "platforms/__init__.py",
     "platforms/predictfun",
@@ -627,7 +628,11 @@ def _parse_timestamp(value: Any) -> datetime:
 
 
 def _is_fresh_after(value: Any, observed_after: datetime) -> bool:
-    return _parse_timestamp(value) >= observed_after.replace(microsecond=0)
+    try:
+        parsed = _parse_timestamp(value)
+    except DeploymentError:
+        return False
+    return parsed >= observed_after.replace(microsecond=0)
 
 
 def _verify_runner_state(
@@ -698,7 +703,7 @@ def _verify_ws_state(
     paths: DeploymentPaths,
     observed_after: datetime,
     *,
-    attempts: int = 30,
+    attempts: int = WS_ACCEPTANCE_ATTEMPTS,
     interval_sec: float = 1.0,
 ) -> dict[str, Any]:
     last_failure = "state unavailable"
