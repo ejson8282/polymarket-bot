@@ -311,7 +311,7 @@ def test_ws_orderbook_rejects_out_of_order_update() -> None:
         )
 
 
-def test_ws_book_rejects_non_open_trading_status_and_stale_upstream() -> None:
+def test_ws_book_rejects_non_open_status_but_accepts_old_unchanged_snapshot() -> None:
     now = time.time()
     state = {
         "schema_version": 2,
@@ -326,6 +326,9 @@ def test_ws_book_rejects_non_open_trading_status_and_stale_upstream() -> None:
 
     state["trading_statuses"]["42"]["status"] = "OPEN"
     state["orderbook_upstream_updated_at_ms"]["42"] = int((now - 10) * 1000)
+    assert _book_from_ws_state(state, 42, max_age_sec=5)["_source"] == "ws"
+
+    state["orderbook_updated_at"]["42"] = "2020-01-01T00:00:00Z"
     assert _book_from_ws_state(state, 42, max_age_sec=5) == {}
 
 
@@ -1178,7 +1181,8 @@ def test_required_ws_is_a_hard_risk_gate() -> None:
 
     healthy = {
         "connected": True,
-        "last_message_at": utc_now(),
+        "last_message_at": "2020-01-01T00:00:00Z",
+        "last_data_at": utc_now(),
         "orderbooks": {"42": {"bids": [], "asks": []}},
         "orderbook_errors": {},
     }

@@ -721,8 +721,17 @@ def _verify_ws_state(
             upstream_timestamps = state.get(
                 "orderbook_upstream_updated_at_ms"
             )
+            local_timestamps = state.get("orderbook_updated_at")
             book_ids = set(books) if isinstance(books, dict) else set()
-            statuses_cover_books = bool(book_ids) and all(
+            expected_ids = {
+                str(market_id)
+                for market_id in market_ids or []
+                if str(market_id)
+            }
+            full_book_coverage = bool(expected_ids) and expected_ids.issubset(
+                book_ids
+            )
+            statuses_cover_books = full_book_coverage and all(
                 isinstance(trading_statuses, dict)
                 and isinstance(trading_statuses.get(market_id), dict)
                 and trading_statuses[market_id].get("status") == "OPEN"
@@ -730,18 +739,26 @@ def _verify_ws_state(
                 and isinstance(market_statuses.get(market_id), dict)
                 and market_statuses[market_id].get("status")
                 in {"OPEN", "REGISTERED"}
-                for market_id in book_ids
+                for market_id in expected_ids
             )
-            timestamps_cover_books = bool(book_ids) and all(
+            timestamps_cover_books = full_book_coverage and all(
                 isinstance(upstream_timestamps, dict)
                 and int(upstream_timestamps.get(market_id) or 0) > 0
-                for market_id in book_ids
+                for market_id in expected_ids
             )
-            books_are_valid = bool(book_ids) and all(
+            local_books_are_fresh = full_book_coverage and all(
+                isinstance(local_timestamps, dict)
+                and _is_fresh_after(
+                    local_timestamps.get(market_id),
+                    observed_after,
+                )
+                for market_id in expected_ids
+            )
+            books_are_valid = full_book_coverage and all(
                 isinstance(books[market_id], dict)
                 and isinstance(books[market_id].get("bids"), list)
                 and isinstance(books[market_id].get("asks"), list)
-                for market_id in book_ids
+                for market_id in expected_ids
             )
             checks = {
                 "schema": int(state.get("schema_version") or 0) >= 2,
@@ -749,12 +766,15 @@ def _verify_ws_state(
                 "error": not str(state.get("error") or ""),
                 "markets": isinstance(market_ids, list) and bool(market_ids),
                 "orderbooks": books_are_valid,
+                "full_book_coverage": full_book_coverage,
                 "book_timestamps": timestamps_cover_books,
+                "local_books_fresh": local_books_are_fresh,
                 "market_statuses": statuses_cover_books,
                 "file_fresh": paths.ws_state.stat().st_mtime
                 >= observed_after.replace(microsecond=0).timestamp(),
                 "fresh": _is_fresh_after(
-                    state.get("last_message_at"),
+                    state.get("last_data_at")
+                    or state.get("last_message_at"),
                     observed_after,
                 ),
             }
@@ -968,6 +988,8 @@ def activate_release(
                 "market_count": len(ws_state.get("market_ids") or []),
                 "book_count": len(ws_state.get("orderbooks") or {}),
                 "last_message_at": ws_state.get("last_message_at"),
+                "last_data_at": ws_state.get("last_data_at"),
+                "last_rest_sync_at": ws_state.get("last_rest_sync_at"),
             },
             "status_snapshot": {
                 "schema_version": status_state.get("schema_version"),

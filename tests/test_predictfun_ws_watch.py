@@ -283,3 +283,118 @@ def test_forever_idle_timeout_scales_with_refresh_window() -> None:
         )
         == 1800
     )
+
+
+def test_rest_orderbook_fetch_reports_partial_failures() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def get_orderbook(self, market_id: int) -> dict[str, Any]:
+            self.calls.append(market_id)
+            if market_id == 2:
+                raise RuntimeError("temporary API failure")
+            return {
+                "success": True,
+                "data": {
+                    "marketId": market_id,
+                    "updateTimestampMs": 1000 + market_id,
+                    "bids": [["0.40", "10"]],
+                    "asks": [["0.60", "10"]],
+                },
+            }
+
+    client = FakeClient()
+    books, errors = asyncio.run(
+        ws_watch.fetch_rest_orderbooks(client, [1, 2, 1], concurrency=2)
+    )
+
+    assert sorted(client.calls) == [1, 2]
+    assert sorted(books) == [1]
+    assert "temporary API failure" in errors[2]
+
+
+def test_rest_orderbook_refresh_keeps_successful_markets_fresh() -> None:
+    async def refresher(
+        _market_ids: list[int],
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, str]]:
+        return (
+            {
+                1: {
+                    "marketId": 1,
+                    "updateTimestampMs": 1001,
+                    "bids": [["0.40", "10"]],
+                    "asks": [["0.60", "10"]],
+                }
+            },
+            {2: "HTTP 503"},
+        )
+
+    state: dict[str, Any] = {
+        "rest_sync_count": 0,
+        "rest_sync_failure_count": 0,
+        "consecutive_rest_sync_failures": 0,
+    }
+    asyncio.run(
+        ws_watch._refresh_rest_orderbooks(
+            state,
+            market_ids=[1, 2],
+            refresher=refresher,
+            sentinel=ws_watch.LiquiditySentinel.from_config({"enabled": False}),
+        )
+    )
+
+    assert state["rest_sync_count"] == 1
+    assert state["rest_synced_market_count"] == 1
+    assert state["rest_sync_failed_market_count"] == 1
+    assert state["rest_orderbook_errors"] == {"2": "HTTP 503"}
+    assert state["orderbook_sources"] == {"1": "rest"}
+    assert state["orderbook_updated_at"]["1"]
+    assert state["last_data_at"] == state["last_rest_sync_at"]
+    assert state["consecutive_rest_sync_failures"] == 0
+
+
+def test_watcher_bootstraps_rest_books_before_ws_market_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    websocket = FakeWebSocket()
+
+    async def fake_connect(_ws_url: str, _api_key: str) -> FakeWebSocket:
+        return websocket
+
+    async def refresher(
+        _market_ids: list[int],
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, str]]:
+        return (
+            {
+                1: {
+                    "marketId": 1,
+                    "updateTimestampMs": 1001,
+                    "bids": [["0.40", "10"]],
+                    "asks": [["0.60", "10"]],
+                }
+            },
+            {},
+        )
+
+    monkeypatch.setattr(ws_watch, "_connect", fake_connect)
+    state = asyncio.run(
+        ws_watch.watch_orderbooks(
+            ws_url="ws://relay.test",
+            api_key="",
+            market_ids=[1],
+            state_path=tmp_path / "ws-state.json",
+            max_messages=1,
+            timeout_sec=2,
+            initial_market_statuses={"1": {"status": "OPEN"}},
+            initial_trading_statuses={"1": {"status": "OPEN"}},
+            orderbook_refresher=refresher,
+            orderbook_refresh_sec=0.01,
+        )
+    )
+
+    assert state["rest_sync_count"] >= 2
+    assert state["orderbook_sources"] == {"1": "rest"}
+    assert state["last_data_at"]
+    assert state["error"] == ""

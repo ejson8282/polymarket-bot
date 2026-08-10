@@ -46,8 +46,12 @@
   "data": {
     "use_ws_orderbook_cache": true,
     "require_ws_for_quotes": true,
-    "ws_state_max_age_sec": 30,
-    "ws_orderbook_max_age_sec": 330
+    "ws_state_max_age_sec": 60,
+    "ws_orderbook_max_age_sec": 75,
+    "rest_orderbook_refresh_sec": 30,
+    "rest_orderbook_concurrency": 5,
+    "rest_orderbook_timeout_sec": 5,
+    "rest_orderbook_retries": 1
   },
   "risk": {
     "min_seconds_to_expiry": 3600,

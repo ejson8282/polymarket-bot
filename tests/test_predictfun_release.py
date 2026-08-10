@@ -192,6 +192,7 @@ class SystemdRunner(CommandRunner):
                         "orderbook_upstream_updated_at_ms": {
                             "58416": now_ms,
                         },
+                        "orderbook_updated_at": {"58416": now},
                         "trading_statuses": {
                             "58416": {"status": "OPEN"},
                         },
@@ -199,6 +200,7 @@ class SystemdRunner(CommandRunner):
                             "58416": {"status": "REGISTERED"},
                         },
                         "last_message_at": now,
+                        "last_data_at": now,
                     }
                 ),
                 encoding="utf-8",
@@ -413,6 +415,8 @@ def test_activate_starts_continuous_dry_run_without_polymarket_controls(
         "market_count": 1,
         "book_count": 1,
         "last_message_at": result["websocket"]["last_message_at"],
+        "last_data_at": result["websocket"]["last_data_at"],
+        "last_rest_sync_at": None,
     }
 
 
@@ -638,6 +642,7 @@ def test_ws_acceptance_waits_past_thirty_seconds_for_first_message(
             }
         },
         "orderbook_upstream_updated_at_ms": {"58416": now_ms},
+        "orderbook_updated_at": {},
         "trading_statuses": {"58416": {"status": "OPEN"}},
         "market_statuses": {"58416": {"status": "REGISTERED"}},
         "last_message_at": None,
@@ -649,7 +654,10 @@ def test_ws_acceptance_waits_past_thirty_seconds_for_first_message(
         nonlocal sleeps
         sleeps += 1
         if sleeps == 35:
-            state["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc).isoformat()
+            state["last_message_at"] = now
+            state["last_data_at"] = now
+            state["orderbook_updated_at"] = {"58416": now}
             paths.ws_state.write_text(json.dumps(state), encoding="utf-8")
 
     monkeypatch.setattr(
@@ -662,6 +670,56 @@ def test_ws_acceptance_waits_past_thirty_seconds_for_first_message(
 
     assert accepted["last_message_at"]
     assert sleeps == 35
+
+
+def test_ws_acceptance_rejects_partial_market_book_coverage(
+    tmp_path: Path,
+) -> None:
+    paths, _sha = _paths(tmp_path)
+    paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
+    observed_after = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).isoformat()
+    paths.ws_state.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "connected": True,
+                "error": "",
+                "market_ids": [1, 2],
+                "orderbooks": {
+                    "1": {
+                        "marketId": 1,
+                        "updateTimestampMs": 1001,
+                        "bids": [["0.40", "10"]],
+                        "asks": [["0.60", "10"]],
+                    }
+                },
+                "orderbook_upstream_updated_at_ms": {"1": 1001},
+                "orderbook_updated_at": {"1": now},
+                "trading_statuses": {
+                    "1": {"status": "OPEN"},
+                    "2": {"status": "OPEN"},
+                },
+                "market_statuses": {
+                    "1": {"status": "REGISTERED"},
+                    "2": {"status": "REGISTERED"},
+                },
+                "last_data_at": now,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        DeploymentError,
+        match="full_book_coverage",
+    ):
+        deploy_release_module._verify_ws_state(
+            paths,
+            observed_after,
+            attempts=1,
+            interval_sec=0,
+        )
 
 
 def test_systemd_units_are_predict_only_and_release_guarded() -> None:
@@ -707,5 +765,9 @@ def test_mainnet_ws_freshness_matches_heartbeat_and_refresh_windows() -> None:
     assert runner["fast_requote_after_fill_sec"] == 2
 
     assert data["require_ws_for_quotes"] is True
-    assert data["ws_state_max_age_sec"] >= 30
-    assert data["ws_orderbook_max_age_sec"] >= 300
+    assert data["ws_state_max_age_sec"] == 60
+    assert data["ws_orderbook_max_age_sec"] == 75
+    assert data["rest_orderbook_refresh_sec"] == 30
+    assert data["rest_orderbook_concurrency"] == 5
+    assert data["rest_orderbook_timeout_sec"] == 5
+    assert data["rest_orderbook_retries"] == 1

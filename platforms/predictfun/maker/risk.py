@@ -362,7 +362,11 @@ def _check_ws_required(
     _check_age(
         checks,
         name="ws_message_fresh",
-        ts=str(ws_state.get("last_message_at") or ""),
+        ts=str(
+            ws_state.get("last_data_at")
+            or ws_state.get("last_message_at")
+            or ""
+        ),
         max_age_sec=max_age_sec,
     )
     _check_bool(
