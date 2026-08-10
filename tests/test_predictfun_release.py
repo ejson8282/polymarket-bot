@@ -880,6 +880,60 @@ def test_live_shutdown_cleanup_rejects_malformed_counters(
         )
 
 
+def test_live_shutdown_cleanup_accepts_empty_managed_registry(
+    tmp_path: Path,
+) -> None:
+    paths, _sha = _paths(tmp_path, execution_mode="live")
+    observed_after = datetime.now(timezone.utc)
+    paths.execution_report.parent.mkdir(parents=True, exist_ok=True)
+    paths.execution_report.write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": "live_risk_blocked",
+                "reason": "runner_shutdown",
+                "summary": {"actions": 0, "failed": 0},
+                "managed_orders": {"summary": {"active": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cleanup = deploy_release_module._verify_live_shutdown_cleanup(
+        paths, observed_after
+    )
+
+    assert cleanup["mode"] == "live_risk_blocked"
+
+
+def test_live_shutdown_cleanup_rejects_blocked_mode_with_actions(
+    tmp_path: Path,
+) -> None:
+    paths, _sha = _paths(tmp_path, execution_mode="live")
+    observed_after = datetime.now(timezone.utc)
+    paths.execution_report.parent.mkdir(parents=True, exist_ok=True)
+    paths.execution_report.write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": "live_risk_blocked",
+                "reason": "runner_shutdown",
+                "summary": {"actions": 1, "failed": 0},
+                "managed_orders": {"summary": {"active": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        deploy_release_module.LiveCleanupError,
+        match="mode",
+    ):
+        deploy_release_module._verify_live_shutdown_cleanup(
+            paths, observed_after
+        )
+
+
 def test_failed_ws_acceptance_restores_previous_predict_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
