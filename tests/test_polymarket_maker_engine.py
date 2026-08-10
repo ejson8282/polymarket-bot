@@ -2229,6 +2229,68 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
     assert posted == []
 
 
+def test_signer_outage_triggers_fail_safe_after_threshold_and_throttles(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._signer_failure_since = 0.0
+    engine._signer_fail_safe_fired_at = 0.0
+    engine.signer_fail_safe_after_sec = 30.0
+    engine.signer_fail_safe_cooldown_sec = 120.0
+    engine.cooldown_seconds = 60
+    triggered = []
+
+    async def trigger(reason):
+        triggered.append(reason)
+
+    engine.trigger_global_kill_switch = trigger
+    clock = iter([100.0, 129.0, 131.0, 200.0, 252.0])
+    monkeypatch.setattr(engine_module.time, "time", lambda: next(clock))
+
+    for _ in range(5):
+        asyncio.run(
+            engine._handle_signer_failure("101", RuntimeError("offline"), "buy")
+        )
+
+    assert triggered == ["remote_signer_unreachable", "remote_signer_unreachable"]
+    assert engine._signer_failure_since == 100.0
+    assert engine._signer_fail_safe_fired_at == 252.0
+
+
+def test_market_ws_outage_cancels_quotes_and_preserves_exit_path(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_market_ws_ok_ts = 100.0
+    engine._market_ws_down_cancel_sec = 30.0
+    engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine.market_cfg = {"101": {}}
+    engine._last_plan_sig = {"101": "quoted"}
+    engine.last_quote_ts = {"101": 123.0}
+    cancelled = []
+    notices = []
+
+    async def cancel_all_except_exit():
+        cancelled.append(True)
+
+    async def stop_after_guard_tick(_seconds):
+        engine._running = False
+
+    engine._cancel_all_except_exit = cancel_all_except_exit
+    engine._notify_attention = lambda title, **fields: notices.append((title, fields))
+    monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_guard_tick)
+
+    asyncio.run(engine.best_bid_guard_loop())
+
+    assert cancelled == [True]
+    assert notices == [
+        (
+            "Market WS down",
+            {"age_sec": "40", "action": "cancelled quotes; preserved SELL exits"},
+        )
+    ]
+    assert engine._last_plan_sig["101"] == ""
+    assert engine.last_quote_ts["101"] == 0.0
+
+
 def test_latency_record_includes_cancel_clear_timing():
     engine = object.__new__(PolyLPSMulti)
     engine._latency_marks = {
