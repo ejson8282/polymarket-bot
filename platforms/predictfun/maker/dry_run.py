@@ -676,6 +676,13 @@ def run_once(
         inventory_positions,
         scoring_profile=strategy_profile,
     )
+    require_ws_for_quotes = bool(data_cfg.get("require_ws_for_quotes", False))
+    markets = _filter_market_candidates_for_ws(
+        markets,
+        ws_state,
+        required=require_ws_for_quotes,
+        pinned_market_ids=_position_market_ids(inventory_positions),
+    )
     admission_path_raw = str(out_cfg.get("admission_state_path") or "").strip()
     previous_admission = {}
     admission_path: Path | None = None
@@ -696,7 +703,6 @@ def run_once(
     plans: list[DryRunPlan] = []
     liquidity_blocks = _liquidity_blocks_from_ws_state(ws_state)
     allowed_market_modes = _allowed_market_modes(risk.get("allowed_market_modes"))
-    require_ws_for_quotes = bool(data_cfg.get("require_ws_for_quotes", False))
     for market in markets:
         mode_skip = _market_mode_skip_reason(market, allowed_market_modes)
         if mode_skip:
@@ -891,6 +897,48 @@ def _load_fresh_ws_state(path: Path, *, max_age_sec: float) -> dict[str, Any]:
     if age > max_age_sec:
         return {}
     return data
+
+
+def _filter_market_candidates_for_ws(
+    markets: list[PredictMarket],
+    ws_state: dict[str, Any],
+    *,
+    required: bool,
+    pinned_market_ids: set[int],
+) -> list[PredictMarket]:
+    """Keep admission inside the market universe the WS watcher can serve."""
+
+    if not required or not ws_state:
+        return markets
+    active_ids: set[int] = set()
+    for value in ws_state.get("market_ids") or []:
+        try:
+            market_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if market_id > 0:
+            active_ids.add(market_id)
+    if not active_ids:
+        books = (
+            ws_state.get("orderbooks")
+            if isinstance(ws_state.get("orderbooks"), dict)
+            else {}
+        )
+        for value in books:
+            try:
+                market_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if market_id > 0:
+                active_ids.add(market_id)
+    if not active_ids:
+        return markets
+    pinned = {int(value) for value in pinned_market_ids if int(value) > 0}
+    return [
+        market
+        for market in markets
+        if int(market.id) in active_ids or int(market.id) in pinned
+    ]
 
 
 def _liquidity_blocks_from_ws_state(ws_state: dict[str, Any]) -> dict[str, str]:
