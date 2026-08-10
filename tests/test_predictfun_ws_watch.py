@@ -36,7 +36,7 @@ class FakeWebSocket:
 
 
 def _market(market_id: int) -> SimpleNamespace:
-    return SimpleNamespace(id=market_id, status="OPEN")
+    return SimpleNamespace(id=market_id, status="OPEN", trading_status="OPEN")
 
 
 def test_subscription_refresh_reuses_connection_and_prunes_removed_markets() -> None:
@@ -60,6 +60,10 @@ def test_subscription_refresh_reuses_connection_and_prunes_removed_markets() -> 
             state,
             market_ids=[2, 3],
             market_statuses={"2": {"status": "OPEN"}, "3": {"status": "OPEN"}},
+            trading_statuses={
+                "2": {"status": "OPEN"},
+                "3": {"status": "OPEN"},
+            },
             request_id=10,
         )
     )
@@ -69,6 +73,7 @@ def test_subscription_refresh_reuses_connection_and_prunes_removed_markets() -> 
     assert "1" not in state["orderbooks"]
     assert "2" in state["orderbooks"]
     assert state["market_statuses"]["3"]["status"] == "OPEN"
+    assert state["trading_statuses"]["3"]["status"] == "OPEN"
     assert [message["method"] for message in websocket.sent] == [
         "unsubscribe",
         "unsubscribe",
@@ -263,6 +268,8 @@ def test_forever_uses_heartbeat_safe_idle_timeout_and_settles_before_reconnect(
     assert calls[0]["timeout_sec"] == 900
     assert calls[0]["session_number"] == 1
     assert calls[0]["reconnect_count"] == 0
+    assert calls[0]["initial_market_statuses"]["1"]["source"] == "rest_discovery"
+    assert calls[0]["initial_trading_statuses"]["1"]["source"] == "rest_discovery"
     assert calls[1]["session_number"] == 2
     assert calls[1]["reconnect_count"] == 1
     assert sleep_delays == [ws_watch.RECONNECT_SETTLE_SEC]

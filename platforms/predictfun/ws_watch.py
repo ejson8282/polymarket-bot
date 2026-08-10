@@ -88,6 +88,7 @@ async def watch_orderbooks(
     max_runtime_sec: float = 0,
     sentinel_config: dict[str, Any] | None = None,
     initial_market_statuses: dict[str, dict[str, Any]] | None = None,
+    initial_trading_statuses: dict[str, dict[str, Any]] | None = None,
     session_number: int = 1,
     reconnect_count: int = 0,
     market_refresher: Callable[[], Awaitable[list[PredictMarket]]] | None = None,
@@ -100,6 +101,13 @@ async def watch_orderbooks(
         if str(market_id) in allowed_market_ids
         and isinstance(row, dict)
         and str(row.get("status") or "").upper() in MARKET_STATUSES
+    }
+    trading_statuses = {
+        str(market_id): dict(row)
+        for market_id, row in (initial_trading_statuses or {}).items()
+        if str(market_id) in allowed_market_ids
+        and isinstance(row, dict)
+        and str(row.get("status") or "").upper() in TRADING_STATUSES
     }
     state: dict[str, Any] = {
         "schema_version": 2,
@@ -123,7 +131,7 @@ async def watch_orderbooks(
         "orderbook_upstream_updated_at_ms": {},
         "orderbook_latency_ms": {},
         "orderbook_errors": {},
-        "trading_statuses": {},
+        "trading_statuses": trading_statuses,
         "market_statuses": market_statuses,
         "liquidity": {},
         "liquidity_alerts": {},
@@ -227,6 +235,7 @@ async def watch_orderbooks(
                         state,
                         market_ids=refreshed_market_ids,
                         market_statuses=_market_status_snapshot(refreshed_markets),
+                        trading_statuses=_trading_status_snapshot(refreshed_markets),
                         request_id=request_id,
                     )
                     active_market_ids = {str(value) for value in refreshed_market_ids}
@@ -353,6 +362,7 @@ async def watch_orderbooks_forever(
                 ),
                 max_runtime_sec=0,
                 initial_market_statuses=_market_status_snapshot(markets),
+                initial_trading_statuses=_trading_status_snapshot(markets),
                 sentinel_config=(
                     cfg.get("liquidity_sentinel")
                     if isinstance(cfg.get("liquidity_sentinel"), dict)
@@ -457,6 +467,22 @@ def _market_status_snapshot(
     }
 
 
+def _trading_status_snapshot(
+    markets: list[PredictMarket],
+) -> dict[str, dict[str, Any]]:
+    updated_at = _utc_now()
+    return {
+        str(market.id): {
+            "status": market.trading_status,
+            "updated_at": updated_at,
+            "upstream_ts_ms": 0,
+            "source": "rest_discovery",
+        }
+        for market in markets
+        if market.id > 0 and market.trading_status in TRADING_STATUSES
+    }
+
+
 def _market_topics(market_ids: list[int]) -> list[str]:
     topics: list[str] = []
     for market_id in market_ids:
@@ -502,6 +528,7 @@ async def _sync_market_subscriptions(
     *,
     market_ids: list[int],
     market_statuses: dict[str, dict[str, Any]],
+    trading_statuses: dict[str, dict[str, Any]],
     request_id: int,
 ) -> int:
     normalized_ids = list(dict.fromkeys(int(value) for value in market_ids if int(value) > 0))
@@ -535,6 +562,12 @@ async def _sync_market_subscriptions(
         if market_key not in active_ids or not isinstance(row, dict):
             continue
         current_statuses.setdefault(market_key, dict(row))
+    current_trading_statuses = state["trading_statuses"]
+    for market_id, row in trading_statuses.items():
+        market_key = str(market_id)
+        if market_key not in active_ids or not isinstance(row, dict):
+            continue
+        current_trading_statuses.setdefault(market_key, dict(row))
     state["last_subscription_refresh"] = {
         "at": _utc_now(),
         "added_market_ids": added_ids,
@@ -702,12 +735,14 @@ def main() -> None:
         )
         return
     initial_market_statuses: dict[str, dict[str, Any]] = {}
+    initial_trading_statuses: dict[str, dict[str, Any]] = {}
     if args.market_id:
         market_ids = args.market_id
     else:
         markets = discover_markets(client, cfg, args.discover)
         market_ids = [market.id for market in markets]
         initial_market_statuses = _market_status_snapshot(markets)
+        initial_trading_statuses = _trading_status_snapshot(markets)
     state = asyncio.run(
         watch_orderbooks(
             ws_url=str(cfg.get("ws_url") or DEFAULT_WS_URL),
@@ -717,6 +752,7 @@ def main() -> None:
             max_messages=args.max_messages,
             timeout_sec=args.timeout_sec,
             initial_market_statuses=initial_market_statuses,
+            initial_trading_statuses=initial_trading_statuses,
             sentinel_config=(cfg.get("liquidity_sentinel") if isinstance(cfg.get("liquidity_sentinel"), dict) else {}),
         )
     )
