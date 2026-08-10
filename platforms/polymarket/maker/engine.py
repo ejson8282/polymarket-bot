@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 import contextvars
@@ -51,6 +51,14 @@ try:
     from .aggressive_guardrails import AggressiveGuardrailState
 except ImportError:
     from aggressive_guardrails import AggressiveGuardrailState
+try:
+    from .aggressive_recovery import evaluate_recovery_sample
+except ImportError:
+    from aggressive_recovery import evaluate_recovery_sample
+try:
+    from .order_scoring_observer import OrderScoringObserver
+except ImportError:
+    from order_scoring_observer import OrderScoringObserver
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -973,6 +981,18 @@ class PolyLPSMulti:
             tid: {"front_notional_history": [], "defense_actions": [], "bba_prev": None, "watch_count": 0}
             for tid in self.market_cfg
         }
+        aggressive_defense_cfg = self.cfg.get("aggressive_defense", {}) or {}
+        self._aggressive_recovery_enabled = bool(
+            self.lp_account_profile.profile_type == "aggressive"
+            and aggressive_defense_cfg.get("enabled", True)
+        )
+        self._aggressive_recovery_required_samples = max(
+            1, int(aggressive_defense_cfg.get("recovery_required_samples", 3))
+        )
+        self._aggressive_recovery_sample_interval_sec = max(
+            5.0,
+            float(aggressive_defense_cfg.get("recovery_sample_interval_sec", 30.0)),
+        )
 
         # --- automatic Clash proxy failover ---
         pf_cfg = self.cfg.get("proxy_failover", {})
@@ -1150,7 +1170,32 @@ class PolyLPSMulti:
             self._state_path.parent / "reward_observer_state.json"
         )
         self._eligibility_state: Dict[str, Dict[str, Any]] = {}
-        self._eligibility_check_interval_sec = 300.0
+        eligibility_cfg = self.cfg.get("eligibility_guard", {}) or {}
+        self._eligibility_check_interval_sec = max(
+            15.0, float(eligibility_cfg.get("check_interval_sec", 60.0))
+        )
+        self._eligibility_failure_threshold = max(
+            1, int(eligibility_cfg.get("failure_threshold", 2))
+        )
+        self._eligibility_stale_after_sec = max(
+            self._eligibility_check_interval_sec,
+            float(eligibility_cfg.get("stale_after_sec", 660.0)),
+        )
+        scoring_cfg = self.cfg.get("order_scoring_observer", {}) or {}
+        self._order_scoring_observer_enabled = bool(
+            self.lp_account_profile.profile_type == "aggressive"
+            and scoring_cfg.get("enabled", True)
+        )
+        checkpoints = scoring_cfg.get("checkpoints_sec") or (10, 30, 60, 120, 180, 300)
+        self._order_scoring_observer_interval_sec = max(
+            5.0, float(scoring_cfg.get("poll_interval_sec", 10.0))
+        )
+        self._order_scoring_observer = OrderScoringObserver(
+            self._state_path.parent
+            / f"order_scoring_state_{self._account_idx or 1}.json",
+            checkpoints_sec=tuple(checkpoints),
+            retention_sec=float(scoring_cfg.get("retention_sec", 7 * 24 * 60 * 60)),
+        )
 
         # Rehydrate _curator_events_log from prior engine_state so a restart
         # doesn't wipe recently added records. Reads new key "curator_events"
@@ -2663,6 +2708,58 @@ class PolyLPSMulti:
             if now - enter_ts >= self._vol_quarantine_duration_sec:
                 return True
         return False
+
+    def _aggressive_recovery_ready(self, token_id: str) -> bool:
+        """Require several fresh, healthy samples before aggressive re-entry."""
+        now = time.time()
+        timer_expired = self._vol_check_recovery(token_id)
+        if not getattr(self, "_aggressive_recovery_enabled", False):
+            return timer_expired
+
+        snapshot = self._market_snapshots.get(token_id)
+        snapshot_fresh = bool(
+            snapshot is not None and not self._snapshot_is_stale(token_id, snapshot)
+        )
+        book_valid = bool(
+            snapshot is not None
+            and snapshot.best_bid > 0
+            and snapshot.best_ask > snapshot.best_bid
+        )
+        cfg = self._get_mcfg(token_id)
+        eligibility_ok = True
+        if cfg.get("eligibility_managed"):
+            eligibility_token = (
+                str(cfg.get("paired_token_id") or token_id)
+                if cfg.get("_dual_side_auto")
+                else token_id
+            )
+            eligibility_ok = bool(
+                (self._eligibility_state.get(eligibility_token) or {}).get(
+                    "qualified"
+                )
+            )
+
+        tracker = self._vol_tracker(token_id)
+        decision = evaluate_recovery_sample(
+            now=now,
+            timer_expired=timer_expired,
+            snapshot_fresh=snapshot_fresh,
+            book_valid=book_valid,
+            eligibility_ok=eligibility_ok,
+            last_sample_at=float(tracker.get("recovery_last_sample_at") or 0.0),
+            good_samples=int(tracker.get("recovery_good_samples") or 0),
+            required_samples=self._aggressive_recovery_required_samples,
+            sample_interval_sec=self._aggressive_recovery_sample_interval_sec,
+        )
+        if decision.reason == "waiting_next_sample":
+            return False
+        tracker["recovery_good_samples"] = decision.good_samples
+        tracker["recovery_last_sample_at"] = now
+        tracker["recovery_reason"] = decision.reason
+        if decision.ready:
+            tracker["recovery_good_samples"] = 0
+            tracker["recovery_last_sample_at"] = 0.0
+        return decision.ready
 
     # ---------------------------------------------------------------
     # # P1: Fill exit strategy
@@ -5307,6 +5404,8 @@ class PolyLPSMulti:
             )
         except Exception:
             return None, {}, None
+        if not isinstance(state, dict):
+            return None, {}, None
         generated_at = state.get("generated_at")
         try:
             age = max(0.0, time.time() - float(generated_at))
@@ -5442,6 +5541,79 @@ class PolyLPSMulti:
             self._market_budget_pct.pop(tid, None)
         self._last_budget_rebalance_ts = 0.0
 
+    async def _hold_aggressive_ineligible_market(
+        self,
+        token_id: str,
+        paired_token_id: str,
+        reason: str,
+    ) -> None:
+        """Cancel both event legs and hold them until slow recovery passes."""
+        now = time.time()
+        for tid in sorted({token_id, paired_token_id} - {""}):
+            state = self._event_state_name(tid)
+            if state in {
+                EVENT_HALTED_ON_FILL,
+                EVENT_EXIT_PENDING,
+                EVENT_PENDING_MANUAL_EXIT,
+                EVENT_STARTED_BLOCKED,
+            }:
+                continue
+            tracker = self._vol_tracker(tid)
+            tracker["watch_enter_ts"] = now
+            tracker["recovery_good_samples"] = 0
+            tracker["recovery_last_sample_at"] = 0.0
+            tracker["recovery_reason"] = reason
+            self._set_event_state(tid, EVENT_WATCH, reason)
+            cleared = await self._cancel_risk_buys(
+                tid,
+                f"aggressive_eligibility:{reason}",
+            )
+            if not cleared:
+                log(
+                    f"[eligibility] token={tid[:16]} cancellation remains "
+                    "unconfirmed after global escalation"
+                )
+
+    def _natural_managed_scoring_orders(
+        self,
+        orders: Iterable[Mapping[str, Any]],
+    ) -> list[Mapping[str, Any]]:
+        """Return only live maker BUYs created and tracked by this engine."""
+        return [
+            order
+            for order in orders
+            if _order_is_live(order)
+            and self._order_side(order) == "BUY"
+            and self._order_id(order) in self._managed_buy_order_ids
+        ]
+
+    async def order_scoring_observer_loop(self) -> None:
+        """Sample official scoring status for natural managed BUY orders only."""
+        from py_clob_client_v2.clob_types import OrderScoringParams
+
+        while self._running:
+            try:
+                orders = await self._get_all_orders_cached()
+                natural_orders = self._natural_managed_scoring_orders(orders)
+
+                def _query(order_id: str) -> object:
+                    return self.client.is_order_scoring(
+                        OrderScoringParams(orderId=order_id)
+                    )
+
+                await asyncio.to_thread(
+                    self._order_scoring_observer.poll,
+                    natural_orders,
+                    _query,
+                    now=time.time(),
+                )
+            except Exception as exc:
+                log(
+                    "[order-scoring-observer] read-only poll failed: "
+                    f"{type(exc).__name__}: {str(exc)[:160]}"
+                )
+            await asyncio.sleep(self._order_scoring_observer_interval_sec)
+
     async def eligibility_guard_loop(self) -> None:
         """Keep dashboard-added markets useful without creating an all-off cliff.
 
@@ -5452,8 +5624,16 @@ class PolyLPSMulti:
         """
         while self._running:
             try:
-                _, candidates, observer_age = self._reward_observer_snapshot()
+                observer_state, candidates, observer_age = self._reward_observer_snapshot()
                 now = time.time()
+                try:
+                    observer_generated_at = (
+                        float(observer_state.get("generated_at") or 0.0)
+                        if isinstance(observer_state, dict)
+                        else 0.0
+                    )
+                except (TypeError, ValueError):
+                    observer_generated_at = 0.0
                 for token_id, cfg in list(self.market_cfg.items()) + list(
                     self._night_market_cfg.items()
                 ):
@@ -5471,15 +5651,42 @@ class PolyLPSMulti:
                         != "live"
                     )
                     previous = self._eligibility_state.get(token_id, {})
-                    failures = 0 if qualified else int(
+                    sample_changed = bool(
+                        (
+                            observer_generated_at
+                            and observer_generated_at
+                            != float(previous.get("observer_generated_at") or 0.0)
+                        )
+                        or (
+                            not observer_generated_at
+                            and now - float(previous.get("updated_at") or 0.0)
+                            >= self._eligibility_check_interval_sec * 0.9
+                        )
+                    )
+                    previous_failures = int(
                         previous.get("consecutive_failures") or 0
-                    ) + 1
+                    )
+                    failures = (
+                        0
+                        if qualified
+                        else previous_failures + (1 if sample_changed else 0)
+                    )
                     paired = str(cfg.get("paired_token_id") or "")
                     if qualified:
                         status = "qualified"
                         target_risk = str(cfg.get("base_risk") or "mid")
-                    elif failures < 3:
+                    elif (
+                        self.lp_account_profile.profile_type == "aggressive"
+                        and observer_age is not None
+                        and observer_age > self._eligibility_stale_after_sec
+                    ):
+                        status = "withdrawn"
+                        target_risk = "high"
+                    elif failures < self._eligibility_failure_threshold:
                         status = "watch"
+                        target_risk = "high"
+                    elif self.lp_account_profile.profile_type == "aggressive":
+                        status = "withdrawn"
                         target_risk = "high"
                     else:
                         status = "retained_reduced"
@@ -5496,14 +5703,28 @@ class PolyLPSMulti:
                         "observer_age_sec": round(observer_age, 1)
                         if observer_age is not None
                         else None,
+                        "observer_generated_at": observer_generated_at or None,
                         "updated_at": now,
                         "reason": (
                             "eligible"
                             if qualified
-                            else "soft eligibility failed; budget reduced"
+                            else (
+                                "aggressive eligibility failed; orders held"
+                                if status == "withdrawn"
+                                else "soft eligibility failed; budget reduced"
+                            )
                         ),
                     }
                     self._eligibility_state[token_id] = state
+                    if (
+                        status == "withdrawn"
+                        and previous.get("status") != "withdrawn"
+                    ):
+                        await self._hold_aggressive_ineligible_market(
+                            token_id,
+                            paired,
+                            "eligibility_withdrawn",
+                        )
                     if previous.get("status") != status:
                         log(
                             f"[eligibility] token={token_id[:16]} "
@@ -6821,6 +7042,13 @@ class PolyLPSMulti:
                     name="aggressive_guardrail_loop",
                 )
             )
+        if self._order_scoring_observer_enabled:
+            tasks.append(
+                asyncio.create_task(
+                    self.order_scoring_observer_loop(),
+                    name="order_scoring_observer_loop",
+                )
+            )
         if self._sponsored_guard.enabled:
             tasks.append(
                 asyncio.create_task(
@@ -7525,7 +7753,7 @@ class PolyLPSMulti:
             )
             if self._event_is_banned(token_id):
                 # --- P0: auto-recover from WATCH/QUARANTINE if timer expired ---
-                if self._vol_check_recovery(token_id):
+                if self._aggressive_recovery_ready(token_id):
                     prev_state = self._event_state_name(token_id)
                     self._vol_tracker(token_id)["watch_count"] = 0
                     self._vol_tracker(token_id)["defense_repeat_count"] = 0
@@ -9409,6 +9637,7 @@ class PolyLPSMulti:
                     })
 
                 current_session = self._current_session()
+                order_scoring_state = self._order_scoring_observer.public_state(now)
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
@@ -9425,6 +9654,16 @@ class PolyLPSMulti:
                             and self._runtime_scope == "aggressive"
                         ),
                         "state": self._aggressive_guardrail_state.public_dict(),
+                    },
+                    "aggressive_defense": {
+                        "enabled": self._aggressive_recovery_enabled,
+                        "recovery_required_samples": self._aggressive_recovery_required_samples,
+                        "recovery_sample_interval_sec": self._aggressive_recovery_sample_interval_sec,
+                    },
+                    "order_scoring_observer": {
+                        "enabled": self._order_scoring_observer_enabled,
+                        **order_scoring_state["summary"],
+                        "last_error": order_scoring_state.get("last_error"),
                     },
                     "release_sha": os.getenv("POLYMARKET_RELEASE_SHA") or None,
                     "release_required": os.getenv(

@@ -87,6 +87,7 @@ RELEASE_TESTS = (
     "tests/test_polymarket_account_roster.py",
     "tests/test_polymarket_multi_runner.py",
     "tests/test_polymarket_aggressive_guardrails.py",
+    "tests/test_polymarket_order_scoring_observer.py",
     "tests/test_polymarket_aggressive_deploy.py",
     "tests/test_polymarket_aggressive_proxy.py",
 )

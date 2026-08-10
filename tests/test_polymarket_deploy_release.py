@@ -692,11 +692,17 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     reward_observer = maker / "reward_observer.py"
     reward_observer.write_text("print('observer')\n", encoding="utf-8")
+    scoring_observer = maker / "order_scoring_observer.py"
+    scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
+    aggressive_recovery = maker / "aggressive_recovery.py"
+    aggressive_recovery.write_text("print('recovery')\n", encoding="utf-8")
 
     manifest = _manifest_for(release, target_sha)
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
     multi_runner_path = "platforms/polymarket/maker/multi_runner.py"
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
+    scoring_observer_path = "platforms/polymarket/maker/order_scoring_observer.py"
+    aggressive_recovery_path = "platforms/polymarket/maker/aggressive_recovery.py"
     assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
         proxy.read_bytes()
     ).hexdigest()
@@ -705,6 +711,12 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     ).hexdigest()
     assert manifest["artifacts_sha256"][reward_observer_path] == hashlib.sha256(
         reward_observer.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts_sha256"][scoring_observer_path] == hashlib.sha256(
+        scoring_observer.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts_sha256"][aggressive_recovery_path] == hashlib.sha256(
+        aggressive_recovery.read_bytes()
     ).hexdigest()
     (release / ".release-manifest.json").write_text(
         json.dumps(manifest),
@@ -723,6 +735,16 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
 
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
     reward_observer.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    reward_observer.write_text("print('observer')\n", encoding="utf-8")
+    scoring_observer.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
+    aggressive_recovery.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
 
