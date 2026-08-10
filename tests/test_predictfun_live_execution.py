@@ -205,6 +205,40 @@ def test_multi_account_executor_applies_observed_account_order_limits() -> None:
     assert second.max_order_notional == Decimal("5")
 
 
+def test_live_executor_omits_market_only_reserved_balance_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    submitted: list[dict[str, Any]] = []
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        del params
+        assert method == "POST"
+        assert suffix == "/submit-order"
+        submitted.append(dict(json_body))
+        return {"ok": True, "order_hash": "0x" + "1" * 64}
+
+    monkeypatch.setattr(executor, "_request", request)
+
+    result = executor.create(_order("account_01"))
+
+    assert result.ok is True
+    assert len(submitted) == 1
+    assert submitted[0]["is_post_only"] is True
+    assert submitted[0]["self_trade_prevention"] == "CANCEL_MAKER"
+    assert "reserved_balance_policy" not in submitted[0]
+
+
 @pytest.mark.parametrize("inventory_source", ["live", "live_read_only"])
 def test_live_inventory_is_used_by_risk_instead_of_simulation(
     inventory_source: str,
@@ -968,7 +1002,6 @@ def _proxy_order_body() -> dict[str, object]:
         "price": "0.4",
         "size": "2",
         "is_post_only": True,
-        "reserved_balance_policy": "REJECT_MARKET_ORDER",
         "self_trade_prevention": "CANCEL_MAKER",
         "max_notional_usdc": "8",
     }
@@ -979,7 +1012,7 @@ def test_proxy_idempotency_replays_same_payload_and_rejects_mismatch(
 ) -> None:
     proxy = _load_proxy_module()
     monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
-    upstream_calls: list[str] = []
+    upstream_payloads: list[dict[str, Any]] = []
 
     def signed_payload(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {
@@ -995,8 +1028,8 @@ def test_proxy_idempotency_replays_same_payload_and_rejects_mismatch(
             "signer_mode": "predict_account",
         }
 
-    def upstream(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
-        upstream_calls.append("submit")
+    def upstream(*_args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        upstream_payloads.append(dict(kwargs["body"]["data"]))
         return 201, {
             "success": True,
             "data": {"orderHash": "0x" + "1" * 64},
@@ -1018,7 +1051,11 @@ def test_proxy_idempotency_replays_same_payload_and_rejects_mismatch(
         "error": "idempotency_key_payload_mismatch",
         "alias": "account_01",
     }
-    assert upstream_calls == ["submit"]
+    assert len(upstream_payloads) == 1
+    assert upstream_payloads[0]["strategy"] == "LIMIT"
+    assert upstream_payloads[0]["isPostOnly"] is True
+    assert upstream_payloads[0]["selfTradePrevention"] == "CANCEL_MAKER"
+    assert "reservedBalancePolicy" not in upstream_payloads[0]
 
 
 def test_proxy_rejected_order_preserves_only_safe_upstream_details(
@@ -1498,6 +1535,9 @@ def test_live_canary_forwards_explicit_idempotency_key(
     assert body["market_id"] == 10835
     assert body["idempotency_key"] == "canary-account01-20260809-01"
     assert body["intent_id"] == "canary-account01-20260809-01"
+    assert body["is_post_only"] is True
+    assert body["self_trade_prevention"] == "CANCEL_MAKER"
+    assert "reserved_balance_policy" not in body
 
 
 def test_live_canary_failure_returns_nonzero(
@@ -1568,13 +1608,18 @@ def test_live_canary_never_uses_off_book_only_remove_endpoint() -> None:
         ("is_post_only", None, "post_only_required"),
         (
             "reserved_balance_policy",
-            "",
-            "reserved_balance_policy_required",
+            "REJECT_MARKET_ORDER",
+            "reserved_balance_policy_not_allowed_for_limit",
         ),
         (
             "reserved_balance_policy",
             "ALLOW_MARKET_ORDER",
-            "reserved_balance_policy_required",
+            "reserved_balance_policy_not_allowed_for_limit",
+        ),
+        (
+            "reservedBalancePolicy",
+            "REJECT_MARKET_ORDER",
+            "reserved_balance_policy_not_allowed_for_limit",
         ),
         (
             "self_trade_prevention",
