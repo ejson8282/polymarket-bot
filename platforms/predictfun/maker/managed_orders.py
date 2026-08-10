@@ -110,6 +110,18 @@ class ManagedOrderRegistry:
             }
         )
 
+    def discard_simulated(self) -> int:
+        """Drop dry-run placeholders before a live reconciliation cycle."""
+
+        simulated_ids = [
+            order_id
+            for order_id in self._orders
+            if order_id.startswith("dry:")
+        ]
+        for order_id in simulated_ids:
+            self._orders.pop(order_id, None)
+        return len(simulated_ids)
+
     def sync_live_orders(self, live_orders: list[LiveOrder]) -> None:
         """Refresh engine-owned rows without adopting manual website orders."""
 

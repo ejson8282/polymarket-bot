@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from platforms.predictfun.maker.capital import build_account_capital_rows
+from platforms.predictfun.maker.dry_run import QuoteLevel, _filter_quotes
 from platforms.predictfun.maker.execution_gate import resolve_execution_gate
 from platforms.predictfun.maker.executor import (
     AccountBalance,
@@ -28,6 +29,7 @@ from platforms.predictfun.maker import live_order_once
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.runner import (
+    _apply_configured_capital_caps,
     _apply_manual_order_constraints,
     _cancel_managed_on_shutdown,
     _runtime_read_capabilities,
@@ -204,6 +206,295 @@ def test_multi_account_executor_applies_observed_account_order_limits() -> None:
 
     assert first.max_order_notional == Decimal("15")
     assert second.max_order_notional == Decimal("5")
+
+
+def test_limited_live_config_clamps_observed_capital_tier() -> None:
+    rows = [
+        {
+            "account_id": "account_01",
+            "max_account_notional": "14",
+            "max_account_market_notional": "5",
+            "max_order_notional": "1.6",
+            "max_markets": 3,
+            "inventory_warning": "6",
+        }
+    ]
+
+    capped = _apply_configured_capital_caps(
+        rows,
+        {
+            "scan": {"max_markets": 1},
+            "strategy": {"max_order_notional": "1.60"},
+            "risk": {
+                "max_account_desired_notional": "1.60",
+                "max_account_market_desired_notional": "1.60",
+            },
+        },
+    )
+
+    assert capped == [
+        {
+            "account_id": "account_01",
+            "max_account_notional": "1.60",
+            "max_account_market_notional": "1.60",
+            "max_order_notional": "1.6",
+            "max_markets": 1,
+            "inventory_warning": "1.60",
+        }
+    ]
+    assert rows[0]["max_account_notional"] == "14"
+
+
+def test_limited_live_disables_new_buys_while_manual_buy_is_open() -> None:
+    capped = _apply_configured_capital_caps(
+        [
+            {
+                "account_id": "account_01",
+                "quote_enabled": True,
+                "max_account_notional": "14",
+                "max_account_market_notional": "5",
+                "max_order_notional": "1.6",
+                "max_markets": 3,
+                "inventory_warning": "6",
+            }
+        ],
+        {
+            "scan": {"max_markets": 1},
+            "strategy": {"max_order_notional": "1.60"},
+            "risk": {
+                "max_account_desired_notional": "1.60",
+                "max_account_market_desired_notional": "1.60",
+            },
+            "inventory": {
+                "halt_new_buys_while_manual_buy_orders": True,
+            },
+        },
+        manual_order_constraints={
+            "account_01": {"manual_buy_reserved_notional": "0.50"}
+        },
+    )
+
+    assert capped[0]["quote_enabled"] is False
+    assert capped[0]["disabled_reason"] == "manual_buy_order_present"
+
+
+def test_limited_live_resizes_large_reward_quote_to_static_cap() -> None:
+    quotes = _filter_quotes(
+        [
+            QuoteLevel(
+                outcome="YES",
+                side="BUY",
+                price=Decimal("0.40"),
+                size=Decimal("100"),
+                notional=Decimal("40"),
+                reason="reward threshold",
+            )
+        ],
+        min_order_notional=Decimal("0.90"),
+        max_order_notional=Decimal("1.60"),
+        resize_to_max_order_notional=True,
+    )
+
+    assert len(quotes) == 1
+    assert quotes[0].size == Decimal("4.000000")
+    assert quotes[0].notional == Decimal("1.60000000")
+    assert "max_notional_adjusted=1.60" in quotes[0].reason
+
+
+def test_limited_live_caps_produce_one_order_without_tripping_risk() -> None:
+    cfg = {
+        "accounts": {"ids": ["account_01"], "max_active_accounts": 1},
+        "scan": {"max_markets": 1},
+        "strategy": {"max_order_notional": "1.60"},
+        "risk": {
+            "max_plan_state_age_sec": 180,
+            "max_total_desired_notional": "1.60",
+            "max_account_desired_notional": "1.60",
+            "max_account_market_desired_notional": "1.60",
+            "max_market_desired_notional": "1.60",
+        },
+    }
+    capital_rows = _apply_configured_capital_caps(
+        [
+            {
+                "account_id": "account_01",
+                "enabled": True,
+                "quote_enabled": True,
+                "max_account_notional": "14",
+                "max_account_market_notional": "5",
+                "max_order_notional": "1.6",
+                "max_markets": 3,
+                "inventory_warning": "6",
+            }
+        ],
+        cfg,
+    )
+    plans = [
+        {
+            "can_quote": True,
+            "market": {
+                "id": 42,
+                "decimal_precision": 2,
+                "yes_token_id": "yes-token",
+                "no_token_id": "no-token",
+            },
+            "yes_quotes": [
+                {
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "price": "0.40",
+                    "size": "10",
+                }
+            ],
+            "no_quotes": [
+                {
+                    "outcome": "NO",
+                    "side": "BUY",
+                    "price": "0.60",
+                    "size": "10",
+                }
+            ],
+        }
+    ]
+
+    intents = build_intents_from_plans(
+        plans,
+        accounts_config={"ids": capital_rows, "max_active_accounts": 1},
+        planner_config={
+            "max_account_notional": "1.60",
+            "max_account_market_notional": "1.60",
+        },
+    )
+    intent_rows = [
+        {
+            **vars(intent),
+            "price": str(intent.price),
+            "size": str(intent.size),
+            "notional": str(intent.notional),
+        }
+        for intent in intents
+    ]
+
+    assert len(intent_rows) == 1
+    assert Decimal(intent_rows[0]["notional"]) <= Decimal("1.60")
+    risk = evaluate_risk(
+        cfg={**cfg, "accounts": {"ids": capital_rows, "max_active_accounts": 1}},
+        plan_state={"ts": utc_now()},
+        intents_state={
+            "summary": {"total_notional": intent_rows[0]["notional"]},
+            "intents": intent_rows,
+        },
+        runner_state={"error_count": 0},
+        ws_state={},
+        simulation_state={"positions": []},
+        kill_switch_state={},
+    )
+    assert risk["blocked"] is False
+    assert risk["execution_mode"] == "normal"
+
+
+def test_limited_live_position_blocks_new_buys_in_another_market() -> None:
+    intents = build_intents_from_plans(
+        [
+            {
+                "can_quote": True,
+                "market": {
+                    "id": 42,
+                    "yes_token_id": "yes-token",
+                    "no_token_id": "no-token",
+                },
+                "yes_quotes": [
+                    {
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.40",
+                        "size": "4",
+                    }
+                ],
+                "no_quotes": [],
+            }
+        ],
+        accounts_config={
+            "ids": [
+                {
+                    "account_id": "account_01",
+                    "enabled": True,
+                    "quote_enabled": True,
+                    "max_account_notional": "1.60",
+                    "max_account_market_notional": "1.60",
+                    "max_order_notional": "1.60",
+                    "max_markets": 1,
+                }
+            ],
+            "max_active_accounts": 1,
+        },
+        inventory_positions=[
+            {
+                "account_id": "account_01",
+                "market_id": 7,
+                "outcome": "YES",
+                "size": "2",
+            }
+        ],
+        inventory_config={
+            "enabled": True,
+            "halt_all_buys_while_any_position": True,
+        },
+    )
+
+    assert not [intent for intent in intents if intent.side == "BUY"]
+
+
+def test_limited_live_combined_position_and_buy_risk_is_reduce_only() -> None:
+    risk = evaluate_risk(
+        cfg={
+            "accounts": {"ids": ["account_01"], "max_active_accounts": 1},
+            "risk": {
+                "max_plan_state_age_sec": 180,
+                "max_total_desired_notional": "1.60",
+                "max_total_exposure_notional": "1.60",
+            },
+        },
+        plan_state={"ts": utc_now()},
+        intents_state={
+            "summary": {"total_notional": "0.80"},
+            "intents": [
+                {
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "notional": "0.80",
+                }
+            ],
+        },
+        runner_state={"error_count": 0},
+        ws_state={},
+        simulation_state={},
+        kill_switch_state={},
+        inventory_state={
+            "positions": [
+                {
+                    "account_id": "account_01",
+                    "market_id": 7,
+                    "outcome": "YES",
+                    "size": "2",
+                    "value_usd": "1.00",
+                }
+            ]
+        },
+        inventory_source="live",
+    )
+
+    assert risk["blocked"] is True
+    assert risk["execution_mode"] == "reduce_only"
+    combined = next(
+        row
+        for row in risk["checks"]
+        if row["name"] == "total_position_plus_buy_notional"
+    )
+    assert combined["value"] == "1.80"
+    assert combined["limit"] == "1.60"
 
 
 def test_live_executor_omits_market_only_reserved_balance_policy(

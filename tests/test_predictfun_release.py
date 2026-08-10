@@ -14,6 +14,7 @@ import pytest
 import platforms.predictfun.maker.deploy_release as deploy_release_module
 from platforms.predictfun.maker.deploy_release import (
     CONFIRMATION,
+    LIVE_CONFIRMATION,
     CommandRunner,
     DeploymentError,
     DeploymentPaths,
@@ -107,6 +108,7 @@ def _paths(
     tmp_path: Path,
     *,
     profile: str = "vps1",
+    execution_mode: str = "dry_run",
     account_id: str = "account_01",
     account_ids: tuple[str, ...] = (),
 ) -> tuple[DeploymentPaths, str]:
@@ -120,6 +122,7 @@ def _paths(
     lock.touch()
     paths = DeploymentPaths(
         profile=profile,
+        execution_mode=execution_mode,
         account_id=account_id,
         account_ids=account_ids,
         bare_repo=bare,
@@ -130,6 +133,7 @@ def _paths(
         runtime_config=runtime / "config.mainnet.json",
         release_env=runtime / "release.env",
         runner_state=data / "predictfun_mainnet_runner_state.json",
+        execution_report=data / "predictfun_mainnet_execution_report.json",
         ws_state=data / "predictfun_mainnet_ws_state.json",
         status_state=data / "predictfun_mainnet_status.json",
         lock_file=lock,
@@ -149,11 +153,16 @@ class SystemdRunner(CommandRunner):
         *,
         fail_cycle: bool = False,
         auth_ok: bool = True,
+        execution_failed: bool = False,
+        shutdown_failed: bool = False,
     ) -> None:
         self.paths = paths
         self.sha = sha
         self.fail_cycle = fail_cycle
         self.auth_ok = auth_ok
+        self.execution_failed = execution_failed
+        self.shutdown_failed = shutdown_failed
+        self.service_started = False
         self.calls: list[tuple[str, ...]] = []
 
     def run(
@@ -170,6 +179,38 @@ class SystemdRunner(CommandRunner):
             return "enabled"
         if command[:2] == ("systemctl", "is-active"):
             return "active"
+        if command == ("systemctl", "stop", self.paths.service_name):
+            if self.service_started:
+                now = datetime.now(timezone.utc).isoformat()
+                self.paths.execution_report.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                self.paths.execution_report.write_text(
+                    json.dumps(
+                        {
+                            "ts": now,
+                            "mode": "live_cancel_only",
+                            "reason": "runner_shutdown",
+                            "summary": {
+                                "actions": 1,
+                                "create": 0,
+                                "cancel": 1,
+                                "failed": 1 if self.shutdown_failed else 0,
+                                "blocked": 1,
+                            },
+                            "managed_orders": {
+                                "summary": {
+                                    "tracked": 1,
+                                    "active": 1 if self.shutdown_failed else 0,
+                                    "inventory_exits": 0,
+                                },
+                                "orders": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            self.service_started = False
         if command == ("systemctl", "start", self.paths.ws_service_name):
             self.paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
@@ -206,20 +247,34 @@ class SystemdRunner(CommandRunner):
                 encoding="utf-8",
             )
         if command == ("systemctl", "start", self.paths.service_name):
+            self.service_started = True
             self.paths.runner_state.parent.mkdir(parents=True, exist_ok=True)
             now = datetime.now(timezone.utc).isoformat()
             config = json.loads(
                 self.paths.runtime_config.read_text(encoding="utf-8")
             )
             account_ids = list(config["accounts"]["ids"])
+            mode = str((config.get("execution") or {}).get("mode") or "dry_run")
+            live_enabled = mode == "live"
             self.paths.runner_state.write_text(
                 json.dumps(
                     {
-                        "mode": "dry_run",
+                        "mode": mode,
                         "release_sha": self.sha,
                         "release_required": True,
                         "deployment_profile": config["deployment"]["profile"],
                         "account_ids": account_ids,
+                        "execution_gate": {
+                            "requested_mode": mode,
+                            "effective_mode": mode,
+                            "allowed": True,
+                            "blocks": [],
+                            "account_ids": account_ids,
+                        },
+                        "capabilities": {
+                            "live_order_submit": live_enabled,
+                            "live_order_cancel": live_enabled,
+                        },
                         "last_auth_summary": {
                             "enabled": True,
                             "ok": self.auth_ok,
@@ -234,6 +289,12 @@ class SystemdRunner(CommandRunner):
                         "cycle_count": 0 if self.fail_cycle else 1,
                         "error_count": 1 if self.fail_cycle else 0,
                         "last_error": "upstream failed" if self.fail_cycle else "",
+                        "last_execution_summary": {
+                            "actions": 1 if self.execution_failed else 0,
+                            "create": 1 if self.execution_failed else 0,
+                            "cancel": 0,
+                            "failed": 1 if self.execution_failed else 0,
+                        },
                         "last_cycle_finished_at": now,
                         "running": True,
                     }
@@ -253,12 +314,12 @@ class SystemdRunner(CommandRunner):
                             ),
                             "account_ids": account_ids,
                             "release_sha": self.sha,
-                            "mode": "dry_run",
+                            "mode": mode,
                         },
                         "health": {"status": "healthy"},
                         "capabilities": {
-                            "live_order_submit": False,
-                            "live_order_cancel": False,
+                            "live_order_submit": live_enabled,
+                            "live_order_cancel": live_enabled,
                         },
                     }
                 ),
@@ -420,6 +481,111 @@ def test_activate_starts_continuous_dry_run_without_polymarket_controls(
     }
 
 
+def test_activate_vps1_limited_live_writes_exact_caps_and_live_gate(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(paths, sha)
+
+    with pytest.raises(DeploymentError, match=LIVE_CONFIRMATION):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="wrong-mode-confirmation",
+        )
+
+    result = activate_release(
+        paths,
+        runner,
+        target_sha=sha,
+        expected_current="none",
+        confirm=LIVE_CONFIRMATION,
+        authorization_id="limited-live-test-authorization",
+    )
+
+    config = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+    assert config["execution"] == {"mode": "live"}
+    assert config["simulation"]["enabled"] is False
+    assert config["deployment"] == {
+        "profile": "vps1",
+        "account_id": "account_01",
+        "account_ids": ["account_01"],
+        "safety_profile": "vps1_limited_live_v1",
+    }
+    assert config["scan"]["max_markets"] == 1
+    assert config["strategy"]["max_quote_levels"] == 1
+    assert config["strategy"]["min_order_notional"] == "0.90"
+    assert config["strategy"]["max_order_notional"] == "1.60"
+    assert config["strategy"]["resize_to_max_order_notional"] is True
+    assert config["inventory"]["halt_all_buys_while_any_position"] is True
+    assert (
+        config["inventory"]["halt_new_buys_while_manual_buy_orders"]
+        is True
+    )
+    assert {
+        key: config["risk"][key]
+        for key in (
+            "max_total_desired_notional",
+            "max_account_desired_notional",
+            "max_account_market_desired_notional",
+            "max_market_desired_notional",
+        )
+    } == {
+        "max_total_desired_notional": "1.60",
+        "max_account_desired_notional": "1.60",
+        "max_account_market_desired_notional": "1.60",
+        "max_market_desired_notional": "1.60",
+    }
+    assert config["risk"]["max_total_exposure_notional"] == "1.60"
+    assert paths.release_env.read_text(encoding="utf-8").splitlines() == [
+        f"PREDICTFUN_RELEASE_SHA={sha}",
+        "PREDICTFUN_LIVE_TRADING=1",
+        "PREDICTFUN_LIVE_CONFIRM=ENABLE_PREDICTFUN_LIVE",
+        f"PREDICTFUN_LIVE_RELEASE_SHA={sha}",
+        "PREDICTFUN_LIVE_ACCOUNT_IDS=account_01",
+    ]
+    assert result["execution_mode"] == "live"
+    assert result["runner"]["mode"] == "live"
+    assert result["status_snapshot"]["mode"] == "live"
+
+
+@pytest.mark.parametrize(
+    ("profile", "account_ids", "message"),
+    [
+        ("vps2", ("account_02",), "restricted to VPS1"),
+        ("vps1", ("account_01", "account_03"), "only account_01"),
+    ],
+)
+def test_limited_live_rejects_other_hosts_or_accounts(
+    tmp_path: Path,
+    profile: str,
+    account_ids: tuple[str, ...],
+    message: str,
+) -> None:
+    paths, sha = _paths(
+        tmp_path,
+        profile=profile,
+        execution_mode="live",
+        account_id=account_ids[0],
+        account_ids=account_ids,
+    )
+    prepare_release(paths, CommandRunner(), sha)
+
+    with pytest.raises(DeploymentError, match=message):
+        activate_release(
+            paths,
+            SystemdRunner(paths, sha),
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="invalid-limited-live-target",
+        )
+
+
 def test_profiles_pin_independent_accounts_and_locks() -> None:
     vps1 = DeploymentPaths.for_profile("vps1")
     vps2 = DeploymentPaths.for_profile("VPS2")
@@ -574,6 +740,144 @@ def test_failed_account_auth_restores_previous_predict_state(
         paths.ws_service_unit.read_text(encoding="utf-8")
         == "legacy predict ws service\n"
     )
+
+
+def test_live_execution_failure_restores_previous_predict_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(paths, sha, execution_failed=True)
+
+    with pytest.raises(DeploymentError, match="previous Predict-only service state"):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="test-live-execution-failure",
+        )
+
+    assert not paths.current_link.exists()
+    assert (
+        "systemctl",
+        "stop",
+        paths.service_name,
+    ) in runner.calls
+    cleanup = json.loads(paths.execution_report.read_text(encoding="utf-8"))
+    assert cleanup["reason"] == "runner_shutdown"
+    assert cleanup["summary"]["failed"] == 0
+    assert cleanup["managed_orders"]["summary"]["active"] == 0
+
+
+def test_unverified_live_cleanup_leaves_predict_services_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(
+        paths,
+        sha,
+        execution_failed=True,
+        shutdown_failed=True,
+    )
+
+    with pytest.raises(
+        DeploymentError,
+        match="live managed-order cleanup was not verified",
+    ):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=LIVE_CONFIRMATION,
+            authorization_id="test-live-cleanup-failure",
+        )
+
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.service_name,
+    ) in runner.calls
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.ws_service_name,
+    ) in runner.calls
+    cleanup = json.loads(paths.execution_report.read_text(encoding="utf-8"))
+    assert cleanup["summary"]["failed"] == 1
+    assert cleanup["managed_orders"]["summary"]["active"] == 1
+
+
+def test_replacing_live_release_requires_fresh_shutdown_cleanup(
+    tmp_path: Path,
+) -> None:
+    paths, sha = _paths(tmp_path, execution_mode="dry_run")
+    prepare_release(paths, CommandRunner(), sha)
+    paths.current_link.parent.mkdir(parents=True, exist_ok=True)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    paths.runtime_config.parent.mkdir(parents=True, exist_ok=True)
+    paths.runtime_config.write_text(
+        json.dumps({"execution": {"mode": "live"}}),
+        encoding="utf-8",
+    )
+    runner = SystemdRunner(paths, sha)
+
+    with pytest.raises(
+        DeploymentError,
+        match="live managed-order cleanup was not verified",
+    ):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current=sha,
+            confirm=CONFIRMATION,
+            authorization_id="test-replace-live-without-cleanup",
+        )
+
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert (
+        "systemctl",
+        "disable",
+        "--now",
+        paths.service_name,
+    ) in runner.calls
+
+
+def test_live_shutdown_cleanup_rejects_malformed_counters(
+    tmp_path: Path,
+) -> None:
+    paths, _sha = _paths(tmp_path, execution_mode="live")
+    observed_after = datetime.now(timezone.utc)
+    paths.execution_report.parent.mkdir(parents=True, exist_ok=True)
+    paths.execution_report.write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": "live_cancel_only",
+                "reason": "runner_shutdown",
+                "summary": {"failed": "invalid"},
+                "managed_orders": {"summary": {"active": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        deploy_release_module.LiveCleanupError,
+        match="counters are invalid",
+    ):
+        deploy_release_module._verify_live_shutdown_cleanup(
+            paths, observed_after
+        )
 
 
 def test_failed_ws_acceptance_restores_previous_predict_state(

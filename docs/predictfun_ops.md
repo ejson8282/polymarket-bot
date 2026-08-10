@@ -1,10 +1,10 @@
 # Predict.fun Ops Notes
 
 Predict.fun has a separately confirmed one-shot live order path through the
-Mac mini signer. The continuous runner remains deliberately dry-run until the
-signer exposes reviewed order, balance, position, wallet-event, and two-stage
-cancel contracts. API keys and wallet keys stay on the Mac mini; the VPS must
-not receive either secret.
+Mac mini signer. The continuous runner defaults to dry-run. Its only supported
+live deployment is the explicitly confirmed VPS1 limited-live profile described
+below. API keys and wallet keys stay on the Mac mini; the VPS must not receive
+either secret.
 
 ## Poly-parity architecture
 
@@ -106,10 +106,10 @@ replenish BUY liquidity while inventory remains. It produces only a protected
 next wake-up uses `runner.fast_requote_after_fill_sec` rather than the normal
 interval.
 
-Inventory handling is still simulated, but no longer BUY-only: existing
+Dry-run inventory handling is simulated, but no longer BUY-only: existing
 simulated long inventory can generate passive SELL exit intents, bounded by the
-inventory config. Live account mapping and signer routing must be reviewed
-before enabling the continuous executor.
+inventory config. Live mode reads official orders, balances, and positions from
+the account-scoped Mac mini proxy before every planning cycle.
 
 Desired BUY orders reserve inventory while intents are built. This prevents two
 passive levels on the same account/market/outcome from each passing the cap
@@ -188,6 +188,37 @@ returns a non-zero process status.
 The separate `remove-order-by-hash` route remains `off_book_only` and must not
 be used as proof of cancellation. A real canary still requires a distinct user
 authorization after the reviewed release has been deployed.
+
+### VPS1 limited-live profile
+
+`deploy_release.py --mode live` is deliberately narrower than the general
+runner capability. Activation fails closed unless all of these conditions are
+true:
+
+- deployment profile is `vps1`;
+- the only account alias is `account_01`;
+- the exact immutable release SHA is supplied to the execution gate;
+- the dedicated confirmation is
+  `DEPLOY_PREDICTFUN_VPS1_LIMITED_LIVE`;
+- simulation is disabled and live submit/cancel/read capabilities pass the
+  post-start acceptance checks.
+
+The generated runtime config admits one market and one quote level. Per-order,
+per-account, per-account/market, per-market, and total desired BUY notional are
+all capped at `1.60` USDT. The observed capital tier is clamped to those static
+limits before intents are built, so an oversized plan is not generated and then
+merely rejected later by the risk gate. Reward-threshold quote sizes above the
+cap are reduced to `1.60` rather than silently skipped. At Predict.fun's `0.90`
+USDT minimum, this first profile can maintain only one passive side at a time.
+After any account position appears, all new BUY intents are suppressed across
+markets; the runner may only manage passive exits until the account is flat.
+The risk gate independently caps live position value plus desired BUY notional
+at `1.60`, and an open manual BUY also suppresses new managed BUY intents.
+
+VPS2 and multi-account deployments reject `--mode live`. Their existing
+dry-run path and confirmation remain unchanged. A reviewed merge and exact-SHA
+deployment still require a separate user authorization; creating this profile
+does not activate it.
 
 Unified Dashboard code and service operations belong to `latitude-alpha`, not
 this repository.

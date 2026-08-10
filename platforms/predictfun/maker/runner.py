@@ -139,6 +139,84 @@ def _read_only_executor(
     )
 
 
+def _apply_configured_capital_caps(
+    rows: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    *,
+    manual_order_constraints: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Clamp observed capital tiers to stricter deployment configuration."""
+
+    risk = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
+    strategy = (
+        cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else {}
+    )
+    scan = cfg.get("scan") if isinstance(cfg.get("scan"), dict) else {}
+    inventory = (
+        cfg.get("inventory")
+        if isinstance(cfg.get("inventory"), dict)
+        else {}
+    )
+    account_cap = _positive_decimal(
+        risk.get("max_account_desired_notional")
+    )
+    account_market_cap = _positive_decimal(
+        risk.get("max_account_market_desired_notional")
+    )
+    order_cap = _positive_decimal(strategy.get("max_order_notional"))
+    market_cap = max(0, int(scan.get("max_markets") or 0))
+
+    capped_rows: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        _clamp_decimal_field(row, "max_account_notional", account_cap)
+        _clamp_decimal_field(
+            row, "max_account_market_notional", account_market_cap
+        )
+        _clamp_decimal_field(row, "max_order_notional", order_cap)
+        if account_cap > 0:
+            _clamp_decimal_field(row, "inventory_warning", account_cap)
+        if market_cap > 0:
+            row["max_markets"] = min(
+                max(0, int(row.get("max_markets") or 0)), market_cap
+            )
+        account_id = str(row.get("account_id") or "")
+        manual_row = (
+            manual_order_constraints.get(account_id)
+            if isinstance(manual_order_constraints, Mapping)
+            else None
+        )
+        if (
+            inventory.get("halt_new_buys_while_manual_buy_orders") is True
+            and isinstance(manual_row, Mapping)
+            and _positive_decimal(
+                manual_row.get("manual_buy_reserved_notional")
+            )
+            > 0
+        ):
+            row["quote_enabled"] = False
+            row["disabled_reason"] = "manual_buy_order_present"
+        capped_rows.append(row)
+    return capped_rows
+
+
+def _positive_decimal(value: Any) -> Decimal:
+    try:
+        number = Decimal(str(value or "0"))
+    except Exception:
+        return Decimal("0")
+    return number if number.is_finite() and number > 0 else Decimal("0")
+
+
+def _clamp_decimal_field(
+    row: dict[str, Any], key: str, cap: Decimal
+) -> None:
+    if cap <= 0:
+        return
+    current = _positive_decimal(row.get(key))
+    row[key] = str(min(current, cap) if current > 0 else cap)
+
+
 def _runtime_read_capabilities(
     base: Mapping[str, Any], read_state: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -519,7 +597,9 @@ def run_loop(
         registry = ManagedOrderRegistry.from_state(managed_state)
         try:
             cycle_cfg = deepcopy(cfg)
+            discarded_simulated_orders = 0
             if effective_mode == "live":
+                discarded_simulated_orders = registry.discard_simulated()
                 live_orders = executor.list_orders()
                 live_balances = executor.list_balances()
                 live_positions = executor.list_positions()
@@ -603,6 +683,11 @@ def run_loop(
                 ),
                 allow_fallback=effective_mode == "dry_run",
             )
+            capital_rows = _apply_configured_capital_caps(
+                capital_rows,
+                cycle_cfg,
+                manual_order_constraints=manual_order_constraints,
+            )
             if isinstance(executor, MultiAccountExecutor):
                 executor.set_order_notional_limits(
                     {
@@ -633,6 +718,7 @@ def run_loop(
                 },
                 "manual_order_constraints": manual_order_constraints,
                 "reads": state.get("account_reads") or {},
+                "discarded_simulated_orders": discarded_simulated_orders,
             }
 
             plan_state = run_once(

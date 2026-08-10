@@ -538,6 +538,11 @@ def _halt_market_buys_while_position(
     market_id: int,
     inventory: dict[str, Any],
 ) -> bool:
+    if _bool(inventory.get("halt_all_buys_while_any_position", False)):
+        return any(
+            position_account_id == account_id and size > 0
+            for (position_account_id, _market_id, _outcome), size in positions.items()
+        )
     if not _bool(inventory.get("halt_market_buys_while_position", True)):
         return False
     return any(
