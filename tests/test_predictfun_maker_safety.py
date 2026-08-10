@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
+import json
 import time
 from types import SimpleNamespace
 
@@ -9,9 +11,11 @@ import pytest
 from platforms.predictfun.maker.admission import select_stable_markets
 from platforms.predictfun.maker.dry_run import (
     _book_from_ws_state,
+    _filter_market_candidates_for_ws,
     _load_fresh_ws_state,
     build_quote_plan,
     plan_to_jsonable,
+    run_once,
 )
 from platforms.predictfun.maker.executor import (
     ExecutableOrder,
@@ -846,6 +850,120 @@ def test_position_market_is_pinned_in_admission() -> None:
     )
     assert [row.id for row in selected] == [2]
     assert state["summary"]["pinned"] == 1
+
+
+def test_required_ws_filter_replaces_unsubscribed_admission_incumbent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unsubscribed = _market()
+    unsubscribed.id = 1
+    unsubscribed.score = Decimal("10")
+    subscribed = _market()
+    subscribed.id = 2
+    subscribed.score = Decimal("9")
+    subscribed.spread_threshold = Decimal("0.20")
+    monkeypatch.setattr(
+        "platforms.predictfun.maker.dry_run.scan_markets",
+        lambda *_args, **_kwargs: [unsubscribed, subscribed],
+    )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "ws.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "connected": True,
+                "ts": now,
+                "market_ids": [2],
+                "orderbooks": {
+                    "2": {
+                        "bids": [["0.40", "100"]],
+                        "asks": [["0.60", "100"]],
+                    }
+                },
+                "orderbook_updated_at": {"2": now},
+                "orderbook_upstream_updated_at_ms": {"2": 1},
+                "orderbook_sources": {"2": "rest_reconcile"},
+                "orderbook_errors": {},
+                "trading_statuses": {"2": {"status": "OPEN"}},
+                "market_statuses": {"2": {"status": "OPEN"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "admission.json").write_text(
+        json.dumps(
+            {
+                "markets": {
+                    "1": {
+                        "market_id": 1,
+                        "score": "10",
+                        "admitted_at_ts": time.time(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = {
+        "environment": "mainnet",
+        "scan": {
+            "max_markets": 1,
+            "candidate_pool_size": 2,
+            "min_market_dwell_sec": 1800,
+        },
+        "strategy": {
+            "profile": "balanced",
+            "min_quote_size": "10",
+            "max_quote_levels": 1,
+            "min_order_notional": "0.90",
+            "max_order_notional": "8.00",
+        },
+        "data": {
+            "use_ws_orderbook_cache": True,
+            "require_ws_for_quotes": True,
+            "ws_state_max_age_sec": 60,
+            "ws_orderbook_max_age_sec": 60,
+        },
+        "risk": {"min_seconds_to_expiry": 3600},
+        "output": {
+            "ws_state_path": "ws.json",
+            "admission_state_path": "admission.json",
+            "state_path": "plan.json",
+            "intents_path": "intents.json",
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    state = run_once(
+        SimpleNamespace(),
+        cfg,
+        config_path=config_path,
+        previous_intents=[],
+        inventory_positions=[],
+    )
+
+    assert len(state["plans"]) == 1
+    assert state["plans"][0]["market"]["id"] == 2
+    assert state["plans"][0]["can_quote"] is True
+    assert state["plans"][0]["orderbook_source"] == "rest_reconcile"
+
+
+def test_required_ws_filter_keeps_position_market_outside_subscription() -> None:
+    subscribed = _market()
+    subscribed.id = 2
+    pinned = _market()
+    pinned.id = 3
+
+    filtered = _filter_market_candidates_for_ws(
+        [subscribed, pinned],
+        {"market_ids": [2]},
+        required=True,
+        pinned_market_ids={3},
+    )
+
+    assert [market.id for market in filtered] == [2, 3]
 
 
 def test_managed_registry_never_adopts_unseen_manual_order() -> None:
