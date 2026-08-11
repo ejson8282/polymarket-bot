@@ -7,11 +7,12 @@ from platforms.predictfun.maker.executor import (
     ExecutableOrder,
     ExecutionResult,
     LiveOrder,
+    TERMINAL_ORDER_STATUSES,
 )
 from platforms.predictfun.maker.intents import utc_now
 
 
-TERMINAL_STATUSES = frozenset({"cancelled", "canceled", "filled", "expired", "rejected", "closed"})
+TERMINAL_STATUSES = TERMINAL_ORDER_STATUSES
 
 
 @dataclass(frozen=True)

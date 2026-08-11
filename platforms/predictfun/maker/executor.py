@@ -7,6 +7,11 @@ from typing import Any, Mapping, Protocol
 import requests
 
 
+TERMINAL_ORDER_STATUSES = frozenset(
+    {"cancelled", "canceled", "filled", "expired", "rejected", "closed"}
+)
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     intent_id: str
@@ -268,6 +273,12 @@ class PredictFunLiveExecutor:
                 },
             )
         except Exception as exc:
+            terminal = self._terminal_cancel_result(
+                order_id,
+                intent_id=intent_id,
+            )
+            if terminal is not None:
+                return terminal
             return self._error(
                 "cancel",
                 f"Predict.fun cancel failed: {type(exc).__name__}",
@@ -276,6 +287,13 @@ class PredictFunLiveExecutor:
                 order_id=order_id,
             )
         ok = payload.get("ok") is True and payload.get("verified") is True
+        if not ok:
+            terminal = self._terminal_cancel_result(
+                order_id,
+                intent_id=intent_id,
+            )
+            if terminal is not None:
+                return terminal
         return ExecutionResult(
             intent_id=intent_id,
             account_id=self.account_id,
@@ -288,6 +306,28 @@ class PredictFunLiveExecutor:
             ),
             order_id=order_id,
             status="cancelled" if ok else "open",
+        )
+
+    def _terminal_cancel_result(
+        self,
+        order_id: str,
+        *,
+        intent_id: str,
+    ) -> ExecutionResult | None:
+        try:
+            order = self.get_order(order_id, account_id=self.account_id)
+        except Exception:
+            return None
+        if order is None or order.status not in TERMINAL_ORDER_STATUSES:
+            return None
+        return ExecutionResult(
+            intent_id=intent_id,
+            account_id=self.account_id,
+            action="cancel",
+            ok=True,
+            message=f"order already terminal: {order.status}",
+            order_id=order_id,
+            status=order.status,
         )
 
     def list_orders(self) -> list[LiveOrder]:
