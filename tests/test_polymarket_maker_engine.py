@@ -423,6 +423,141 @@ def test_runtime_dashboard_add_is_blocked_in_multi_account_roster_mode():
         )
 
 
+def test_runtime_command_partial_json_is_restored_for_retry(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_command_parse_failures = {}
+    engine._runtime_command_parse_retry_limit = 5
+    processing = tmp_path / "dashboard-add-2.processing"
+    processing.write_text("", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError) as caught:
+        json.loads(processing.read_text(encoding="utf-8"))
+
+    assert engine._defer_runtime_command_parse_error(
+        processing,
+        caught.value,
+    ) is True
+    assert not processing.exists()
+    assert (tmp_path / "dashboard-add-2.json").exists()
+    assert engine._runtime_command_parse_failures == {"dashboard-add-2": 1}
+
+
+def test_runtime_command_corrupt_json_stops_retrying_at_limit(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_command_parse_failures = {"dashboard-add-2": 1}
+    engine._runtime_command_parse_retry_limit = 1
+    processing = tmp_path / "dashboard-add-2.processing"
+    processing.write_text("{", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError) as caught:
+        json.loads(processing.read_text(encoding="utf-8"))
+
+    assert engine._defer_runtime_command_parse_error(
+        processing,
+        caught.value,
+    ) is False
+    assert processing.exists()
+    assert engine._runtime_command_parse_failures == {}
+
+
+def test_runtime_command_failure_clears_pending_by_command_id(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._config_path = tmp_path / "config.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "101",
+                        "enabled": False,
+                        "pending_activation": True,
+                        "pending_command_id": "dashboard-add-2",
+                    },
+                    {
+                        "token_id": "201",
+                        "enabled": False,
+                        "pending_activation": True,
+                        "pending_command_id": "other-command",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    engine._mark_runtime_pending_failed(
+        "",
+        "dashboard-add-2",
+        "JSONDecodeError: incomplete command",
+    )
+
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    failed, untouched = config["markets"]
+    assert failed["pending_activation"] is False
+    assert failed["activation_error"] == "JSONDecodeError: incomplete command"
+    assert untouched["pending_activation"] is True
+
+
+def test_runtime_command_loop_processes_completed_retry_once(tmp_path, monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_command_dir = tmp_path / "runtime_commands_2"
+    engine._runtime_command_dir.mkdir()
+    engine._runtime_command_parse_failures = {}
+    engine._runtime_command_parse_retry_limit = 5
+    engine._running = True
+    command_path = engine._runtime_command_dir / "dashboard-add-2.json"
+    command_path.write_text("", encoding="utf-8")
+    added = []
+    results = []
+
+    def add_market(market):
+        added.append(dict(market))
+        return "added"
+
+    def write_result(command_id, payload):
+        results.append((command_id, dict(payload)))
+        engine._running = False
+
+    engine._runtime_add_from_command = add_market
+    engine._write_runtime_result = write_result
+    engine._mark_runtime_pending_failed = lambda *_args: pytest.fail(
+        "a partial command must not be rejected"
+    )
+
+    sleep_calls = 0
+
+    async def complete_copy_after_retry(_delay):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            command_path.write_text(
+                json.dumps(
+                    {
+                        "command_id": "dashboard-add-2",
+                        "action": "add_market",
+                        "market": {
+                            "token_id": "101",
+                            "paired_token_id": "102",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", complete_copy_after_retry)
+
+    asyncio.run(engine.runtime_command_loop())
+
+    assert added == [{"token_id": "101", "paired_token_id": "102"}]
+    assert results == [
+        (
+            "dashboard-add-2",
+            {"ok": True, "status": "added", "token_id": "101"},
+        )
+    ]
+    assert not list(engine._runtime_command_dir.iterdir())
+
+
 def test_cancel_quotes_preserves_unregistered_sell_exit():
     engine = object.__new__(PolyLPSMulti)
     orders = [
