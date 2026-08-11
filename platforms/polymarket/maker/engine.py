@@ -6688,24 +6688,18 @@ class PolyLPSMulti:
             primary_decision="skip",
         )
         # --- P1: auto exit sell after fill halt ---
+        # Keep the exchange-reported matched price as the immutable cost basis.
+        # The actual inventory can land on the paired YES/NO token; that
+        # conversion happens only after _attempt_exit_sell resolves which token
+        # is held. Using this token's current ask here corrupts the paired cost
+        # basis (for example 0.53 -> ask 0.56 -> paired 0.44 instead of 0.47).
         fill_price = matched_price if matched_price is not None and matched_price > 0 else Decimal("0")
         fill_size = matched_size if matched_size is not None and matched_size > 0 else Decimal("0")
-        # Determine best_ask from snapshot
-        _best_ask = Decimal("0")
-        snap = self._market_snapshots.get(token_id)
-        if snap and snap.best_ask > 0:
-            _best_ask = snap.best_ask
-        else:
-            tob = self.market_states.get(token_id)
-            if tob and tob.best_ask > 0:
-                _best_ask = tob.best_ask
-        # SELL price = max(fill_price, best_ask) — protect against loss, but take higher price if available
         if fill_price <= 0:
-            fill_price = _best_ask if _best_ask > 0 else Decimal("0.01")
-            log(f"[exit] token={token_id} no fill price, using best_ask={fill_price}")
-        elif _best_ask > fill_price:
-            log(f"[exit] token={token_id} best_ask={_best_ask} > fill_price={fill_price}, using best_ask")
-            fill_price = _best_ask
+            log(
+                f"[exit] token={token_id} no confirmed fill price; "
+                "held-token book will determine the exit quote"
+            )
         self._spawn_bg(self._attempt_exit_sell(token_id, fill_price, fill_size, reason), name=f"attempt_exit_sell:{token_id}")
 
     async def _get_collateral_available(self, force_refresh: bool = False) -> Optional[Decimal]:
