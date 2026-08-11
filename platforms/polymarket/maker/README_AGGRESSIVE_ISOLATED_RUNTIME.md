@@ -111,6 +111,7 @@ Generate a review-only market-universe candidate with:
 python platforms/polymarket/maker/aggressive_market_selector.py \
   --observer /home/ubuntu/polymarket-aggressive-runtime/data/reward_observer_state.json \
   --principal-usdc 200 \
+  --min-front-bid-notional-usdc 5000 \
   --limit 1
 ```
 
@@ -118,7 +119,10 @@ Without `--output`, the command only prints JSON. Even with `--output`, it only
 writes a candidate document; it never changes the running config, restarts a
 service, removes a pause flag, or places an order. Selection fails closed for
 stale snapshots, live markets, unverified candidates, excessive fill risk,
-insufficient stability, or probe capital above the account tier.
+insufficient stability, probe capital above the account tier, missing/stale
+depth, or either YES/NO leg below the supplied runtime front-depth threshold.
+The selector records depth rejections and falls through to the next ranked
+candidate instead of lowering the engine's production gate.
 
 ## Activation boundary
 

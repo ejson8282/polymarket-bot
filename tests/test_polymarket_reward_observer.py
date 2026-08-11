@@ -33,11 +33,14 @@ def _market(
     }
 
 
-def _book(size: str = "5") -> dict:
-    return {
+def _book(size: str = "5", *, tick_size="0.01") -> dict:
+    book = {
         "bids": [{"price": "0.48", "size": size}],
         "asks": [{"price": "0.52", "size": size}],
     }
+    if tick_size is not None:
+        book["tick_size"] = tick_size
+    return book
 
 
 def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
@@ -107,6 +110,47 @@ def test_minimum_share_size_can_raise_probe_capital_above_budget() -> None:
     assert candidate["probe_capital_usd"] > 100
     assert candidate["probe_shares_each_side"] == 200
     assert "minimum_size_raises_capital" in candidate["reasons"]
+
+
+def test_observer_records_engine_aligned_front_depth_for_both_legs() -> None:
+    book = {
+        "tick_size": "0.01",
+        "bids": [
+            {"price": "0.48", "size": "100"},
+            {"price": "0.47", "size": "100"},
+            {"price": "0.46", "size": "100"},
+        ],
+        "asks": [{"price": "0.52", "size": "100"}],
+    }
+
+    candidate = observe_reward_markets([_market()], lambda _token: book)["candidates"][0]
+
+    assert candidate["front_depth_status"] == "verified"
+    assert candidate["yes_safe_quote"] == 0.47
+    assert candidate["no_safe_quote"] == 0.47
+    assert candidate["yes_front_bid_notional_usd"] == 95.0
+    assert candidate["no_front_bid_notional_usd"] == 95.0
+    assert candidate["yes_front_bid_levels"] == 2
+    assert candidate["no_front_bid_levels"] == 2
+
+
+def test_observer_marks_missing_tick_depth_unavailable_without_dropping_candidate() -> None:
+    candidate = observe_reward_markets(
+        [_market()],
+        lambda _token: _book(tick_size=None),
+    )["candidates"][0]
+
+    assert candidate["front_depth_status"] == "missing_tick_size"
+    assert candidate["min_front_bid_notional_usd"] is None
+
+
+def test_observer_rejects_mismatched_leg_ticks_for_depth_preflight() -> None:
+    books = iter((_book(tick_size="0.01"), _book(tick_size="0.001")))
+
+    candidate = observe_reward_markets([_market()], lambda _token: next(books))["candidates"][0]
+
+    assert candidate["front_depth_status"] == "tick_size_mismatch"
+    assert candidate["min_front_bid_notional_usd"] is None
 
 
 def test_sports_market_is_classified_without_excluding_generic_markets() -> None:

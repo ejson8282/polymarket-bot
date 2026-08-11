@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-MODEL_VERSION = 1
+MODEL_VERSION = 2
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
@@ -176,6 +176,16 @@ def _book_levels(book: Optional[Dict[str, Any]], side: str) -> List[Tuple[Decima
     return levels
 
 
+def _book_tick_size(book: Optional[Dict[str, Any]]) -> Optional[Decimal]:
+    if not isinstance(book, dict):
+        return None
+    for key in ("tick_size", "tickSize", "minimum_tick_size", "minimumTickSize"):
+        tick = _decimal(book.get(key), Decimal("-1"))
+        if Decimal("0") < tick < Decimal("1"):
+            return tick
+    return None
+
+
 def _book_summary(book: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     bids = _book_levels(book, "bids")
     asks = _book_levels(book, "asks")
@@ -191,7 +201,66 @@ def _book_summary(book: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "best_bid": best_bid,
         "best_ask": best_ask,
         "mid": (best_bid + best_ask) / Decimal("2"),
+        "tick_size": _book_tick_size(book),
     }
+
+
+def _front_depth_metrics(
+    yes: Dict[str, Any],
+    no: Dict[str, Any],
+    *,
+    observed_at: float,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "front_depth_status": "unavailable",
+        "front_depth_observed_at": round(observed_at, 3),
+        "yes_tick_size": None,
+        "no_tick_size": None,
+        "yes_safe_quote": None,
+        "no_safe_quote": None,
+        "yes_front_bid_notional_usd": None,
+        "no_front_bid_notional_usd": None,
+        "min_front_bid_notional_usd": None,
+        "yes_front_bid_levels": 0,
+        "no_front_bid_levels": 0,
+    }
+    yes_tick = yes.get("tick_size")
+    no_tick = no.get("tick_size")
+    if not isinstance(yes_tick, Decimal) or not isinstance(no_tick, Decimal):
+        result["front_depth_status"] = "missing_tick_size"
+        return result
+    result["yes_tick_size"] = round(float(yes_tick), 6)
+    result["no_tick_size"] = round(float(no_tick), 6)
+    if yes_tick != no_tick:
+        result["front_depth_status"] = "tick_size_mismatch"
+        return result
+    if len(yes["bids"]) < 2 or len(no["bids"]) < 2:
+        result["front_depth_status"] = "insufficient_bid_levels"
+        return result
+
+    yes_quote = yes["best_bid"] - yes_tick
+    no_quote = no["best_bid"] - no_tick
+    if yes_quote < yes_tick or no_quote < no_tick:
+        result["front_depth_status"] = "no_safe_quote"
+        return result
+
+    yes_front = [(price, size) for price, size in yes["bids"] if price >= yes_quote]
+    no_front = [(price, size) for price, size in no["bids"] if price >= no_quote]
+    yes_notional = sum((price * size for price, size in yes_front), Decimal("0"))
+    no_notional = sum((price * size for price, size in no_front), Decimal("0"))
+    result.update(
+        {
+            "front_depth_status": "verified",
+            "yes_safe_quote": round(float(yes_quote), 6),
+            "no_safe_quote": round(float(no_quote), 6),
+            "yes_front_bid_notional_usd": round(float(yes_notional), 2),
+            "no_front_bid_notional_usd": round(float(no_notional), 2),
+            "min_front_bid_notional_usd": round(float(min(yes_notional, no_notional)), 2),
+            "yes_front_bid_levels": len(yes_front),
+            "no_front_bid_levels": len(no_front),
+        }
+    )
+    return result
 
 
 def _distance_score(max_spread: Decimal, midpoint: Decimal, price: Decimal) -> Decimal:
@@ -301,6 +370,7 @@ def _observe_candidate(
     midpoint = yes["mid"]
     fill_risk = _fill_risk(market, midpoint)
     market_phase, game_start_ts = _market_phase(market)
+    front_depth = _front_depth_metrics(yes, no, observed_at=time.time())
 
     reasons: List[str] = []
     if estimated_share >= Decimal("0.5"):
@@ -365,6 +435,7 @@ def _observe_candidate(
         "status": "observe_only",
         "estimate_confidence": "directional",
         "model_version": MODEL_VERSION,
+        **front_depth,
     }
 
 
@@ -643,6 +714,8 @@ def _apply_observation_history(
                 "capital": candidate.get("probe_capital_usd"),
                 "yes_quote": candidate.get("yes_quote"),
                 "no_quote": candidate.get("no_quote"),
+                "front_depth_status": candidate.get("front_depth_status"),
+                "min_front_bid_notional_usd": candidate.get("min_front_bid_notional_usd"),
             }
         )
         samples = samples[-HISTORY_SAMPLES_PER_MARKET:]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -23,6 +24,11 @@ def _number(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _finite_optional_number(value: Any) -> float | None:
+    number = _number(value, float("nan"))
+    return round(number, 2) if math.isfinite(number) else None
 
 
 def _candidate_rank(row: Mapping[str, Any]) -> tuple[float, float, float, float]:
@@ -43,7 +49,8 @@ def _market_row(candidate: Mapping[str, Any]) -> dict[str, Any]:
         raise AggressiveSelectionError("candidate token pair is self-referential")
     spread = _number(candidate.get("rewards_max_spread"), 0.0)
     quote_size = _number(candidate.get("probe_shares_each_side"), 0.0)
-    if spread <= 0 or quote_size <= 0:
+    tick = _number(candidate.get("yes_tick_size"), 0.0)
+    if spread <= 0 or quote_size <= 0 or tick <= 0:
         raise AggressiveSelectionError("candidate quote parameters are invalid")
     fill_risk = _number(candidate.get("fill_risk"), 100.0)
     risk = "low" if fill_risk < 35 else "mid"
@@ -55,8 +62,9 @@ def _market_row(candidate: Mapping[str, Any]) -> dict[str, Any]:
             spread,
             6,
         ),
-        "price_tick": 0.01,
-        "min_distance_from_best_bid": 0.01,
+        "price_tick": round(tick, 6),
+        "min_distance_from_best_bid": round(tick, 6),
+        "min_distance_ticks": 1,
         "quote_size": round(
             quote_size,
             4,
@@ -73,22 +81,56 @@ def _market_row(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _front_depth_rejection(
+    candidate: Mapping[str, Any],
+    *,
+    min_front_bid_notional_usdc: float,
+    now_ts: float,
+    max_depth_age_sec: float,
+) -> str | None:
+    if str(candidate.get("front_depth_status") or "") != "verified":
+        return "front_depth_unavailable"
+    observed_at = _number(candidate.get("front_depth_observed_at"), 0.0)
+    if not math.isfinite(observed_at):
+        return "front_depth_unavailable"
+    age = now_ts - observed_at
+    if observed_at <= 0 or age < -30 or age > max_depth_age_sec:
+        return "front_depth_stale"
+    yes_depth = _number(candidate.get("yes_front_bid_notional_usd"), -1.0)
+    no_depth = _number(candidate.get("no_front_bid_notional_usd"), -1.0)
+    if not math.isfinite(yes_depth) or not math.isfinite(no_depth):
+        return "front_depth_unavailable"
+    if min(yes_depth, no_depth) < min_front_bid_notional_usdc:
+        return "front_depth_below_min"
+    return None
+
+
 def select_aggressive_market_universe(
     observer: Mapping[str, Any],
     *,
     principal_usdc: float,
+    min_front_bid_notional_usdc: float,
     limit: int = 1,
     now_ts: float | None = None,
     max_age_sec: float = 900.0,
     max_fill_risk: float = 65.0,
     min_stability_score: float = 70.0,
+    max_depth_age_sec: float = 300.0,
 ) -> dict[str, Any]:
-    if principal_usdc <= 0:
+    if not math.isfinite(principal_usdc) or principal_usdc <= 0:
         raise AggressiveSelectionError("principal_usdc must be positive")
     if limit <= 0:
         raise AggressiveSelectionError("limit must be positive")
+    if (
+        not math.isfinite(min_front_bid_notional_usdc)
+        or min_front_bid_notional_usdc <= 0
+    ):
+        raise AggressiveSelectionError("min_front_bid_notional_usdc must be positive")
+    if not math.isfinite(max_depth_age_sec) or max_depth_age_sec <= 0:
+        raise AggressiveSelectionError("max_depth_age_sec must be positive")
+    selection_ts = time.time() if now_ts is None else now_ts
     generated_at = _number(observer.get("generated_at"), 0.0)
-    age = (time.time() if now_ts is None else now_ts) - generated_at
+    age = selection_ts - generated_at
     if generated_at <= 0 or age < -30 or age > max_age_sec:
         raise AggressiveSelectionError("reward observer snapshot is stale")
 
@@ -97,6 +139,7 @@ def select_aggressive_market_universe(
         raise AggressiveSelectionError("reward observer candidates are invalid")
 
     eligible: list[Mapping[str, Any]] = []
+    depth_rejections: list[dict[str, Any]] = []
     seen_events: set[str] = set()
     for row in sorted(
         (item for item in candidates if isinstance(item, Mapping)),
@@ -113,6 +156,27 @@ def select_aggressive_market_universe(
             continue
         probe_capital = _number(row.get("probe_capital_usd"), 0.0)
         if probe_capital <= 0 or probe_capital > principal_usdc * 1.05:
+            continue
+        depth_reason = _front_depth_rejection(
+            row,
+            min_front_bid_notional_usdc=min_front_bid_notional_usdc,
+            now_ts=selection_ts,
+            max_depth_age_sec=max_depth_age_sec,
+        )
+        if depth_reason is not None:
+            depth_rejections.append(
+                {
+                    "token_id": str(row.get("token_id") or ""),
+                    "condition_id": str(row.get("condition_id") or "").strip().lower(),
+                    "reason": depth_reason,
+                    "yes_front_bid_notional_usd": _finite_optional_number(
+                        row.get("yes_front_bid_notional_usd")
+                    ),
+                    "no_front_bid_notional_usd": _finite_optional_number(
+                        row.get("no_front_bid_notional_usd")
+                    ),
+                }
+            )
             continue
         event_key = str(row.get("condition_id") or "").strip().lower()
         if not event_key:
@@ -146,6 +210,9 @@ def select_aggressive_market_universe(
             "principal_usdc": round(principal_usdc, 2),
             "selection_limit": limit,
             "selection_mode": "review_only",
+            "min_front_bid_notional_usdc": round(min_front_bid_notional_usdc, 2),
+            "max_depth_age_sec": round(max_depth_age_sec, 1),
+            "depth_rejections": depth_rejections,
         },
     }
 
@@ -156,7 +223,14 @@ def main() -> int:
     )
     parser.add_argument("--observer", type=Path, required=True)
     parser.add_argument("--principal-usdc", type=float, required=True)
+    parser.add_argument(
+        "--min-front-bid-notional-usdc",
+        type=float,
+        required=True,
+        help="Require each YES/NO leg to meet the runtime front-depth gate",
+    )
     parser.add_argument("--limit", type=int, default=1)
+    parser.add_argument("--max-depth-age-sec", type=float, default=300.0)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -167,7 +241,9 @@ def main() -> int:
         payload = select_aggressive_market_universe(
             observer,
             principal_usdc=args.principal_usdc,
+            min_front_bid_notional_usdc=args.min_front_bid_notional_usdc,
             limit=args.limit,
+            max_depth_age_sec=args.max_depth_age_sec,
         )
     except (OSError, json.JSONDecodeError, AggressiveSelectionError) as exc:
         print(f"ERROR: {exc}")
