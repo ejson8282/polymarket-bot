@@ -6436,6 +6436,8 @@ class PolyLPSMulti:
         trigger: str,
         snapshot: Optional[MarketSnapshot] = None,
     ) -> None:
+        if self._is_account_paused():
+            return
         if token_id in self._top_leg_defense_active:
             self._top_leg_defense_pending[token_id] = (trigger, snapshot)
             return

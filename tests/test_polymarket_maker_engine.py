@@ -1912,6 +1912,32 @@ def test_top_leg_defense_skips_preempted_token_before_market_reads():
     assert engine._top_leg_defense_tasks == {}
 
 
+def test_top_leg_defense_skips_paused_account_before_market_reads():
+    engine = object.__new__(PolyLPSMulti)
+    engine._top_leg_defense_active = set()
+    engine._top_leg_defense_pending = {}
+    engine._top_leg_defense_tasks = {}
+    engine._is_account_paused = lambda: True
+    engine._halt_preemption_reason = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("paused defense must stop before preemption checks")
+    )
+    engine._effective_snapshot_for_gate = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("paused defense must not read market data")
+    )
+
+    asyncio.run(
+        engine._maybe_run_top_leg_defense(
+            "101",
+            "market_ws:price_change",
+            object(),
+        )
+    )
+
+    assert engine._top_leg_defense_active == set()
+    assert engine._top_leg_defense_pending == {}
+    assert engine._top_leg_defense_tasks == {}
+
+
 def _paired_state_engine() -> PolyLPSMulti:
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
