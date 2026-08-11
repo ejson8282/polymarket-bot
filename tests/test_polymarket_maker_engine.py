@@ -18,6 +18,7 @@ from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
     EVENT_COOLDOWN,
+    EVENT_DEFENSIVE,
     EVENT_EXIT_PENDING,
     EVENT_HALTED_ON_FILL,
     EVENT_HALTED_ON_DATA,
@@ -1936,6 +1937,122 @@ def test_exit_pending_blocks_both_sides_of_the_same_event():
     assert engine._halt_preemption_reason("101").startswith(
         "paired_event_state=EXIT_PENDING"
     )
+
+
+def test_aggressive_pair_token_is_scoped_to_isolated_runtime():
+    engine = _paired_state_engine()
+    engine._runtime_scope = "normal"
+
+    assert engine._aggressive_pair_token("101") == ""
+
+    engine._runtime_scope = "aggressive"
+    assert engine._aggressive_pair_token("101") == "102"
+
+
+def test_aggressive_pair_preflight_checks_mid_price_sibling_gate():
+    engine = _paired_state_engine()
+    engine._dual_side_max_mid = Decimal("0.10")
+    engine._market_snapshots = {
+        "102": type(
+            "Snapshot",
+            (),
+            {"best_bid": Decimal("0.55"), "best_ask": Decimal("0.56")},
+        )(),
+    }
+    engine._market_meta_cache = {"102": ({"rewardsMinSize": 200}, time.time())}
+    engine._build_price_legs = lambda *_args, **_kwargs: [Decimal("0.54")]
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._quote_gate = lambda *_args, **_kwargs: (True, "")
+    engine._feasibility_gate = lambda *_args, **_kwargs: {"can_quote": False}
+    engine._last_balance = Decimal("200")
+
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.40"),
+    ) == (True, "")
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.40"),
+        enforce_all_pairs=True,
+    ) == (False, "paired_side_gate_failed")
+
+
+def test_aggressive_pair_preflight_rejects_invalid_sibling_snapshot():
+    engine = _paired_state_engine()
+    engine._dual_side_max_mid = Decimal("0.10")
+    engine._market_snapshots = {
+        "102": type(
+            "Snapshot",
+            (),
+            {"best_bid": Decimal("0.55"), "best_ask": Decimal("0.56")},
+        )(),
+    }
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._quote_gate = lambda *_args, **_kwargs: (False, "snapshot_stale")
+
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.40"),
+        enforce_all_pairs=True,
+    ) == (False, "paired_side_quote_gate:snapshot_stale")
+
+
+def test_aggressive_pair_cancel_preempts_and_clears_both_quote_legs():
+    engine = _paired_state_engine()
+    engine._runtime_scope = "aggressive"
+    engine._top_leg_defense_tasks = {}
+    engine._defense_block_until = {}
+    engine._defense_requote_block_sec = 15
+    engine._event_bus = _RecordingEventBus()
+    canceled = []
+
+    async def cancel_risk_buys(token_id, reason):
+        canceled.append((token_id, reason))
+        return True
+
+    engine._cancel_risk_buys = cancel_risk_buys
+
+    assert asyncio.run(
+        engine._cancel_aggressive_pair_quotes(
+            "101",
+            "feasibility_gate:front_depth_critical",
+        )
+    ) is True
+    assert [token_id for token_id, _reason in canceled] == ["102", "101"]
+    assert all("aggressive_pair:" in reason for _token_id, reason in canceled)
+    assert engine._event_state_name("101") == EVENT_DEFENSIVE
+    assert engine._event_state_name("102") == EVENT_DEFENSIVE
+    assert engine._halt_requested == {"101": None, "102": None}
+    assert engine._defense_blocks_requote("101") is True
+    assert engine._defense_blocks_requote("102") is True
+
+
+def test_aggressive_pair_cancel_stays_preempted_when_either_cancel_is_unconfirmed():
+    engine = _paired_state_engine()
+    engine._runtime_scope = "aggressive"
+    engine._top_leg_defense_tasks = {}
+    engine._defense_block_until = {}
+    engine._defense_requote_block_sec = 15
+    engine._event_bus = _RecordingEventBus()
+
+    async def cancel_risk_buys(token_id, _reason):
+        return token_id == "102"
+
+    engine._cancel_risk_buys = cancel_risk_buys
+
+    assert asyncio.run(
+        engine._cancel_aggressive_pair_quotes(
+            "101",
+            "feasibility_gate:front_depth_critical",
+        )
+    ) is False
+    assert engine._event_state_name("101") == EVENT_CANCELING
+    assert engine._event_state_name("102") == EVENT_CANCELING
+    assert engine._halt_requested["101"]
+    assert engine._halt_requested["102"]
 
 
 def test_parent_event_metadata_groups_separate_conditions():
