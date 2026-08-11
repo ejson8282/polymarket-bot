@@ -65,6 +65,11 @@ _ACCOUNT_LOCKS_LOCK = threading.Lock()
 _LEDGER_LOCK = threading.Lock()
 
 
+class PredictFunHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 64
+
+
 def load_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -1695,7 +1700,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8791)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = PredictFunHTTPServer((args.host, args.port), Handler)
     logging.info("PredictFun proxy listening on %s:%s", args.host, args.port)
     server.serve_forever()
 

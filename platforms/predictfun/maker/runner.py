@@ -409,6 +409,52 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _mark_runner_error(state: dict[str, Any], exc: Exception) -> None:
+    now = _utc_now()
+    state["error_count"] = int(state.get("error_count") or 0) + 1
+    state["consecutive_error_count"] = int(
+        state.get("consecutive_error_count") or 0
+    ) + 1
+    state["last_error"] = f"{type(exc).__name__}: {exc}"
+    state["last_error_at"] = now
+    print(
+        json.dumps(
+            {
+                "event": "predictfun_runner_error",
+                "ts": now,
+                "consecutive_errors": state["consecutive_error_count"],
+                "lifetime_errors": state["error_count"],
+                "error": state["last_error"],
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _mark_runner_success(state: dict[str, Any]) -> None:
+    now = _utc_now()
+    recovered_after = int(state.get("consecutive_error_count") or 0)
+    state["consecutive_error_count"] = 0
+    state["last_error"] = ""
+    state["last_success_at"] = now
+    if recovered_after:
+        print(
+            json.dumps(
+                {
+                    "event": "predictfun_runner_recovered",
+                    "ts": now,
+                    "recovered_after_errors": recovered_after,
+                    "lifetime_errors": int(state.get("error_count") or 0),
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _write_runner_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -547,9 +593,12 @@ def run_loop(
         "interval_sec": interval_sec,
         "cycle_count": 0,
         "error_count": 0,
+        "consecutive_error_count": 0,
         "last_cycle_started_at": "",
         "last_cycle_finished_at": "",
         "last_error": "",
+        "last_error_at": "",
+        "last_success_at": "",
         "last_plan_summary": {},
         "last_execution_summary": {},
         "last_risk_summary": {},
@@ -815,7 +864,6 @@ def run_loop(
                 fast_requote = fills_new > 0
 
             state["cycle_count"] = int(state.get("cycle_count") or 0) + 1
-            state["last_error"] = ""
             state["last_plan_summary"] = {
                 "ts": plan_state.get("ts"),
                 "plans": len(plan_state.get("plans") or []),
@@ -833,9 +881,9 @@ def run_loop(
                 else {}
             )
             state["fast_requote"] = bool(fast_requote)
+            _mark_runner_success(state)
         except Exception as exc:
-            state["error_count"] = int(state.get("error_count") or 0) + 1
-            state["last_error"] = f"{exc.__class__.__name__}: {exc}"
+            _mark_runner_error(state, exc)
             if (
                 effective_mode == "live"
                 and str(previous_execution.get("mode") or "").startswith("live")

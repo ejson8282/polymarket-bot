@@ -1450,6 +1450,45 @@ def test_stale_plan_and_notional_limit_fail_closed() -> None:
     assert {"plan_state_fresh", "desired_total_notional"}.issubset(blocked)
 
 
+def test_runner_risk_uses_consecutive_errors_and_legacy_fails_closed() -> None:
+    def runner_check(runner_state: dict) -> dict:
+        risk = evaluate_risk(
+            cfg={
+                "accounts": {"max_active_accounts": 1},
+                "risk": {
+                    "max_plan_state_age_sec": 180,
+                    "max_runner_errors": 3,
+                },
+            },
+            plan_state={"ts": utc_now()},
+            intents_state={"summary": {}, "intents": []},
+            runner_state=runner_state,
+            ws_state={},
+            simulation_state={"positions": []},
+            kill_switch_state={},
+        )
+        return next(
+            row for row in risk["checks"] if row["name"] == "runner_errors"
+        )
+
+    recovered = runner_check(
+        {"error_count": 54, "consecutive_error_count": 0}
+    )
+    assert recovered["status"] == "OK"
+    assert recovered["value"] == 0
+    assert recovered["detail"] == "lifetime_total=54"
+
+    consecutive = runner_check(
+        {"error_count": 54, "consecutive_error_count": 4}
+    )
+    assert consecutive["status"] == "BLOCK"
+    assert consecutive["value"] == 4
+
+    legacy = runner_check({"error_count": 4})
+    assert legacy["status"] == "BLOCK"
+    assert legacy["value"] == 4
+
+
 def test_required_ws_is_a_hard_risk_gate() -> None:
     cfg = {
         "accounts": {"max_active_accounts": 1},

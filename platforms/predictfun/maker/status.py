@@ -169,7 +169,16 @@ def build_status_snapshot(
                 "running": runner_state.get("running") is True,
                 "cycle_count": _integer(runner_state.get("cycle_count")),
                 "error_count": _integer(runner_state.get("error_count")),
+                "consecutive_error_count": _integer(
+                    runner_state.get("consecutive_error_count")
+                ),
                 "last_error": runner_error,
+                "last_error_at": str(
+                    runner_state.get("last_error_at") or ""
+                ),
+                "last_success_at": str(
+                    runner_state.get("last_success_at") or ""
+                ),
                 "last_cycle_finished_at": str(
                     runner_state.get("last_cycle_finished_at") or ""
                 ),
