@@ -33,6 +33,7 @@ class ExecutableOrder:
     is_yield_bearing: bool = False
     market_mode: str = "standard"
     purpose: str = "maker_quote"
+    idempotency_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,14 @@ class PredictFunLiveExecutor:
                 intent_id=order.intent_id,
                 account_id=order.account_id,
             )
+        idempotency_key = str(order.idempotency_key or order.intent_id).strip()
+        if not idempotency_key:
+            return self._error(
+                "create",
+                "missing Predict.fun idempotency key",
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+            )
         try:
             payload = self._request(
                 "POST",
@@ -201,7 +210,7 @@ class PredictFunLiveExecutor:
                 json_body={
                     "submit": True,
                     "confirm": "SUBMIT_PREDICTFUN_ORDER",
-                    "idempotency_key": order.intent_id,
+                    "idempotency_key": idempotency_key,
                     "intent_id": order.intent_id,
                     "market_id": order.market_id,
                     "token_id": order.token_id,

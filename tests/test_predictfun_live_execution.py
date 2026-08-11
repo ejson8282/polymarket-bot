@@ -567,6 +567,40 @@ def test_live_executor_omits_market_only_reserved_balance_policy(
     assert "reserved_balance_policy" not in submitted[0]
 
 
+def test_live_executor_separates_slot_intent_from_submission_idempotency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    submitted: list[dict[str, Any]] = []
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        del method, suffix, params
+        submitted.append(dict(json_body))
+        return {"ok": True, "order_hash": "0x" + "2" * 64}
+
+    monkeypatch.setattr(executor, "_request", request)
+    base = _order("account_01")
+    order = ExecutableOrder(
+        **{**base.__dict__, "idempotency_key": f"{base.intent_id}:g2"}
+    )
+
+    result = executor.create(order)
+
+    assert result.ok is True
+    assert submitted[0]["intent_id"] == base.intent_id
+    assert submitted[0]["idempotency_key"] == f"{base.intent_id}:g2"
+
+
 @pytest.mark.parametrize("inventory_source", ["live", "live_read_only"])
 def test_live_inventory_is_used_by_risk_instead_of_simulation(
     inventory_source: str,

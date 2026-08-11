@@ -26,6 +26,8 @@ class ManagedOrder:
     status: str
     created_at: str
     updated_at: str
+    idempotency_key: str = ""
+    submission_generation: int = 0
 
 
 class ManagedOrderRegistry:
@@ -35,9 +37,19 @@ class ManagedOrderRegistry:
     this registry merely because they share an account or market.
     """
 
-    def __init__(self, orders: list[ManagedOrder] | None = None, *, history_limit: int = 1000) -> None:
+    def __init__(
+        self,
+        orders: list[ManagedOrder] | None = None,
+        *,
+        history_limit: int = 1000,
+        submission_generations: dict[str, dict[str, int]] | None = None,
+    ) -> None:
         self.history_limit = max(1, int(history_limit))
         self._orders = {order.order_id: order for order in orders or [] if order.order_id}
+        self._submission_generations = self._validated_generations(
+            submission_generations
+        )
+        self._seed_generations_from_orders()
 
     @classmethod
     def from_state(cls, state: dict[str, Any] | None, *, history_limit: int = 1000) -> "ManagedOrderRegistry":
@@ -54,6 +66,12 @@ class ManagedOrderRegistry:
                 market_id = int(row.get("market_id") or 0)
             except (TypeError, ValueError):
                 continue
+            try:
+                submission_generation = max(
+                    0, int(row.get("submission_generation") or 0)
+                )
+            except (TypeError, ValueError):
+                submission_generation = 0
             orders.append(
                 ManagedOrder(
                     order_id=order_id,
@@ -66,14 +84,47 @@ class ManagedOrderRegistry:
                     status=str(row.get("status") or "open").lower(),
                     created_at=str(row.get("created_at") or utc_now()),
                     updated_at=str(row.get("updated_at") or utc_now()),
+                    idempotency_key=str(row.get("idempotency_key") or ""),
+                    submission_generation=submission_generation,
                 )
             )
-        return cls(orders, history_limit=history_limit)
+        generations = (
+            state.get("submission_generations")
+            if isinstance(state, dict)
+            and isinstance(state.get("submission_generations"), dict)
+            else {}
+        )
+        return cls(
+            orders,
+            history_limit=history_limit,
+            submission_generations=generations,
+        )
+
+    def idempotency_key_for_create(self, intent_id: str, account_id: str) -> str:
+        """Return a stable key for this attempt and rotate after successful creates."""
+
+        intent_id = str(intent_id or "").strip()
+        account_id = str(account_id or "").strip()
+        generation = self._submission_generations.get(account_id, {}).get(
+            intent_id, 0
+        )
+        return intent_id if generation <= 0 else f"{intent_id}:g{generation + 1}"
 
     def record_create(self, order: ExecutableOrder, result: ExecutionResult) -> None:
         if not result.ok or not result.order_id:
             return
         now = utc_now()
+        idempotency_key = str(order.idempotency_key or order.intent_id).strip()
+        generation = self._generation_for_key(order.intent_id, idempotency_key)
+        if not result.order_id.startswith("dry:"):
+            account_generations = self._submission_generations.setdefault(
+                order.account_id, {}
+            )
+            generation = max(
+                generation,
+                account_generations.get(order.intent_id, 0) + 1,
+            )
+            account_generations[order.intent_id] = generation
         self._orders[result.order_id] = ManagedOrder(
             order_id=result.order_id,
             intent_id=order.intent_id,
@@ -85,6 +136,8 @@ class ManagedOrderRegistry:
             status=(result.status or "open").lower(),
             created_at=now,
             updated_at=now,
+            idempotency_key=idempotency_key,
+            submission_generation=generation,
         )
         self._trim()
 
@@ -163,8 +216,66 @@ class ManagedOrderRegistry:
                     if order.status not in TERMINAL_STATUSES and order.purpose == "inventory_exit"
                 ),
             },
+            "submission_generations": {
+                account_id: dict(sorted(rows.items()))
+                for account_id, rows in sorted(
+                    self._submission_generations.items()
+                )
+                if rows
+            },
             "orders": [asdict(order) for order in rows],
         }
+
+    @staticmethod
+    def _validated_generations(
+        raw: dict[str, dict[str, int]] | None,
+    ) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for account_id, rows in (raw or {}).items():
+            if not isinstance(rows, dict):
+                continue
+            cleaned: dict[str, int] = {}
+            for intent_id, value in rows.items():
+                try:
+                    generation = max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+                if intent_id and generation > 0:
+                    cleaned[str(intent_id)] = generation
+            if cleaned:
+                out[str(account_id)] = cleaned
+        return out
+
+    @staticmethod
+    def _generation_for_key(intent_id: str, idempotency_key: str) -> int:
+        if not idempotency_key or idempotency_key == intent_id:
+            return 1
+        prefix = f"{intent_id}:g"
+        if idempotency_key.startswith(prefix):
+            try:
+                return max(1, int(idempotency_key[len(prefix) :]))
+            except ValueError:
+                pass
+        return 1
+
+    def _seed_generations_from_orders(self) -> None:
+        for order in self._orders.values():
+            if order.order_id.startswith("dry:"):
+                continue
+            generation = max(
+                order.submission_generation,
+                self._generation_for_key(
+                    order.intent_id,
+                    order.idempotency_key or order.intent_id,
+                ),
+            )
+            account_generations = self._submission_generations.setdefault(
+                order.account_id, {}
+            )
+            account_generations[order.intent_id] = max(
+                generation,
+                account_generations.get(order.intent_id, 0),
+            )
 
     def _trim(self) -> None:
         if len(self._orders) <= self.history_limit:

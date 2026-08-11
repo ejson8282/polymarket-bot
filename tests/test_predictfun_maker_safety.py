@@ -1006,6 +1006,136 @@ def test_managed_registry_never_adopts_unseen_manual_order() -> None:
     assert registry.active() == []
 
 
+def test_terminal_managed_order_rotates_submission_idempotency_key() -> None:
+    executor = RecordingExecutor()
+    report = reconcile_once(
+        {
+            "diff": {
+                "create": [
+                    {
+                        "intent_id": "stable-slot",
+                        "account_id": "account_01",
+                        "market_id": 42,
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.40",
+                        "size": "4",
+                        "token_id": "yes-token",
+                    }
+                ]
+            }
+        },
+        executor=executor,
+        managed_state={
+            "orders": [
+                {
+                    "order_id": "legacy-cancelled-order",
+                    "intent_id": "stable-slot",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "purpose": "maker_quote",
+                    "status": "CANCELLED",
+                }
+            ]
+        },
+        mode="live",
+    )
+
+    assert len(executor.created) == 1
+    assert executor.created[0].intent_id == "stable-slot"
+    assert executor.created[0].idempotency_key == "stable-slot:g2"
+    assert report["managed_orders"]["submission_generations"] == {
+        "account_01": {"stable-slot": 2}
+    }
+
+
+def test_successful_order_rotates_key_after_terminal_state_and_restart() -> None:
+    intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "stable-slot",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "price": "0.40",
+                    "size": "4",
+                    "token_id": "yes-token",
+                }
+            ]
+        }
+    }
+    first = RecordingExecutor()
+    first_report = reconcile_once(
+        intents, executor=first, managed_state={}, mode="live"
+    )
+    assert first.created[0].idempotency_key == "stable-slot"
+
+    restarted_state = first_report["managed_orders"]
+    restarted_state["orders"][0]["status"] = "filled"
+    second = RecordingExecutor()
+    second_report = reconcile_once(
+        intents,
+        executor=second,
+        managed_state=restarted_state,
+        mode="live",
+    )
+
+    assert second.created[0].intent_id == "stable-slot"
+    assert second.created[0].idempotency_key == "stable-slot:g2"
+    assert second_report["managed_orders"]["submission_generations"] == {
+        "account_01": {"stable-slot": 2}
+    }
+
+
+def test_unconfirmed_create_retry_reuses_original_idempotency_key() -> None:
+    class FailingCreateExecutor(RecordingExecutor):
+        def create(self, order: ExecutableOrder) -> ExecutionResult:
+            self.created.append(order)
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=False,
+                message="transport timeout",
+            )
+
+    intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "stable-slot",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "price": "0.40",
+                    "size": "4",
+                    "token_id": "yes-token",
+                }
+            ]
+        }
+    }
+    first = FailingCreateExecutor()
+    first_report = reconcile_once(
+        intents, executor=first, managed_state={}, mode="live"
+    )
+    second = FailingCreateExecutor()
+    reconcile_once(
+        intents,
+        executor=second,
+        managed_state=first_report["managed_orders"],
+        mode="live",
+    )
+
+    assert first.created[0].idempotency_key == "stable-slot"
+    assert second.created[0].idempotency_key == "stable-slot"
+    assert first_report["managed_orders"]["submission_generations"] == {}
+
+
 def test_live_registry_discards_only_dry_run_placeholders() -> None:
     registry = ManagedOrderRegistry.from_state(
         {
