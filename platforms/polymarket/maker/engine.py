@@ -5116,23 +5116,29 @@ class PolyLPSMulti:
         pair_reward_min = Decimal(str(pair_meta.get("rewardsMinSize") or 0))
         pair_min_size = max(self.min_order_size, pair_reward_min, Decimal("0.001"))
 
+        own_cached = self._market_meta_cache.get(token_id)
+        own_meta = own_cached[0] if own_cached else {}
+        own_reward_min = Decimal(str(own_meta.get("rewardsMinSize") or 0))
+        own_min_size = max(self.min_order_size, own_reward_min, Decimal("0.001"))
+
         avail = self._last_balance
         if avail is not None and avail > 0:
-            # Dual-side collateral model: YES+NO share the same collateral.
-            # 1 share on each side costs $1 total (YES_price + NO_price ≈ 1.0).
-            # So the minimum collateral needed = pair_min_size × $1 = pair_min_size.
-            # (NOT yes_notional + no_notional, which double-counts the collateral.)
+            # Each resting BUY reserves its actual price * size. Requiring one
+            # full dollar per YES/NO share pair makes a $200 account unable to
+            # quote a valid 0.41 + 0.56 pair even though it costs only $194.
             safety_buffer = avail * Decimal("0.02")  # 2% safety cushion
             real_avail = max(Decimal("0"), avail - safety_buffer)
-
-            # The combined min required is just the share count (collateral = shares × $1)
-            combined_min_shares = pair_min_size
+            combined_min_notional = (
+                yes_top_price * own_min_size
+                + pair_top_price * pair_min_size
+            )
 
             slug = self._token_slug_cache.get(token_id, token_id[:16])
-            if real_avail < combined_min_shares:
+            if real_avail < combined_min_notional:
                 log(
                     f"[paired-budget] slug={slug} token={token_id[:16]} "
-                    f"real_avail={real_avail} min_shares={combined_min_shares}"
+                    f"real_avail={real_avail} required={combined_min_notional} "
+                    f"legs={yes_top_price}x{own_min_size}+{pair_top_price}x{pair_min_size}"
                 )
                 return False, "paired_side_budget_insufficient"
         elif avail is not None and avail <= 0:

@@ -2000,6 +2000,44 @@ def test_aggressive_pair_preflight_rejects_invalid_sibling_snapshot():
     ) == (False, "paired_side_quote_gate:snapshot_stale")
 
 
+def test_aggressive_pair_budget_uses_actual_two_leg_notional():
+    engine = _paired_state_engine()
+    engine._dual_side_max_mid = Decimal("0.10")
+    engine.min_order_size = Decimal("5")
+    engine._market_snapshots = {
+        "102": type(
+            "Snapshot",
+            (),
+            {"best_bid": Decimal("0.55"), "best_ask": Decimal("0.56")},
+        )(),
+    }
+    engine._market_meta_cache = {
+        "101": ({"rewardsMinSize": 200}, time.time()),
+        "102": ({"rewardsMinSize": 200}, time.time()),
+    }
+    engine._build_price_legs = lambda *_args, **_kwargs: [Decimal("0.56")]
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._quote_gate = lambda *_args, **_kwargs: (True, "")
+    engine._feasibility_gate = lambda *_args, **_kwargs: {"can_quote": True}
+    engine._last_balance = Decimal("201.688043")
+    engine._token_slug_cache = {}
+
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.41"),
+        enforce_all_pairs=True,
+    ) == (True, "")
+
+    engine._last_balance = Decimal("197")
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.41"),
+        enforce_all_pairs=True,
+    ) == (False, "paired_side_budget_insufficient")
+
+
 def test_aggressive_pair_cancel_preempts_and_clears_both_quote_legs():
     engine = _paired_state_engine()
     engine._runtime_scope = "aggressive"
