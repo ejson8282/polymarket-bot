@@ -31,6 +31,7 @@ def _candidate(
     market_closed: bool = False,
     market_archived: bool = False,
     accepting_orders: bool = True,
+    rewards_min_size: float = 100.0,
 ) -> dict:
     return {
         "condition_id": "0x" + f"{token:064x}",
@@ -46,7 +47,8 @@ def _candidate(
         "market_end_ts": market_end_ts,
         "verification_recommended": recommended,
         "probe_capital_usd": capital,
-        "probe_shares_each_side": 101.0101,
+        "probe_shares_each_side": max(101.0101, rewards_min_size),
+        "rewards_min_size_shares": rewards_min_size,
         "rewards_max_spread": 0.045,
         "estimated_daily_gross_usd": roi * capital / 100,
         "risk_adjusted_daily_roi_pct": roi,
@@ -62,8 +64,27 @@ def _candidate(
     }
 
 
-def _observer(*rows: dict, generated_at: float = NOW - 30) -> dict:
-    return {"generated_at": generated_at, "candidates": list(rows)}
+def _observer(
+    *rows: dict,
+    generated_at: float = NOW - 30,
+    sponsored_assessments: dict | None = None,
+) -> dict:
+    if sponsored_assessments is None:
+        sponsored_assessments = {
+            row["condition_id"]: {
+                "condition_id": row["condition_id"],
+                "status": "safe",
+                "size_cap": 1.0,
+                "reasons": ["ok"],
+                "assessed_at": NOW - 5,
+            }
+            for row in rows
+        }
+    return {
+        "generated_at": generated_at,
+        "candidates": list(rows),
+        "sponsored_risk_assessments": sponsored_assessments,
+    }
 
 
 def test_selector_ranks_qualified_markets_and_renders_review_only_universe() -> None:
@@ -191,6 +212,64 @@ def test_selector_skips_shallow_top_candidate_and_records_reason() -> None:
     ]
 
 
+def test_selector_skips_market_when_sponsor_cap_breaks_reward_minimum() -> None:
+    blocked = _candidate(
+        1,
+        roi=9.0,
+        capital=198.0,
+        rewards_min_size=200.0,
+    )
+    safe = _candidate(2, roi=5.0)
+    payload = select_aggressive_market_universe(
+        _observer(
+            blocked,
+            safe,
+            sponsored_assessments={
+                blocked["condition_id"]: {
+                    "status": "caution",
+                    "size_cap": 0.5,
+                    "reasons": ["sponsored_share_high"],
+                    "assessed_at": NOW - 5,
+                },
+                safe["condition_id"]: {
+                    "status": "safe",
+                    "size_cap": 1.0,
+                    "reasons": ["ok"],
+                    "assessed_at": NOW - 5,
+                },
+            },
+        ),
+        principal_usdc=200,
+        min_front_bid_notional_usdc=5_000,
+        now_ts=NOW,
+    )
+
+    assert [row["token_id"] for row in payload["markets"]] == ["2"]
+    assert payload["build"]["sponsored_rejections"] == [
+        {
+            "token_id": "1",
+            "condition_id": blocked["condition_id"],
+            "status": "caution",
+            "size_cap": 0.5,
+            "reasons": ["sponsored_share_high"],
+            "required_min_shares": 200.0,
+            "capped_quote_shares": 100,
+            "reason": "sponsored_size_cap_below_reward_min",
+        }
+    ]
+
+
+def test_selector_fails_closed_without_fresh_sponsor_assessment() -> None:
+    candidate = _candidate(1, roi=5.0)
+    with pytest.raises(AggressiveSelectionError, match="no eligible"):
+        select_aggressive_market_universe(
+            _observer(candidate, sponsored_assessments={}),
+            principal_usdc=200,
+            min_front_bid_notional_usdc=5_000,
+            now_ts=NOW,
+        )
+
+
 @pytest.mark.parametrize(
     "candidate, reason",
     [
@@ -241,6 +320,14 @@ def test_selector_cli_does_not_write_without_output(
     monkeypatch.setattr(
         "platforms.polymarket.maker.aggressive_market_selector.time.time",
         lambda: NOW,
+    )
+
+    async def safe_sponsored_assessments(observer, _config):
+        return dict(observer["sponsored_risk_assessments"])
+
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.aggressive_market_selector._fetch_sponsored_assessments",
+        safe_sponsored_assessments,
     )
     monkeypatch.setattr(
         "sys.argv",

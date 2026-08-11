@@ -7,7 +7,9 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/aggressive_market_selector.py"
       - "platforms/polymarket/maker/aggressive_recovery.py"
+      - "platforms/polymarket/maker/sponsored_guard.py"
       - "platforms/polymarket/maker/order_scoring_observer.py"
       - "tests/test_polymarket_deploy_release.py"
       - "tests/test_polymarket_aggressive_deploy.py"
@@ -15,6 +17,8 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_aggressive_market_selector.py"
+      - "tests/test_polymarket_sponsored_guard.py"
       - ".github/workflows/polymarket-python-safety.yml"
   push:
     branches: [main]
@@ -23,7 +27,9 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/aggressive_market_selector.py"
       - "platforms/polymarket/maker/aggressive_recovery.py"
+      - "platforms/polymarket/maker/sponsored_guard.py"
       - "platforms/polymarket/maker/order_scoring_observer.py"
       - "tests/test_polymarket_deploy_release.py"
       - "tests/test_polymarket_aggressive_deploy.py"
@@ -31,6 +37,8 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_aggressive_market_selector.py"
+      - "tests/test_polymarket_sponsored_guard.py"
       - ".github/workflows/polymarket-python-safety.yml"
 
 permissions:
@@ -66,3 +74,5 @@ jobs:
           tests/test_polymarket_order_scoring_observer.py
           tests/test_polymarket_release_guard.py
           tests/test_polymarket_maker_engine.py
+          tests/test_polymarket_aggressive_market_selector.py
+          tests/test_polymarket_sponsored_guard.py

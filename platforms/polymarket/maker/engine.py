@@ -3314,6 +3314,41 @@ class PolyLPSMulti:
                     self._clear_halt_preemption(target)
             inflight.discard(pair_key)
 
+    async def _cancel_infeasible_quote_target(
+        self,
+        token_id: str,
+        paired_token_id: str,
+        gate: Dict[str, Any],
+        warning: str,
+    ) -> None:
+        """Cancel live quotes when risk caps make the reward minimum impossible."""
+        reason = f"minimum_quote_infeasible:{warning}"
+        self._gate_decisions[token_id] = {
+            **gate,
+            "can_quote": False,
+            "top_leg_action": "cancel",
+            "reason": list(gate.get("reason", [])) + [reason],
+        }
+        retry_at = time.time() + self.budget_skip_cooldown_sec
+        self._market_budget_skip_until[token_id] = retry_at
+        if paired_token_id:
+            self._market_budget_skip_until[paired_token_id] = retry_at
+            await self._cancel_aggressive_pair_quotes(token_id, reason)
+            return
+
+        live_token = await self._get_live_orders_fast(token_id)
+        if not live_token:
+            return
+        self._set_event_state(token_id, EVENT_DEFENSIVE, reason)
+        await self._cancel_order_ids(
+            token_id,
+            [self._order_id(order) for order in live_token],
+            reason,
+        )
+        self._market_live_orders[token_id] = await self._get_live_orders_fast(
+            token_id
+        )
+
     async def _execute_cross_side_cancel(
         self,
         trigger_token: str,
@@ -8155,7 +8190,16 @@ class PolyLPSMulti:
                 size_cap=size_cap,
             )
             if target_bid <= 0:
-                log(f"[quote-skip] token={token_id} reason=no_target_shares warning={share_warning}")
+                log(
+                    f"[quote-cancel] token={token_id} "
+                    f"reason=minimum_quote_infeasible warning={share_warning}"
+                )
+                await self._cancel_infeasible_quote_target(
+                    token_id,
+                    aggressive_paired,
+                    gate,
+                    share_warning,
+                )
                 return
 
             avail = await self._get_collateral_available()

@@ -2093,6 +2093,39 @@ def test_aggressive_pair_cancel_stays_preempted_when_either_cancel_is_unconfirme
     assert engine._halt_requested["102"]
 
 
+def test_infeasible_reward_minimum_cancels_both_aggressive_quote_legs():
+    engine = object.__new__(PolyLPSMulti)
+    engine._gate_decisions = {}
+    engine._market_budget_skip_until = {}
+    engine.budget_skip_cooldown_sec = 120
+    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    gate = {
+        "can_quote": True,
+        "size_cap": 0.5,
+        "reason": ["sponsored_share_high"],
+    }
+
+    asyncio.run(
+        engine._cancel_infeasible_quote_target(
+            "101",
+            "102",
+            gate,
+            "budget_below_min|required=200|size_cap=0.5",
+        )
+    )
+
+    decision = engine._gate_decisions["101"]
+    assert decision["can_quote"] is False
+    assert decision["top_leg_action"] == "cancel"
+    assert decision["reason"][-1].startswith("minimum_quote_infeasible:")
+    assert engine._market_budget_skip_until["101"] > time.time()
+    assert engine._market_budget_skip_until["102"] > time.time()
+    engine._cancel_aggressive_pair_quotes.assert_awaited_once_with(
+        "101",
+        "minimum_quote_infeasible:budget_below_min|required=200|size_cap=0.5",
+    )
+
+
 def test_parent_event_metadata_groups_separate_conditions():
     engine = object.__new__(PolyLPSMulti)
     engine._market_parent_event_ids = {}
