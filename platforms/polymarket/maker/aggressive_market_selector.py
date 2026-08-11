@@ -78,7 +78,29 @@ def _market_row(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "slug": str(candidate.get("slug") or "").strip(),
         "question": str(candidate.get("question") or "").strip(),
         "game_start_ts": _number(candidate.get("game_start_ts"), 0.0),
+        "market_end_ts": _number(candidate.get("market_end_ts"), 0.0),
     }
+
+
+def _market_eligibility_rejection(
+    candidate: Mapping[str, Any],
+    *,
+    now_ts: float,
+) -> str | None:
+    if candidate.get("market_active") is not True:
+        return "market_not_active"
+    if candidate.get("market_closed") is not False:
+        return "market_closed_or_unknown"
+    if candidate.get("market_archived") is not False:
+        return "market_archived_or_unknown"
+    if candidate.get("accepting_orders") is not True:
+        return "market_not_accepting_orders"
+    market_end_ts = _number(candidate.get("market_end_ts"), float("nan"))
+    if not math.isfinite(market_end_ts) or market_end_ts <= 0:
+        return "market_end_unavailable"
+    if market_end_ts <= now_ts:
+        return "market_expired"
+    return None
 
 
 def _front_depth_rejection(
@@ -139,6 +161,7 @@ def select_aggressive_market_universe(
         raise AggressiveSelectionError("reward observer candidates are invalid")
 
     eligible: list[Mapping[str, Any]] = []
+    eligibility_rejections: list[dict[str, Any]] = []
     depth_rejections: list[dict[str, Any]] = []
     seen_events: set[str] = set()
     for row in sorted(
@@ -149,6 +172,20 @@ def select_aggressive_market_universe(
         if row.get("verification_recommended") is not True:
             continue
         if str(row.get("market_phase") or "").strip().lower() == "live":
+            continue
+        eligibility_reason = _market_eligibility_rejection(
+            row,
+            now_ts=selection_ts,
+        )
+        if eligibility_reason is not None:
+            eligibility_rejections.append(
+                {
+                    "token_id": str(row.get("token_id") or ""),
+                    "condition_id": str(row.get("condition_id") or "").strip().lower(),
+                    "reason": eligibility_reason,
+                    "market_end_ts": _finite_optional_number(row.get("market_end_ts")),
+                }
+            )
             continue
         if _number(row.get("fill_risk"), 100.0) >= max_fill_risk:
             continue
@@ -212,6 +249,7 @@ def select_aggressive_market_universe(
             "selection_mode": "review_only",
             "min_front_bid_notional_usdc": round(min_front_bid_notional_usdc, 2),
             "max_depth_age_sec": round(max_depth_age_sec, 1),
+            "eligibility_rejections": eligibility_rejections,
             "depth_rejections": depth_rejections,
         },
     }

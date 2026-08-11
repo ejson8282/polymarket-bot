@@ -26,6 +26,11 @@ def _candidate(
     no_depth: float = 6_000.0,
     depth_status: str = "verified",
     depth_observed_at: float = NOW - 5,
+    market_end_ts: float = NOW + 3_600,
+    market_active: bool = True,
+    market_closed: bool = False,
+    market_archived: bool = False,
+    accepting_orders: bool = True,
 ) -> dict:
     return {
         "condition_id": "0x" + f"{token:064x}",
@@ -34,6 +39,11 @@ def _candidate(
         "question": f"Market {token}?",
         "slug": f"market-{token}",
         "market_phase": phase,
+        "market_active": market_active,
+        "market_closed": market_closed,
+        "market_archived": market_archived,
+        "accepting_orders": accepting_orders,
+        "market_end_ts": market_end_ts,
         "verification_recommended": recommended,
         "probe_capital_usd": capital,
         "probe_shares_each_side": 101.0101,
@@ -75,6 +85,64 @@ def test_selector_ranks_qualified_markets_and_renders_review_only_universe() -> 
     assert payload["build"]["selection_mode"] == "review_only"
     assert all(row["source"] == "aggressive_observer_selected" for row in payload["markets"])
     assert all(row["eligibility_managed"] is True for row in payload["markets"])
+    assert all(row["market_end_ts"] == NOW + 3_600 for row in payload["markets"])
+
+
+@pytest.mark.parametrize(
+    "candidate, expected_reason",
+    [
+        (_candidate(1, roi=9.0, market_end_ts=NOW), "market_expired"),
+        (_candidate(1, roi=9.0, market_end_ts=float("nan")), "market_end_unavailable"),
+        (_candidate(1, roi=9.0, market_active=False), "market_not_active"),
+        (_candidate(1, roi=9.0, market_closed=True), "market_closed_or_unknown"),
+        (_candidate(1, roi=9.0, market_archived=True), "market_archived_or_unknown"),
+        (_candidate(1, roi=9.0, accepting_orders=False), "market_not_accepting_orders"),
+    ],
+)
+def test_selector_skips_ineligible_market_and_records_reason(
+    candidate: dict,
+    expected_reason: str,
+) -> None:
+    payload = select_aggressive_market_universe(
+        _observer(candidate, _candidate(2, roi=5.0)),
+        principal_usdc=200,
+        min_front_bid_notional_usdc=5_000,
+        now_ts=NOW,
+    )
+
+    assert [row["token_id"] for row in payload["markets"]] == ["2"]
+    assert payload["build"]["eligibility_rejections"] == [
+        {
+            "token_id": "1",
+            "condition_id": "0x" + f"{1:064x}",
+            "reason": expected_reason,
+            "market_end_ts": (
+                None
+                if expected_reason == "market_end_unavailable"
+                else candidate["market_end_ts"]
+            ),
+        }
+    ]
+
+
+def test_selector_rejects_legacy_snapshot_without_lifecycle_fields() -> None:
+    legacy = _candidate(1, roi=9.0)
+    for key in (
+        "market_active",
+        "market_closed",
+        "market_archived",
+        "accepting_orders",
+        "market_end_ts",
+    ):
+        legacy.pop(key)
+
+    with pytest.raises(AggressiveSelectionError, match="no eligible"):
+        select_aggressive_market_universe(
+            _observer(legacy),
+            principal_usdc=200,
+            min_front_bid_notional_usdc=5_000,
+            now_ts=NOW,
+        )
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,8 @@ def _market(
         "active": True,
         "closed": False,
         "archived": False,
+        "acceptingOrders": True,
+        "endDate": "2099-12-31T23:59:00Z",
         "conditionId": "condition-1",
         "question": "Will rates change in 2026?",
         "slug": slug,
@@ -57,6 +59,33 @@ def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     assert candidate["status"] == "observe_only"
     assert candidate["actual_reward_share_pct"] is None
     assert candidate["market_type"] == "always_on"
+    assert candidate["market_active"] is True
+    assert candidate["market_closed"] is False
+    assert candidate["market_archived"] is False
+    assert candidate["accepting_orders"] is True
+    assert candidate["market_end_ts"] == reward_observer._timestamp(
+        "2099-12-31T23:59:00Z"
+    )
+
+
+def test_observer_excludes_expired_market_even_when_gamma_still_accepts_orders() -> None:
+    expired = _market(slug="ceasefire-by-july-31")
+    expired["endDate"] = "2020-07-31T23:59:00Z"
+
+    result = observe_reward_markets([expired], lambda _token: _book())
+
+    assert result["rewarded_markets_seen"] == 0
+    assert result["candidates"] == []
+
+
+def test_observer_excludes_market_that_stopped_accepting_orders() -> None:
+    market = _market()
+    market["acceptingOrders"] = False
+
+    result = observe_reward_markets([market], lambda _token: _book())
+
+    assert result["rewarded_markets_seen"] == 0
+    assert result["candidates"] == []
 
 
 def test_candidate_url_uses_parent_event_and_market_slugs() -> None:
