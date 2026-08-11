@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -63,6 +63,17 @@ def _registry_for_mode(
     return registry
 
 
+def _with_submission_key(
+    order: ExecutableOrder, registry: ManagedOrderRegistry
+) -> ExecutableOrder:
+    return replace(
+        order,
+        idempotency_key=registry.idempotency_key_for_create(
+            order.intent_id, order.account_id
+        ),
+    )
+
+
 def reconcile_once(
     intents_state: dict[str, Any],
     *,
@@ -91,7 +102,7 @@ def reconcile_once(
     if not cancel_failed:
         for item in diff.get("create") or []:
             if isinstance(item, dict):
-                order = _to_order(item)
+                order = _with_submission_key(_to_order(item), registry)
                 result = executor.create(order)
                 registry.record_create(order, result)
                 results.append(asdict(result))
@@ -195,7 +206,7 @@ def reconcile_reduce_only(
     ]
     if not cancel_failed:
         for item in exit_creates:
-            order = _to_order(item)
+            order = _with_submission_key(_to_order(item), registry)
             result = executor.create(order)
             registry.record_create(order, result)
             results.append(asdict(result))
