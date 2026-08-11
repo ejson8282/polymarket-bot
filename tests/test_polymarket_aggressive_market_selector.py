@@ -22,6 +22,10 @@ def _candidate(
     stability: float = 90.0,
     recommended: bool = True,
     phase: str = "normal",
+    yes_depth: float = 6_000.0,
+    no_depth: float = 6_000.0,
+    depth_status: str = "verified",
+    depth_observed_at: float = NOW - 5,
 ) -> dict:
     return {
         "condition_id": "0x" + f"{token:064x}",
@@ -38,6 +42,13 @@ def _candidate(
         "risk_adjusted_daily_roi_pct": roi,
         "fill_risk": fill_risk,
         "stability_score": stability,
+        "front_depth_status": depth_status,
+        "front_depth_observed_at": depth_observed_at,
+        "yes_tick_size": 0.01,
+        "no_tick_size": 0.01,
+        "yes_front_bid_notional_usd": yes_depth,
+        "no_front_bid_notional_usd": no_depth,
+        "min_front_bid_notional_usd": min(yes_depth, no_depth),
     }
 
 
@@ -54,6 +65,7 @@ def test_selector_ranks_qualified_markets_and_renders_review_only_universe() -> 
             _candidate(4, roi=7.0, recommended=False),
         ),
         principal_usdc=200,
+        min_front_bid_notional_usdc=5_000,
         limit=2,
         now_ts=NOW,
     )
@@ -83,8 +95,69 @@ def test_selector_fails_closed_for_stale_or_ineligible_input(
         select_aggressive_market_universe(
             observer,
             principal_usdc=principal,
+            min_front_bid_notional_usdc=5_000,
             now_ts=NOW,
         )
+
+
+def test_selector_skips_shallow_top_candidate_and_records_reason() -> None:
+    payload = select_aggressive_market_universe(
+        _observer(
+            _candidate(1, roi=9.0, yes_depth=4_999),
+            _candidate(2, roi=5.0),
+        ),
+        principal_usdc=200,
+        min_front_bid_notional_usdc=5_000,
+        now_ts=NOW,
+    )
+
+    assert [row["token_id"] for row in payload["markets"]] == ["2"]
+    assert payload["build"]["depth_rejections"] == [
+        {
+            "token_id": "1",
+            "condition_id": "0x" + f"{1:064x}",
+            "reason": "front_depth_below_min",
+            "yes_front_bid_notional_usd": 4_999,
+            "no_front_bid_notional_usd": 6_000.0,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "candidate, reason",
+    [
+        (_candidate(1, roi=1, no_depth=4_999), "no eligible"),
+        (_candidate(1, roi=1, depth_status="missing_tick_size"), "no eligible"),
+        (_candidate(1, roi=1, depth_observed_at=NOW - 301), "no eligible"),
+        (_candidate(1, roi=1, yes_depth=float("nan")), "no eligible"),
+    ],
+)
+def test_selector_fails_closed_when_either_depth_leg_is_unusable(
+    candidate: dict,
+    reason: str,
+) -> None:
+    with pytest.raises(AggressiveSelectionError, match=reason):
+        select_aggressive_market_universe(
+            _observer(candidate),
+            principal_usdc=200,
+            min_front_bid_notional_usdc=5_000,
+            now_ts=NOW,
+        )
+
+
+def test_selector_depth_rejections_remain_strict_json_for_nonfinite_input() -> None:
+    payload = select_aggressive_market_universe(
+        _observer(
+            _candidate(1, roi=9.0, yes_depth=float("nan")),
+            _candidate(2, roi=5.0),
+        ),
+        principal_usdc=200,
+        min_front_bid_notional_usdc=5_000,
+        now_ts=NOW,
+    )
+
+    assert payload["build"]["depth_rejections"][0]["yes_front_bid_notional_usd"] is None
+    json.dumps(payload, allow_nan=False)
 
 
 def test_selector_cli_does_not_write_without_output(
@@ -109,6 +182,8 @@ def test_selector_cli_does_not_write_without_output(
             str(observer_path),
             "--principal-usdc",
             "200",
+            "--min-front-bid-notional-usdc",
+            "5000",
         ],
     )
 
