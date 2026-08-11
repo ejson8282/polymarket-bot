@@ -601,6 +601,119 @@ def test_live_executor_separates_slot_intent_from_submission_idempotency(
     assert submitted[0]["idempotency_key"] == f"{base.intent_id}:g2"
 
 
+@pytest.mark.parametrize("cancel_raises", [True, False])
+def test_live_executor_accepts_official_terminal_state_after_cancel_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_raises: bool,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    order_id = "0x" + "3" * 64
+    calls: list[tuple[str, str]] = []
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        del params, json_body
+        calls.append((method, suffix))
+        if suffix == "/cancel-orders":
+            if cancel_raises:
+                raise RuntimeError("already terminal")
+            return {
+                "ok": True,
+                "verified": False,
+                "error": "cancel verification timeout",
+            }
+        assert suffix == f"/orders/{order_id}"
+        return {
+            "response": {
+                "data": {
+                    "marketId": 10835,
+                    "amountFilled": "0",
+                    "status": "CANCELLED",
+                    "order": {
+                        "hash": order_id,
+                        "side": 0,
+                        "makerAmount": str(8 * 10**17),
+                        "takerAmount": str(2 * 10**18),
+                    },
+                }
+            }
+        }
+
+    monkeypatch.setattr(executor, "_request", request)
+
+    result = executor.cancel(
+        order_id,
+        intent_id="stable-slot",
+        account_id="account_01",
+    )
+
+    assert result.ok is True
+    assert result.status == "cancelled"
+    assert result.message == "order already terminal: cancelled"
+    assert calls == [
+        ("POST", "/cancel-orders"),
+        ("GET", f"/orders/{order_id}"),
+    ]
+
+
+def test_live_executor_keeps_cancel_failed_when_order_is_still_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    order_id = "0x" + "4" * 64
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        del method, params, json_body
+        if suffix == "/cancel-orders":
+            raise RuntimeError("cancel failed")
+        return {
+            "response": {
+                "data": {
+                    "marketId": 10835,
+                    "amountFilled": "0",
+                    "status": "OPEN",
+                    "order": {
+                        "hash": order_id,
+                        "side": 0,
+                        "makerAmount": str(8 * 10**17),
+                        "takerAmount": str(2 * 10**18),
+                    },
+                }
+            }
+        }
+
+    monkeypatch.setattr(executor, "_request", request)
+
+    result = executor.cancel(
+        order_id,
+        intent_id="stable-slot",
+        account_id="account_01",
+    )
+
+    assert result.ok is False
+    assert result.status == "open"
+    assert result.message == "Predict.fun cancel failed: RuntimeError"
+
+
 @pytest.mark.parametrize("inventory_source", ["live", "live_read_only"])
 def test_live_inventory_is_used_by_risk_instead_of_simulation(
     inventory_source: str,
