@@ -183,6 +183,42 @@ The normal signer endpoint on port 8420 and normal Redis on port 6379 are
 rejected. The initial service activation is always paused and therefore cannot
 quote until the account mapping and public funder have been verified.
 
+### Pause-only market staging
+
+Use `stage_aggressive_market.py` when the selected observer market changes. It
+refuses to stage anything unless every local aggressive account has a fresh
+`paused=true` state, a pause flag, active guardrails, zero live orders, zero
+pending unwinds, and zero position value. The candidate must be a fresh,
+review-only output from `aggressive_market_selector.py`, use at least the
+engine's front-depth threshold, and contain exactly one unexpired day market.
+For a shared multi-account roster, feasibility is checked against the account
+that deterministic event allocation will actually use. A 200 USDC candidate
+may therefore be assigned to a 200 USDC profile even when another account on
+the roster has a smaller principal; it is rejected if the selected owner is too
+small.
+
+First obtain the candidate digest without changing the host:
+
+```bash
+python platforms/polymarket/maker/stage_aggressive_market.py plan \
+  /tmp/aggressive-candidate.json --profile aggressive-a
+```
+
+Apply requires the exact confirmation printed by `plan` and an audit ID:
+
+```bash
+python platforms/polymarket/maker/stage_aggressive_market.py apply \
+  /tmp/aggressive-candidate.json --profile aggressive-a \
+  --confirm STAGE-AGGRESSIVE-MARKET:<candidate-market-sha256> \
+  --authorization-id <authorization-id>
+```
+
+The command only atomically replaces `markets.runtime.json` and the matching
+reviewed digest in `env/runtime.env`. It does not restart or resume the engine,
+does not contact the signer, and does not touch orders. Afterwards run the
+normal exact-SHA `plan` / `prepare` / `activate` workflow below; activation
+regenerates account configs and remains paused.
+
 Read-only plan:
 
 ```bash

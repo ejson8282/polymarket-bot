@@ -696,6 +696,8 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
     aggressive_recovery = maker / "aggressive_recovery.py"
     aggressive_recovery.write_text("print('recovery')\n", encoding="utf-8")
+    aggressive_market_stage = maker / "stage_aggressive_market.py"
+    aggressive_market_stage.write_text("print('stage')\n", encoding="utf-8")
 
     manifest = _manifest_for(release, target_sha)
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
@@ -703,6 +705,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
     scoring_observer_path = "platforms/polymarket/maker/order_scoring_observer.py"
     aggressive_recovery_path = "platforms/polymarket/maker/aggressive_recovery.py"
+    aggressive_market_stage_path = (
+        "platforms/polymarket/maker/stage_aggressive_market.py"
+    )
     assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
         proxy.read_bytes()
     ).hexdigest()
@@ -717,6 +722,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     ).hexdigest()
     assert manifest["artifacts_sha256"][aggressive_recovery_path] == hashlib.sha256(
         aggressive_recovery.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts_sha256"][aggressive_market_stage_path] == hashlib.sha256(
+        aggressive_market_stage.read_bytes()
     ).hexdigest()
     (release / ".release-manifest.json").write_text(
         json.dumps(manifest),

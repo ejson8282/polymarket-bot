@@ -514,6 +514,11 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     )
     if aggressive_recovery.is_file():
         artifacts.append(aggressive_recovery)
+    aggressive_market_stage = (
+        release_dir / "platforms/polymarket/maker/stage_aggressive_market.py"
+    )
+    if aggressive_market_stage.is_file():
+        artifacts.append(aggressive_market_stage)
     return {
         "source_repository": SOURCE_REPOSITORY,
         "commit": target_sha,

@@ -19,6 +19,7 @@ from deploy_aggressive_runtime import (  # noqa: E402
     AggressivePaths,
     AggressiveRequest,
     DeploymentError,
+    execute,
     _normalize_request,
     _load_sanitized_base_config,
     _parse_env_file,
@@ -139,6 +140,42 @@ def test_confirmation_is_profile_and_sha_scoped() -> None:
         )
     )
     assert request.expected_current == "none"
+
+
+def test_plan_allows_reactivating_current_sha_after_market_staging(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = _paths(tmp_path)
+    paths.release_root.mkdir(parents=True)
+    release = paths.release_root / SHA
+    release.mkdir()
+    paths.current_link.symlink_to(release)
+    paths.lock_root.mkdir(parents=True)
+    verified = []
+
+    def verify_candidate(_paths, _runner, target_sha, *, promote):
+        verified.append((target_sha, promote))
+
+    monkeypatch.setattr(
+        "deploy_aggressive_runtime._verify_or_promote_candidate",
+        verify_candidate,
+    )
+
+    result = execute(
+        AggressiveRequest(
+            action="plan",
+            target_sha=SHA,
+            expected_current=SHA,
+            profile_name="aggressive-a",
+        ),
+        paths=paths,
+        runner=_RecordingRunner(),
+    )
+
+    assert result["current_sha"] == SHA
+    assert result["target_sha"] == SHA
+    assert result["will_start_orders"] is False
+    assert verified == [(SHA, False)]
 
 
 def test_aggressive_paths_reject_normal_lp_reuse(tmp_path: Path) -> None:

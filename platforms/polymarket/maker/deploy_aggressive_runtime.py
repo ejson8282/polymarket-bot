@@ -89,6 +89,7 @@ RELEASE_TESTS = (
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_order_scoring_observer.py",
     "tests/test_polymarket_aggressive_deploy.py",
+    "tests/test_polymarket_aggressive_market_stage.py",
     "tests/test_polymarket_aggressive_proxy.py",
 )
 REQUIRED_ENV_KEYS = (
