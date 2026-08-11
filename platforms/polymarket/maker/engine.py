@@ -861,6 +861,18 @@ class PolyLPSMulti:
         self._global_order_max_sec = float(execution.get("global_order_max_sec", 30))
         self._per_token_order_min_sec = float(execution.get("per_token_order_min_sec", 15))
         self._per_token_last_order_ts: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
+        self._aggressive_pair_submit_timeout_sec = max(
+            1.0,
+            float(execution.get("aggressive_pair_submit_timeout_sec", 5.0)),
+        )
+        self._aggressive_pair_retry_cooldown_sec = max(
+            self._aggressive_pair_submit_timeout_sec,
+            float(execution.get("aggressive_pair_retry_cooldown_sec", 15.0)),
+        )
+        self._aggressive_pair_submit_lock = asyncio.Lock()
+        self._aggressive_pair_submit_seq = 0
+        self._aggressive_pair_submit_attempts: Dict[str, Dict[str, Any]] = {}
+        self._aggressive_pair_submit_watchdogs: Dict[str, asyncio.Task] = {}
 
         # market reward-health auto offlining
         self.health_check_interval_sec = int(execution.get("health_check_interval_sec", 600))
@@ -3314,6 +3326,217 @@ class PolyLPSMulti:
                     self._clear_halt_preemption(target)
             inflight.discard(pair_key)
 
+    @staticmethod
+    def _aggressive_pair_key(token_id: str, paired_token_id: str) -> str:
+        return "|".join(sorted((str(token_id), str(paired_token_id))))
+
+    async def _claim_aggressive_pair_submit(
+        self,
+        token_id: str,
+    ) -> Optional[tuple[str, int, str]]:
+        paired = self._aggressive_pair_token(token_id)
+        if not paired:
+            return None
+
+        pair_key = self._aggressive_pair_key(token_id, paired)
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None:
+                self._aggressive_pair_submit_seq += 1
+                attempt = {
+                    "id": self._aggressive_pair_submit_seq,
+                    "leader": token_id,
+                    "follower": paired,
+                    "leader_posted": asyncio.Event(),
+                    "posted": set(),
+                    "failed": False,
+                    "created_at": time.time(),
+                    "first_post_at": 0.0,
+                    "follower_claimed": False,
+                }
+                self._aggressive_pair_submit_attempts[pair_key] = attempt
+                return pair_key, int(attempt["id"]), "leader"
+
+            if (
+                token_id == attempt.get("follower")
+                and not attempt.get("follower_claimed")
+            ):
+                attempt["follower_claimed"] = True
+                return pair_key, int(attempt["id"]), "follower"
+
+        return None
+
+    async def _aggressive_pair_attempt(
+        self,
+        claim: tuple[str, int, str],
+    ) -> Optional[Dict[str, Any]]:
+        pair_key, attempt_id, _role = claim
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None or int(attempt.get("id", -1)) != attempt_id:
+                return None
+            return attempt
+
+    async def _clear_aggressive_pair_submit(
+        self,
+        pair_key: str,
+        attempt_id: int,
+    ) -> None:
+        watchdog: Optional[asyncio.Task] = None
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None or int(attempt.get("id", -1)) != attempt_id:
+                return
+            self._aggressive_pair_submit_attempts.pop(pair_key, None)
+            watchdog = self._aggressive_pair_submit_watchdogs.pop(pair_key, None)
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+
+    def _cooldown_aggressive_pair(self, token_id: str, paired_token_id: str) -> None:
+        retry_at = time.time() + self._aggressive_pair_retry_cooldown_sec
+        for target in (token_id, paired_token_id):
+            self._market_budget_skip_until[target] = max(
+                float(self._market_budget_skip_until.get(target, 0.0)),
+                retry_at,
+            )
+            self._last_plan_sig[target] = ""
+            self._last_top_plan_sig[target] = ""
+            self._last_back_plan_sig[target] = ""
+
+    async def _aggressive_pair_submit_failed(
+        self,
+        token_id: str,
+        claim: Optional[tuple[str, int, str]],
+        reason: str,
+    ) -> None:
+        if claim is None:
+            return
+        pair_key, attempt_id, _role = claim
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None or int(attempt.get("id", -1)) != attempt_id:
+                return
+            paired = str(
+                attempt.get("follower")
+                if token_id == attempt.get("leader")
+                else attempt.get("leader")
+            )
+            attempt["failed"] = True
+            attempt["leader_posted"].set()
+        self._cooldown_aggressive_pair(token_id, paired)
+        try:
+            await self._cancel_aggressive_pair_quotes(
+                token_id,
+                f"paired_submit_failed:{reason}",
+            )
+        finally:
+            await self._clear_aggressive_pair_submit(pair_key, attempt_id)
+
+    async def _aggressive_pair_submit_succeeded(
+        self,
+        token_id: str,
+        claim: Optional[tuple[str, int, str]],
+    ) -> None:
+        if claim is None:
+            return
+        pair_key, attempt_id, _role = claim
+        start_watchdog = False
+        complete = False
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None or int(attempt.get("id", -1)) != attempt_id:
+                return
+            attempt["posted"].add(token_id)
+            if token_id == attempt.get("leader"):
+                attempt["first_post_at"] = time.time()
+                attempt["leader_posted"].set()
+            expected = {str(attempt.get("leader")), str(attempt.get("follower"))}
+            complete = expected.issubset(attempt["posted"])
+            if not complete and pair_key not in self._aggressive_pair_submit_watchdogs:
+                start_watchdog = True
+
+        if complete:
+            log(
+                f"[aggressive-pair-submit] pair={pair_key} "
+                f"attempt={attempt_id} action=both_posted"
+            )
+            await self._clear_aggressive_pair_submit(pair_key, attempt_id)
+            return
+
+        if start_watchdog:
+            watchdog = asyncio.create_task(
+                self._aggressive_pair_submit_watchdog(
+                    pair_key,
+                    attempt_id,
+                    token_id,
+                ),
+                name=f"aggressive_pair_submit:{attempt_id}",
+            )
+            async with self._aggressive_pair_submit_lock:
+                attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+                if attempt is not None and int(attempt.get("id", -1)) == attempt_id:
+                    self._aggressive_pair_submit_watchdogs[pair_key] = watchdog
+                else:
+                    watchdog.cancel()
+
+    async def _aggressive_pair_submit_watchdog(
+        self,
+        pair_key: str,
+        attempt_id: int,
+        trigger_token_id: str,
+    ) -> None:
+        await asyncio.sleep(self._aggressive_pair_submit_timeout_sec)
+        async with self._aggressive_pair_submit_lock:
+            attempt = self._aggressive_pair_submit_attempts.get(pair_key)
+            if attempt is None or int(attempt.get("id", -1)) != attempt_id:
+                return
+            leader = str(attempt.get("leader"))
+            follower = str(attempt.get("follower"))
+
+        live_counts: Dict[str, int] = {}
+        refresh_error = ""
+        try:
+            self._invalidate_all_orders_cache()
+            for target in (leader, follower):
+                live_counts[target] = len(await self._refresh_live_orders(target))
+        except Exception as exc:
+            refresh_error = f"{exc.__class__.__name__}:{exc}"
+
+        if not refresh_error and all(live_counts.get(target, 0) > 0 for target in (leader, follower)):
+            log(
+                f"[aggressive-pair-submit] pair={pair_key} "
+                f"attempt={attempt_id} action=confirmed_live"
+            )
+            await self._clear_aggressive_pair_submit(pair_key, attempt_id)
+            return
+
+        reason = (
+            f"paired_submit_timeout:{self._aggressive_pair_submit_timeout_sec:.1f}s:"
+            f"leader_live={live_counts.get(leader, -1)}:"
+            f"follower_live={live_counts.get(follower, -1)}"
+        )
+        if refresh_error:
+            reason = f"{reason}:refresh_error={refresh_error}"
+        self._cooldown_aggressive_pair(leader, follower)
+        try:
+            cleared = await self._cancel_aggressive_pair_quotes(
+                trigger_token_id,
+                reason,
+            )
+            result_text = (
+                "已确认撤回两腿"
+                if cleared
+                else "撤单尚未确认，事件保持阻断"
+            )
+            self.notify_discord(
+                "激进 LP 双腿建单失败",
+                f"{reason}\n{result_text}，冷却 "
+                f"{self._aggressive_pair_retry_cooldown_sec:.0f} 秒",
+                "warning" if cleared else "error",
+            )
+        finally:
+            await self._clear_aggressive_pair_submit(pair_key, attempt_id)
+
     async def _cancel_infeasible_quote_target(
         self,
         token_id: str,
@@ -4514,33 +4737,109 @@ class PolyLPSMulti:
         log(f"[pace] {label} sleep={d:.2f}s")
         await asyncio.sleep(d)
 
-    async def _acquire_order_throttle(self, token_id: str, label: str) -> None:
+    async def _acquire_order_throttle(
+        self,
+        token_id: str,
+        label: str,
+    ) -> Optional[tuple[str, int, str]]:
         """Unified order throttle: per-token + global.
         Must be called before every real order placement."""
         slug = self._token_slug_cache.get(token_id, token_id[:16])
-        async with self._global_order_lock:
-            now = time.time()
+        claim = await self._claim_aggressive_pair_submit(token_id)
+        if claim is not None and claim[2] == "follower":
+            attempt = await self._aggressive_pair_attempt(claim)
+            if attempt is None:
+                raise SoftQuoteSkip(
+                    f"paired_submit_missing token={token_id[:16]} label={label}"
+                )
+            leader_wait_sec = max(
+                self._global_order_max_sec,
+                self._per_token_order_min_sec,
+            ) + self._aggressive_pair_submit_timeout_sec + 10.0
+            try:
+                await asyncio.wait_for(
+                    attempt["leader_posted"].wait(),
+                    timeout=leader_wait_sec,
+                )
+            except asyncio.TimeoutError:
+                await self._aggressive_pair_submit_failed(
+                    token_id,
+                    claim,
+                    "leader_wait_timeout",
+                )
+                raise SoftQuoteSkip(
+                    f"paired_submit_leader_timeout token={token_id[:16]} label={label}"
+                )
 
-            # # Per-token cooldown
+            attempt = await self._aggressive_pair_attempt(claim)
+            if (
+                attempt is None
+                or attempt.get("failed")
+                or str(attempt.get("leader")) not in attempt.get("posted", set())
+            ):
+                raise SoftQuoteSkip(
+                    f"paired_submit_leader_failed token={token_id[:16]} label={label}"
+                )
+
             per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
-            per_token_elapsed = now - per_token_last
-            per_token_wait = max(0.0, self._per_token_order_min_sec - per_token_elapsed)
+            per_token_wait = max(
+                0.0,
+                self._per_token_order_min_sec - (time.time() - per_token_last),
+            )
+            deadline = float(attempt.get("first_post_at", 0.0)) + self._aggressive_pair_submit_timeout_sec
+            if per_token_wait > 0:
+                if time.time() + per_token_wait >= deadline:
+                    await self._aggressive_pair_submit_failed(
+                        token_id,
+                        claim,
+                        "follower_per_token_throttle_timeout",
+                    )
+                    raise SoftQuoteSkip(
+                        f"paired_submit_follower_throttled token={token_id[:16]} label={label}"
+                    )
+                await asyncio.sleep(per_token_wait)
+            if time.time() >= deadline:
+                await self._aggressive_pair_submit_failed(
+                    token_id,
+                    claim,
+                    "follower_deadline_elapsed",
+                )
+                raise SoftQuoteSkip(
+                    f"paired_submit_follower_late token={token_id[:16]} label={label}"
+                )
 
-            # # Global cooldown
-            global_elapsed = now - self._global_last_order_ts
+            order_ts = time.time()
+            self._global_last_order_ts = max(self._global_last_order_ts, order_ts)
+            self._per_token_last_order_ts[token_id] = order_ts
+            log(
+                f"[aggressive-pair-submit] token={slug} role=follower "
+                f"action=fast_follow label={label}"
+            )
+            return claim
+
+        async with self._global_order_lock:
             global_min = random.uniform(self._global_order_min_sec, self._global_order_max_sec)
-            global_wait = max(0.0, global_min - global_elapsed)
-
-            # Take the larger wait
-            wait = max(per_token_wait, global_wait)
-
-            if wait > 0:
+            while True:
+                now = time.time()
+                per_token_last = self._per_token_last_order_ts.get(token_id, 0.0)
+                per_token_wait = max(
+                    0.0,
+                    self._per_token_order_min_sec - (now - per_token_last),
+                )
+                global_wait = max(
+                    0.0,
+                    global_min - (now - self._global_last_order_ts),
+                )
+                wait = max(per_token_wait, global_wait)
+                if wait <= 0:
+                    break
                 await asyncio.sleep(wait)
 
             # Record timestamps
             order_ts = time.time()
             self._global_last_order_ts = order_ts
             self._per_token_last_order_ts[token_id] = order_ts
+        return claim
 
 
     @staticmethod
@@ -7253,6 +7552,10 @@ class PolyLPSMulti:
             self._running = False
             for t in tasks:
                 t.cancel()
+            for watchdog in self._aggressive_pair_submit_watchdogs.values():
+                watchdog.cancel()
+            self._aggressive_pair_submit_watchdogs.clear()
+            self._aggressive_pair_submit_attempts.clear()
 
     def _read_proxies_for_token(self, token_id: str = "") -> Optional[dict]:
         p = _choose_proxy(self.cfg, for_ws=False, shard_key=str(token_id or ""))
@@ -8562,34 +8865,70 @@ class PolyLPSMulti:
             log(f"[safety] REJECT price>=ask slug={slug} token={token_id[:16]} target={price} ask={fresh_ask} bid={fresh_bid} label={label}")
             raise RuntimeError(f"pre_order_reject:price_crosses_spread token={token_id[:16]}")
 
-    async def _preflight_post_order(self, token_id: str, price: Decimal, label: str) -> None:
+    async def _preflight_post_order(
+        self,
+        token_id: str,
+        price: Decimal,
+        label: str,
+    ) -> Optional[tuple[str, int, str]]:
         await self._validate_passive_buy_quote(
             token_id,
             price,
             f"pre_throttle:{label}",
         )
-        await self._acquire_order_throttle(token_id, label)
-        await self._validate_passive_buy_quote(
-            token_id,
-            price,
-            f"post_throttle:{label}",
-        )
+        claim = await self._acquire_order_throttle(token_id, label)
+        try:
+            await self._validate_passive_buy_quote(
+                token_id,
+                price,
+                f"post_throttle:{label}",
+            )
+        except Exception as exc:
+            await self._aggressive_pair_submit_failed(
+                token_id,
+                claim,
+                f"post_throttle:{label}:{exc.__class__.__name__}",
+            )
+            raise
+        return claim
 
     async def _place_post_only_order_fast(self, token_id: str, price: Decimal, size: Decimal, label: str = "post_fast") -> Any:
         """Fast repost path that retains the full passive-order safety gate."""
-        await self._preflight_post_order(token_id, price, label)
-        return await self._submit_post_order(token_id, price, size, label)
+        claim: Optional[tuple[str, int, str]] = None
+        try:
+            claim = await self._preflight_post_order(token_id, price, label)
+            response = await self._submit_post_order(token_id, price, size, label)
+            await self._aggressive_pair_submit_succeeded(token_id, claim)
+            return response
+        except Exception as exc:
+            await self._aggressive_pair_submit_failed(
+                token_id,
+                claim,
+                f"{label}:{exc.__class__.__name__}",
+            )
+            raise
 
     async def place_post_only_order(self, token_id: str, price: Decimal, size: Decimal, label: str = "post") -> Any:
-        await self._preflight_post_order(token_id, price, label)
-        async with self._signer_sem:
-            async with self._signer_gap_lock:
-                now = time.time()
-                wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
-                if wait_sec > 0:
-                    await asyncio.sleep(wait_sec)
-                self._last_signer_post_ts = time.time()
-            return await self._submit_post_order(token_id, price, size, label)
+        claim: Optional[tuple[str, int, str]] = None
+        try:
+            claim = await self._preflight_post_order(token_id, price, label)
+            async with self._signer_sem:
+                async with self._signer_gap_lock:
+                    now = time.time()
+                    wait_sec = max(0.0, self.signer_requote_gap_sec - (now - self._last_signer_post_ts))
+                    if wait_sec > 0:
+                        await asyncio.sleep(wait_sec)
+                    self._last_signer_post_ts = time.time()
+                response = await self._submit_post_order(token_id, price, size, label)
+            await self._aggressive_pair_submit_succeeded(token_id, claim)
+            return response
+        except Exception as exc:
+            await self._aggressive_pair_submit_failed(
+                token_id,
+                claim,
+                f"{label}:{exc.__class__.__name__}",
+            )
+            raise
 
     def _count_live_orders(self, orders: list[dict]) -> int:
         return sum(1 for order in orders if _order_is_live(order))
