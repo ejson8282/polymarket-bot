@@ -112,6 +112,7 @@ python platforms/polymarket/maker/aggressive_market_selector.py \
   --observer /home/ubuntu/polymarket-aggressive-runtime/data/reward_observer_state.json \
   --principal-usdc 200 \
   --min-front-bid-notional-usdc 5000 \
+  --sponsored-risk-config /home/ubuntu/polymarket-aggressive-runtime/base.config.json \
   --limit 1
 ```
 
@@ -120,9 +121,11 @@ writes a candidate document; it never changes the running config, restarts a
 service, removes a pause flag, or places an order. Selection fails closed for
 stale snapshots, live markets, unverified candidates, excessive fill risk,
 insufficient stability, probe capital above the account tier, missing/stale
-depth, or either YES/NO leg below the supplied runtime front-depth threshold.
-The selector records depth rejections and falls through to the next ranked
-candidate instead of lowering the engine's production gate.
+depth, either YES/NO leg below the supplied runtime front-depth threshold, or
+a sponsored-reward size cap that leaves fewer shares than the reward minimum.
+The selector refreshes the official sponsored-reward source, records depth and
+sponsor feasibility rejections, and falls through to the next ranked candidate
+instead of lowering the engine's production gates.
 
 ## Activation boundary
 

@@ -8,11 +8,17 @@ market-universe document for later review and deployment.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+try:
+    from .sponsored_guard import SponsoredRiskGuard
+except ImportError:  # pragma: no cover - direct script execution
+    from sponsored_guard import SponsoredRiskGuard
 
 
 class AggressiveSelectionError(ValueError):
@@ -127,6 +133,102 @@ def _front_depth_rejection(
     return None
 
 
+def _sponsored_feasibility_rejection(
+    candidate: Mapping[str, Any],
+    assessments: Mapping[str, Any],
+    *,
+    principal_usdc: float,
+    quote_budget_pct: float,
+    now_ts: float,
+    max_age_sec: float,
+) -> tuple[str | None, dict[str, Any]]:
+    condition_id = str(candidate.get("condition_id") or "").strip().lower()
+    assessment = assessments.get(condition_id)
+    detail = {
+        "token_id": str(candidate.get("token_id") or ""),
+        "condition_id": condition_id,
+    }
+    if not condition_id or not isinstance(assessment, Mapping):
+        return "sponsored_risk_unavailable", detail
+
+    assessed_at = _number(assessment.get("assessed_at"), 0.0)
+    age = now_ts - assessed_at
+    if assessed_at <= 0 or age < -30 or age > max_age_sec:
+        return "sponsored_risk_stale", detail
+
+    status = str(assessment.get("status") or "unknown").strip().lower()
+    size_cap = _number(assessment.get("size_cap"), float("nan"))
+    reasons = [str(reason) for reason in (assessment.get("reasons") or [])]
+    detail.update(
+        {
+            "status": status,
+            "size_cap": round(size_cap, 4) if math.isfinite(size_cap) else None,
+            "reasons": reasons,
+        }
+    )
+    if status not in {"safe", "caution", "disabled"}:
+        return f"sponsored_risk_{status or 'unknown'}", detail
+    if not math.isfinite(size_cap) or size_cap < 0 or size_cap > 1:
+        return "sponsored_size_cap_invalid", detail
+
+    required_shares = _number(candidate.get("rewards_min_size_shares"), 0.0)
+    if required_shares <= 0:
+        return "reward_min_size_unavailable", detail
+    capped_shares = math.floor(
+        max(0.0, principal_usdc)
+        * max(0.0, min(quote_budget_pct, 1.0))
+        * size_cap
+    )
+    detail.update(
+        {
+            "required_min_shares": round(required_shares, 4),
+            "capped_quote_shares": capped_shares,
+        }
+    )
+    if capped_shares < required_shares:
+        return "sponsored_size_cap_below_reward_min", detail
+    return None, detail
+
+
+async def _fetch_sponsored_assessments(
+    observer: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    guard = SponsoredRiskGuard(dict(config or {}))
+    refreshed = await guard.refresh(force=True)
+    if guard.enabled and not refreshed:
+        raise AggressiveSelectionError("official sponsored reward source is unavailable")
+
+    now_ts = time.time()
+    assessments: dict[str, dict[str, Any]] = {}
+    for row in observer.get("candidates") or []:
+        if not isinstance(row, Mapping):
+            continue
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        if not condition_id or condition_id in assessments:
+            continue
+        assessments[condition_id] = guard.assess(
+            condition_id,
+            for_admission=True,
+            now=now_ts,
+        )
+    return assessments
+
+
+def _load_sponsored_config(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise AggressiveSelectionError("sponsored risk config must be an object")
+    nested = payload.get("sponsored_risk_guard")
+    if nested is None:
+        return payload
+    if not isinstance(nested, dict):
+        raise AggressiveSelectionError("sponsored_risk_guard config must be an object")
+    return nested
+
+
 def select_aggressive_market_universe(
     observer: Mapping[str, Any],
     *,
@@ -138,6 +240,8 @@ def select_aggressive_market_universe(
     max_fill_risk: float = 65.0,
     min_stability_score: float = 70.0,
     max_depth_age_sec: float = 300.0,
+    quote_budget_pct: float = 1.0,
+    max_sponsored_age_sec: float = 180.0,
 ) -> dict[str, Any]:
     if not math.isfinite(principal_usdc) or principal_usdc <= 0:
         raise AggressiveSelectionError("principal_usdc must be positive")
@@ -150,6 +254,10 @@ def select_aggressive_market_universe(
         raise AggressiveSelectionError("min_front_bid_notional_usdc must be positive")
     if not math.isfinite(max_depth_age_sec) or max_depth_age_sec <= 0:
         raise AggressiveSelectionError("max_depth_age_sec must be positive")
+    if not math.isfinite(quote_budget_pct) or not 0 < quote_budget_pct <= 1:
+        raise AggressiveSelectionError("quote_budget_pct must be within (0, 1]")
+    if not math.isfinite(max_sponsored_age_sec) or max_sponsored_age_sec <= 0:
+        raise AggressiveSelectionError("max_sponsored_age_sec must be positive")
     selection_ts = time.time() if now_ts is None else now_ts
     generated_at = _number(observer.get("generated_at"), 0.0)
     age = selection_ts - generated_at
@@ -159,10 +267,14 @@ def select_aggressive_market_universe(
     candidates = observer.get("candidates")
     if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
         raise AggressiveSelectionError("reward observer candidates are invalid")
+    sponsored_assessments = observer.get("sponsored_risk_assessments")
+    if not isinstance(sponsored_assessments, Mapping):
+        raise AggressiveSelectionError("sponsored risk assessments are unavailable")
 
     eligible: list[Mapping[str, Any]] = []
     eligibility_rejections: list[dict[str, Any]] = []
     depth_rejections: list[dict[str, Any]] = []
+    sponsored_rejections: list[dict[str, Any]] = []
     seen_events: set[str] = set()
     for row in sorted(
         (item for item in candidates if isinstance(item, Mapping)),
@@ -193,6 +305,19 @@ def select_aggressive_market_universe(
             continue
         probe_capital = _number(row.get("probe_capital_usd"), 0.0)
         if probe_capital <= 0 or probe_capital > principal_usdc * 1.05:
+            continue
+        sponsored_reason, sponsored_detail = _sponsored_feasibility_rejection(
+            row,
+            sponsored_assessments,
+            principal_usdc=principal_usdc,
+            quote_budget_pct=quote_budget_pct,
+            now_ts=selection_ts,
+            max_age_sec=max_sponsored_age_sec,
+        )
+        if sponsored_reason is not None:
+            sponsored_rejections.append(
+                {**sponsored_detail, "reason": sponsored_reason}
+            )
             continue
         depth_reason = _front_depth_rejection(
             row,
@@ -249,8 +374,11 @@ def select_aggressive_market_universe(
             "selection_mode": "review_only",
             "min_front_bid_notional_usdc": round(min_front_bid_notional_usdc, 2),
             "max_depth_age_sec": round(max_depth_age_sec, 1),
+            "quote_budget_pct": round(quote_budget_pct, 4),
+            "max_sponsored_age_sec": round(max_sponsored_age_sec, 1),
             "eligibility_rejections": eligibility_rejections,
             "depth_rejections": depth_rejections,
+            "sponsored_rejections": sponsored_rejections,
         },
     }
 
@@ -269,6 +397,13 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=1)
     parser.add_argument("--max-depth-age-sec", type=float, default=300.0)
+    parser.add_argument("--quote-budget-pct", type=float, default=1.0)
+    parser.add_argument("--max-sponsored-age-sec", type=float, default=180.0)
+    parser.add_argument(
+        "--sponsored-risk-config",
+        type=Path,
+        help="Optional runtime/base config whose sponsored guard policy must match",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -276,12 +411,19 @@ def main() -> int:
         observer = json.loads(args.observer.read_text(encoding="utf-8"))
         if not isinstance(observer, dict):
             raise AggressiveSelectionError("reward observer state must be an object")
+        sponsored_config = _load_sponsored_config(args.sponsored_risk_config)
+        observer = dict(observer)
+        observer["sponsored_risk_assessments"] = asyncio.run(
+            _fetch_sponsored_assessments(observer, sponsored_config)
+        )
         payload = select_aggressive_market_universe(
             observer,
             principal_usdc=args.principal_usdc,
             min_front_bid_notional_usdc=args.min_front_bid_notional_usdc,
             limit=args.limit,
             max_depth_age_sec=args.max_depth_age_sec,
+            quote_budget_pct=args.quote_budget_pct,
+            max_sponsored_age_sec=args.max_sponsored_age_sec,
         )
     except (OSError, json.JSONDecodeError, AggressiveSelectionError) as exc:
         print(f"ERROR: {exc}")
