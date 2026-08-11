@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1124,6 +1125,111 @@ def test_fill_with_collateral_floor_halts_only_filled_event():
         ("101", "fill:test_fill", "skip")
     ]
     assert calls["spawned"] == ["attempt_exit_sell:101"]
+
+
+def test_fill_keeps_matched_price_when_current_ask_is_higher():
+    engine, calls = _fill_halt_policy_engine(Decimal("765.54"))
+    engine._market_snapshots["101"] = engine_module.MarketSnapshot(
+        best_bid=Decimal("0.55"),
+        best_ask=Decimal("0.56"),
+    )
+    attempt_exit = AsyncMock()
+
+    def spawn(coro, *, name):
+        calls["spawned"].append(name)
+        coro.close()
+
+    engine._attempt_exit_sell = attempt_exit
+    engine._spawn_bg = spawn
+
+    asyncio.run(
+        engine._trigger_event_offline(
+            "101",
+            "test_fill",
+            matched_size=Decimal("517.63"),
+            matched_price=Decimal("0.53"),
+        )
+    )
+
+    attempt_exit.assert_called_once_with(
+        "101", Decimal("0.53"), Decimal("517.63"), "test_fill"
+    )
+
+
+def test_paired_exit_uses_complement_of_matched_price_not_source_book(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._exit_delay_sec = 0
+    engine._active_exit_orders = {}
+    engine._event_states = {
+        "101": {"state": EVENT_ACTIVE, "reason": "init", "updated_at": 0},
+    }
+    engine._event_bus = _RecordingEventBus()
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {"paired_token_id": "101"},
+    }
+    engine._night_market_cfg = {}
+    engine._market_snapshots = {
+        "101": engine_module.MarketSnapshot(
+            best_bid=Decimal("0.55"),
+            best_ask=Decimal("0.56"),
+        ),
+        "102": engine_module.MarketSnapshot(
+            best_bid=Decimal("0.42"),
+            best_ask=Decimal("0.43"),
+        ),
+    }
+    engine.market_states = {}
+    engine._exit_dust_threshold = Decimal("0.5")
+    engine._exit_max_loss_usd = Decimal("0")
+    engine._exit_stop_loss_wait_sec = 3600
+    engine._exit_retry_count = 1
+    engine._pending_unwinds = []
+    engine._running = True
+    placed = []
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def cancel_token_orders(_token_id, *, reason):
+        return True
+
+    async def token_position(token_id):
+        return 0.0 if token_id == "101" else 517.645966
+
+    async def scan_for_position(_tokens):
+        return "102", 517.645966
+
+    async def place_sell(token_id, price, size):
+        placed.append((token_id, price, size))
+        return {"orderID": "exit-order"}
+
+    def spawn(coro, *, name):
+        coro.close()
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_sleep)
+    engine._cancel_token_orders = cancel_token_orders
+    engine._get_token_position = token_position
+    engine._scan_for_position = scan_for_position
+    engine._place_sell_order = place_sell
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token_id: token_id
+
+    asyncio.run(
+        engine._attempt_exit_sell(
+            "101",
+            Decimal("0.53"),
+            Decimal("517.63"),
+            "test_fill",
+        )
+    )
+
+    assert placed == [
+        ("102", Decimal("0.47"), Decimal("517.645966"))
+    ]
+    assert engine._pending_unwinds[-1]["fill_price"] == pytest.approx(0.47)
 
 
 @pytest.mark.parametrize(
