@@ -1336,6 +1336,14 @@ class PolyLPSMulti:
         except Exception:
             return ""
 
+    def _aggressive_pair_token(self, token_id: str) -> str:
+        if str(getattr(self, "_runtime_scope", "") or "").lower() != "aggressive":
+            return ""
+        paired = self._paired_token_id(token_id)
+        if not paired or paired == token_id or paired not in self.market_cfg:
+            return ""
+        return paired
+
     def _event_quote_block_reason(self, token_id: str) -> Optional[str]:
         state = self._event_state_name(token_id)
         if state in {
@@ -3244,6 +3252,68 @@ class PolyLPSMulti:
             )
         return confirmed
 
+    async def _cancel_aggressive_pair_quotes(
+        self,
+        token_id: str,
+        reason: str,
+    ) -> bool:
+        """Cancel both aggressive YES/NO quote legs as one risk unit."""
+        paired = self._aggressive_pair_token(token_id)
+        if not paired:
+            return await self._cancel_risk_buys(token_id, reason)
+
+        pair_key = "|".join(sorted((str(token_id), str(paired))))
+        inflight = getattr(self, "_aggressive_pair_cancel_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._aggressive_pair_cancel_inflight = inflight
+        if pair_key in inflight:
+            return True
+
+        inflight.add(pair_key)
+        pair_reason = f"aggressive_pair:{reason}"
+        targets = (paired, token_id)
+        block_until = time.time() + max(0.0, self._defense_requote_block_sec)
+        results: list[bool] = []
+        try:
+            # Preempt both planners before the first network round-trip so a
+            # sibling task cannot recreate the opposite leg during cleanup.
+            for target in targets:
+                self._arm_halt_preemption(target, pair_reason)
+                self._defense_block_until[target] = max(
+                    float(self._defense_block_until.get(target, 0.0)),
+                    block_until,
+                )
+                self._set_event_state(target, EVENT_DEFENSIVE, pair_reason)
+
+            # Cancel the opposite leg first: it is the leg otherwise left live
+            # when the triggering side fails its feasibility gate.
+            for target in targets:
+                results.append(
+                    await self._cancel_risk_buys(target, pair_reason)
+                )
+
+            cleared = all(results)
+            if not cleared:
+                for target in targets:
+                    self._set_event_state(
+                        target,
+                        EVENT_CANCELING,
+                        f"{pair_reason}:cancel_unconfirmed",
+                    )
+                return False
+
+            log(
+                f"[aggressive-pair] token={token_id[:16]} "
+                f"paired={paired[:16]} action=cancel_both reason={reason}"
+            )
+            return True
+        finally:
+            if len(results) == len(targets) and all(results):
+                for target in targets:
+                    self._clear_halt_preemption(target)
+            inflight.discard(pair_key)
+
     async def _execute_cross_side_cancel(
         self,
         trigger_token: str,
@@ -4986,21 +5056,32 @@ class PolyLPSMulti:
         token_id: str,
         paired_token: str,
         yes_top_price: Decimal,
+        *,
+        enforce_all_pairs: bool = False,
     ) -> tuple[bool, str]:
         """Validate that the paired side can also produce a valid plan.
 
-        Called when paired mode is active — either YES or NO is below
-        max_mid.  Returns (ready: bool, skip_reason: str).
+        Low-price mode checks only the risky tail by default. Aggressive LP can
+        set ``enforce_all_pairs`` so every YES/NO pair is validated before
+        either leg is allowed to quote.
         """
         yes_is_low = yes_top_price <= self._dual_side_max_mid
         no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
-        if not yes_is_low and not no_is_low:
+        if not enforce_all_pairs and not yes_is_low and not no_is_low:
             # Neither side is in low-price territory — paired mode not needed
             return True, ""
 
         pair_snap = self._market_snapshots.get(paired_token)
         if pair_snap is None:
             return False, "paired_side_unavailable"
+
+        pair_snap = self._effective_snapshot_for_gate(paired_token, pair_snap)
+        pair_quote_ready, pair_quote_reason = self._quote_gate(
+            paired_token,
+            pair_snap,
+        )
+        if not pair_quote_ready:
+            return False, f"paired_side_quote_gate:{pair_quote_reason}"
 
         cached = self._market_meta_cache.get(paired_token)
         if cached is None:
@@ -6078,6 +6159,12 @@ class PolyLPSMulti:
                 top_price = self._order_price(top_order)
                 gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
                 if gate.get("top_leg_action") in {"cancel", "move_back", "halt"} or legal_top is None or (legal_top is not None and top_price > legal_top):
+                    if self._aggressive_pair_token(token_id):
+                        await self._cancel_aggressive_pair_quotes(
+                            token_id,
+                            f"top_leg_defense:{trigger}:fast_cancel_locked",
+                        )
+                        return
                     # Mirror the main defense path: MOVE_BACK gets the longer cooldown.
                     _fast_is_move_back = (
                         gate.get("top_leg_action") == "move_back"
@@ -6170,6 +6257,17 @@ class PolyLPSMulti:
                 if action == "HALT_EVENT":
                     pass
                 elif action in ("CANCEL_TOP_LEG", "MOVE_BACK_TOP_LEG"):
+                    if self._aggressive_pair_token(token_id):
+                        await self._cancel_aggressive_pair_quotes(
+                            token_id,
+                            f"top_leg_defense:{trigger}:{action.lower()}",
+                        )
+                        self._emit_latency_record(
+                            token_id,
+                            "top_leg_defense",
+                            {"trigger": trigger, "action": action},
+                        )
+                        return
                     # STRUCTURAL FIX: defense NEVER reposts/requotes.
                     # Both CANCEL and MOVE_BACK only cancel the top order here.
                     # The regular planner loop will repost on its next cycle
@@ -7786,6 +7884,8 @@ class PolyLPSMulti:
                 return
             if self._event_blocks_quote(token_id):
                 return
+            if self._defense_blocks_requote(token_id):
+                return
             if await self._manual_exit_blocks_quote(token_id):
                 return
 
@@ -7896,10 +7996,16 @@ class PolyLPSMulti:
             if effective_snapshot is not None:
                 tob = TopOfBook(best_bid=effective_snapshot.best_bid, best_ask=effective_snapshot.best_ask)
             depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
+            aggressive_paired = self._aggressive_pair_token(token_id)
             can_quote, gate_reason = self._quote_gate(token_id, effective_snapshot)
             if not can_quote:
                 live_token = await self._get_live_orders_fast(token_id)
-                if live_token:
+                if aggressive_paired:
+                    await self._cancel_aggressive_pair_quotes(
+                        token_id,
+                        f"quote_gate:{gate_reason}",
+                    )
+                elif live_token:
                     self._mark_latency(token_id, "t_detect")
                     self._mark_latency(token_id, "t_decision")
                     self._set_event_state(token_id, EVENT_DEFENSIVE, f"quote_gate:{gate_reason}")
@@ -7955,17 +8061,46 @@ class PolyLPSMulti:
                         )
             # End paired gate
 
+            if aggressive_paired:
+                paired_ready, paired_reason = self._paired_side_ready(
+                    token_id,
+                    aggressive_paired,
+                    prices[0] if prices else best_bid,
+                    enforce_all_pairs=True,
+                )
+                if not paired_ready:
+                    await self._cancel_aggressive_pair_quotes(
+                        token_id,
+                        f"paired_preflight:{paired_reason}",
+                    )
+                    return
+
             gate = self._feasibility_gate(token_id, meta, effective_snapshot, top_price=prices[0] if prices else None)
             self._gate_decisions[token_id] = gate
             if not gate.get("can_quote", False):
                 live_token = await self._get_live_orders_fast(token_id)
-                if live_token:
+                gate_reason = f"feasibility_gate:{'|'.join(gate.get('reason', []))}"
+                if aggressive_paired:
+                    await self._cancel_aggressive_pair_quotes(
+                        token_id,
+                        gate_reason,
+                    )
+                elif live_token:
                     self._mark_latency(token_id, "t_detect")
                     self._mark_latency(token_id, "t_decision")
-                    self._set_event_state(token_id, EVENT_DEFENSIVE, f"feasibility_gate:{'|'.join(gate.get('reason', []))}")
-                    await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], f"feasibility_gate:{'|'.join(gate.get('reason', []))}")
+                    self._set_event_state(token_id, EVENT_DEFENSIVE, gate_reason)
+                    await self._cancel_order_ids(
+                        token_id,
+                        [self._order_id(o) for o in live_token],
+                        gate_reason,
+                    )
                 if gate.get("top_leg_action") == "halt":
-                    await self._request_event_halt(token_id, EVENT_HALTED_ON_DATA, f"feasibility_gate:{'|'.join(gate.get('reason', []))}", halt_key="t_detect")
+                    await self._request_event_halt(
+                        token_id,
+                        EVENT_HALTED_ON_DATA,
+                        gate_reason,
+                        halt_key="t_detect",
+                    )
                 return
             market_risk = str(self._get_mcfg(token_id).get("risk", "mid")).lower()
             required_min_size = max(self.min_order_size, reward_min_size)
