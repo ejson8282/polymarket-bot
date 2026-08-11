@@ -2093,6 +2093,190 @@ def test_aggressive_pair_cancel_stays_preempted_when_either_cancel_is_unconfirme
     assert engine._halt_requested["102"]
 
 
+def _aggressive_pair_submit_engine() -> PolyLPSMulti:
+    engine = _paired_state_engine()
+    engine._runtime_scope = "aggressive"
+    engine.market_cfg["103"] = {}
+    engine._token_slug_cache = {
+        "101": "example-yes",
+        "102": "example-no",
+        "103": "unrelated",
+    }
+    engine._global_order_lock = asyncio.Lock()
+    engine._global_last_order_ts = 0.0
+    engine._global_order_min_sec = 7.0
+    engine._global_order_max_sec = 7.0
+    engine._per_token_order_min_sec = 0.0
+    engine._per_token_last_order_ts = {"101": 0.0, "102": 0.0, "103": 0.0}
+    engine._aggressive_pair_submit_timeout_sec = 5.0
+    engine._aggressive_pair_retry_cooldown_sec = 15.0
+    engine._aggressive_pair_submit_lock = asyncio.Lock()
+    engine._aggressive_pair_submit_seq = 0
+    engine._aggressive_pair_submit_attempts = {}
+    engine._aggressive_pair_submit_watchdogs = {}
+    engine._market_budget_skip_until = {}
+    engine._last_plan_sig = {}
+    engine._last_top_plan_sig = {}
+    engine._last_back_plan_sig = {}
+    return engine
+
+
+def test_aggressive_pair_follower_bypasses_only_global_order_throttle(monkeypatch):
+    engine = _aggressive_pair_submit_engine()
+    sleeps = []
+    clock = [100.0]
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(engine_module.time, "time", lambda: clock[0])
+
+    async def scenario():
+        leader_claim = await engine._acquire_order_throttle("101", "leader")
+        assert leader_claim is not None and leader_claim[2] == "leader"
+        attempt = await engine._aggressive_pair_attempt(leader_claim)
+        attempt["posted"].add("101")
+        attempt["first_post_at"] = time.time()
+        attempt["leader_posted"].set()
+
+        follower_claim = await engine._acquire_order_throttle("102", "follower")
+        assert follower_claim is not None and follower_claim[2] == "follower"
+        assert sleeps == []
+
+        await engine._acquire_order_throttle("103", "unrelated")
+        await engine._clear_aggressive_pair_submit(
+            leader_claim[0],
+            leader_claim[1],
+        )
+
+    asyncio.run(scenario())
+
+    assert len(sleeps) == 1
+    assert sleeps[0] == pytest.approx(7.0, abs=0.1)
+
+
+def test_aggressive_pair_submit_timeout_cancels_single_live_leg():
+    engine = _aggressive_pair_submit_engine()
+    engine._aggressive_pair_submit_timeout_sec = 0.0
+    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    notices = []
+    engine.notify_discord = lambda *args: notices.append(args)
+    engine._invalidate_all_orders_cache = lambda: None
+
+    async def refresh(token_id):
+        if token_id == "101":
+            return [{"id": "only-live-leg"}]
+        return []
+
+    engine._refresh_live_orders = refresh
+
+    async def scenario():
+        claim = await engine._claim_aggressive_pair_submit("101")
+        attempt = await engine._aggressive_pair_attempt(claim)
+        attempt["posted"].add("101")
+        attempt["first_post_at"] = time.time()
+        attempt["leader_posted"].set()
+        await engine._aggressive_pair_submit_watchdog(
+            claim[0],
+            claim[1],
+            "101",
+        )
+
+    asyncio.run(scenario())
+
+    engine._cancel_aggressive_pair_quotes.assert_awaited_once()
+    assert engine._aggressive_pair_submit_attempts == {}
+    assert engine._market_budget_skip_until["101"] > time.time()
+    assert engine._market_budget_skip_until["102"] > time.time()
+    assert notices and notices[0][0] == "激进 LP 双腿建单失败"
+
+
+def test_aggressive_pair_submit_watchdog_keeps_confirmed_pair():
+    engine = _aggressive_pair_submit_engine()
+    engine._aggressive_pair_submit_timeout_sec = 0.0
+    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    engine.notify_discord = lambda *_args: None
+    engine._invalidate_all_orders_cache = lambda: None
+
+    async def refresh(token_id):
+        return [{"id": f"live-{token_id}"}]
+
+    engine._refresh_live_orders = refresh
+
+    async def scenario():
+        claim = await engine._claim_aggressive_pair_submit("101")
+        attempt = await engine._aggressive_pair_attempt(claim)
+        attempt["posted"].add("101")
+        attempt["first_post_at"] = time.time()
+        attempt["leader_posted"].set()
+        await engine._aggressive_pair_submit_watchdog(
+            claim[0],
+            claim[1],
+            "101",
+        )
+
+    asyncio.run(scenario())
+
+    engine._cancel_aggressive_pair_quotes.assert_not_awaited()
+    assert engine._aggressive_pair_submit_attempts == {}
+    assert engine._market_budget_skip_until == {}
+
+
+def test_aggressive_pair_both_posts_clear_watchdog_without_cancel():
+    engine = _aggressive_pair_submit_engine()
+    engine._aggressive_pair_submit_timeout_sec = 60.0
+    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+
+    async def scenario():
+        leader_claim = await engine._claim_aggressive_pair_submit("101")
+        follower_claim = await engine._claim_aggressive_pair_submit("102")
+        await engine._aggressive_pair_submit_succeeded("101", leader_claim)
+        watchdog = engine._aggressive_pair_submit_watchdogs[leader_claim[0]]
+        await engine._aggressive_pair_submit_succeeded("102", follower_claim)
+        await asyncio.sleep(0)
+        return watchdog
+
+    watchdog = asyncio.run(scenario())
+
+    assert watchdog.cancelled()
+    engine._cancel_aggressive_pair_quotes.assert_not_awaited()
+    assert engine._aggressive_pair_submit_attempts == {}
+    assert engine._aggressive_pair_submit_watchdogs == {}
+
+
+def test_aggressive_pair_post_throttle_validation_failure_cleans_attempt():
+    engine = _aggressive_pair_submit_engine()
+    validations = 0
+
+    async def validate(*_args):
+        nonlocal validations
+        validations += 1
+        if validations == 2:
+            raise RuntimeError("book moved")
+
+    engine._validate_passive_buy_quote = validate
+    engine._aggressive_pair_submit_failed = AsyncMock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="book moved"):
+        asyncio.run(
+            engine._preflight_post_order(
+                "101",
+                Decimal("0.40"),
+                "moving-book",
+            )
+        )
+
+    claim = engine._aggressive_pair_submit_failed.await_args.args[1]
+    assert claim is not None and claim[2] == "leader"
+    engine._aggressive_pair_submit_failed.assert_awaited_once_with(
+        "101",
+        claim,
+        "post_throttle:moving-book:RuntimeError",
+    )
+
+
 def test_infeasible_reward_minimum_cancels_both_aggressive_quote_legs():
     engine = object.__new__(PolyLPSMulti)
     engine._gate_decisions = {}
