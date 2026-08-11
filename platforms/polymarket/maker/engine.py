@@ -1178,6 +1178,8 @@ class PolyLPSMulti:
         )
         self._runtime_command_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_result_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_command_parse_failures: Dict[str, int] = {}
+        self._runtime_command_parse_retry_limit = 5
         self._eligibility_observer_path = (
             self._state_path.parent / "reward_observer_state.json"
         )
@@ -5802,19 +5804,22 @@ class PolyLPSMulti:
         command_id: str,
         error: str,
     ) -> None:
-        if not token_id:
+        if not token_id and not command_id:
             return
         try:
             config = json.loads(self._config_path.read_text(encoding="utf-8"))
             changed = False
             for section in ("markets", "night_markets"):
                 for market in config.get(section) or []:
-                    if str(market.get("token_id") or "") != token_id:
-                        continue
-                    if (
-                        market.get("pending_command_id")
-                        and str(market.get("pending_command_id")) != command_id
-                    ):
+                    pending_command_id = str(
+                        market.get("pending_command_id") or ""
+                    )
+                    if token_id:
+                        if str(market.get("token_id") or "") != token_id:
+                            continue
+                        if pending_command_id and pending_command_id != command_id:
+                            continue
+                    elif pending_command_id != command_id:
                         continue
                     market["enabled"] = False
                     market["pending_activation"] = False
@@ -5828,6 +5833,46 @@ class PolyLPSMulti:
                 )
         except Exception as exc:
             log(f"[runtime-command] failed-state persist error: {exc}")
+
+    def _defer_runtime_command_parse_error(
+        self,
+        processing: Path,
+        exc: Exception,
+    ) -> bool:
+        """Restore a partially copied command so the next loop can retry it."""
+        if not isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+            return False
+
+        command_id = processing.stem
+        failures = getattr(self, "_runtime_command_parse_failures", None)
+        if failures is None:
+            failures = {}
+            self._runtime_command_parse_failures = failures
+        attempt = failures.get(command_id, 0) + 1
+        limit = max(
+            1,
+            int(getattr(self, "_runtime_command_parse_retry_limit", 5)),
+        )
+        if attempt > limit:
+            failures.pop(command_id, None)
+            return False
+
+        retry_path = processing.with_suffix(".json")
+        try:
+            processing.replace(retry_path)
+        except OSError as restore_exc:
+            log(
+                f"[runtime-command] id={command_id[:12]} retry restore failed="
+                f"{type(restore_exc).__name__}:{str(restore_exc)[:120]}"
+            )
+            return False
+
+        failures[command_id] = attempt
+        log(
+            f"[runtime-command] id={command_id[:12]} partial file deferred "
+            f"retry={attempt}/{limit}"
+        )
+        return True
 
     def _reward_observer_snapshot(
         self,
@@ -5908,10 +5953,15 @@ class PolyLPSMulti:
                         path.replace(processing)
                     except FileNotFoundError:
                         continue
-                    command_id = processing.stem
+                    file_command_id = processing.stem
+                    command_id = file_command_id
                     market: Dict[str, Any] = {}
                     try:
                         command = json.loads(processing.read_text(encoding="utf-8"))
+                        self._runtime_command_parse_failures.pop(
+                            file_command_id,
+                            None,
+                        )
                         command_id = str(command.get("command_id") or command_id)
                         action = str(command.get("action") or "")
                         if action != "add_market":
@@ -5934,6 +5984,11 @@ class PolyLPSMulti:
                             f"action={action} status={status}"
                         )
                     except Exception as exc:
+                        if self._defer_runtime_command_parse_error(
+                            processing,
+                            exc,
+                        ):
+                            continue
                         error = f"{type(exc).__name__}: {str(exc)[:180]}"
                         self._mark_runtime_pending_failed(
                             str(market.get("token_id") or ""),
