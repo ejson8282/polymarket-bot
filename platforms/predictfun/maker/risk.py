@@ -249,14 +249,19 @@ def evaluate_risk(
         )
 
     max_errors = int(risk_cfg.get("max_runner_errors") or 3)
-    error_count = int(runner_state.get("error_count") or 0)
+    lifetime_error_count = int(runner_state.get("error_count") or 0)
+    error_count = int(
+        runner_state.get("consecutive_error_count")
+        if "consecutive_error_count" in runner_state
+        else lifetime_error_count
+    )
     checks.append(
         {
             "name": "runner_errors",
             "status": "BLOCK" if error_count > max_errors else "OK",
             "value": error_count,
             "limit": max_errors,
-            "detail": "",
+            "detail": f"lifetime_total={lifetime_error_count}",
             "block_scope": "hard",
         }
     )

@@ -32,6 +32,8 @@ from platforms.predictfun.maker.runner import (
     _apply_configured_capital_caps,
     _apply_manual_order_constraints,
     _cancel_managed_on_shutdown,
+    _mark_runner_error,
+    _mark_runner_success,
     _runtime_read_capabilities,
     _sync_managed_live_orders,
     _ws_quote_fingerprint,
@@ -57,6 +59,40 @@ def _live_env() -> dict[str, str]:
         "PREDICTFUN_LIVE_RELEASE_SHA": sha,
         "PREDICTFUN_LIVE_ACCOUNT_IDS": "account_01",
     }
+
+
+def test_runner_error_streak_recovers_without_losing_lifetime_audit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state: dict[str, Any] = {
+        "error_count": 52,
+        "consecutive_error_count": 0,
+        "last_error": "",
+    }
+
+    _mark_runner_error(state, TimeoutError("proxy timeout"))
+    _mark_runner_error(state, ConnectionError("proxy unavailable"))
+
+    assert state["error_count"] == 54
+    assert state["consecutive_error_count"] == 2
+    assert state["last_error"] == "ConnectionError: proxy unavailable"
+    assert state["last_error_at"]
+
+    _mark_runner_success(state)
+
+    assert state["error_count"] == 54
+    assert state["consecutive_error_count"] == 0
+    assert state["last_error"] == ""
+    assert state["last_success_at"]
+    events = [
+        json.loads(line)["event"]
+        for line in capsys.readouterr().err.splitlines()
+    ]
+    assert events == [
+        "predictfun_runner_error",
+        "predictfun_runner_error",
+        "predictfun_runner_recovered",
+    ]
 
 
 def test_live_execution_gate_requires_exact_release_account_set_and_no_simulation() -> None:
@@ -1265,6 +1301,14 @@ def _load_proxy_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_proxy_server_absorbs_two_host_request_bursts() -> None:
+    proxy = _load_proxy_module()
+
+    assert issubclass(proxy.PredictFunHTTPServer, proxy.ThreadingHTTPServer)
+    assert proxy.PredictFunHTTPServer.daemon_threads is True
+    assert proxy.PredictFunHTTPServer.request_queue_size >= 64
 
 
 def _proxy_env(max_order_notional: str = "8") -> dict[str, str]:

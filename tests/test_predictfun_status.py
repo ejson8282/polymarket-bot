@@ -26,7 +26,10 @@ def _healthy_snapshot() -> dict:
             "running": False,
             "cycle_count": 3,
             "error_count": 0,
+            "consecutive_error_count": 0,
             "last_error": "",
+            "last_error_at": "",
+            "last_success_at": now,
             "last_cycle_finished_at": now,
             "release_sha": "a" * 40,
             "release_required": True,
@@ -135,6 +138,9 @@ def test_status_contract_matches_poly_style_sections_without_claiming_live() -> 
     assert status["deployment"]["profile"] == "vps1"
     assert status["deployment"]["account_id"] == "account_01"
     assert status["health"]["status"] == "healthy"
+    assert status["health"]["runner"]["error_count"] == 0
+    assert status["health"]["runner"]["consecutive_error_count"] == 0
+    assert status["health"]["runner"]["last_success_at"]
     assert status["health"]["websocket"]["healthy"] is True
     assert status["overview"] == {
         "markets": 1,
