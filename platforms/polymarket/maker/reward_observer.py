@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
@@ -57,6 +57,35 @@ def _timestamp(value: Any) -> Optional[float]:
         return parsed.timestamp()
     except ValueError:
         return None
+
+
+def _optional_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    return None
+
+
+def _market_end_timestamp(market: Dict[str, Any]) -> Optional[float]:
+    for key in ("endDate", "end_date", "endDateIso", "end_date_iso"):
+        value = market.get(key)
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        timestamp = _timestamp(text)
+        if timestamp is None:
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            timestamp += 24 * 60 * 60 - 1
+        return timestamp
+    return None
 
 
 def _market_phase(market: Dict[str, Any], now_ts: Optional[float] = None) -> Tuple[str, Optional[float]]:
@@ -298,7 +327,18 @@ def _risk_label(score: float) -> str:
 
 
 def _rough_candidate(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if market.get("closed") or market.get("archived") or market.get("active") is False:
+    active = _optional_bool(market.get("active"))
+    closed = _optional_bool(market.get("closed"))
+    archived = _optional_bool(market.get("archived"))
+    accepting_orders = _optional_bool(
+        market.get("acceptingOrders")
+        if "acceptingOrders" in market
+        else market.get("accepting_orders")
+    )
+    market_end_ts = _market_end_timestamp(market)
+    if closed is True or archived is True or active is False or accepting_orders is False:
+        return None
+    if market_end_ts is not None and market_end_ts <= time.time():
         return None
     reward = _daily_reward(market)
     token_ids = _token_ids(market)
@@ -316,6 +356,11 @@ def _rough_candidate(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     rough_efficiency = reward / max(minimum_capital, Decimal("1"))
     return {
         "market": market,
+        "market_active": active,
+        "market_closed": closed,
+        "market_archived": archived,
+        "accepting_orders": accepting_orders,
+        "market_end_ts": market_end_ts,
         "token_ids": token_ids[:2],
         "reward": reward,
         "spread": spread,
@@ -406,6 +451,11 @@ def _observe_candidate(
         "market_type": "sports" if _is_sports_market(market) else "always_on",
         "market_phase": market_phase,
         "game_start_ts": game_start_ts,
+        "market_active": rough.get("market_active"),
+        "market_closed": rough.get("market_closed"),
+        "market_archived": rough.get("market_archived"),
+        "accepting_orders": rough.get("accepting_orders"),
+        "market_end_ts": rough.get("market_end_ts"),
         "seconds_to_start": (
             round(game_start_ts - time.time(), 1)
             if game_start_ts is not None
