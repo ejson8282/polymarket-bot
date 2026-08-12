@@ -25,9 +25,10 @@ import re
 import signal
 import sys
 import time
-from dataclasses import asdict
+from collections import deque
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 # Add maker dir to path for engine import
@@ -82,27 +83,179 @@ else:  # direct script execution
 
 # ── Shared book cache ──────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class CachedBookSnapshot:
+    book: Any
+    fetched_at: float
+
+
 class SharedBookCache:
     """
     In-process order book cache shared across all account engines.
 
     One SharedBookFetcher coroutine writes; all PolyLPSMulti instances read.
-    TTL defaults to 500ms — books older than this are considered stale and
-    the engine falls back to fetching directly.
+    Reads can pin one immutable snapshot for a complete quote cycle. This
+    prevents a large market universe from expiring halfway through the cycle
+    and amplifying one batch failure into dozens of direct REST requests.
     """
 
-    def __init__(self, ttl_sec: float = 0.5):
+    def __init__(
+        self,
+        ttl_sec: float = 2.0,
+        *,
+        direct_rest_burst: int = 4,
+        direct_rest_window_sec: float = 1.0,
+    ):
         self._data: Dict[str, Tuple[Any, float]] = {}
-        self._ttl = ttl_sec
+        self._ttl = max(0.1, float(ttl_sec))
+        self._generation = 0
+        self._direct_rest_burst = max(1, int(direct_rest_burst))
+        self._direct_rest_window_sec = max(0.1, float(direct_rest_window_sec))
+        self._direct_rest_events: deque[float] = deque()
+        self._batch_latencies_ms: deque[float] = deque(maxlen=120)
+        self._counters: Dict[str, int] = {
+            "full_batch_requests": 0,
+            "full_batch_successes": 0,
+            "full_batch_failures": 0,
+            "chunk_batch_requests": 0,
+            "chunk_batch_successes": 0,
+            "chunk_batch_failures": 0,
+            "books_stored": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "ws_depth_fallbacks": 0,
+            "direct_rest_fallbacks": 0,
+            "direct_rest_suppressed": 0,
+        }
+        self._last_success_ts = 0.0
+        self._last_failure_ts = 0.0
+        self._last_error_type = ""
+        self._backoff_sec = 0.0
 
     def put(self, token_id: str, book: Any) -> None:
         self._data[token_id] = (book, time.time())
 
+    def put_many(self, books: Iterable[Any]) -> int:
+        now = time.time()
+        staged: Dict[str, Tuple[Any, float]] = {}
+        for book in books or []:
+            if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                continue
+            token_id = str(getattr(book, "asset_id", None) or "").strip()
+            if token_id:
+                staged[token_id] = (book, now)
+        if staged:
+            self._data.update(staged)
+            self._generation += 1
+            self._counters["books_stored"] += len(staged)
+            self._last_success_ts = now
+        return len(staged)
+
     def get(self, token_id: str) -> Optional[Any]:
         entry = self._data.get(token_id)
         if entry and (time.time() - entry[1]) < self._ttl:
+            self._counters["cache_hits"] += 1
             return entry[0]
+        self._counters["cache_misses"] += 1
         return None
+
+    def snapshot(self, token_ids: Iterable[str]) -> Dict[str, CachedBookSnapshot]:
+        """Return fresh books using one timestamp for the whole quote cycle."""
+        now = time.time()
+        result: Dict[str, CachedBookSnapshot] = {}
+        requested = [str(token_id) for token_id in token_ids]
+        for token_id in requested:
+            entry = self._data.get(token_id)
+            if entry and (now - entry[1]) < self._ttl:
+                result[token_id] = CachedBookSnapshot(
+                    book=entry[0],
+                    fetched_at=entry[1],
+                )
+        self._counters["cache_hits"] += len(result)
+        self._counters["cache_misses"] += len(requested) - len(result)
+        return result
+
+    def allow_direct_rest(self) -> bool:
+        """Bound cache-miss REST fan-out across all local account engines."""
+        now = time.time()
+        cutoff = now - self._direct_rest_window_sec
+        while self._direct_rest_events and self._direct_rest_events[0] <= cutoff:
+            self._direct_rest_events.popleft()
+        if len(self._direct_rest_events) >= self._direct_rest_burst:
+            self._counters["direct_rest_suppressed"] += 1
+            return False
+        self._direct_rest_events.append(now)
+        self._counters["direct_rest_fallbacks"] += 1
+        return True
+
+    def note_ws_depth_fallback(self) -> None:
+        self._counters["ws_depth_fallbacks"] += 1
+
+    def record_batch_result(
+        self,
+        *,
+        kind: str,
+        success: bool,
+        latency_ms: float,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        prefix = "chunk_batch" if kind == "chunk" else "full_batch"
+        self._counters[f"{prefix}_requests"] += 1
+        self._counters[f"{prefix}_{'successes' if success else 'failures'}"] += 1
+        self._batch_latencies_ms.append(max(0.0, float(latency_ms)))
+        if success:
+            self._last_success_ts = time.time()
+        else:
+            self._last_failure_ts = time.time()
+            self._last_error_type = type(error).__name__ if error is not None else "unknown"
+
+    def set_backoff(self, seconds: float) -> None:
+        self._backoff_sec = max(0.0, float(seconds))
+
+    @staticmethod
+    def _percentile(values: Sequence[float], fraction: float) -> Optional[float]:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * fraction))))
+        return round(ordered[index], 1)
+
+    def stats(self) -> Dict[str, Any]:
+        now = time.time()
+        fresh_entries = sum(1 for _, ts in self._data.values() if (now - ts) < self._ttl)
+        latencies = list(self._batch_latencies_ms)
+        cache_lookups = self._counters["cache_hits"] + self._counters["cache_misses"]
+        full_requests = self._counters["full_batch_requests"]
+        return {
+            **self._counters,
+            "ttl_sec": self._ttl,
+            "generation": self._generation,
+            "entries": len(self._data),
+            "fresh_entries": fresh_entries,
+            "batch_latency_ms_p50": self._percentile(latencies, 0.50),
+            "batch_latency_ms_p95": self._percentile(latencies, 0.95),
+            "batch_latency_ms_max": round(max(latencies), 1) if latencies else None,
+            "cache_hit_ratio": (
+                round(self._counters["cache_hits"] / cache_lookups, 4)
+                if cache_lookups
+                else None
+            ),
+            "full_batch_success_ratio": (
+                round(self._counters["full_batch_successes"] / full_requests, 4)
+                if full_requests
+                else None
+            ),
+            "last_success_age_sec": (
+                round(now - self._last_success_ts, 1) if self._last_success_ts else None
+            ),
+            "last_failure_age_sec": (
+                round(now - self._last_failure_ts, 1) if self._last_failure_ts else None
+            ),
+            "last_error_type": self._last_error_type or None,
+            "backoff_sec": self._backoff_sec,
+            "direct_rest_burst": self._direct_rest_burst,
+            "direct_rest_window_sec": self._direct_rest_window_sec,
+        }
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -119,10 +272,10 @@ async def _shared_book_fetcher(
 ) -> None:
     """Continuously fetch all market books via batch POST /books.
 
-    One batch request replaces N per-token GET /book calls, cutting request
-    volume ~55× and staying well clear of Cloudflare's per-IP throttle. On
-    429 the fetcher backs off exponentially (1→2→4→8s, capped at 30s).
-    If the batch endpoint itself fails, falls back to per-token fetches.
+    One batch request replaces N per-token GET /book calls. When that request
+    fails, bounded chunk batches recover partial coverage without starting a
+    per-token request storm. Repeated failures enter a short chunk-mode circuit
+    with exponential backoff.
 
     `get_token_ids` is a zero-arg callable returning the current list of
     token ids — supports runtime market changes (auto-curator add/remove).
@@ -133,6 +286,52 @@ async def _shared_book_fetcher(
     params: List[Dict[str, str]] = []
     backoff = 0.0
     consecutive_errors = 0
+    chunk_mode_until = 0.0
+    last_health_log_ts = 0.0
+    chunk_size = max(2, int(getattr(primary_engine, "_shared_book_chunk_size", 12)))
+    chunk_concurrency = max(
+        1,
+        min(4, int(getattr(primary_engine, "_shared_book_chunk_concurrency", 2))),
+    )
+
+    async def _fetch(payload: List[Dict[str, str]], *, kind: str):
+        started = time.perf_counter()
+        try:
+            books = await asyncio.to_thread(primary_engine.client.get_order_books, payload)
+        except Exception as exc:
+            cache.record_batch_result(
+                kind=kind,
+                success=False,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                error=exc,
+            )
+            return None, exc
+        cache.record_batch_result(
+            kind=kind,
+            success=True,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return books, None
+
+    async def _fetch_chunks(payload: List[Dict[str, str]]) -> tuple[int, int, int]:
+        chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+        sem = asyncio.Semaphore(chunk_concurrency)
+
+        async def _one(chunk: List[Dict[str, str]]):
+            async with sem:
+                return await _fetch(chunk, kind="chunk")
+
+        results = await asyncio.gather(*[_one(chunk) for chunk in chunks])
+        successes = 0
+        failures = 0
+        stored = 0
+        for books, error in results:
+            if error is not None:
+                failures += 1
+                continue
+            successes += 1
+            stored += cache.put_many(books or [])
+        return successes, failures, stored
 
     while primary_engine._running:
         current_tokens = list(get_token_ids())
@@ -143,45 +342,71 @@ async def _shared_book_fetcher(
                 await asyncio.sleep(fetch_interval_sec)
                 continue
 
-        if backoff > 0:
-            await asyncio.sleep(backoff)
-
-        try:
-            payload = [asdict(param) if hasattr(param, "__dataclass_fields__") else dict(param) for param in params]
-            books = await asyncio.to_thread(primary_engine.client.get_order_books, payload)
-            stored = 0
-            for book in books or []:
-                if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
-                    continue
-                tid = getattr(book, "asset_id", None)
-                if tid:
-                    cache.put(tid, book)
-                    stored += 1
-            if stored == 0 and books:
-                log(f"[book-fetcher] batch returned {len(books)} book(s), 0 stored (empty bids/asks)")
-            consecutive_errors = 0
-            backoff = 0.0
-        except Exception as e:
-            consecutive_errors += 1
-            if _is_rate_limit_error(e):
-                backoff = min(30.0, max(1.0, backoff * 2 if backoff else 1.0))
-                log(f"[book-fetcher] batch 429 — backoff {backoff:.1f}s (consecutive={consecutive_errors})")
+        payload = [
+            asdict(param) if hasattr(param, "__dataclass_fields__") else dict(param)
+            for param in params
+        ]
+        use_chunk_mode = time.time() < chunk_mode_until
+        if use_chunk_mode:
+            successes, failures, stored = await _fetch_chunks(payload)
+            if failures:
+                consecutive_errors += 1
+                backoff = min(30.0, max(1.0, 2 ** min(consecutive_errors - 1, 5)))
+                chunk_mode_until = time.time() + max(5.0, backoff * 2)
+                log(
+                    f"[book-fetcher] chunk mode partial ok={successes} failed={failures} "
+                    f"stored={stored} backoff={backoff:.1f}s"
+                )
             else:
-                log(f"[book-fetcher] batch err={type(e).__name__}: {e} — falling back to per-token")
-                for tid in current_tokens:
-                    try:
-                        book = await asyncio.to_thread(primary_engine.client.get_order_book, tid)
-                        if book and getattr(book, "bids", None) and getattr(book, "asks", None):
-                            cache.put(tid, book)
-                    except Exception as e2:
-                        if _is_rate_limit_error(e2):
-                            backoff = min(30.0, max(1.0, backoff * 2 if backoff else 1.0))
-                            log(f"[book-fetcher] per-token 429 token={tid} — backoff {backoff:.1f}s")
-                            break
-                        log(f"[book-fetcher] token={tid} err={e2}")
-                backoff = max(backoff, 0.0)
+                consecutive_errors = max(0, consecutive_errors - 1)
+                backoff = 0.0
+                if consecutive_errors == 0:
+                    chunk_mode_until = 0.0
+        else:
+            books, error = await _fetch(payload, kind="full")
+            if error is None:
+                stored = cache.put_many(books or [])
+                if stored == 0 and books:
+                    log(
+                        f"[book-fetcher] batch returned {len(books)} book(s), "
+                        "0 stored (empty bids/asks)"
+                    )
+                consecutive_errors = 0
+                backoff = 0.0
+            else:
+                consecutive_errors += 1
+                backoff = min(30.0, max(1.0, 2 ** min(consecutive_errors - 1, 5)))
+                if _is_rate_limit_error(error):
+                    log(
+                        f"[book-fetcher] batch 429 — backoff {backoff:.1f}s "
+                        f"(consecutive={consecutive_errors})"
+                    )
+                else:
+                    successes, failures, stored = await _fetch_chunks(payload)
+                    chunk_mode_until = time.time() + max(5.0, backoff * 2)
+                    log(
+                        f"[book-fetcher] batch err={type(error).__name__}; "
+                        f"bounded_chunks ok={successes} failed={failures} stored={stored} "
+                        f"backoff={backoff:.1f}s"
+                    )
 
-        await asyncio.sleep(fetch_interval_sec)
+        cache.set_backoff(backoff)
+        now = time.time()
+        if now - last_health_log_ts >= 60.0:
+            health = cache.stats()
+            mode = "chunk" if now < chunk_mode_until else "full"
+            log(
+                f"[book-fetcher] health mode={mode} tokens={len(current_tokens)} "
+                f"fresh={health['fresh_entries']} hit_ratio={health['cache_hit_ratio']} "
+                f"p95_ms={health['batch_latency_ms_p95']} "
+                f"full_ok={health['full_batch_successes']}/{health['full_batch_requests']} "
+                f"chunk_fail={health['chunk_batch_failures']} backoff={backoff:.1f}s"
+            )
+            last_health_log_ts = now
+        if not primary_engine._running:
+            break
+        delay = backoff if backoff > 0 else (max(1.0, fetch_interval_sec) if use_chunk_mode else fetch_interval_sec)
+        await asyncio.sleep(delay)
 
 
 # -- Roster and startup validation ---------------------------------------------
@@ -705,8 +930,16 @@ async def multi_run(
         f"across {len(engines)} local account(s)"
     )
 
-    cache = SharedBookCache(ttl_sec=0.5)
     primary_engine = engines[0][1]
+    cache = SharedBookCache(
+        ttl_sec=float(getattr(primary_engine, "_shared_book_cache_ttl_sec", 2.0)),
+        direct_rest_burst=int(
+            getattr(primary_engine, "_shared_book_direct_rest_burst", 4)
+        ),
+        direct_rest_window_sec=float(
+            getattr(primary_engine, "_shared_book_direct_rest_window_sec", 1.0)
+        ),
+    )
 
     def _all_tokens_fn() -> List[str]:
         return list(

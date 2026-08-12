@@ -23,11 +23,13 @@ except ModuleNotFoundError:
     sys.modules.setdefault("platforms.polymarket.maker.engine", engine_stub)
 
 from platforms.polymarket.maker.multi_runner import (
+    SharedBookCache,
     _aggressive_reward_observer_loop,
     _cancel_accounts_preserving_exits,
     _require_pause_flags,
     _resolve_host_id,
     _roster_config_files,
+    _shared_book_fetcher,
     _verify_roster_config,
     _verify_expected_digest,
     multi_run,
@@ -148,6 +150,146 @@ def test_expected_digest_is_strict_and_fail_closed() -> None:
         _verify_expected_digest("market universe", "abc", digest)
     with pytest.raises(ValueError, match="SHA256 mismatch"):
         _verify_expected_digest("market universe", "b" * 64, digest)
+
+
+def test_shared_book_cache_pins_a_complete_quote_cycle(monkeypatch) -> None:
+    now = {"value": 100.0}
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.time.time",
+        lambda: now["value"],
+    )
+    cache = SharedBookCache(ttl_sec=0.5)
+    books = [
+        types.SimpleNamespace(asset_id=token, bids=[1], asks=[1])
+        for token in ("101", "102")
+    ]
+
+    assert cache.put_many(books) == 2
+    cycle = cache.snapshot(["101", "102", "missing"])
+    now["value"] = 101.0
+
+    assert sorted(cycle) == ["101", "102"]
+    assert cycle["101"].book is books[0]
+    assert cycle["101"].fetched_at == 100.0
+    assert cache.get("101") is None
+    stats = cache.stats()
+    assert stats["generation"] == 1
+    assert stats["cache_hits"] == 2
+    assert stats["cache_misses"] == 2
+
+
+def test_shared_book_cache_bounds_direct_rest_fallbacks(monkeypatch) -> None:
+    now = {"value": 200.0}
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.time.time",
+        lambda: now["value"],
+    )
+    cache = SharedBookCache(
+        direct_rest_burst=2,
+        direct_rest_window_sec=1.0,
+    )
+
+    assert cache.allow_direct_rest() is True
+    assert cache.allow_direct_rest() is True
+    assert cache.allow_direct_rest() is False
+    now["value"] = 201.1
+    assert cache.allow_direct_rest() is True
+
+    stats = cache.stats()
+    assert stats["direct_rest_fallbacks"] == 3
+    assert stats["direct_rest_suppressed"] == 1
+
+
+def test_shared_book_fetcher_uses_bounded_chunk_batches_after_failure() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.batch_sizes = []
+            self.per_token_calls = 0
+
+        def get_order_books(self, payload):
+            self.batch_sizes.append(len(payload))
+            if len(self.batch_sizes) == 1:
+                raise RuntimeError("batch timeout")
+            if len(self.batch_sizes) == 4:
+                engine._running = False
+            return [
+                types.SimpleNamespace(
+                    asset_id=str(row["token_id"]),
+                    bids=[1],
+                    asks=[1],
+                )
+                for row in payload
+            ]
+
+        def get_order_book(self, _token_id):
+            self.per_token_calls += 1
+            raise AssertionError("per-token fallback must not run")
+
+    client = Client()
+    engine = types.SimpleNamespace(
+        _running=True,
+        client=client,
+        _shared_book_chunk_size=10,
+        _shared_book_chunk_concurrency=2,
+    )
+    cache = SharedBookCache()
+    token_ids = [str(index) for index in range(25)]
+
+    asyncio.run(
+        _shared_book_fetcher(
+            engine,
+            lambda: token_ids,
+            cache,
+            fetch_interval_sec=0.0,
+        )
+    )
+
+    assert client.batch_sizes[0] == 25
+    assert sorted(client.batch_sizes[1:]) == [5, 10, 10]
+    assert client.per_token_calls == 0
+    stats = cache.stats()
+    assert stats["full_batch_failures"] == 1
+    assert stats["chunk_batch_requests"] == 3
+    assert stats["chunk_batch_successes"] == 3
+    assert stats["books_stored"] == 25
+
+
+def test_shared_book_fetcher_rate_limit_backs_off_without_chunk_burst() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.batch_calls = 0
+
+        def get_order_books(self, _payload):
+            self.batch_calls += 1
+            engine._running = False
+            raise RuntimeError("429 too many requests")
+
+        def get_order_book(self, _token_id):
+            raise AssertionError("rate limits must never trigger per-token fallback")
+
+    client = Client()
+    engine = types.SimpleNamespace(
+        _running=True,
+        client=client,
+        _shared_book_chunk_size=10,
+        _shared_book_chunk_concurrency=2,
+    )
+    cache = SharedBookCache()
+
+    asyncio.run(
+        _shared_book_fetcher(
+            engine,
+            lambda: ["101", "102"],
+            cache,
+            fetch_interval_sec=0.0,
+        )
+    )
+
+    assert client.batch_calls == 1
+    stats = cache.stats()
+    assert stats["full_batch_failures"] == 1
+    assert stats["chunk_batch_requests"] == 0
+    assert stats["backoff_sec"] == 1.0
 
 
 def test_multi_host_roster_requires_both_reviewed_digests(tmp_path: Path) -> None:

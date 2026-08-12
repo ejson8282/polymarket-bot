@@ -2842,6 +2842,31 @@ def test_submit_does_not_post_when_final_quote_validation_fails():
     assert posted == []
 
 
+def test_cached_book_keeps_original_observation_time(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_snapshots = {}
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine.market_states = {}
+    engine._token_slug_cache = {}
+
+    snapshot = engine._update_market_snapshot(
+        "101",
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.41"),
+        bids=[(Decimal("0.40"), Decimal("100"))],
+        asks=[(Decimal("0.41"), Decimal("100"))],
+        source="shared_batch",
+        observed_ts=100.0,
+    )
+
+    assert snapshot is not None
+    assert snapshot.last_update_ts == 100.0
+    assert engine._market_depth_snapshots["101"].last_update_ts == 100.0
+    monkeypatch.setattr(engine_module.time, "time", lambda: 106.0)
+    assert engine._snapshot_is_stale("101", snapshot) is True
+
+
 def test_signer_outage_triggers_fail_safe_after_threshold_and_throttles(monkeypatch):
     engine = object.__new__(PolyLPSMulti)
     engine._signer_failure_since = 0.0
