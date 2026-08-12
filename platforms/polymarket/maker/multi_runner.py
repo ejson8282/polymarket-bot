@@ -313,25 +313,43 @@ async def _shared_book_fetcher(
         )
         return books, None
 
-    async def _fetch_chunks(payload: List[Dict[str, str]]) -> tuple[int, int, int]:
+    async def _fetch_chunks(
+        payload: List[Dict[str, str]],
+    ) -> tuple[int, int, int, bool]:
         chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
-        sem = asyncio.Semaphore(chunk_concurrency)
+        next_chunk = 0
+        stop_scheduling = False
+        results = []
 
-        async def _one(chunk: List[Dict[str, str]]):
-            async with sem:
-                return await _fetch(chunk, kind="chunk")
+        async def _worker() -> None:
+            nonlocal next_chunk, stop_scheduling
+            while not stop_scheduling and next_chunk < len(chunks):
+                chunk = chunks[next_chunk]
+                next_chunk += 1
+                result = await _fetch(chunk, kind="chunk")
+                results.append(result)
+                _, error = result
+                if error is not None and _is_rate_limit_error(error):
+                    stop_scheduling = True
 
-        results = await asyncio.gather(*[_one(chunk) for chunk in chunks])
+        await asyncio.gather(
+            *[
+                _worker()
+                for _ in range(min(chunk_concurrency, len(chunks)))
+            ]
+        )
         successes = 0
         failures = 0
         stored = 0
+        rate_limited = False
         for books, error in results:
             if error is not None:
                 failures += 1
+                rate_limited = rate_limited or _is_rate_limit_error(error)
                 continue
             successes += 1
             stored += cache.put_many(books or [])
-        return successes, failures, stored
+        return successes, failures, stored, rate_limited
 
     while primary_engine._running:
         current_tokens = list(get_token_ids())
@@ -348,14 +366,14 @@ async def _shared_book_fetcher(
         ]
         use_chunk_mode = time.time() < chunk_mode_until
         if use_chunk_mode:
-            successes, failures, stored = await _fetch_chunks(payload)
+            successes, failures, stored, rate_limited = await _fetch_chunks(payload)
             if failures:
                 consecutive_errors += 1
                 backoff = min(30.0, max(1.0, 2 ** min(consecutive_errors - 1, 5)))
                 chunk_mode_until = time.time() + max(5.0, backoff * 2)
                 log(
                     f"[book-fetcher] chunk mode partial ok={successes} failed={failures} "
-                    f"stored={stored} backoff={backoff:.1f}s"
+                    f"stored={stored} rate_limited={rate_limited} backoff={backoff:.1f}s"
                 )
             else:
                 consecutive_errors = max(0, consecutive_errors - 1)
@@ -382,12 +400,12 @@ async def _shared_book_fetcher(
                         f"(consecutive={consecutive_errors})"
                     )
                 else:
-                    successes, failures, stored = await _fetch_chunks(payload)
+                    successes, failures, stored, rate_limited = await _fetch_chunks(payload)
                     chunk_mode_until = time.time() + max(5.0, backoff * 2)
                     log(
                         f"[book-fetcher] batch err={type(error).__name__}; "
                         f"bounded_chunks ok={successes} failed={failures} stored={stored} "
-                        f"backoff={backoff:.1f}s"
+                        f"rate_limited={rate_limited} backoff={backoff:.1f}s"
                     )
 
         cache.set_backoff(backoff)

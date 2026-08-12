@@ -292,6 +292,47 @@ def test_shared_book_fetcher_rate_limit_backs_off_without_chunk_burst() -> None:
     assert stats["backoff_sec"] == 1.0
 
 
+def test_shared_book_fetcher_stops_queued_chunks_after_chunk_rate_limit() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.batch_sizes = []
+
+        def get_order_books(self, payload):
+            self.batch_sizes.append(len(payload))
+            if len(self.batch_sizes) == 1:
+                raise RuntimeError("batch timeout")
+            engine._running = False
+            raise RuntimeError("429 too many requests")
+
+        def get_order_book(self, _token_id):
+            raise AssertionError("chunk rate limits must not trigger per-token fallback")
+
+    client = Client()
+    engine = types.SimpleNamespace(
+        _running=True,
+        client=client,
+        _shared_book_chunk_size=10,
+        _shared_book_chunk_concurrency=1,
+    )
+    cache = SharedBookCache()
+
+    asyncio.run(
+        _shared_book_fetcher(
+            engine,
+            lambda: [str(index) for index in range(50)],
+            cache,
+            fetch_interval_sec=0.0,
+        )
+    )
+
+    assert client.batch_sizes == [50, 10]
+    stats = cache.stats()
+    assert stats["full_batch_failures"] == 1
+    assert stats["chunk_batch_requests"] == 1
+    assert stats["chunk_batch_failures"] == 1
+    assert stats["backoff_sec"] == 1.0
+
+
 def test_multi_host_roster_requires_both_reviewed_digests(tmp_path: Path) -> None:
     rows = [_row(1, "vps1", 7901), _row(2, "vps2", 7901)]
     roster_path = tmp_path / "accounts.runtime.json"
