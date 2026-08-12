@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from platforms.predictfun.maker.executor import (
@@ -31,6 +32,26 @@ class ManagedOrder:
     submission_generation: int = 0
 
 
+@dataclass(frozen=True)
+class PendingSubmission:
+    intent_id: str
+    account_id: str
+    market_id: int
+    outcome: str
+    side: str
+    price: str
+    size: str
+    token_id: str
+    fee_rate_bps: int
+    is_neg_risk: bool
+    is_yield_bearing: bool
+    market_mode: str
+    purpose: str
+    idempotency_key: str
+    created_at: str
+    updated_at: str
+
+
 class ManagedOrderRegistry:
     """Tracks only orders created by this engine.
 
@@ -44,12 +65,18 @@ class ManagedOrderRegistry:
         *,
         history_limit: int = 1000,
         submission_generations: dict[str, dict[str, int]] | None = None,
+        pending_submissions: list[PendingSubmission] | None = None,
     ) -> None:
         self.history_limit = max(1, int(history_limit))
         self._orders = {order.order_id: order for order in orders or [] if order.order_id}
         self._submission_generations = self._validated_generations(
             submission_generations
         )
+        self._pending_submissions = {
+            (row.account_id, row.idempotency_key): row
+            for row in pending_submissions or []
+            if row.account_id and row.intent_id and row.idempotency_key
+        }
         self._seed_generations_from_orders()
 
     @classmethod
@@ -95,10 +122,53 @@ class ManagedOrderRegistry:
             and isinstance(state.get("submission_generations"), dict)
             else {}
         )
+        pending_rows = (
+            state.get("pending_submissions")
+            if isinstance(state, dict)
+            and isinstance(state.get("pending_submissions"), list)
+            else []
+        )
+        pending_submissions: list[PendingSubmission] = []
+        for row in pending_rows:
+            if not isinstance(row, dict):
+                continue
+            intent_id = str(row.get("intent_id") or "").strip()
+            account_id = str(row.get("account_id") or "").strip()
+            idempotency_key = str(
+                row.get("idempotency_key") or ""
+            ).strip()
+            try:
+                market_id = int(row.get("market_id") or 0)
+                fee_rate_bps = int(row.get("fee_rate_bps") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not intent_id or not account_id or not idempotency_key:
+                continue
+            pending_submissions.append(
+                PendingSubmission(
+                    intent_id=intent_id,
+                    account_id=account_id,
+                    market_id=market_id,
+                    outcome=str(row.get("outcome") or ""),
+                    side=str(row.get("side") or ""),
+                    price=str(row.get("price") or "0"),
+                    size=str(row.get("size") or "0"),
+                    token_id=str(row.get("token_id") or ""),
+                    fee_rate_bps=fee_rate_bps,
+                    is_neg_risk=bool(row.get("is_neg_risk")),
+                    is_yield_bearing=bool(row.get("is_yield_bearing")),
+                    market_mode=str(row.get("market_mode") or "standard"),
+                    purpose=str(row.get("purpose") or "maker_quote"),
+                    idempotency_key=idempotency_key,
+                    created_at=str(row.get("created_at") or utc_now()),
+                    updated_at=str(row.get("updated_at") or utc_now()),
+                )
+            )
         return cls(
             orders,
             history_limit=history_limit,
             submission_generations=generations,
+            pending_submissions=pending_submissions,
         )
 
     def idempotency_key_for_create(self, intent_id: str, account_id: str) -> str:
@@ -111,11 +181,91 @@ class ManagedOrderRegistry:
         )
         return intent_id if generation <= 0 else f"{intent_id}:g{generation + 1}"
 
+    def record_submission_pending(self, order: ExecutableOrder) -> None:
+        idempotency_key = str(
+            order.idempotency_key or order.intent_id
+        ).strip()
+        if not order.intent_id or not order.account_id or not idempotency_key:
+            return
+        now = utc_now()
+        key = (order.account_id, idempotency_key)
+        existing = self._pending_submissions.get(key)
+        self._pending_submissions[key] = PendingSubmission(
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+            market_id=order.market_id,
+            outcome=order.outcome,
+            side=order.side,
+            price=str(order.price),
+            size=str(order.size),
+            token_id=order.token_id,
+            fee_rate_bps=order.fee_rate_bps,
+            is_neg_risk=order.is_neg_risk,
+            is_yield_bearing=order.is_yield_bearing,
+            market_mode=order.market_mode,
+            purpose=order.purpose,
+            idempotency_key=idempotency_key,
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+
+    def pending_submissions(self) -> list[ExecutableOrder]:
+        return [
+            ExecutableOrder(
+                intent_id=row.intent_id,
+                account_id=row.account_id,
+                market_id=row.market_id,
+                outcome=row.outcome,
+                side=row.side,
+                price=self._decimal(row.price),
+                size=self._decimal(row.size),
+                token_id=row.token_id,
+                fee_rate_bps=row.fee_rate_bps,
+                is_neg_risk=row.is_neg_risk,
+                is_yield_bearing=row.is_yield_bearing,
+                market_mode=row.market_mode,
+                purpose=row.purpose,
+                idempotency_key=row.idempotency_key,
+            )
+            for row in sorted(
+                self._pending_submissions.values(),
+                key=lambda item: (
+                    item.created_at,
+                    item.account_id,
+                    item.idempotency_key,
+                ),
+            )
+        ]
+
+    def discard_pending(self, order: ExecutableOrder) -> None:
+        idempotency_key = str(
+            order.idempotency_key or order.intent_id
+        ).strip()
+        self._pending_submissions.pop(
+            (order.account_id, idempotency_key), None
+        )
+
     def record_create(self, order: ExecutableOrder, result: ExecutionResult) -> None:
         if not result.ok or not result.order_id:
             return
+        self.discard_pending(order)
         now = utc_now()
         idempotency_key = str(order.idempotency_key or order.intent_id).strip()
+        existing = self._orders.get(result.order_id)
+        if (
+            existing is not None
+            and existing.account_id == order.account_id
+            and existing.intent_id == order.intent_id
+            and existing.idempotency_key == idempotency_key
+        ):
+            self._orders[result.order_id] = ManagedOrder(
+                **{
+                    **asdict(existing),
+                    "status": (result.status or existing.status).lower(),
+                    "updated_at": now,
+                }
+            )
+            return
         generation = self._generation_for_key(order.intent_id, idempotency_key)
         if not result.order_id.startswith("dry:"):
             account_generations = self._submission_generations.setdefault(
@@ -211,6 +361,7 @@ class ManagedOrderRegistry:
             "summary": {
                 "tracked": len(rows),
                 "active": sum(1 for order in rows if order.status not in TERMINAL_STATUSES),
+                "pending_submissions": len(self._pending_submissions),
                 "inventory_exits": sum(
                     1
                     for order in rows
@@ -224,8 +375,27 @@ class ManagedOrderRegistry:
                 )
                 if rows
             },
+            "pending_submissions": [
+                asdict(row)
+                for row in sorted(
+                    self._pending_submissions.values(),
+                    key=lambda item: (
+                        item.created_at,
+                        item.account_id,
+                        item.idempotency_key,
+                    ),
+                )
+            ],
             "orders": [asdict(order) for order in rows],
         }
+
+    @staticmethod
+    def _decimal(value: object) -> Decimal:
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal("0")
+        return number if number.is_finite() else Decimal("0")
 
     @staticmethod
     def _validated_generations(

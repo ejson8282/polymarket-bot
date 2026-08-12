@@ -1134,6 +1134,164 @@ def test_unconfirmed_create_retry_reuses_original_idempotency_key() -> None:
     assert first.created[0].idempotency_key == "stable-slot"
     assert second.created[0].idempotency_key == "stable-slot"
     assert first_report["managed_orders"]["submission_generations"] == {}
+    assert first_report["managed_orders"]["summary"]["pending_submissions"] == 1
+
+
+def test_pending_submission_is_recovered_after_runner_restart() -> None:
+    class LostResponseExecutor(RecordingExecutor):
+        def create(self, order: ExecutableOrder) -> ExecutionResult:
+            self.created.append(order)
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=False,
+                message="response lost",
+                order_id="0x" + "8" * 64,
+                status="unknown",
+            )
+
+    class LedgerExecutor(RecordingExecutor):
+        def recover_submission(
+            self, order: ExecutableOrder
+        ) -> ExecutionResult | None:
+            assert order.idempotency_key == "stable-slot"
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=True,
+                message="ledger recovered",
+                order_id="0x" + "8" * 64,
+                status="open",
+            )
+
+    intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "stable-slot",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "price": "0.40",
+                    "size": "4",
+                    "token_id": "yes-token",
+                }
+            ]
+        }
+    }
+    first = reconcile_once(
+        intents,
+        executor=LostResponseExecutor(),
+        managed_state={},
+        mode="live",
+    )
+    assert first["managed_orders"]["summary"]["active"] == 0
+    assert first["managed_orders"]["summary"]["pending_submissions"] == 1
+
+    recovered = reconcile_once(
+        {"diff": {"create": []}},
+        executor=LedgerExecutor(),
+        managed_state=first["managed_orders"],
+        mode="live",
+    )
+
+    assert recovered["managed_orders"]["summary"]["active"] == 1
+    assert recovered["managed_orders"]["summary"]["pending_submissions"] == 0
+    assert recovered["managed_orders"]["orders"][0]["order_id"] == (
+        "0x" + "8" * 64
+    )
+    assert recovered["managed_orders"]["submission_generations"] == {
+        "account_01": {"stable-slot": 1}
+    }
+
+
+def test_recovered_open_submission_is_not_created_twice() -> None:
+    class LedgerExecutor(RecordingExecutor):
+        def recover_submission(
+            self, order: ExecutableOrder
+        ) -> ExecutionResult | None:
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=True,
+                message="ledger recovered",
+                order_id="0x" + "9" * 64,
+                status="open",
+            )
+
+    executor = LedgerExecutor()
+    report = reconcile_once(
+        {
+            "diff": {
+                "create": [
+                    {
+                        "intent_id": "stable-slot",
+                        "account_id": "account_01",
+                        "market_id": 42,
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.40",
+                        "size": "4",
+                        "token_id": "yes-token",
+                    }
+                ]
+            }
+        },
+        executor=executor,
+        managed_state={},
+        mode="live",
+    )
+
+    assert executor.created == []
+    assert report["managed_orders"]["summary"]["active"] == 1
+    assert report["managed_orders"]["summary"]["pending_submissions"] == 0
+
+
+def test_recovered_rejection_does_not_permanently_block_desired_create() -> None:
+    class RejectedLedgerExecutor(RecordingExecutor):
+        def recover_submission(
+            self, order: ExecutableOrder
+        ) -> ExecutionResult | None:
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=False,
+                message="ledger rejected",
+                status="rejected",
+            )
+
+    executor = RejectedLedgerExecutor()
+    report = reconcile_once(
+        {
+            "diff": {
+                "create": [
+                    {
+                        "intent_id": "stable-slot",
+                        "account_id": "account_01",
+                        "market_id": 42,
+                        "outcome": "YES",
+                        "side": "BUY",
+                        "price": "0.40",
+                        "size": "4",
+                        "token_id": "yes-token",
+                    }
+                ]
+            }
+        },
+        executor=executor,
+        managed_state={},
+        mode="live",
+    )
+
+    assert len(executor.created) == 1
+    assert executor.created[0].idempotency_key == "stable-slot"
+    assert report["managed_orders"]["summary"]["active"] == 1
+    assert report["managed_orders"]["summary"]["pending_submissions"] == 0
 
 
 def test_live_registry_discards_only_dry_run_placeholders() -> None:

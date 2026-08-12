@@ -75,6 +75,20 @@ No private key or API key is copied into a release, plist, VPS, or Git. Both
 Mac services read the existing mode-0600 secret file at runtime. The mainnet
 config talks to the Mac mini Predict API proxy over Tailscale.
 
+## Network and submission recovery
+
+The API proxy and VPS clients keep HTTP/1.1 connections open to reduce repeated
+Tailscale handshakes. Read requests and idempotent order submissions retry with
+bounded exponential backoff; cancellation requests are never blindly retried.
+
+Before every submission the Mac mini writes an account-scoped idempotency row
+to its mode-0600 order ledger. If the upstream accepted an order but the VPS
+lost the response, the runner queries that exact account and idempotency key,
+verifies the deterministic order hash against Predict.fun, and then restores
+the order to the managed registry. Unrelated website/manual orders are never
+adopted. Unresolved submissions remain durable across runner restarts and block
+key rotation until they are accepted or definitively rejected.
+
 ## Fixed release sequence
 
 After the reviewed PR is merged, mirror the exact GitHub `main` commit into the

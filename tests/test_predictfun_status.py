@@ -153,6 +153,7 @@ def test_status_contract_matches_poly_style_sections_without_claiming_live() -> 
         "simulated_unrealized_pnl": "0.25",
         "live_active_orders": 0,
         "live_positions": 0,
+        "pending_submissions": 0,
         "live_balance": "0",
         "live_position_value": "0",
         "scanner_markets": 20,
@@ -164,6 +165,43 @@ def test_status_contract_matches_poly_style_sections_without_claiming_live() -> 
     assert status["capabilities"]["live_order_submit"] is False
     assert status["capabilities"]["live_order_cancel"] is False
     assert status["capabilities"]["simulated_fills"] is True
+
+
+def test_pending_submission_is_visible_as_attention() -> None:
+    status = _healthy_snapshot()
+    now = _now()
+    status = build_status_snapshot(
+        cfg={
+            "accounts": {"ids": ["account_01"]},
+            "data": {"require_ws_for_quotes": False},
+        },
+        runner_state={
+            "last_submission_recovery": {
+                "checked_at": now,
+                "resolved": 0,
+                "pending": 1,
+                "rejected": 0,
+            },
+            "last_auth_summary": {
+                "enabled": True,
+                "ok": True,
+                "accounts": [{"account_id": "account_01", "ok": True}],
+            },
+        },
+        plan_state={},
+        intents_state={},
+        execution_state={
+            "managed_orders": {"summary": {"pending_submissions": 1}}
+        },
+        risk_state={},
+        simulation_state={},
+        research_state={},
+        ws_state={},
+    )
+
+    assert status["health"]["status"] == "attention"
+    assert status["health"]["submission_recovery"]["pending"] == 1
+    assert status["overview"]["pending_submissions"] == 1
 
 
 def test_required_ws_failure_is_visible_as_blocked() -> None:

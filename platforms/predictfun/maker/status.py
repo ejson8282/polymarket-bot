@@ -105,6 +105,9 @@ def build_status_snapshot(
         for source, read in raw_sources.items()
         if isinstance(read, dict) and read.get("ok") is not True
     ]
+    managed_summary = _object(
+        _object(execution_state.get("managed_orders")).get("summary")
+    )
     if gate_blocked or risk_blocked or (
         bool(data_cfg.get("require_ws_for_quotes"))
         and not ws_transport_healthy
@@ -116,6 +119,7 @@ def build_status_snapshot(
         or ws_error_count
         or ws_rest_error_count
         or account_read_errors
+        or _integer(managed_summary.get("pending_submissions")) > 0
     ):
         health_status = "attention"
     else:
@@ -226,6 +230,9 @@ def build_status_snapshot(
                 "ts": str(account_reads.get("ts") or ""),
                 "errors": account_read_errors,
             },
+            "submission_recovery": _object(
+                runner_state.get("last_submission_recovery")
+            ),
         },
         "overview": {
             "markets": len(plans),
@@ -242,6 +249,9 @@ def build_status_snapshot(
                 1 for row in live_order_rows if row["status"] == "open"
             ),
             "live_positions": len(live_position_rows),
+            "pending_submissions": _integer(
+                managed_summary.get("pending_submissions")
+            ),
             "live_balance": _decimal_text(
                 sum(
                     (Decimal(row["total"]) for row in live_balance_rows),

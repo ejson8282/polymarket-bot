@@ -98,7 +98,10 @@
     "enabled": true,
     "base_url": "http://100.91.159.54:8791",
     "auth_check_path": "/predictfun/accounts/{account_id}/auth-check",
-    "timeout_sec": 10
+    "timeout_sec": 30,
+    "connect_timeout_sec": 20,
+    "request_retries": 3,
+    "retry_backoff_sec": 1
   },
   "liquidity": {
     "depth_levels": 3,
