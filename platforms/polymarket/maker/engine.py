@@ -1298,6 +1298,26 @@ class PolyLPSMulti:
 
         # multi-account shared book cache (set by multi_runner; None in single-account mode)
         self._shared_book_cache: Optional[Any] = None
+        self._shared_book_cache_ttl_sec: float = max(
+            0.5,
+            float(execution.get("shared_book_cache_ttl_sec", 2.0)),
+        )
+        self._shared_book_chunk_size: int = max(
+            2,
+            int(execution.get("shared_book_chunk_size", 12)),
+        )
+        self._shared_book_chunk_concurrency: int = max(
+            1,
+            min(4, int(execution.get("shared_book_chunk_concurrency", 2))),
+        )
+        self._shared_book_direct_rest_burst: int = max(
+            1,
+            int(execution.get("shared_book_direct_rest_burst", 4)),
+        )
+        self._shared_book_direct_rest_window_sec: float = max(
+            0.1,
+            float(execution.get("shared_book_direct_rest_window_sec", 1.0)),
+        )
         # multi-account cycle sleep (random interval between full book-loop cycles)
         self._multi_cycle_sleep_min: float = float(execution.get("multi_cycle_sleep_min_sec", 3.0))
         self._multi_cycle_sleep_max: float = float(execution.get("multi_cycle_sleep_max_sec", 20.0))
@@ -1771,6 +1791,7 @@ class PolyLPSMulti:
         asks: Optional[list[tuple[Decimal, Decimal]]] = None,
         source: str,
         ts_ms: int = 0,
+        observed_ts: Optional[float] = None,
     ) -> Optional[MarketSnapshot]:
         prev = self._market_snapshots.get(token_id)
         if not self._snapshot_values_valid(best_bid, best_ask):
@@ -1780,7 +1801,11 @@ class PolyLPSMulti:
             )
             return prev
 
-        now = time.time()
+        now = (
+            float(observed_ts)
+            if observed_ts is not None and float(observed_ts) > 0
+            else time.time()
+        )
         incoming_bids, incoming_asks = self._sort_book_levels(
             list(bids) if bids else [],
             list(asks) if asks else [],
@@ -7591,13 +7616,24 @@ class PolyLPSMulti:
                     from .multi_runner import SharedBookCache, _shared_book_fetcher
                 except ImportError:
                     from multi_runner import SharedBookCache, _shared_book_fetcher
-                _bf_cache = SharedBookCache(ttl_sec=0.5)
+                _bf_cache = SharedBookCache(
+                    ttl_sec=self._shared_book_cache_ttl_sec,
+                    direct_rest_burst=self._shared_book_direct_rest_burst,
+                    direct_rest_window_sec=self._shared_book_direct_rest_window_sec,
+                )
                 self._shared_book_cache = _bf_cache
                 tasks.append(asyncio.create_task(
-                    _shared_book_fetcher(self, lambda: list(self.market_cfg.keys()), _bf_cache),
+                    _shared_book_fetcher(
+                        self,
+                        lambda: list({**self.market_cfg, **self._night_market_cfg}.keys()),
+                        _bf_cache,
+                    ),
                     name="shared_book_fetcher",
                 ))
-                log(f"[engine] shared_book_fetcher spawned (single-account, {len(self.market_cfg)} tokens)")
+                log(
+                    "[engine] shared_book_fetcher spawned "
+                    f"(single-account, {len({**self.market_cfg, **self._night_market_cfg})} tokens)"
+                )
             except Exception as e:
                 log(f"[engine] shared_book_fetcher spawn err: {e}")
 
@@ -7927,10 +7963,10 @@ class PolyLPSMulti:
     async def book_loop(self) -> None:
         sem = asyncio.Semaphore(self._book_loop_concurrency)
 
-        async def _process(token_id: str) -> None:
+        async def _process(token_id: str, cycle_books: Optional[Mapping[str, Any]]) -> None:
             async with sem:
                 try:
-                    await self.update_and_quote_market(token_id)
+                    await self.update_and_quote_market(token_id, cycle_books=cycle_books)
                     self._book_req_exc_streak[token_id] = 0
                 except Exception as e:
                     em = _format_exc(e)
@@ -7984,7 +8020,12 @@ class PolyLPSMulti:
             active_cfg = self._active_market_cfg()
             token_ids = list(active_cfg.keys())
             random.shuffle(token_ids)
-            await asyncio.gather(*[_process(tid) for tid in token_ids])
+            cycle_books: Optional[Mapping[str, Any]] = None
+            if self._shared_book_cache is not None:
+                snapshot_fn = getattr(self._shared_book_cache, "snapshot", None)
+                if callable(snapshot_fn):
+                    cycle_books = snapshot_fn(token_ids)
+            await asyncio.gather(*[_process(tid, cycle_books) for tid in token_ids])
             if self._shared_book_cache is not None:
                 # multi-account mode: random cycle interval to stagger accounts
                 cycle_sleep = random.uniform(self._multi_cycle_sleep_min, self._multi_cycle_sleep_max)
@@ -8225,7 +8266,12 @@ class PolyLPSMulti:
         except Exception:
             return None
 
-    async def update_and_quote_market(self, token_id: str) -> None:
+    async def update_and_quote_market(
+        self,
+        token_id: str,
+        *,
+        cycle_books: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         self._ensure_runtime_token_state(token_id, reason="quote_loop")
         mcfg = self._get_mcfg(token_id)
         owner = shared_event_owner(
@@ -8303,13 +8349,51 @@ class PolyLPSMulti:
             now = time.time()
             if (now - self.last_quote_ts[token_id]) * 1000 < self.requote_interval_ms:
                 return
-            book = self._shared_book_cache.get(token_id) if self._shared_book_cache is not None else None
-            quote_source = "shared" if book is not None else "rest"
+            quote_observed_ts: Optional[float] = None
+            if cycle_books is not None:
+                cycle_entry = cycle_books.get(token_id)
+                if cycle_entry is not None and hasattr(cycle_entry, "book"):
+                    quote_observed_ts = float(getattr(cycle_entry, "fetched_at", 0.0) or 0.0)
+                    if (
+                        quote_observed_ts <= 0
+                        or (time.time() - quote_observed_ts) > self._market_snapshot_stale_sec
+                    ):
+                        book = None
+                    else:
+                        book = cycle_entry.book
+                else:
+                    book = cycle_entry
+            else:
+                book = self._shared_book_cache.get(token_id) if self._shared_book_cache is not None else None
+            quote_source = "shared_batch" if book is not None else "rest"
             used_ws_fallback = False
             if book is None:
+                # Prefer the already-streaming full-depth WS snapshot over
+                # multiplying one failed batch into many direct REST calls.
+                depth_snap = self._fresh_depth_snapshot(token_id)
+                if depth_snap is not None and str(depth_snap.source).startswith("market_ws"):
+                    bids = list(depth_snap.bids)
+                    asks = list(depth_snap.asks)
+                    best_bid = depth_snap.best_bid
+                    best_ask = depth_snap.best_ask
+                    used_ws_fallback = True
+                    quote_source = depth_snap.source
+                    quote_observed_ts = depth_snap.last_update_ts
+                    note_ws = getattr(self._shared_book_cache, "note_ws_depth_fallback", None)
+                    if callable(note_ws):
+                        note_ws()
+                elif self._shared_book_cache is not None:
+                    allow_direct = getattr(self._shared_book_cache, "allow_direct_rest", None)
+                    if callable(allow_direct) and not allow_direct():
+                        # Fail closed for this cycle. The shared fetcher or WS
+                        # will make the market eligible again without a REST storm.
+                        return
+
+            if book is None and not used_ws_fallback:
                 try:
                     book = await asyncio.to_thread(self.client.get_order_book, token_id)
                     quote_source = "rest"
+                    quote_observed_ts = time.time()
                 except Exception as e:
                     depth_snap = self._fresh_depth_snapshot(token_id)
                     if depth_snap is not None and str(depth_snap.source).startswith("market_ws"):
@@ -8319,6 +8403,10 @@ class PolyLPSMulti:
                         best_ask = depth_snap.best_ask
                         used_ws_fallback = True
                         quote_source = depth_snap.source
+                        quote_observed_ts = depth_snap.last_update_ts
+                        note_ws = getattr(self._shared_book_cache, "note_ws_depth_fallback", None)
+                        if callable(note_ws):
+                            note_ws()
                         age_ms = round((time.time() - depth_snap.last_update_ts) * 1000.0, 1)
                         log(
                             f"[book-loop] token={token_id} using_market_ws_fallback source={depth_snap.source} "
@@ -8390,6 +8478,7 @@ class PolyLPSMulti:
                 bids=bids,
                 asks=asks,
                 source=quote_source,
+                observed_ts=quote_observed_ts,
             )
             effective_snapshot = self._effective_snapshot_for_gate(token_id, snapshot)
             if effective_snapshot is not None:
@@ -10225,6 +10314,20 @@ class PolyLPSMulti:
 
                 current_session = self._current_session()
                 order_scoring_state = self._order_scoring_observer.public_state(now)
+                market_data_state: Dict[str, Any] = {"shared_fetcher_enabled": False}
+                if self._shared_book_cache is not None:
+                    stats_fn = getattr(self._shared_book_cache, "stats", None)
+                    if callable(stats_fn):
+                        try:
+                            market_data_state = {
+                                "shared_fetcher_enabled": True,
+                                **stats_fn(),
+                            }
+                        except Exception as stats_exc:
+                            market_data_state = {
+                                "shared_fetcher_enabled": True,
+                                "stats_error": type(stats_exc).__name__,
+                            }
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
@@ -10266,6 +10369,7 @@ class PolyLPSMulti:
                         "local_account_count": self._local_account_count,
                         "dynamic_market_updates": self._runtime_market_updates_enabled,
                     },
+                    "market_data": market_data_state,
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,
