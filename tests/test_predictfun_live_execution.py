@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import requests
 
 from platforms.predictfun.maker.capital import build_account_capital_rows
 from platforms.predictfun.maker.dry_run import QuoteLevel, _filter_quotes
@@ -27,6 +28,7 @@ from platforms.predictfun.maker.intents import _configured_accounts, utc_now
 from platforms.predictfun.maker.intents import build_intents_from_plans
 from platforms.predictfun.maker import live_order_once
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.reconcile import recover_uncertain_submissions
 from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.runner import (
     _apply_configured_capital_caps,
@@ -599,6 +601,125 @@ def test_live_executor_separates_slot_intent_from_submission_idempotency(
     assert result.ok is True
     assert submitted[0]["intent_id"] == base.intent_id
     assert submitted[0]["idempotency_key"] == f"{base.intent_id}:g2"
+
+
+def test_live_executor_retries_idempotent_submit_after_lost_response() -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, Any]:
+            return {"ok": True, "order_hash": "0x" + "8" * 64}
+
+    class Session:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def request(self, method: str, url: str, **kwargs: Any) -> Response:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            if len(self.calls) == 1:
+                raise requests.ConnectionError("response lost")
+            return Response()
+
+    session = Session()
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+        timeout=30,
+        connect_timeout=20,
+        request_retries=2,
+        retry_backoff_sec=0,
+        session=session,  # type: ignore[arg-type]
+    )
+    order = ExecutableOrder(
+        **{
+            **_order("account_01").__dict__,
+            "idempotency_key": "stable-slot:g2",
+        }
+    )
+
+    result = executor.create(order)
+
+    assert result.ok is True
+    assert result.order_id == "0x" + "8" * 64
+    assert len(session.calls) == 2
+    assert session.calls[0]["json"]["idempotency_key"] == "stable-slot:g2"
+    assert session.calls[1]["json"] == session.calls[0]["json"]
+    assert session.calls[0]["timeout"] == (20.0, 30.0)
+
+
+def test_exact_ledger_recovery_prevents_orphan_from_becoming_manual() -> None:
+    order_hash = "0x" + "9" * 64
+
+    class RecoveringExecutor(_AccountExecutor):
+        def recover_submission(
+            self, order: ExecutableOrder
+        ) -> ExecutionResult | None:
+            assert order.account_id == "account_01"
+            assert order.idempotency_key == order.intent_id
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=True,
+                message="ledger recovered",
+                order_id=order_hash,
+                status="open",
+            )
+
+    previous_intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "stable-slot",
+                    "account_id": "account_01",
+                    "market_id": 42,
+                    "outcome": "YES",
+                    "side": "BUY",
+                    "price": "0.40",
+                    "size": "2",
+                    "token_id": "yes-token",
+                }
+            ]
+        }
+    }
+    registry = ManagedOrderRegistry()
+    recovered = recover_uncertain_submissions(
+        previous_intents,
+        registry=registry,
+        executor=RecoveringExecutor("account_01"),
+    )
+    live_order = LiveOrder(
+        order_id=order_hash,
+        intent_id="",
+        market_id=42,
+        outcome="YES",
+        side="BUY",
+        price=Decimal("0.40"),
+        size=Decimal("2"),
+        filled_size=Decimal("0"),
+        status="open",
+        account_id="account_01",
+    )
+    balances, _positions, constraints = _apply_manual_order_constraints(
+        balances=[
+            AccountBalance(
+                asset="USDT",
+                available=Decimal("10"),
+                total=Decimal("10"),
+                account_id="account_01",
+            )
+        ],
+        positions=[],
+        live_orders=[live_order],
+        registry=registry,
+    )
+
+    assert recovered[0]["order_id"] == order_hash
+    assert registry.owns_order_id(order_hash) is True
+    assert balances[0].available == Decimal("10")
+    assert constraints == {}
 
 
 @pytest.mark.parametrize("cancel_raises", [True, False])
@@ -1456,6 +1577,7 @@ def test_proxy_server_absorbs_two_host_request_bursts() -> None:
     assert issubclass(proxy.PredictFunHTTPServer, proxy.ThreadingHTTPServer)
     assert proxy.PredictFunHTTPServer.daemon_threads is True
     assert proxy.PredictFunHTTPServer.request_queue_size >= 64
+    assert proxy.Handler.protocol_version == "HTTP/1.1"
 
 
 def _proxy_env(max_order_notional: str = "8") -> dict[str, str]:
@@ -1705,6 +1827,101 @@ def test_proxy_network_failure_persists_pending_order_for_safe_retry(
     assert result["ok"] is True
     assert expirations[0] == expirations[1]
     assert upstream_calls == 2
+
+
+def test_proxy_submission_status_resolves_pending_order_by_exact_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    order_hash = "0x" + "6" * 64
+    (tmp_path / "ledger.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "orders": {
+                    "account_01:stable-slot": {
+                        "ok": False,
+                        "alias": "account_01",
+                        "status": 0,
+                        "order_hash": order_hash,
+                        "error": "submission_pending",
+                        "updated_at": 1,
+                        "request_fingerprint": "safe-hash",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def upstream(
+        _env: Any, alias: str, path: str, **_kwargs: Any
+    ) -> tuple[int, dict[str, Any]]:
+        assert alias == "account_01"
+        assert path == f"/v1/orders/{order_hash}"
+        return 200, {
+            "success": True,
+            "data": {
+                "id": "2035025252",
+                "status": "OPEN",
+                "order": {"hash": order_hash},
+            },
+        }
+
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+
+    result = proxy.submission_status(
+        _proxy_env(), "account_01", "stable-slot"
+    )
+
+    assert result == {
+        "ok": True,
+        "alias": "account_01",
+        "idempotency_key": "stable-slot",
+        "found": True,
+        "submission_state": "accepted",
+        "submission_ok": True,
+        "order_hash": order_hash,
+        "order_id": "2035025252",
+        "order_status": "open",
+        "error": "",
+        "updated_at": result["updated_at"],
+    }
+    assert result["updated_at"] > 1
+    ledger = json.loads(
+        (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["orders"]["account_01:stable-slot"]["ok"] is True
+    assert ledger["orders"]["account_01:stable-slot"]["status"] == "open"
+
+
+def test_proxy_submission_status_is_account_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = _load_proxy_module()
+    monkeypatch.setattr(proxy, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    (tmp_path / "ledger.json").write_text(
+        json.dumps(
+            {
+                "orders": {
+                    "account_02:stable-slot": {
+                        "ok": True,
+                        "order_hash": "0x" + "7" * 64,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = proxy.submission_status(
+        _proxy_env(), "account_01", "stable-slot"
+    )
+
+    assert result["ok"] is True
+    assert result["found"] is False
+    assert "order_hash" not in result
 
 
 def test_proxy_enforces_mac_side_order_limit(

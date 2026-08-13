@@ -74,6 +74,79 @@ def _with_submission_key(
     )
 
 
+def recover_uncertain_submissions(
+    intents_state: dict[str, Any],
+    *,
+    registry: ManagedOrderRegistry,
+    executor: PredictFunExecutor,
+) -> list[dict[str, Any]]:
+    """Adopt only submissions proven by the exact account/idempotency ledger."""
+
+    recover = getattr(executor, "recover_submission", None)
+    if not callable(recover):
+        return []
+    candidates = registry.pending_submissions()
+    seen = {
+        (row.account_id, row.idempotency_key or row.intent_id)
+        for row in candidates
+    }
+    diff = (
+        intents_state.get("diff")
+        if isinstance(intents_state.get("diff"), dict)
+        else {}
+    )
+    for item in diff.get("create") or []:
+        if not isinstance(item, dict):
+            continue
+        order = _with_submission_key(_to_order(item), registry)
+        key = (order.account_id, order.idempotency_key or order.intent_id)
+        if key not in seen and not registry.active_for_intent(
+            order.intent_id, order.account_id
+        ):
+            registry.record_submission_pending(order)
+            candidates.append(order)
+            seen.add(key)
+
+    results: list[dict[str, Any]] = []
+    for order in candidates:
+        result = recover(order)
+        if result is None:
+            continue
+        if result.ok:
+            registry.record_create(order, result)
+        elif result.status == "rejected":
+            registry.discard_pending(order)
+        results.append(asdict(result))
+    return results
+
+
+def _create_with_recovery(
+    order: ExecutableOrder,
+    *,
+    registry: ManagedOrderRegistry,
+    executor: PredictFunExecutor,
+) -> ExecutionResult:
+    recover = getattr(executor, "recover_submission", None)
+    if callable(recover):
+        recovered = recover(order)
+        if recovered is not None and recovered.ok:
+            registry.record_create(order, recovered)
+            return recovered
+        if recovered is not None and recovered.status == "rejected":
+            # A definitive rejection proves that no orphan order exists. Clear
+            # the uncertain marker, then retain the engine's existing retry
+            # behavior for this desired intent.
+            registry.discard_pending(order)
+
+    registry.record_submission_pending(order)
+    result = executor.create(order)
+    if result.ok:
+        registry.record_create(order, result)
+    elif result.status == "rejected":
+        registry.discard_pending(order)
+    return result
+
+
 def reconcile_once(
     intents_state: dict[str, Any],
     *,
@@ -83,6 +156,9 @@ def reconcile_once(
 ) -> dict[str, Any]:
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
+    recover_uncertain_submissions(
+        intents_state, registry=registry, executor=executor
+    )
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
     results = []
     cancel_failed = False
@@ -102,9 +178,15 @@ def reconcile_once(
     if not cancel_failed:
         for item in diff.get("create") or []:
             if isinstance(item, dict):
-                order = _with_submission_key(_to_order(item), registry)
-                result = executor.create(order)
-                registry.record_create(order, result)
+                raw_order = _to_order(item)
+                if registry.active_for_intent(
+                    raw_order.intent_id, raw_order.account_id
+                ):
+                    continue
+                order = _with_submission_key(raw_order, registry)
+                result = _create_with_recovery(
+                    order, registry=registry, executor=executor
+                )
                 results.append(asdict(result))
     return {
         "ts": utc_now(),
@@ -138,6 +220,9 @@ def reconcile_cancel_only(
 
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
+    recover_uncertain_submissions(
+        {}, registry=registry, executor=executor
+    )
     results: list[dict[str, Any]] = []
     for managed in registry.active():
         result = executor.cancel(
@@ -178,6 +263,9 @@ def reconcile_reduce_only(
 
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
+    recover_uncertain_submissions(
+        intents_state, registry=registry, executor=executor
+    )
     desired_exit_ids = {
         str(item.get("intent_id") or "")
         for item in intents_state.get("intents") or []
@@ -206,9 +294,15 @@ def reconcile_reduce_only(
     ]
     if not cancel_failed:
         for item in exit_creates:
-            order = _with_submission_key(_to_order(item), registry)
-            result = executor.create(order)
-            registry.record_create(order, result)
+            raw_order = _to_order(item)
+            if registry.active_for_intent(
+                raw_order.intent_id, raw_order.account_id
+            ):
+                continue
+            order = _with_submission_key(raw_order, registry)
+            result = _create_with_recovery(
+                order, registry=registry, executor=executor
+            )
             results.append(asdict(result))
 
     return {

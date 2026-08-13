@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 import time
 from typing import Any
@@ -24,6 +24,9 @@ class PredictFunClient:
     timeout: float = 15.0
     retries: int = 3
     user_agent: str = PREDICT_USER_AGENT
+    session: requests.Session = field(
+        default_factory=requests.Session, compare=False, repr=False
+    )
 
     def _headers(self, *, jwt: str = "") -> dict[str, str]:
         headers = {"accept": "application/json", "user-agent": self.user_agent}
@@ -46,7 +49,7 @@ class PredictFunClient:
         last_exc: Exception | None = None
         for attempt in range(max(1, self.retries)):
             try:
-                resp = requests.request(
+                resp = self.session.request(
                     method,
                     url,
                     params={k: v for k, v in (params or {}).items() if v is not None},

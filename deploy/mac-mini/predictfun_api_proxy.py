@@ -15,7 +15,7 @@ from decimal import Decimal, ROUND_DOWN
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 SECRET_FILE = Path.home() / ".macmini-secrets" / "predictfun.env"
@@ -38,6 +38,9 @@ ALLOWED_PATHS = (
 AUTH_CHECK_RE = re.compile(r"^/predictfun/accounts/([^/]+)/auth-check/?$")
 ORDER_PREVIEW_RE = re.compile(r"^/predictfun/accounts/([^/]+)/preview-order/?$")
 ORDER_SUBMIT_RE = re.compile(r"^/predictfun/accounts/([^/]+)/submit-order/?$")
+ORDER_SUBMISSION_RE = re.compile(
+    r"^/predictfun/accounts/([^/]+)/submissions/([^/]+)/?$"
+)
 ORDER_REMOVE_HASH_RE = re.compile(r"^/predictfun/accounts/([^/]+)/remove-order-by-hash/?$")
 ALLOWANCES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/allowances/?$")
 CAPABILITIES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/capabilities/?$")
@@ -125,12 +128,19 @@ def _write_order_ledger(payload: dict[str, object]) -> None:
 
 
 def _idempotency_key(alias: str, body: dict[str, object]) -> str:
-    raw = str(body.get("idempotency_key") or body.get("intent_id") or "").strip()
+    raw = _validated_idempotency_value(
+        body.get("idempotency_key") or body.get("intent_id")
+    )
+    return f"{alias}:{raw}"
+
+
+def _validated_idempotency_value(value: object) -> str:
+    raw = str(value or "").strip()
     if not raw:
         raise ValueError("missing_idempotency_key")
     if len(raw) > 160 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", raw):
         raise ValueError("idempotency_key_invalid")
-    return f"{alias}:{raw}"
+    return raw
 
 
 def _idempotent_salt(key: str) -> int:
@@ -1144,6 +1154,102 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
         return result
 
 
+def submission_status(
+    env: dict[str, str], alias: str, idempotency_key: str
+) -> dict[str, object]:
+    """Resolve one exact account-scoped submission without exposing secrets."""
+
+    if not _account_row(env, alias):
+        return {
+            "ok": False,
+            "error": "account_alias_not_found",
+            "alias": alias,
+        }
+    raw_key = _validated_idempotency_value(idempotency_key)
+    ledger_key = f"{alias}:{raw_key}"
+
+    with _account_lock(alias):
+        with _LEDGER_LOCK:
+            ledger = _load_order_ledger()
+            rows = ledger.get("orders")
+            rows = rows if isinstance(rows, dict) else {}
+            stored = rows.get(ledger_key)
+            row = dict(stored) if isinstance(stored, dict) else None
+
+        if row is None:
+            return {
+                "ok": True,
+                "alias": alias,
+                "idempotency_key": raw_key,
+                "found": False,
+                "submission_state": "absent",
+            }
+
+        order_hash = str(row.get("order_hash") or "")
+        pending = (
+            row.get("ok") is not True
+            and str(row.get("error") or "") == "submission_pending"
+        )
+        if pending and re.fullmatch(r"0x[0-9a-fA-F]{64}", order_hash):
+            status, payload = _authenticated_request(
+                env, alias, f"/v1/orders/{order_hash}"
+            )
+            data = (
+                payload.get("data")
+                if isinstance(payload.get("data"), dict)
+                else {}
+            )
+            if status < 400 and payload.get("success") is not False and data:
+                official_status = _order_status(payload) or "OPEN"
+                row.update(
+                    {
+                        "ok": True,
+                        "status": official_status.lower(),
+                        "order_id": data.get("id") or data.get("orderId"),
+                        "error": "",
+                        "updated_at": int(time.time()),
+                    }
+                )
+                with _LEDGER_LOCK:
+                    ledger = _load_order_ledger()
+                    rows = ledger.get("orders")
+                    rows = rows if isinstance(rows, dict) else {}
+                    rows[ledger_key] = row
+                    ledger["orders"] = rows
+                    _write_order_ledger(ledger)
+                pending = False
+
+        raw_status = str(row.get("status") or "").strip().lower()
+        if row.get("ok") is True:
+            submission_state = (
+                "terminal"
+                if raw_status
+                in {"cancelled", "canceled", "filled", "expired", "rejected", "closed"}
+                else "accepted"
+            )
+            order_status = raw_status if raw_status and not raw_status.isdigit() else "open"
+        elif pending:
+            submission_state = "pending"
+            order_status = "unknown"
+        else:
+            submission_state = "rejected"
+            order_status = "rejected"
+
+        return {
+            "ok": True,
+            "alias": alias,
+            "idempotency_key": raw_key,
+            "found": True,
+            "submission_state": submission_state,
+            "submission_ok": row.get("ok") is True,
+            "order_hash": order_hash,
+            "order_id": row.get("order_id"),
+            "order_status": order_status,
+            "error": str(row.get("error") or ""),
+            "updated_at": int(row.get("updated_at") or 0),
+        }
+
+
 def remove_order_by_hash(env: dict[str, str], alias: str, body: dict[str, object]) -> dict[str, object]:
     if body.get("remove") is not True or str(body.get("confirm") or "") != "REMOVE_PREDICTFUN_ORDER":
         return {"ok": False, "error": "explicit_remove_confirmation_required", "alias": alias}
@@ -1461,6 +1567,7 @@ def cancel_orders_on_chain(
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PredictFunAccountProxy/1.0"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
         logging.info(
@@ -1516,6 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/predictfun/accounts/{alias}/auth-check",
                         "/predictfun/accounts/{alias}/preview-order",
                         "/predictfun/accounts/{alias}/submit-order",
+                        "/predictfun/accounts/{alias}/submissions/{idempotency_key}",
                         "/predictfun/accounts/{alias}/remove-order-by-hash",
                         "/predictfun/accounts/{alias}/cancel-orders",
                         "/predictfun/accounts/{alias}/allowances",
@@ -1539,6 +1647,7 @@ class Handler(BaseHTTPRequestHandler):
         positions_match = ACCOUNT_POSITIONS_RE.match(parsed.path)
         activity_match = ACCOUNT_ACTIVITY_RE.match(parsed.path)
         allowances_match = ALLOWANCES_RE.match(parsed.path)
+        submission_match = ORDER_SUBMISSION_RE.match(parsed.path)
         account_route = (
             capabilities_match
             or state_match
@@ -1548,12 +1657,17 @@ class Handler(BaseHTTPRequestHandler):
             or positions_match
             or activity_match
             or allowances_match
+            or submission_match
         )
         if account_route:
             alias = account_route.group(1)
             try:
                 if capabilities_match:
                     result = account_capabilities(env, alias)
+                elif submission_match:
+                    result = submission_status(
+                        env, alias, unquote(submission_match.group(2))
+                    )
                 elif state_match:
                     result = account_state(env, alias)
                 elif allowances_match:

@@ -41,6 +41,7 @@ from platforms.predictfun.maker.reconcile import (
     reconcile_cancel_only,
     reconcile_once,
     reconcile_reduce_only,
+    recover_uncertain_submissions,
     write_json,
 )
 from platforms.predictfun.maker.simulator import update_simulation
@@ -86,6 +87,13 @@ def _live_executor(
         str(strategy_cfg.get("max_order_notional") or "0")
     )
     timeout = float(signer_cfg.get("timeout_sec") or 20)
+    connect_timeout = float(
+        signer_cfg.get("connect_timeout_sec") or timeout
+    )
+    request_retries = int(signer_cfg.get("request_retries") or 3)
+    retry_backoff_sec = float(
+        signer_cfg.get("retry_backoff_sec") or 0.5
+    )
     return MultiAccountExecutor(
         {
             account_id: PredictFunLiveExecutor(
@@ -93,6 +101,9 @@ def _live_executor(
                 account_id=account_id,
                 max_order_notional=max_order_notional,
                 timeout=timeout,
+                connect_timeout=connect_timeout,
+                request_retries=request_retries,
+                retry_backoff_sec=retry_backoff_sec,
             )
             for account_id in account_ids
         }
@@ -119,6 +130,13 @@ def _read_only_executor(
         str(strategy_cfg.get("max_order_notional") or "0")
     )
     timeout = float(signer_cfg.get("timeout_sec") or 20)
+    connect_timeout = float(
+        signer_cfg.get("connect_timeout_sec") or timeout
+    )
+    request_retries = int(signer_cfg.get("request_retries") or 3)
+    retry_backoff_sec = float(
+        signer_cfg.get("retry_backoff_sec") or 0.5
+    )
     return MultiAccountExecutor(
         {
             account_id: PredictFunReadOnlyExecutor(
@@ -127,6 +145,9 @@ def _read_only_executor(
                     account_id=account_id,
                     max_order_notional=max_order_notional,
                     timeout=timeout,
+                    connect_timeout=connect_timeout,
+                    request_retries=request_retries,
+                    retry_backoff_sec=retry_backoff_sec,
                 )
             )
             for account_id in account_ids
@@ -606,6 +627,7 @@ def run_loop(
         "last_research_summary": {},
         "last_auth_summary": {},
         "last_account_summary": {},
+        "last_submission_recovery": {},
         "capital_profiles": {},
         "account_reads": {},
         "last_wake_reason": "startup",
@@ -653,6 +675,27 @@ def run_loop(
                 live_balances = executor.list_balances()
                 live_positions = executor.list_positions()
                 _sync_managed_live_orders(registry, live_orders, executor)
+                recovery_results = recover_uncertain_submissions(
+                    intents_state,
+                    registry=registry,
+                    executor=executor,
+                )
+                state["last_submission_recovery"] = {
+                    "checked_at": _utc_now(),
+                    "resolved": sum(
+                        1 for row in recovery_results if row.get("ok")
+                    ),
+                    "pending": sum(
+                        1
+                        for row in recovery_results
+                        if row.get("status") == "unknown"
+                    ),
+                    "rejected": sum(
+                        1
+                        for row in recovery_results
+                        if row.get("status") == "rejected"
+                    ),
+                }
                 managed_state = registry.to_state()
                 previous_intents = _previous_intents_from_managed(registry)
                 (

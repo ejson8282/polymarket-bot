@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import time
 from typing import Any, Mapping, Protocol
+from urllib.parse import quote
 
 import requests
 
@@ -93,6 +95,11 @@ class PredictFunExecutor(Protocol):
     ) -> LiveOrder | None:
         ...
 
+    def recover_submission(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        ...
+
     def list_balances(self) -> list[AccountBalance]:
         ...
 
@@ -137,6 +144,12 @@ class DryRunExecutor:
         del order_id, account_id
         return None
 
+    def recover_submission(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        del order
+        return None
+
     def list_balances(self) -> list[AccountBalance]:
         return []
 
@@ -163,12 +176,21 @@ class PredictFunLiveExecutor:
         account_id: str,
         max_order_notional: Decimal,
         timeout: float = 20.0,
+        connect_timeout: float | None = None,
+        request_retries: int = 3,
+        retry_backoff_sec: float = 0.5,
         session: requests.Session | None = None,
     ) -> None:
         self.signer_url = signer_url.rstrip("/")
         self.account_id = str(account_id).strip()
         self.max_order_notional = _decimal(max_order_notional)
         self.timeout = max(1.0, float(timeout))
+        self.connect_timeout = max(
+            1.0,
+            float(connect_timeout if connect_timeout is not None else timeout),
+        )
+        self.request_retries = max(1, int(request_retries))
+        self.retry_backoff_sec = max(0.0, float(retry_backoff_sec))
         self.session = session or requests.Session()
         if not self.account_id:
             raise ValueError("Predict.fun live executor requires account_id")
@@ -231,11 +253,18 @@ class PredictFunLiveExecutor:
                 },
             )
         except Exception as exc:
+            recovered = self.recover_submission(order)
+            if recovered is not None and (
+                recovered.ok or recovered.status == "rejected"
+            ):
+                return recovered
             return self._error(
                 "create",
                 f"Predict.fun submit failed: {type(exc).__name__}",
                 intent_id=order.intent_id,
                 account_id=order.account_id,
+                order_id=(recovered.order_id if recovered is not None else ""),
+                status="unknown",
             )
         ok = payload.get("ok") is True
         order_hash = str(payload.get("order_hash") or "")
@@ -251,6 +280,60 @@ class PredictFunLiveExecutor:
             ),
             order_id=order_hash,
             status="open" if ok else "rejected",
+        )
+
+    def recover_submission(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        if order.account_id != self.account_id:
+            return None
+        idempotency_key = str(
+            order.idempotency_key or order.intent_id
+        ).strip()
+        if not idempotency_key:
+            return None
+        try:
+            payload = self._request(
+                "GET",
+                f"/submissions/{quote(idempotency_key, safe='')}",
+            )
+        except Exception:
+            return None
+        if payload.get("found") is not True:
+            return None
+        submission_state = str(
+            payload.get("submission_state") or "unknown"
+        ).lower()
+        order_hash = str(payload.get("order_hash") or "")
+        order_status = str(payload.get("order_status") or "").lower()
+        if submission_state in {"accepted", "terminal"} and order_hash:
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=True,
+                message="order recovered from signer ledger",
+                order_id=order_hash,
+                status=order_status or (
+                    "open" if submission_state == "accepted" else "closed"
+                ),
+            )
+        if submission_state == "rejected":
+            return self._error(
+                "create",
+                str(payload.get("error") or "order rejected"),
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                order_id=order_hash,
+                status="rejected",
+            )
+        return self._error(
+            "create",
+            "submission pending signer-ledger recovery",
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+            order_id=order_hash,
+            status="unknown",
         )
 
     def cancel(self, order_id: str, *, intent_id: str = "", account_id: str = "") -> ExecutionResult:
@@ -434,22 +517,61 @@ class PredictFunLiveExecutor:
             f"{self.signer_url}/predictfun/accounts/"
             f"{self.account_id}{suffix}"
         )
-        response = self.session.request(
-            method,
-            url,
-            params=dict(params or {}),
-            json=dict(json_body) if json_body is not None else None,
-            timeout=self.timeout,
+        method = method.upper()
+        retry_safe = method == "GET" or (
+            method == "POST" and suffix == "/submit-order"
         )
-        try:
-            payload = response.json()
-        except Exception as exc:
-            raise RuntimeError("Predict.fun proxy returned non-JSON") from exc
-        if not isinstance(payload, dict):
-            raise RuntimeError("Predict.fun proxy returned non-object JSON")
-        if response.status_code >= 400 or payload.get("ok") is False:
-            raise RuntimeError(str(payload.get("error") or response.status_code))
-        return payload
+        attempts = self.request_retries if retry_safe else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                response = self.session.request(
+                    method,
+                    url,
+                    params=dict(params or {}),
+                    json=dict(json_body) if json_body is not None else None,
+                    timeout=(self.connect_timeout, self.timeout),
+                )
+                try:
+                    payload = response.json()
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Predict.fun proxy returned non-JSON"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        "Predict.fun proxy returned non-object JSON"
+                    )
+                transient_response = (
+                    response.status_code in {408, 429, 500, 502, 503, 504}
+                    and (
+                        method == "GET"
+                        or str(payload.get("error") or "")
+                        in {
+                            "predictfun_get_failed",
+                            "predictfun_post_failed",
+                            "upstream_error",
+                        }
+                    )
+                )
+                if transient_response and attempt + 1 < attempts:
+                    self._retry_sleep(attempt)
+                    continue
+                if response.status_code >= 400 or payload.get("ok") is False:
+                    raise RuntimeError(
+                        str(payload.get("error") or response.status_code)
+                    )
+                return payload
+            except (requests.RequestException, OSError, TimeoutError) as exc:
+                last_error = exc
+                if attempt + 1 >= attempts:
+                    raise
+                self._retry_sleep(attempt)
+        raise RuntimeError("Predict.fun proxy request failed") from last_error
+
+    def _retry_sleep(self, attempt: int) -> None:
+        if self.retry_backoff_sec > 0:
+            time.sleep(self.retry_backoff_sec * (2**attempt))
 
     @staticmethod
     def _error(
@@ -459,6 +581,7 @@ class PredictFunLiveExecutor:
         intent_id: str = "",
         account_id: str = "",
         order_id: str = "",
+        status: str = "",
     ) -> ExecutionResult:
         return ExecutionResult(
             intent_id=intent_id,
@@ -467,7 +590,7 @@ class PredictFunLiveExecutor:
             ok=False,
             message=message,
             order_id=order_id,
-            status="rejected" if action == "create" else "open",
+            status=status or ("rejected" if action == "create" else "open"),
         )
 
 
@@ -504,6 +627,11 @@ class PredictFunReadOnlyExecutor:
         self, order_id: str, *, account_id: str = ""
     ) -> LiveOrder | None:
         return self.executor.get_order(order_id, account_id=account_id)
+
+    def recover_submission(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        return self.executor.recover_submission(order)
 
     def list_balances(self) -> list[AccountBalance]:
         return self.executor.list_balances()
@@ -603,6 +731,15 @@ class MultiAccountExecutor:
         if executor is None:
             return None
         return executor.get_order(order_id, account_id=account_id)
+
+    def recover_submission(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        executor = self.executors.get(order.account_id)
+        if executor is None:
+            return None
+        recover = getattr(executor, "recover_submission", None)
+        return recover(order) if callable(recover) else None
 
     def list_balances(self) -> list[AccountBalance]:
         return [
