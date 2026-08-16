@@ -68,6 +68,64 @@ def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     )
 
 
+def test_observer_reserves_book_analysis_for_efficient_smaller_reward_pools() -> None:
+    markets = []
+    for index in range(12):
+        market = _market(reward="100", slug=f"large-pool-{index}")
+        market["conditionId"] = f"large-{index}"
+        market["clobTokenIds"] = json.dumps(
+            [f"large-yes-{index}", f"large-no-{index}"]
+        )
+        markets.append(market)
+    for index in range(4):
+        market = _market(reward="5", slug=f"small-pool-{index}")
+        market["conditionId"] = f"small-{index}"
+        market["clobTokenIds"] = json.dumps(
+            [f"small-yes-{index}", f"small-no-{index}"]
+        )
+        market["rewardsMinSize"] = "1"
+        markets.append(market)
+
+    result = observe_reward_markets(
+        markets,
+        lambda _token: _book(),
+        candidate_limit=8,
+        lower_reward_reserve_ratio=Decimal("0.25"),
+    )
+
+    assert result["candidates_evaluated"] == 8
+    assert result["selection_lanes"]["lower_reward_efficiency"] == 2
+    assert sum(
+        candidate["selection_lane"] == "lower_reward_efficiency"
+        for candidate in result["candidates"]
+    ) == 2
+    assert any(candidate["daily_reward_usd"] == 5 for candidate in result["candidates"])
+
+
+def test_estimated_daily_payout_floor_blocks_confirmation_not_observation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
+
+    state = {}
+    for _ in range(12):
+        state = refresh_observer_state(
+            tmp_path,
+            fetch_markets=lambda: [_market(reward="0.50")],
+            fetch_book=lambda _token: _book("1000"),
+        )
+        now[0] += 300
+
+    candidate = state["candidates"][0]
+    assert candidate["estimated_daily_gross_usd"] < 1
+    assert candidate["min_estimated_daily_payout_usd"] == 1
+    assert "estimated_daily_payout_below_floor" in candidate["reasons"]
+    assert candidate["verification_status"] == "stable"
+    assert candidate["verification_recommended"] is False
+
+
 def test_observer_excludes_expired_market_even_when_gamma_still_accepts_orders() -> None:
     expired = _market(slug="ceasefire-by-july-31")
     expired["endDate"] = "2020-07-31T23:59:00Z"
