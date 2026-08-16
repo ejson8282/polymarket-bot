@@ -59,6 +59,16 @@ try:
     from .order_scoring_observer import OrderScoringObserver
 except ImportError:
     from order_scoring_observer import OrderScoringObserver
+try:
+    from .stable_rotation_commands import (
+        confirmation_for_replacement,
+        find_confirmed_replacement,
+    )
+except ImportError:
+    from stable_rotation_commands import (
+        confirmation_for_replacement,
+        find_confirmed_replacement,
+    )
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -1182,6 +1192,9 @@ class PolyLPSMulti:
         self._runtime_command_parse_retry_limit = 5
         self._eligibility_observer_path = (
             self._state_path.parent / "reward_observer_state.json"
+        )
+        self._stable_rotation_proposal_path = (
+            self._state_path.parent / "stable_rotation_proposal.json"
         )
         self._eligibility_state: Dict[str, Dict[str, Any]] = {}
         eligibility_cfg = self.cfg.get("eligibility_guard", {}) or {}
@@ -5622,6 +5635,8 @@ class PolyLPSMulti:
         condition_id: Optional[str] = None,
         eligibility_managed: bool = False,
         eligibility_base_risk: Optional[str] = None,
+        persist: bool = True,
+        notify: bool = True,
     ) -> bool:
         """Register a new market at runtime (no restart). Mirrors the init-time
         market_cfg schema + minimum per-token state (same 5 dicts that dual-side
@@ -5678,31 +5693,35 @@ class PolyLPSMulti:
 
         slug_display = slug or self._token_slug_cache.get(token_id, token_id[:16])
         log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
-        self.send_discord(
-            f"市场已自动加入\n市场：{slug_display}\n"
-            f"价差：{spread}\n来源：{source}"
-        )
+        if notify:
+            self.send_discord(
+                f"市场已自动加入\n市场：{slug_display}\n"
+                f"价差：{spread}\n来源：{source}"
+            )
 
         # Persist every auto-added market (day + night) for dashboard display.
-        try:
-            self._curator_events_log.append({
-                "token_id": token_id,
-                "paired_token_id": paired_token_id,
-                "slug": slug_display,
-                "question": question or "",
-                "league": league or "",
-                "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
-                "added_at": time.time(),
-                "source": source,
-                "session": session_label,
-                "spread": float(spread) if spread is not None else 0.0,
-            })
-        except Exception as _ne:
-            log(f"[runtime-add] curator_events append err: {_ne}")
+        if persist:
+            try:
+                self._curator_events_log.append({
+                    "token_id": token_id,
+                    "paired_token_id": paired_token_id,
+                    "slug": slug_display,
+                    "question": question or "",
+                    "league": league or "",
+                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
+                    "added_at": time.time(),
+                    "source": source,
+                    "session": session_label,
+                    "spread": float(spread) if spread is not None else 0.0,
+                })
+            except Exception as _ne:
+                log(f"[runtime-add] curator_events append err: {_ne}")
 
         # Persist to config.json so a restart (or crash) doesn't drop this market.
         # Mirrors the symmetric prune path in start_guard_sweep_loop at T-2h cutoff.
         try:
+            if not persist:
+                return True
             cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
             section = "night_markets" if session_label == "night" else "markets"
             persisted_entry = {
@@ -5741,10 +5760,7 @@ class PolyLPSMulti:
                 entries = cfg_disk.setdefault(section, []) or []
                 entries.append(persisted_entry)
                 cfg_disk[section] = entries
-            self._config_path.write_text(
-                json.dumps(cfg_disk, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            self._write_config_atomic(cfg_disk)
             log(
                 f"[runtime-add] persisted to config.json "
                 f"section={section} token={token_id[:16]}"
@@ -5752,6 +5768,53 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
 
+        return True
+
+    def _write_config_atomic(self, config: Mapping[str, Any]) -> None:
+        temporary = self._config_path.with_name(
+            f".{self._config_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
+        )
+        try:
+            temporary.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(self._config_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _drop_market_runtime_state(self, token_id: str) -> bool:
+        token_id = str(token_id).strip()
+        if token_id in self.market_cfg:
+            source_cfg = self.market_cfg
+        elif token_id in self._night_market_cfg:
+            source_cfg = self._night_market_cfg
+        else:
+            return False
+        paired = str(source_cfg[token_id].get("paired_token_id", ""))
+        for tid in (token_id, paired):
+            if not tid:
+                continue
+            self.market_cfg.pop(tid, None)
+            self._night_market_cfg.pop(tid, None)
+            self._event_states.pop(tid, None)
+            self._event_locks.pop(tid, None)
+            self._latency_marks.pop(tid, None)
+            self._halt_requested.pop(tid, None)
+            self.last_quote_ts.pop(tid, None)
+            self._market_balance_fail_streak.pop(tid, None)
+            self._market_skip_until.pop(tid, None)
+            self._market_stale_fail_streak.pop(tid, None)
+            self._market_budget_skip_until.pop(tid, None)
+            self._per_token_last_order_ts.pop(tid, None)
+            self._health_fail_streak.pop(tid, None)
+            self._book_req_exc_streak.pop(tid, None)
+            self._volatility_tracker.pop(tid, None)
+            self._market_condition_ids.pop(tid, None)
+            self._sponsored_guard_by_token.pop(tid, None)
+            self._eligibility_state.pop(tid, None)
+            self._dual_side_injected.discard(tid)
+            self._runtime_added_tokens.discard(tid)
         return True
 
     async def remove_market_runtime(self, token_id: str, reason: str = "runtime_remove") -> bool:
@@ -5779,30 +5842,7 @@ class PolyLPSMulti:
         except Exception as e:
             log(f"[runtime-remove] cancel err token={token_id[:16]}: {e}")
 
-        paired = str(source_cfg[token_id].get("paired_token_id", ""))
-        for tid in (token_id, paired):
-            if not tid:
-                continue
-            self.market_cfg.pop(tid, None)
-            self._night_market_cfg.pop(tid, None)
-            self._event_states.pop(tid, None)
-            self._event_locks.pop(tid, None)
-            self._latency_marks.pop(tid, None)
-            self._halt_requested.pop(tid, None)
-            self.last_quote_ts.pop(tid, None)
-            self._market_balance_fail_streak.pop(tid, None)
-            self._market_skip_until.pop(tid, None)
-            self._market_stale_fail_streak.pop(tid, None)
-            self._market_budget_skip_until.pop(tid, None)
-            self._per_token_last_order_ts.pop(tid, None)
-            self._health_fail_streak.pop(tid, None)
-            self._book_req_exc_streak.pop(tid, None)
-            self._volatility_tracker.pop(tid, None)
-            self._market_condition_ids.pop(tid, None)
-            self._sponsored_guard_by_token.pop(tid, None)
-            self._eligibility_state.pop(tid, None)
-            self._dual_side_injected.discard(tid)
-            self._runtime_added_tokens.discard(tid)
+        self._drop_market_runtime_state(token_id)
 
         self._request_market_ws_resubscribe()
         log(f"[runtime-remove] token={token_id[:16]} reason={reason}")
@@ -5924,6 +5964,189 @@ class PolyLPSMulti:
                 candidates[token_id] = row
         return state, candidates, age
 
+    def _validate_stable_replacement_candidate(
+        self,
+        market: Mapping[str, Any],
+        policy: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        token_id = str(market.get("token_id") or "").strip()
+        paired_token_id = str(market.get("paired_token_id") or "").strip()
+        if not token_id.isdigit() or not paired_token_id.isdigit():
+            raise ValueError("invalid replacement token pair")
+
+        _, candidates, observer_age = self._reward_observer_snapshot()
+        candidate = candidates.get(token_id)
+        max_observer_age = float(policy.get("max_observer_age_sec") or 900.0)
+        if observer_age is None or observer_age > max_observer_age:
+            raise ValueError("reward observer snapshot is stale")
+        if not candidate or candidate.get("verification_recommended") is not True:
+            raise ValueError("replacement market is no longer eligible")
+        if str(candidate.get("paired_token_id") or "") != paired_token_id:
+            raise ValueError("replacement token pair changed")
+        expected_condition = str(market.get("condition_id") or "").strip().lower()
+        current_condition = str(candidate.get("condition_id") or "").strip().lower()
+        if expected_condition and current_condition != expected_condition:
+            raise ValueError("replacement condition changed")
+        if str(candidate.get("market_phase") or "").lower() == "live":
+            raise ValueError("live market is observe-only")
+        if candidate.get("market_active") is not True:
+            raise ValueError("replacement market is not active")
+        if candidate.get("market_closed") is not False:
+            raise ValueError("replacement market is closed or unknown")
+        if candidate.get("market_archived") is not False:
+            raise ValueError("replacement market is archived or unknown")
+        if candidate.get("accepting_orders") is not True:
+            raise ValueError("replacement market is not accepting orders")
+        market_end_ts = float(candidate.get("market_end_ts") or 0.0)
+        if market_end_ts <= time.time():
+            raise ValueError("replacement market has expired or has no end time")
+        if str(candidate.get("market_phase") or "").lower() == "pregame":
+            game_start_ts = float(candidate.get("game_start_ts") or 0.0)
+            min_sports_lead = float(policy.get("min_sports_lead_sec") or 10800.0)
+            if game_start_ts < time.time() + min_sports_lead:
+                raise ValueError("replacement sports market starts too soon")
+
+        if str(candidate.get("front_depth_status") or "") != "verified":
+            raise ValueError("replacement depth is not verified")
+        depth_observed_at = float(candidate.get("front_depth_observed_at") or 0.0)
+        max_depth_age = float(policy.get("max_depth_age_sec") or 600.0)
+        depth_age = time.time() - depth_observed_at
+        if depth_observed_at <= 0 or depth_age < -30 or depth_age > max_depth_age:
+            raise ValueError("replacement depth snapshot is stale")
+        yes_depth = Decimal(
+            str(candidate.get("yes_front_bid_notional_usd") or -1)
+        )
+        no_depth = Decimal(
+            str(candidate.get("no_front_bid_notional_usd") or -1)
+        )
+        if min(yes_depth, no_depth) < self.min_front_bid_notional_usdc:
+            raise ValueError("replacement depth is below account minimum")
+
+        stability = float(candidate.get("stability_score") or 0.0)
+        fill_risk = float(candidate.get("fill_risk") or 100.0)
+        roi = float(candidate.get("risk_adjusted_daily_roi_pct") or 0.0)
+        if stability < float(policy.get("min_stability_score") or 70.0):
+            raise ValueError("replacement stability is below minimum")
+        if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
+            raise ValueError("replacement fill risk is above stable limit")
+        if roi < float(
+            policy.get("min_risk_adjusted_daily_roi_pct") or 0.1
+        ):
+            raise ValueError("replacement expected return is below minimum")
+        return dict(candidate)
+
+    def _load_stable_replacement_command(
+        self,
+        command: Mapping[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        try:
+            proposal = json.loads(
+                self._stable_rotation_proposal_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise ValueError("stable rotation proposal is unavailable") from exc
+        if not isinstance(proposal, dict):
+            raise ValueError("stable rotation proposal is invalid")
+
+        account_index = int(command.get("account_index") or 0)
+        if account_index != int(self._account_idx):
+            raise ValueError("replacement command targets another account")
+        replacement_id = str(command.get("replacement_id") or "")
+        expected_confirmation = confirmation_for_replacement(replacement_id)
+        if str(command.get("confirm") or "") != expected_confirmation:
+            raise ValueError("replacement confirmation does not match")
+        replacement = find_confirmed_replacement(
+            proposal,
+            account_index=account_index,
+            replacement_id=replacement_id,
+        )
+        selection = replacement.get("selection")
+        if not isinstance(selection, Mapping):
+            raise ValueError("replacement selection is invalid")
+        target_section = str(
+            selection.get("target_config_section") or ""
+        ).strip()
+        if target_section not in {"markets", "night_markets"}:
+            raise ValueError("replacement target section is invalid")
+        if str(command.get("target_config_section") or "") != target_section:
+            raise ValueError("replacement target section does not match proposal")
+        command_generated_at = float(command.get("proposal_generated_at") or 0.0)
+        if abs(command_generated_at - float(proposal.get("generated_at") or 0.0)) > 0.001:
+            raise ValueError("replacement command references another proposal")
+
+        retire = replacement["retire"]
+        add = replacement["add"]
+        market = command.get("market")
+        if not isinstance(market, Mapping):
+            raise ValueError("missing replacement market payload")
+        if str(command.get("retire_token_id") or "") != str(
+            retire.get("token_id") or ""
+        ):
+            raise ValueError("retirement token does not match proposal")
+        if str(market.get("token_id") or "") != str(add.get("token_id") or ""):
+            raise ValueError("replacement token does not match proposal")
+        if str(market.get("paired_token_id") or "") != str(
+            add.get("paired_token_id") or ""
+        ):
+            raise ValueError("replacement pair does not match proposal")
+        candidate = self._validate_stable_replacement_candidate(
+            market,
+            proposal.get("policy") or {},
+        )
+        return proposal, replacement, candidate
+
+    async def _require_no_live_orders_for_tokens(
+        self,
+        token_ids: tuple[str, ...],
+    ) -> None:
+        try:
+            orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception as exc:
+            raise ValueError("cannot confirm retirement market cancellation") from exc
+        if not isinstance(orders, list):
+            raise ValueError("retirement market order response is invalid")
+        token_set = set(token_ids)
+        for order in orders:
+            if not isinstance(order, dict) or not _order_is_live(order):
+                continue
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset in token_set:
+                raise ValueError("retirement market still has a live order")
+
+    def _add_runtime_candidate(
+        self,
+        market: Mapping[str, Any],
+        candidate: Mapping[str, Any],
+        *,
+        session: str = "day",
+        persist: bool,
+        notify: bool,
+    ) -> bool:
+        token_id = str(market.get("token_id") or "").strip()
+        paired_token_id = str(market.get("paired_token_id") or "").strip()
+        spread = candidate.get("rewards_max_spread")
+        if spread is None:
+            spread = market.get("max_incentive_spread")
+        risk = "low" if float(candidate.get("fill_risk") or 100) < 35 else "mid"
+        return self.add_market_runtime(
+            token_id=token_id,
+            paired_token_id=paired_token_id,
+            spread=spread,
+            tick=market.get("price_tick", 0.01),
+            min_distance=market.get("min_distance_from_best_bid", 0.01),
+            risk=risk,
+            session=session,
+            source="dashboard_confirmed",
+            game_start_ts=candidate.get("game_start_ts"),
+            slug=str(candidate.get("slug") or market.get("slug") or ""),
+            question=str(candidate.get("question") or market.get("question") or ""),
+            condition_id=str(candidate.get("condition_id") or ""),
+            eligibility_managed=True,
+            eligibility_base_risk=risk,
+            persist=persist,
+            notify=notify,
+        )
+
     def _runtime_add_from_command(self, market: Dict[str, Any]) -> str:
         if not getattr(self, "_runtime_market_updates_enabled", True):
             raise ValueError(
@@ -5945,27 +6168,233 @@ class PolyLPSMulti:
         if str(candidate.get("market_phase") or "").lower() == "live":
             raise ValueError("live market is observe-only")
 
+        added = self._add_runtime_candidate(
+            market,
+            candidate,
+            persist=True,
+            notify=True,
+        )
+        return "added" if added else "already_configured"
+
+    def _stable_replacement_config_entry(
+        self,
+        market: Mapping[str, Any],
+        candidate: Mapping[str, Any],
+        *,
+        replacement_id: str,
+        retire_token_id: str,
+    ) -> Dict[str, Any]:
         spread = candidate.get("rewards_max_spread")
         if spread is None:
             spread = market.get("max_incentive_spread")
         risk = "low" if float(candidate.get("fill_risk") or 100) < 35 else "mid"
-        added = self.add_market_runtime(
-            token_id=token_id,
-            paired_token_id=paired_token_id,
-            spread=spread,
-            tick=market.get("price_tick", 0.01),
-            min_distance=market.get("min_distance_from_best_bid", 0.01),
-            risk=risk,
-            session="day",
-            source="dashboard_confirmed",
-            game_start_ts=candidate.get("game_start_ts"),
-            slug=str(candidate.get("slug") or market.get("slug") or ""),
-            question=str(candidate.get("question") or market.get("question") or ""),
-            condition_id=str(candidate.get("condition_id") or ""),
-            eligibility_managed=True,
-            eligibility_base_risk=risk,
+        return {
+            "token_id": str(market.get("token_id") or ""),
+            "paired_token_id": str(market.get("paired_token_id") or ""),
+            "side": "YES",
+            "max_incentive_spread": float(spread),
+            "price_tick": float(market.get("price_tick") or 0.01),
+            "min_distance_from_best_bid": float(
+                market.get("min_distance_from_best_bid") or 0.01
+            ),
+            "quote_size": float(market.get("quote_size") or 100.0),
+            "risk": risk,
+            "enabled": True,
+            "source": "dashboard_confirmed",
+            "eligibility_managed": True,
+            "eligibility_base_risk": risk,
+            "condition_id": str(candidate.get("condition_id") or ""),
+            "slug": str(candidate.get("slug") or market.get("slug") or ""),
+            "question": str(
+                candidate.get("question") or market.get("question") or ""
+            ),
+            "game_start_ts": float(candidate.get("game_start_ts") or 0.0),
+            "rotation_replacement_id": replacement_id,
+            "replaced_token_id": retire_token_id,
+        }
+
+    async def _runtime_replace_from_command(
+        self,
+        command: Mapping[str, Any],
+    ) -> str:
+        if not getattr(self, "_runtime_market_updates_enabled", True):
+            raise ValueError(
+                "runtime market replacements require the multi-account market coordinator"
+            )
+        _proposal, _replacement, candidate = self._load_stable_replacement_command(
+            command
         )
-        return "added" if added else "already_configured"
+        market = command["market"]
+        retire_token_id = str(command.get("retire_token_id") or "")
+        new_token_id = str(market.get("token_id") or "")
+        new_pair_id = str(market.get("paired_token_id") or "")
+        target_section = str(command.get("target_config_section") or "")
+        target_session = "night" if target_section == "night_markets" else "day"
+
+        new_configured = (
+            new_token_id in self.market_cfg
+            or new_token_id in self._night_market_cfg
+        )
+        new_pair_configured = (
+            new_pair_id in self.market_cfg
+            or new_pair_id in self._night_market_cfg
+        )
+        old_configured = (
+            retire_token_id in self.market_cfg
+            or retire_token_id in self._night_market_cfg
+        )
+        if new_configured and not old_configured:
+            return "already_replaced"
+        if new_configured or new_pair_configured:
+            raise ValueError("replacement market is already configured")
+        if not old_configured:
+            raise ValueError("retirement market is no longer configured")
+
+        old_cfg = self.market_cfg.get(retire_token_id) or self._night_market_cfg.get(
+            retire_token_id
+        )
+        old_pair_id = str((old_cfg or {}).get("paired_token_id") or "")
+        old_tokens = tuple(
+            token for token in (retire_token_id, old_pair_id) if token
+        )
+        if any(token in self._active_exit_orders for token in old_tokens):
+            raise ValueError("retirement market has an active exit order")
+        pending_unwinds = getattr(self, "_pending_unwinds", {})
+        if any(token in pending_unwinds for token in old_tokens):
+            raise ValueError("retirement market has a pending unwind")
+
+        try:
+            open_orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception as exc:
+            raise ValueError("cannot verify retirement market orders") from exc
+        if not isinstance(open_orders, list):
+            raise ValueError("retirement market order response is invalid")
+        for order in open_orders:
+            if not isinstance(order, dict) or not _order_is_live(order):
+                continue
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset not in old_tokens:
+                continue
+            if str(order.get("side") or "").upper() != "BUY":
+                raise ValueError("retirement market has a live non-BUY order")
+
+        for token in old_tokens:
+            position = await self._get_token_position(token)
+            if position < 0:
+                raise ValueError("retirement market position is unknown")
+            if position > 0:
+                raise ValueError("retirement market still has a position")
+
+        for token in old_tokens:
+            self._set_event_state(
+                token,
+                EVENT_CANCELING,
+                f"stable_rotation:{command.get('replacement_id')}",
+            )
+        added = self._add_runtime_candidate(
+            market,
+            candidate,
+            session=target_session,
+            persist=False,
+            notify=False,
+        )
+        if not added:
+            for token in old_tokens:
+                self._set_event_state(token, EVENT_ACTIVE, "stable_rotation_add_failed")
+            raise ValueError("replacement market could not be staged")
+        for token in (new_token_id, new_pair_id):
+            if token in self.market_cfg or token in self._night_market_cfg:
+                self._set_event_state(
+                    token,
+                    EVENT_CANCELING,
+                    f"stable_rotation_staged:{command.get('replacement_id')}",
+                )
+
+        cancellation_confirmed = True
+        for token in old_tokens:
+            if not await self._cancel_token_orders(
+                token,
+                reason=f"stable_rotation:{command.get('replacement_id')}",
+            ):
+                cancellation_confirmed = False
+        if not cancellation_confirmed:
+            self._drop_market_runtime_state(new_token_id)
+            self._request_market_ws_resubscribe()
+            self.send_discord(
+                "市场替换已停止\n"
+                f"旧市场：{self._discord_market_name(retire_token_id)}\n"
+                "原因：旧挂单撤销未确认；未启用新市场"
+            )
+            raise ValueError("retirement market cancellation is unconfirmed")
+
+        try:
+            await self._require_no_live_orders_for_tokens(old_tokens)
+        except Exception:
+            self._drop_market_runtime_state(new_token_id)
+            self._request_market_ws_resubscribe()
+            raise
+
+        for token in old_tokens:
+            position = await self._get_token_position(token)
+            if position < 0 or position > 0:
+                self._drop_market_runtime_state(new_token_id)
+                self._request_market_ws_resubscribe()
+                raise ValueError("retirement position changed during replacement")
+
+        replacement_id = str(command.get("replacement_id") or "")
+        new_entry = self._stable_replacement_config_entry(
+            market,
+            candidate,
+            replacement_id=replacement_id,
+            retire_token_id=retire_token_id,
+        )
+        try:
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            drop_ids = set(old_tokens) | {
+                token for token in (new_token_id, new_pair_id) if token
+            }
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                kept = []
+                for row in rows:
+                    if not isinstance(row, Mapping):
+                        raise ValueError(f"account config {section} contains invalid market")
+                    if str(row.get("token_id") or "") not in drop_ids:
+                        kept.append(row)
+                config[section] = kept
+            config.setdefault(target_section, []).append(new_entry)
+            self._write_config_atomic(config)
+        except Exception:
+            self._drop_market_runtime_state(new_token_id)
+            for token in old_tokens:
+                self._set_event_state(token, EVENT_ACTIVE, "stable_rotation_rollback")
+            self._request_market_ws_resubscribe()
+            raise
+
+        self._drop_market_runtime_state(retire_token_id)
+        for token in (new_token_id, new_pair_id):
+            if token in self.market_cfg or token in self._night_market_cfg:
+                self._set_event_state(
+                    token,
+                    EVENT_ACTIVE,
+                    f"stable_rotation_complete:{replacement_id}",
+                )
+        self._request_market_ws_resubscribe()
+        log(
+            f"[stable-rotation] id={replacement_id[:12]} "
+            f"retired={retire_token_id[:16]} added={new_token_id[:16]}"
+        )
+        self.send_discord(
+            "市场替换完成\n"
+            f"退出：{self._discord_market_name(retire_token_id)}\n"
+            f"加入：{str(candidate.get('question') or candidate.get('slug') or new_token_id)[:120]}\n"
+            "选择依据：预期收益率、竞争度与吃单风险"
+        )
+        return "replaced"
 
     async def runtime_command_loop(self) -> None:
         """Apply dashboard commands without restarting the engine."""
@@ -5989,20 +6418,31 @@ class PolyLPSMulti:
                         )
                         command_id = str(command.get("command_id") or command_id)
                         action = str(command.get("action") or "")
-                        if action != "add_market":
+                        if action not in {"add_market", "replace_market"}:
                             raise ValueError(f"unsupported action: {action}")
                         raw_market = command.get("market")
                         if not isinstance(raw_market, dict):
                             raise ValueError("missing market payload")
                         market = raw_market
-                        status = self._runtime_add_from_command(market)
+                        if action == "replace_market":
+                            status = await self._runtime_replace_from_command(command)
+                        else:
+                            status = self._runtime_add_from_command(market)
+                        result_payload = {
+                            "ok": True,
+                            "status": status,
+                            "token_id": str(market.get("token_id") or ""),
+                        }
+                        if action == "replace_market":
+                            result_payload["retired_token_id"] = str(
+                                command.get("retire_token_id") or ""
+                            )
+                            result_payload["replacement_id"] = str(
+                                command.get("replacement_id") or ""
+                            )
                         self._write_runtime_result(
                             command_id,
-                            {
-                                "ok": True,
-                                "status": status,
-                                "token_id": str(market.get("token_id") or ""),
-                            },
+                            result_payload,
                         )
                         log(
                             f"[runtime-command] id={command_id[:12]} "

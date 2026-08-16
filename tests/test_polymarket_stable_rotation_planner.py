@@ -16,6 +16,8 @@ def _candidate(
     index: int,
     *,
     roi: float = 5.0,
+    gross=None,
+    reward_share: float = 25.0,
     recommended: bool = True,
     fill_risk: float = 20.0,
     stability: float = 90.0,
@@ -50,8 +52,8 @@ def _candidate(
         "stability_score": stability,
         "fill_risk": fill_risk,
         "risk_adjusted_daily_roi_pct": roi,
-        "estimated_daily_gross_usd": roi,
-        "estimated_reward_share_pct": 25.0,
+        "estimated_daily_gross_usd": roi if gross is None else gross,
+        "estimated_reward_share_pct": reward_share,
         "daily_reward_usd": 40.0,
         "probe_capital_usd": 100.0,
         "front_depth_status": depth_status,
@@ -186,6 +188,81 @@ def test_current_markets_get_explicit_review_reasons_without_auto_retirement() -
         "not_in_current_observer_top_candidates"
     ]
     assert proposal["safety"]["trading_actions"] is False
+
+
+def test_proposal_pairs_best_candidates_with_old_markets_for_manual_replacement() -> None:
+    closed = _candidate(1, closed=True, active=False)
+    closed_market = _market(closed)
+    closed_market["section"] = "night_markets"
+    missing = {
+        "condition_id": "0x" + f"{999:064x}",
+        "token_id": "999",
+        "paired_token_id": "1999",
+        "question": "Missing from observer?",
+        "enabled": True,
+    }
+    higher_competition_share = _candidate(
+        2,
+        roi=9.0,
+        gross=8.0,
+        reward_share=30.0,
+        fill_risk=20.0,
+    )
+    lower_competition_share = _candidate(
+        3,
+        roi=9.0,
+        gross=8.0,
+        reward_share=20.0,
+        fill_risk=10.0,
+    )
+
+    proposal = build_stable_rotation_proposal(
+        _observer(closed, lower_competition_share, higher_competition_share),
+        [_account(1, closed_market, missing)],
+        now_ts=NOW,
+        max_add_per_account=2,
+    )
+
+    account = proposal["accounts"][0]
+    assert [row["add"]["token_id"] for row in account["replace"]] == [
+        "2",
+        "3",
+    ]
+    assert [row["retire"]["token_id"] for row in account["replace"]] == [
+        "1",
+        "999",
+    ]
+    assert len({row["replacement_id"] for row in account["replace"]}) == 2
+    assert account["replace"][0]["selection"] == {
+        "primary_metric": "risk_adjusted_daily_roi_pct",
+        "competition_metric": "estimated_reward_share_pct",
+        "risk_metric": "fill_risk",
+        "depth_guard_unchanged": True,
+        "min_front_bid_notional_usdc": 2000.0,
+        "target_config_section": "night_markets",
+    }
+    assert proposal["policy"]["depth_guard_relaxed"] is False
+    assert proposal["summary"]["planned_replacements"] == 2
+
+
+def test_replacement_retires_the_configured_pair_not_an_observer_alias() -> None:
+    observed = _candidate(1, active=False, closed=True)
+    configured = _market(observed)
+    configured["token_id"] = "901"
+    configured["paired_token_id"] = "1901"
+    configured["section"] = "markets"
+
+    proposal = build_stable_rotation_proposal(
+        _observer(observed, _candidate(2, roi=8.0)),
+        [_account(1, configured)],
+        now_ts=NOW,
+        max_add_per_account=1,
+    )
+
+    replacement = proposal["accounts"][0]["replace"][0]
+    assert replacement["retire"]["token_id"] == "901"
+    assert replacement["retire"]["paired_token_id"] == "1901"
+    assert replacement["selection"]["target_config_section"] == "markets"
 
 
 def test_stale_observer_blocks_every_addition() -> None:
