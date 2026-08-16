@@ -39,6 +39,7 @@ RELEASE_TESTS = (
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_order_scoring_observer.py",
     "tests/test_polymarket_stable_rotation_planner.py",
+    "tests/test_polymarket_stable_rotation_commands.py",
 )
 
 
@@ -510,6 +511,12 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     )
     if stable_rotation_planner.is_file():
         artifacts.append(stable_rotation_planner)
+    stable_rotation_commands = (
+        release_dir / "platforms/polymarket/maker/stable_rotation_commands.py"
+    )
+    if not stable_rotation_commands.is_file():
+        raise DeploymentError("release is missing stable rotation commands")
+    artifacts.append(stable_rotation_commands)
     order_scoring_observer = (
         release_dir / "platforms/polymarket/maker/order_scoring_observer.py"
     )

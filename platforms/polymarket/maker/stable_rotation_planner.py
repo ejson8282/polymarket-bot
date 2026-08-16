@@ -7,6 +7,7 @@ performs trading actions. Its output is an audit document for later review.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 OUTPUT_NAME = "stable_rotation_proposal.json"
 DEFAULT_MAX_OBSERVER_AGE_SEC = 900.0
 DEFAULT_MAX_DEPTH_AGE_SEC = 600.0
@@ -104,13 +105,17 @@ def _proposal_row(
     *,
     action: str,
     reason_codes: Sequence[str],
+    config_section: str = "",
 ) -> dict[str, Any]:
-    return {
+    proposal = {
         "action": action,
         **_public_market_fields(row),
         **_candidate_metrics(row),
         "reason_codes": list(reason_codes),
     }
+    if config_section in {"markets", "night_markets"}:
+        proposal["config_section"] = config_section
+    return proposal
 
 
 def _current_row(
@@ -119,12 +124,40 @@ def _current_row(
     action: str,
     reason_codes: Sequence[str],
 ) -> dict[str, Any]:
-    return {
+    current = {
         "action": action,
         **_public_market_fields(row),
         "enabled": row.get("enabled", True) is not False,
         "reason_codes": list(reason_codes),
     }
+    section = str(row.get("section") or "")
+    if section in {"markets", "night_markets"}:
+        current["config_section"] = section
+    return current
+
+
+def _review_current_row(
+    current: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    action: str,
+    reason_codes: Sequence[str],
+) -> dict[str, Any]:
+    """Keep the configured token pair while attaching current observer metrics."""
+
+    row = {
+        "action": action,
+        **_public_market_fields(current),
+        **_candidate_metrics(candidate),
+        "reason_codes": list(reason_codes),
+    }
+    for key in ("condition_id", "question", "slug", "market_url"):
+        if not row.get(key):
+            row[key] = _public_market_fields(candidate).get(key, "")
+    section = str(current.get("section") or "")
+    if section in {"markets", "night_markets"}:
+        row["config_section"] = section
+    return row
 
 
 def _candidate_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
@@ -135,6 +168,82 @@ def _candidate_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
         _number(row.get("stability_score"), -1.0),
         -_number(row.get("fill_risk"), 100.0),
     )
+
+
+def _retirement_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
+    """Put unsafe and unobservable markets ahead of merely inefficient ones."""
+
+    action_priority = {
+        "review_retire": 3.0,
+        "review": 2.0,
+        "review_rotate": 1.0,
+    }.get(str(row.get("action") or ""), 0.0)
+    return (
+        action_priority,
+        -_number(row.get("risk_adjusted_daily_roi_pct"), -1.0),
+        -_number(row.get("estimated_daily_gross_usd"), -1.0),
+        -_number(row.get("estimated_reward_share_pct"), -1.0),
+        _number(row.get("fill_risk"), 100.0),
+        -_number(row.get("stability_score"), -1.0),
+    )
+
+
+def _replacement_id(
+    *,
+    account_index: int,
+    generated_at: float,
+    retire: Mapping[str, Any],
+    add: Mapping[str, Any],
+) -> str:
+    material = {
+        "schema_version": SCHEMA_VERSION,
+        "account_index": account_index,
+        "generated_at": generated_at,
+        "retire_event_key": str(retire.get("event_key") or ""),
+        "retire_token_id": str(retire.get("token_id") or ""),
+        "add_event_key": str(add.get("event_key") or ""),
+        "add_token_id": str(add.get("token_id") or ""),
+    }
+    encoded = json.dumps(
+        material,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _replacement_row(
+    *,
+    account_index: int,
+    generated_at: float,
+    retire: Mapping[str, Any],
+    add: Mapping[str, Any],
+    min_front_bid_notional_usdc: float,
+) -> dict[str, Any]:
+    return {
+        "action": "replace",
+        "replacement_id": _replacement_id(
+            account_index=account_index,
+            generated_at=generated_at,
+            retire=retire,
+            add=add,
+        ),
+        "retire": dict(retire),
+        "add": dict(add),
+        "selection": {
+            "primary_metric": "risk_adjusted_daily_roi_pct",
+            "competition_metric": "estimated_reward_share_pct",
+            "risk_metric": "fill_risk",
+            "depth_guard_unchanged": True,
+            "min_front_bid_notional_usdc": round(
+                min_front_bid_notional_usdc,
+                2,
+            ),
+            "target_config_section": str(
+                retire.get("config_section") or "markets"
+            ),
+        },
+    }
 
 
 def _global_rejections(
@@ -362,6 +471,7 @@ def build_stable_rotation_proposal(
                 "keep": [],
                 "review": [],
                 "disabled_hold": [],
+                "replace": [],
             }
         )
     account_rows.sort(key=lambda row: row["account_index"])
@@ -385,6 +495,15 @@ def build_stable_rotation_proposal(
         "min_sports_lead_sec": round(min_sports_lead_sec, 1),
         "allocation": "independent_per_account_best_candidates",
         "cross_account_duplicate_events": "allowed",
+        "candidate_ranking": [
+            "risk_adjusted_daily_roi_pct_desc",
+            "estimated_daily_gross_usd_desc",
+            "estimated_reward_share_pct_desc",
+            "stability_score_desc",
+            "fill_risk_asc",
+        ],
+        "replacement_requires_manual_confirmation": True,
+        "depth_guard_relaxed": False,
     }
     if (
         observer_generated_at <= 0
@@ -407,6 +526,7 @@ def build_stable_rotation_proposal(
                 "accounts": len(account_rows),
                 "candidate_count": len(candidates),
                 "planned_additions": 0,
+                "planned_replacements": 0,
             },
         }
 
@@ -472,7 +592,8 @@ def build_stable_rotation_proposal(
             if reasons:
                 action = "review_retire" if _hard_retire_reasons(reasons) else "review_rotate"
                 account["review"].append(
-                    _proposal_row(
+                    _review_current_row(
+                        current,
                         candidate,
                         action=action,
                         reason_codes=reasons,
@@ -484,6 +605,7 @@ def build_stable_rotation_proposal(
                         candidate,
                         action="keep",
                         reason_codes=("verified_low_risk_efficient",),
+                        config_section=str(current.get("section") or ""),
                     )
                 )
     unassigned: list[dict[str, Any]] = []
@@ -535,6 +657,23 @@ def build_stable_rotation_proposal(
 
     output_accounts: list[dict[str, Any]] = []
     for account in account_rows:
+        retirement_candidates = sorted(
+            account["review"],
+            key=_retirement_rank,
+            reverse=True,
+        )
+        account["replace"] = [
+            _replacement_row(
+                account_index=account["account_index"],
+                generated_at=generated_at,
+                retire=retire,
+                add=add,
+                min_front_bid_notional_usdc=account[
+                    "min_front_bid_notional_usdc"
+                ],
+            )
+            for add, retire in zip(account["add"], retirement_candidates)
+        ]
         enabled_count = sum(
             1 for row in account["current"] if row.get("enabled", True) is not False
         )
@@ -551,6 +690,7 @@ def build_stable_rotation_proposal(
                 "add": account["add"],
                 "keep": account["keep"],
                 "review": account["review"],
+                "replace": account["replace"],
                 "disabled_hold": account["disabled_hold"],
             }
         )
@@ -581,6 +721,9 @@ def build_stable_rotation_proposal(
             "candidate_count": len(unique_candidates),
             "globally_eligible_candidates": len(globally_eligible),
             "planned_additions": sum(len(row["add"]) for row in output_accounts),
+            "planned_replacements": sum(
+                len(row["replace"]) for row in output_accounts
+            ),
             "kept_markets": sum(len(row["keep"]) for row in output_accounts),
             "review_markets": sum(len(row["review"]) for row in output_accounts),
             "operator_disabled_markets": sum(
@@ -649,6 +792,7 @@ def write_blocked_stable_rotation_proposal(
             "accounts": 0,
             "candidate_count": 0,
             "planned_additions": 0,
+            "planned_replacements": 0,
         },
     }
     _write_atomic(data_dir / OUTPUT_NAME, payload)

@@ -350,6 +350,11 @@ def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
                         "paired_token_id": "102",
                         "verification_recommended": True,
                         "market_phase": "normal",
+                        "market_active": True,
+                        "market_closed": False,
+                        "market_archived": False,
+                        "accepting_orders": True,
+                        "market_end_ts": time.time() + 86400,
                         "rewards_max_spread": 0.05,
                         "fill_risk": 20,
                         "condition_id": "condition",
@@ -421,6 +426,259 @@ def test_runtime_dashboard_add_is_blocked_in_multi_account_roster_mode():
         engine._runtime_add_from_command(
             {"token_id": "101", "paired_token_id": "102"}
         )
+
+
+def test_stable_replacement_revalidates_account_depth(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_front_bid_notional_usdc = Decimal("2000")
+    engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": time.time(),
+                "candidates": [
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "condition_id": "0xabc",
+                        "verification_recommended": True,
+                        "market_phase": "normal",
+                        "market_active": True,
+                        "market_closed": False,
+                        "market_archived": False,
+                        "accepting_orders": True,
+                        "market_end_ts": time.time() + 86400,
+                        "front_depth_status": "verified",
+                        "front_depth_observed_at": time.time(),
+                        "yes_front_bid_notional_usd": 1999,
+                        "no_front_bid_notional_usd": 6000,
+                        "stability_score": 90,
+                        "fill_risk": 20,
+                        "risk_adjusted_daily_roi_pct": 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="below account minimum"):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "201",
+                "paired_token_id": "202",
+                "condition_id": "0xabc",
+            },
+            {
+                "max_observer_age_sec": 900,
+                "max_depth_age_sec": 600,
+                "min_stability_score": 70,
+                "max_fill_risk": 35,
+                "min_risk_adjusted_daily_roi_pct": 0.1,
+            },
+        )
+
+
+def _stable_replacement_engine(tmp_path: Path) -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_market_updates_enabled = True
+    engine._account_idx = 1
+    engine.market_cfg = {"101": {"paired_token_id": "102"}, "102": {}}
+    engine._night_market_cfg = {}
+    engine._active_exit_orders = {}
+    engine._pending_unwinds = {}
+    engine.client = type("Client", (), {"get_open_orders": lambda self: []})()
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {"token_id": "101", "paired_token_id": "102"},
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": False,
+                        "pending_activation": True,
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = {
+        "token_id": "201",
+        "paired_token_id": "202",
+        "condition_id": "0xabc",
+        "slug": "new-market",
+        "question": "New market?",
+        "rewards_max_spread": 0.05,
+        "fill_risk": 20,
+    }
+    engine._load_stable_replacement_command = lambda _command: (
+        {},
+        {
+            "retire": {"token_id": "101"},
+            "add": {"token_id": "201", "paired_token_id": "202"},
+        },
+        candidate,
+    )
+    engine._get_token_position = AsyncMock(return_value=0.0)
+    engine._cancel_token_orders = AsyncMock(return_value=True)
+    engine._set_event_state = lambda *_args, **_kwargs: None
+    engine._request_market_ws_resubscribe = lambda: None
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token: token
+
+    def add_candidate(_market, _candidate, *, session, persist, notify):
+        assert session == "day"
+        assert persist is False
+        assert notify is False
+        engine.market_cfg["201"] = {"paired_token_id": "202"}
+        engine.market_cfg["202"] = {}
+        return True
+
+    def drop_market(token_id):
+        pair = str((engine.market_cfg.get(token_id) or {}).get("paired_token_id") or "")
+        found = token_id in engine.market_cfg
+        engine.market_cfg.pop(token_id, None)
+        if pair:
+            engine.market_cfg.pop(pair, None)
+        return found
+
+    engine._add_runtime_candidate = add_candidate
+    engine._drop_market_runtime_state = drop_market
+    return engine
+
+
+def _stable_replacement_command() -> dict:
+    return {
+        "replacement_id": "a" * 64,
+        "retire_token_id": "101",
+        "target_config_section": "markets",
+        "market": {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "condition_id": "0xabc",
+        },
+    }
+
+
+def test_runtime_replacement_cancels_both_old_sides_before_atomic_swap(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+
+    status = asyncio.run(
+        engine._runtime_replace_from_command(_stable_replacement_command())
+    )
+
+    assert status == "replaced"
+    assert set(engine.market_cfg) == {"201", "202"}
+    assert [call.args[0] for call in engine._cancel_token_orders.await_args_list] == [
+        "101",
+        "102",
+    ]
+    assert engine._get_token_position.await_count == 4
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["201"]
+    assert config["markets"][0]["enabled"] is True
+    assert "pending_activation" not in config["markets"][0]
+    assert config["markets"][0]["replaced_token_id"] == "101"
+
+
+def test_runtime_replacement_preserves_the_retired_night_section(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {},
+    }
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [],
+                "night_markets": [
+                    {"token_id": "101", "paired_token_id": "102"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def add_candidate(_market, _candidate, *, session, persist, notify):
+        assert session == "night"
+        assert persist is False
+        assert notify is False
+        engine._night_market_cfg["201"] = {"paired_token_id": "202"}
+        engine._night_market_cfg["202"] = {}
+        return True
+
+    def drop_market(token_id):
+        source = engine.market_cfg if token_id in engine.market_cfg else engine._night_market_cfg
+        pair = str((source.get(token_id) or {}).get("paired_token_id") or "")
+        found = token_id in source
+        engine.market_cfg.pop(token_id, None)
+        engine._night_market_cfg.pop(token_id, None)
+        if pair:
+            engine.market_cfg.pop(pair, None)
+            engine._night_market_cfg.pop(pair, None)
+        return found
+
+    engine._add_runtime_candidate = add_candidate
+    engine._drop_market_runtime_state = drop_market
+    command = _stable_replacement_command()
+    command["target_config_section"] = "night_markets"
+
+    status = asyncio.run(engine._runtime_replace_from_command(command))
+
+    assert status == "replaced"
+    assert set(engine._night_market_cfg) == {"201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"] == []
+    assert [row["token_id"] for row in config["night_markets"]] == ["201"]
+
+
+def test_runtime_replacement_keeps_old_market_when_cancel_is_unconfirmed(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+    engine._cancel_token_orders = AsyncMock(side_effect=[True, False])
+
+    with pytest.raises(ValueError, match="cancellation is unconfirmed"):
+        asyncio.run(
+            engine._runtime_replace_from_command(_stable_replacement_command())
+        )
+
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["token_id"] == "101"
+    assert config["markets"][1]["pending_activation"] is True
+
+
+def test_runtime_replacement_stops_if_an_order_appears_after_cancellation(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+    responses = [
+        [],
+        [
+            {
+                "id": "late-order",
+                "asset_id": "101",
+                "side": "BUY",
+                "status": "live",
+            }
+        ],
+    ]
+    engine.client = type(
+        "Client",
+        (),
+        {"get_open_orders": lambda self: responses.pop(0)},
+    )()
+
+    with pytest.raises(ValueError, match="still has a live order"):
+        asyncio.run(
+            engine._runtime_replace_from_command(_stable_replacement_command())
+        )
+
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["token_id"] == "101"
 
 
 def test_runtime_command_partial_json_is_restored_for_retry(tmp_path):
@@ -556,6 +814,55 @@ def test_runtime_command_loop_processes_completed_retry_once(tmp_path, monkeypat
         )
     ]
     assert not list(engine._runtime_command_dir.iterdir())
+
+
+def test_runtime_command_loop_dispatches_confirmed_replacement(tmp_path, monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_command_dir = tmp_path / "runtime_commands_1"
+    engine._runtime_command_dir.mkdir()
+    engine._runtime_command_parse_failures = {}
+    engine._runtime_command_parse_retry_limit = 5
+    engine._running = True
+    command = {
+        "command_id": "dashboard-replace-1",
+        "action": "replace_market",
+        "replacement_id": "a" * 64,
+        "retire_token_id": "101",
+        "market": {"token_id": "201", "paired_token_id": "202"},
+    }
+    (engine._runtime_command_dir / "dashboard-replace-1.json").write_text(
+        json.dumps(command),
+        encoding="utf-8",
+    )
+    engine._runtime_replace_from_command = AsyncMock(return_value="replaced")
+    results = []
+    engine._write_runtime_result = lambda command_id, payload: results.append(
+        (command_id, dict(payload))
+    )
+    engine._mark_runtime_pending_failed = lambda *_args: pytest.fail(
+        "a valid replacement must not be rejected"
+    )
+
+    async def stop_after_dispatch(_delay):
+        engine._running = False
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_dispatch)
+
+    asyncio.run(engine.runtime_command_loop())
+
+    engine._runtime_replace_from_command.assert_awaited_once_with(command)
+    assert results == [
+        (
+            "dashboard-replace-1",
+            {
+                "ok": True,
+                "status": "replaced",
+                "token_id": "201",
+                "retired_token_id": "101",
+                "replacement_id": "a" * 64,
+            },
+        )
+    ]
 
 
 def test_cancel_quotes_preserves_unregistered_sell_exit():

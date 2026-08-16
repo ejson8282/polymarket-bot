@@ -54,6 +54,10 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
     maker.mkdir(parents=True)
     (maker / "engine.py").write_text("print('maker')\n", encoding="utf-8")
     shutil.copy2(MAKER_DIR / "release_guard.py", maker / "release_guard.py")
+    shutil.copy2(
+        MAKER_DIR / "stable_rotation_commands.py",
+        maker / "stable_rotation_commands.py",
+    )
     tests = source / "tests"
     tests.mkdir()
     (tests / "test_release_smoke.py").write_text(
@@ -694,6 +698,8 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     reward_observer.write_text("print('observer')\n", encoding="utf-8")
     stable_rotation_planner = maker / "stable_rotation_planner.py"
     stable_rotation_planner.write_text("print('rotation')\n", encoding="utf-8")
+    stable_rotation_commands = maker / "stable_rotation_commands.py"
+    stable_rotation_commands.write_text("print('commands')\n", encoding="utf-8")
     scoring_observer = maker / "order_scoring_observer.py"
     scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
     aggressive_recovery = maker / "aggressive_recovery.py"
@@ -707,6 +713,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
     stable_rotation_planner_path = (
         "platforms/polymarket/maker/stable_rotation_planner.py"
+    )
+    stable_rotation_commands_path = (
+        "platforms/polymarket/maker/stable_rotation_commands.py"
     )
     scoring_observer_path = "platforms/polymarket/maker/order_scoring_observer.py"
     aggressive_recovery_path = "platforms/polymarket/maker/aggressive_recovery.py"
@@ -725,6 +734,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     assert manifest["artifacts_sha256"][
         stable_rotation_planner_path
     ] == hashlib.sha256(stable_rotation_planner.read_bytes()).hexdigest()
+    assert manifest["artifacts_sha256"][
+        stable_rotation_commands_path
+    ] == hashlib.sha256(stable_rotation_commands.read_bytes()).hexdigest()
     assert manifest["artifacts_sha256"][scoring_observer_path] == hashlib.sha256(
         scoring_observer.read_bytes()
     ).hexdigest()
@@ -760,6 +772,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
         _verify_release_manifest(release, target_sha)
 
     stable_rotation_planner.write_text("print('rotation')\n", encoding="utf-8")
+    stable_rotation_commands.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    stable_rotation_commands.write_text("print('commands')\n", encoding="utf-8")
     scoring_observer.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
@@ -768,6 +785,18 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     aggressive_recovery.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
+
+
+def test_release_manifest_requires_stable_rotation_commands(tmp_path):
+    target_sha = "d" * 40
+    release = tmp_path / target_sha
+    maker = release / "platforms" / "polymarket" / "maker"
+    maker.mkdir(parents=True)
+    (maker / "engine.py").write_text("print('engine')\n", encoding="utf-8")
+    (maker / "release_guard.py").write_text("print('guard')\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match="stable rotation commands"):
+        _manifest_for(release, target_sha)
 
 
 def test_prepare_rejects_non_fast_forward_candidate_downgrade(tmp_path):
