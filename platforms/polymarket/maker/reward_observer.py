@@ -32,9 +32,11 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-MODEL_VERSION = 3
+MODEL_VERSION = 4
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
+DEFAULT_LOWER_REWARD_RESERVE_RATIO = Decimal("0.25")
+DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC = Decimal("1")
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -385,6 +387,7 @@ def _observe_candidate(
     yes_book: Optional[Dict[str, Any]],
     no_book: Optional[Dict[str, Any]],
     probe_budget: Decimal,
+    min_estimated_daily_payout: Decimal,
 ) -> Optional[Dict[str, Any]]:
     market = rough["market"]
     yes = _book_summary(yes_book)
@@ -441,6 +444,8 @@ def _observe_candidate(
         reasons.append("high_fill_risk")
     elif fill_risk >= 35:
         reasons.append("medium_fill_risk")
+    if estimated_daily_gross < min_estimated_daily_payout:
+        reasons.append("estimated_daily_payout_below_floor")
 
     market_competitiveness = market.get("marketCompetitiveness")
     if market_competitiveness is None:
@@ -473,6 +478,9 @@ def _observe_candidate(
             else None
         ),
         "daily_reward_usd": round(float(daily_reward), 2),
+        "selection_lane": str(
+            rough.get("selection_lane") or "overall_efficiency"
+        ),
         "rewards_min_size_shares": round(float(min_size), 4),
         "rewards_max_spread": round(float(spread), 6),
         "probe_budget_usd": round(float(probe_budget), 2),
@@ -483,6 +491,10 @@ def _observe_candidate(
         "estimated_reward_share_pct": round(float(estimated_share * 100), 2),
         "estimated_daily_gross_usd": round(float(estimated_daily_gross), 2),
         "estimated_gross_daily_roi_pct": round(float(gross_daily_roi * 100), 2),
+        "min_estimated_daily_payout_usd": round(
+            float(min_estimated_daily_payout),
+            2,
+        ),
         "actual_reward_share_pct": None,
         "actual_daily_gross_usd": None,
         "fill_risk": fill_risk,
@@ -500,12 +512,90 @@ def _observe_candidate(
     }
 
 
+def _select_rough_candidates(
+    rough: List[Dict[str, Any]],
+    *,
+    candidate_limit: int,
+    lower_reward_reserve_ratio: Decimal,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Reserve part of the book budget for efficient smaller reward pools.
+
+    The main lane keeps the existing capital-efficiency ranking. The reserve
+    lane samples the lower-reward tail and ranks that tail by the same
+    efficiency metric, so absolute reward size alone cannot crowd every small
+    pool out before order-book analysis.
+    """
+
+    limit = max(1, int(candidate_limit))
+    if not rough:
+        return [], {
+            "overall_efficiency": 0,
+            "lower_reward_efficiency": 0,
+            "lower_reward_pool_seen": 0,
+        }
+
+    overall = sorted(
+        rough,
+        key=lambda row: (row["rough_efficiency"], row["reward"]),
+        reverse=True,
+    )
+    reserve_ratio = min(
+        Decimal("0.5"),
+        max(Decimal("0"), _decimal(lower_reward_reserve_ratio)),
+    )
+    reserve_count = min(
+        max(0, limit - 1),
+        int(Decimal(limit) * reserve_ratio),
+    )
+    lower_pool_size = min(len(rough), max(reserve_count * 2, reserve_count))
+    lower_pool = sorted(
+        rough,
+        key=lambda row: (row["reward"], -row["rough_efficiency"]),
+    )[:lower_pool_size]
+    lower_ranked = sorted(
+        lower_pool,
+        key=lambda row: (row["rough_efficiency"], row["reward"]),
+        reverse=True,
+    )
+
+    selected: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    lane_counts = {
+        "overall_efficiency": 0,
+        "lower_reward_efficiency": 0,
+        "lower_reward_pool_seen": len(lower_pool),
+    }
+
+    def add(rows: Iterable[Dict[str, Any]], count: int, lane: str) -> None:
+        for row in rows:
+            if lane_counts[lane] >= count or len(selected) >= limit:
+                break
+            key = id(row)
+            if key in seen:
+                continue
+            copy = dict(row)
+            copy["selection_lane"] = lane
+            selected.append(copy)
+            seen.add(key)
+            lane_counts[lane] += 1
+
+    add(lower_ranked, reserve_count, "lower_reward_efficiency")
+    add(overall, limit - len(selected), "overall_efficiency")
+    if len(selected) < limit:
+        add(overall, limit, "overall_efficiency")
+    return selected, lane_counts
+
+
 def observe_reward_markets(
     markets: Iterable[Dict[str, Any]],
     fetch_book: Callable[[str], Optional[Dict[str, Any]]],
     *,
     candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     probe_budget_usdc: Decimal = DEFAULT_PROBE_BUDGET_USDC,
+    lower_reward_reserve_ratio: Decimal = DEFAULT_LOWER_REWARD_RESERVE_RATIO,
+    min_estimated_daily_payout_usdc: Decimal = (
+        DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC
+    ),
     fetch_workers: int = 8,
 ) -> Dict[str, Any]:
     """Build a ranked, read-only opportunity list from active reward markets."""
@@ -515,11 +605,11 @@ def observe_reward_markets(
         for market in markets
         if (candidate := _rough_candidate(market)) is not None
     ]
-    rough.sort(
-        key=lambda row: (row["rough_efficiency"], row["reward"]),
-        reverse=True,
+    selected, selection_lanes = _select_rough_candidates(
+        rough,
+        candidate_limit=candidate_limit,
+        lower_reward_reserve_ratio=lower_reward_reserve_ratio,
     )
-    selected = rough[: max(1, int(candidate_limit))]
 
     def load_pair(row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         yes_token, no_token = row["token_ids"]
@@ -536,6 +626,10 @@ def observe_reward_markets(
             yes_book,
             no_book,
             _decimal(probe_budget_usdc, DEFAULT_PROBE_BUDGET_USDC),
+            _decimal(
+                min_estimated_daily_payout_usdc,
+                DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC,
+            ),
         )) is not None
     ]
     observed.sort(
@@ -552,6 +646,7 @@ def observe_reward_markets(
         "rewarded_markets_seen": len(rough),
         "candidates_evaluated": len(selected),
         "candidates_ready": len(observed),
+        "selection_lanes": selection_lanes,
         "candidates": observed,
     }
 
@@ -649,6 +744,23 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
         "probe_budget_usdc": _decimal(
             settings.get("probe_budget_usdc"),
             DEFAULT_PROBE_BUDGET_USDC,
+        ),
+        "lower_reward_reserve_ratio": min(
+            Decimal("0.5"),
+            max(
+                Decimal("0"),
+                _decimal(
+                    settings.get("lower_reward_reserve_ratio"),
+                    DEFAULT_LOWER_REWARD_RESERVE_RATIO,
+                ),
+            ),
+        ),
+        "min_estimated_daily_payout_usdc": max(
+            Decimal("0"),
+            _decimal(
+                settings.get("min_estimated_daily_payout_usdc"),
+                DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC,
+            ),
         ),
     }
 
@@ -799,6 +911,8 @@ def _apply_observation_history(
             and fill_risk < 65
             and stability["stability_score"] >= 70
             and gross_roi > 0
+            and float(candidate.get("estimated_daily_gross_usd") or 0)
+            >= float(candidate.get("min_estimated_daily_payout_usd") or 0)
         )
 
     history_payload = {
@@ -834,6 +948,10 @@ def refresh_observer_state(
         fetch_book,
         candidate_limit=int(settings["candidate_limit"]),
         probe_budget_usdc=settings["probe_budget_usdc"],
+        lower_reward_reserve_ratio=settings["lower_reward_reserve_ratio"],
+        min_estimated_daily_payout_usdc=settings[
+            "min_estimated_daily_payout_usdc"
+        ],
     )
     generated_at = time.time()
     _apply_observation_history(data_dir, state, generated_at)
