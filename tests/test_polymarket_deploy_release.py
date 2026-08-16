@@ -692,6 +692,8 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     reward_observer = maker / "reward_observer.py"
     reward_observer.write_text("print('observer')\n", encoding="utf-8")
+    stable_rotation_planner = maker / "stable_rotation_planner.py"
+    stable_rotation_planner.write_text("print('rotation')\n", encoding="utf-8")
     scoring_observer = maker / "order_scoring_observer.py"
     scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
     aggressive_recovery = maker / "aggressive_recovery.py"
@@ -703,6 +705,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
     multi_runner_path = "platforms/polymarket/maker/multi_runner.py"
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
+    stable_rotation_planner_path = (
+        "platforms/polymarket/maker/stable_rotation_planner.py"
+    )
     scoring_observer_path = "platforms/polymarket/maker/order_scoring_observer.py"
     aggressive_recovery_path = "platforms/polymarket/maker/aggressive_recovery.py"
     aggressive_market_stage_path = (
@@ -717,6 +722,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     assert manifest["artifacts_sha256"][reward_observer_path] == hashlib.sha256(
         reward_observer.read_bytes()
     ).hexdigest()
+    assert manifest["artifacts_sha256"][
+        stable_rotation_planner_path
+    ] == hashlib.sha256(stable_rotation_planner.read_bytes()).hexdigest()
     assert manifest["artifacts_sha256"][scoring_observer_path] == hashlib.sha256(
         scoring_observer.read_bytes()
     ).hexdigest()
@@ -747,6 +755,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
         _verify_release_manifest(release, target_sha)
 
     reward_observer.write_text("print('observer')\n", encoding="utf-8")
+    stable_rotation_planner.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    stable_rotation_planner.write_text("print('rotation')\n", encoding="utf-8")
     scoring_observer.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)

@@ -227,6 +227,69 @@ def test_standalone_refresh_writes_read_only_dashboard_state(
     assert saved["candidates"][0]["verification_status"] == "collecting"
 
 
+def test_refresh_writes_review_only_stable_rotation_proposal(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    config_path = config_dir / "config_1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "account": {"funder": "0x" + "1" * 40},
+                "execution": {"min_front_bid_notional_usdc": 1},
+                "markets": [],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_before = config_path.read_bytes()
+
+    state = refresh_observer_state(
+        data_dir,
+        config_dir=config_dir,
+        fetch_markets=lambda: [_market(reward="25")],
+        fetch_book=lambda _token: _book(),
+    )
+
+    proposal_path = data_dir / "stable_rotation_proposal.json"
+    proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    assert state["stable_rotation_proposal"]["output"] == proposal_path.name
+    assert proposal["mode"] == "proposal_only"
+    assert proposal["safety"]["runtime_config_writes"] is False
+    assert proposal["safety"]["runtime_commands"] is False
+    assert proposal["safety"]["trading_actions"] is False
+    assert config_path.read_bytes() == config_before
+
+
+def test_rotation_planner_failure_does_not_break_reward_observer(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    (config_dir / "config_1.json").write_text("not-json", encoding="utf-8")
+
+    state = refresh_observer_state(
+        data_dir,
+        config_dir=config_dir,
+        fetch_markets=lambda: [_market(reward="25")],
+        fetch_book=lambda _token: _book(),
+    )
+
+    proposal = json.loads(
+        (data_dir / "stable_rotation_proposal.json").read_text(encoding="utf-8")
+    )
+    assert state["status"] == "ready"
+    assert state["stable_rotation_proposal"]["status"] == "blocked"
+    assert proposal["status"] == "blocked"
+    assert proposal["reason"] == "planner_input_error"
+    assert proposal["safety"]["trading_actions"] is False
+    assert "not-json" not in json.dumps(proposal)
+
+
 def test_candidate_requires_repeated_stable_samples_before_verification(
     tmp_path: Path,
     monkeypatch,
