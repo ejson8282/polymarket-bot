@@ -42,6 +42,9 @@ LIMITED_LIVE_ACCOUNT_IDS = ("account_01",)
 LIMITED_LIVE_MAX_MARKETS = 1
 LIMITED_LIVE_MAX_NOTIONAL = "1.60"
 WS_ACCEPTANCE_ATTEMPTS = 90
+# A startup cycle can spend roughly 150 seconds in bounded HTTP retries before
+# it publishes fresh runner state, so deployment acceptance must outlast that.
+RUNNER_ACCEPTANCE_ATTEMPTS = 240
 ARCHIVE_PATHS = (
     "platforms/__init__.py",
     "platforms/predictfun",
@@ -701,6 +704,31 @@ def _restore(path: Path, snapshot: FileSnapshot) -> None:
         os.chown(path, snapshot.uid, snapshot.gid)
 
 
+def _restore_unit_state(
+    runner: CommandRunner,
+    unit_name: str,
+    *,
+    enabled: bool,
+    active: bool,
+) -> None:
+    if enabled and active:
+        runner.run(
+            ("systemctl", "enable", "--now", unit_name),
+            check=False,
+        )
+    elif enabled:
+        runner.run(("systemctl", "enable", unit_name), check=False)
+        runner.run(("systemctl", "stop", unit_name), check=False)
+    elif active:
+        runner.run(("systemctl", "disable", unit_name), check=False)
+        runner.run(("systemctl", "start", unit_name), check=False)
+    else:
+        runner.run(
+            ("systemctl", "disable", "--now", unit_name),
+            check=False,
+        )
+
+
 def _prepare_runtime_permissions(paths: DeploymentPaths) -> tuple[int, int]:
     paths.runtime_root.mkdir(parents=True, exist_ok=True)
     paths.runtime_root.chmod(0o755)
@@ -827,7 +855,7 @@ def _verify_runner_state(
     target_sha: str,
     observed_after: datetime,
     *,
-    attempts: int = 60,
+    attempts: int = RUNNER_ACCEPTANCE_ATTEMPTS,
     interval_sec: float = 1.0,
 ) -> dict[str, Any]:
     last_failure = "state unavailable"
@@ -915,7 +943,7 @@ def _verify_runner_state(
         if attempt + 1 < max(1, attempts):
             time.sleep(max(0.0, interval_sec))
     raise DeploymentError(
-        f"Predict.fun continuous dry-run acceptance failed: {last_failure}"
+        f"Predict.fun continuous runner acceptance failed: {last_failure}"
     )
 
 
@@ -1292,45 +1320,24 @@ def activate_release(
         _restore(paths.runtime_config, snapshots["config"])
         _restore(paths.release_env, snapshots["env"])
         runner.run(("systemctl", "daemon-reload"), check=False)
-        if timer_enabled:
-            runner.run(
-                ("systemctl", "enable", "--now", paths.timer_name),
-                check=False,
-            )
-        elif timer_active:
-            runner.run(("systemctl", "start", paths.timer_name), check=False)
-        else:
-            runner.run(
-                ("systemctl", "disable", "--now", paths.timer_name),
-                check=False,
-            )
-        if service_enabled:
-            runner.run(
-                ("systemctl", "enable", "--now", paths.service_name),
-                check=False,
-            )
-        elif service_active:
-            runner.run(("systemctl", "start", paths.service_name), check=False)
-        else:
-            runner.run(
-                ("systemctl", "disable", "--now", paths.service_name),
-                check=False,
-            )
-        if ws_service_enabled:
-            runner.run(
-                ("systemctl", "enable", "--now", paths.ws_service_name),
-                check=False,
-            )
-        elif ws_service_active:
-            runner.run(
-                ("systemctl", "start", paths.ws_service_name),
-                check=False,
-            )
-        else:
-            runner.run(
-                ("systemctl", "disable", "--now", paths.ws_service_name),
-                check=False,
-            )
+        _restore_unit_state(
+            runner,
+            paths.timer_name,
+            enabled=timer_enabled,
+            active=timer_active,
+        )
+        _restore_unit_state(
+            runner,
+            paths.service_name,
+            enabled=service_enabled,
+            active=service_active,
+        )
+        _restore_unit_state(
+            runner,
+            paths.ws_service_name,
+            enabled=ws_service_enabled,
+            active=ws_service_active,
+        )
         raise DeploymentError(
             "Predict.fun activation failed; previous Predict-only service state "
             f"was restored: {exc}"

@@ -328,6 +328,52 @@ class SystemdRunner(CommandRunner):
         return ""
 
 
+class PausedEnabledSystemdRunner(SystemdRunner):
+    def __init__(self, paths: DeploymentPaths, sha: str) -> None:
+        super().__init__(paths, sha, fail_cycle=True)
+        self.active = {
+            paths.service_name: False,
+            paths.timer_name: False,
+            paths.ws_service_name: True,
+        }
+        self.enabled = {
+            paths.service_name: True,
+            paths.timer_name: False,
+            paths.ws_service_name: True,
+        }
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Optional[Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+        check: bool = True,
+    ) -> str:
+        command = tuple(str(arg) for arg in args)
+        if command[:2] == ("systemctl", "is-active"):
+            self.calls.append(command)
+            return "active" if self.active.get(command[-1], False) else "inactive"
+        if command[:2] == ("systemctl", "is-enabled"):
+            self.calls.append(command)
+            return "enabled" if self.enabled.get(command[-1], False) else "disabled"
+
+        result = super().run(args, cwd=cwd, env=env, check=check)
+        if command[:2] == ("systemctl", "enable"):
+            self.enabled[command[-1]] = True
+            if "--now" in command:
+                self.active[command[-1]] = True
+        elif command[:2] == ("systemctl", "disable"):
+            self.enabled[command[-1]] = False
+            if "--now" in command:
+                self.active[command[-1]] = False
+        elif command[:2] == ("systemctl", "start"):
+            self.active[command[-1]] = True
+        elif command[:2] == ("systemctl", "stop"):
+            self.active[command[-1]] = False
+        return result
+
+
 def test_release_guard_accepts_exact_predict_release(tmp_path: Path) -> None:
     release = _guard_release(tmp_path)
     manifest = verify_release(
@@ -703,6 +749,38 @@ def test_failed_cycle_restores_legacy_predict_units(
     )
 
 
+def test_failed_activation_keeps_enabled_runner_paused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_release_module.time, "sleep", lambda _seconds: None)
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    runner = PausedEnabledSystemdRunner(paths, sha)
+
+    with pytest.raises(DeploymentError, match="previous Predict-only service state"):
+        activate_release(
+            paths,
+            runner,
+            target_sha=sha,
+            expected_current="none",
+            confirm=CONFIRMATION,
+            authorization_id="test-paused-rollback",
+        )
+
+    assert runner.enabled[paths.service_name] is True
+    assert runner.active[paths.service_name] is False
+    assert runner.enabled[paths.ws_service_name] is True
+    assert runner.active[paths.ws_service_name] is True
+    assert runner.enabled[paths.timer_name] is False
+    assert runner.active[paths.timer_name] is False
+    assert (
+        "systemctl",
+        "enable",
+        "--now",
+        paths.service_name,
+    ) not in runner.calls
+
+
 def test_failed_account_auth_restores_previous_predict_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1028,6 +1106,74 @@ def test_ws_acceptance_waits_past_thirty_seconds_for_first_message(
 
     assert accepted["last_message_at"]
     assert sleeps == 35
+
+
+def test_runner_acceptance_waits_past_sixty_seconds_for_live_retry_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, sha = _paths(tmp_path, execution_mode="live")
+    paths.runner_state.parent.mkdir(parents=True, exist_ok=True)
+    paths.runner_state.write_text("{}", encoding="utf-8")
+    observed_after = datetime.now(timezone.utc)
+    sleeps = 0
+
+    def publish_live_cycle(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 60:
+            now = datetime.now(timezone.utc).isoformat()
+            paths.runner_state.write_text(
+                json.dumps(
+                    {
+                        "mode": "live",
+                        "release_sha": sha,
+                        "release_required": True,
+                        "deployment_profile": "vps1",
+                        "account_ids": ["account_01"],
+                        "last_auth_summary": {
+                            "enabled": True,
+                            "ok": True,
+                            "accounts": [
+                                {"account_id": "account_01", "ok": True}
+                            ],
+                        },
+                        "cycle_count": 1,
+                        "error_count": 0,
+                        "last_error": "",
+                        "last_cycle_finished_at": now,
+                        "running": True,
+                        "capabilities": {
+                            "live_order_submit": True,
+                            "live_order_cancel": True,
+                        },
+                        "execution_gate": {
+                            "allowed": True,
+                            "blocks": [],
+                        },
+                        "last_execution_summary": {
+                            "actions": 0,
+                            "failed": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        deploy_release_module.time,
+        "sleep",
+        publish_live_cycle,
+    )
+
+    accepted = deploy_release_module._verify_runner_state(
+        paths,
+        sha,
+        observed_after,
+    )
+
+    assert accepted["mode"] == "live"
+    assert sleeps == 60
 
 
 def test_ws_acceptance_rejects_partial_market_book_coverage(
