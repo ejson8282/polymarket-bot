@@ -20,6 +20,17 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+try:
+    from .stable_rotation_planner import (
+        refresh_stable_rotation_proposal,
+        write_blocked_stable_rotation_proposal,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from stable_rotation_planner import (
+        refresh_stable_rotation_proposal,
+        write_blocked_stable_rotation_proposal,
+    )
+
 
 MODEL_VERSION = 3
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
@@ -835,6 +846,28 @@ def refresh_observer_state(
             "source": "public_gamma_and_clob",
         }
     )
+    if config_dir is not None:
+        try:
+            proposal_summary = refresh_stable_rotation_proposal(
+                data_dir,
+                config_dir,
+                state,
+                now_ts=generated_at,
+            )
+        except Exception as exc:
+            try:
+                proposal_summary = write_blocked_stable_rotation_proposal(
+                    data_dir,
+                    state,
+                    exc,
+                )
+            except Exception:
+                proposal_summary = {
+                    "status": "blocked",
+                    "error_type": type(exc).__name__,
+                }
+        if proposal_summary is not None:
+            state["stable_rotation_proposal"] = proposal_summary
     output = data_dir / "reward_observer_state.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp = output.with_suffix(".json.tmp")
