@@ -146,6 +146,11 @@ directory. The engine only clears the latch and pause flag when fresh total
 equity is above `pause_equity_usdc`; the new daily-loss baseline becomes that
 fresh equity. A rejected reset request is removed and must be requested again.
 
+For paused maintenance such as staging a reviewed market, create
+`.account_N.aggressive_guardrail_reset_paused` instead. It applies the same
+fresh-equity checks and clears the guardrail latch, but keeps the account pause
+flag in place. If both reset requests exist, the paused reset takes precedence.
+
 These guardrails do not authorize activation. The aggressive runtime remains
 paused until its isolation and guardrail PRs are reviewed, merged, deployed,
 and verified through a separate approved cutover.

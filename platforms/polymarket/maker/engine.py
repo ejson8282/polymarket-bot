@@ -1222,6 +1222,10 @@ class PolyLPSMulti:
             self._state_path.parent
             / f".account_{self._account_idx or 1}.aggressive_guardrail_reset"
         )
+        self._aggressive_guardrail_reset_paused_path = (
+            self._state_path.parent
+            / f".account_{self._account_idx or 1}.aggressive_guardrail_reset_paused"
+        )
         self._aggressive_guardrail_state = AggressiveGuardrailState.load(
             self._aggressive_guardrail_state_path
         )
@@ -8199,7 +8203,7 @@ class PolyLPSMulti:
                 "danger",
             )
 
-    async def _reset_aggressive_guardrail(self) -> bool:
+    async def _reset_aggressive_guardrail(self, *, keep_paused: bool = False) -> bool:
         if not (
             self._aggressive_guardrail_latch_path.exists()
             or self._aggressive_guardrail_state.latched
@@ -8231,15 +8235,27 @@ class PolyLPSMulti:
         self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
         self._aggressive_guardrail_latch_path.unlink(missing_ok=True)
         self._aggressive_guardrail_reset_path.unlink(missing_ok=True)
-        self._pause_flag_path.unlink(missing_ok=True)
+        self._aggressive_guardrail_reset_paused_path.unlink(missing_ok=True)
+        if keep_paused:
+            self._pause_flag_path.touch(exist_ok=True)
+        else:
+            self._pause_flag_path.unlink(missing_ok=True)
         self._aggressive_guardrail_cancel_complete = False
         self._event_bus.publish(
             "aggressive_guardrail_reset",
-            {"account_index": self._account_idx or 1, "equity_usdc": str(equity)},
+            {
+                "account_index": self._account_idx or 1,
+                "equity_usdc": str(equity),
+                "paused": keep_paused,
+            },
         )
         self.notify_discord(
             "激进 LP 风控已人工复位",
-            f"当前总权益：${equity}\n当日损失基线已重新建立",
+            (
+                f"当前总权益：${equity}\n"
+                "当日损失基线已重新建立\n"
+                f"运行状态：{'继续暂停' if keep_paused else '解除暂停'}"
+            ),
             "warning",
         )
         return True
@@ -8248,10 +8264,17 @@ class PolyLPSMulti:
         """Enforce isolated aggressive-account equity and daily-loss limits."""
         while self._running:
             try:
-                if self._aggressive_guardrail_reset_path.exists():
-                    reset = await self._reset_aggressive_guardrail()
+                keep_paused = self._aggressive_guardrail_reset_paused_path.exists()
+                resume_requested = self._aggressive_guardrail_reset_path.exists()
+                if keep_paused or resume_requested:
+                    reset = await self._reset_aggressive_guardrail(
+                        keep_paused=keep_paused
+                    )
                     if not reset:
                         self._aggressive_guardrail_reset_path.unlink(missing_ok=True)
+                        self._aggressive_guardrail_reset_paused_path.unlink(
+                            missing_ok=True
+                        )
 
                 if (
                     self._aggressive_guardrail_latch_path.exists()
