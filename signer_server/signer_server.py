@@ -21,6 +21,7 @@ POLY_FUNDER like before. Incoming requests without a `funder` field
 keep working unchanged.
 """
 
+import dataclasses
 import json
 import os
 import time
@@ -31,13 +32,18 @@ from datetime import datetime
 
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import uvicorn
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import OrderArgs
+from py_clob_client_v2.order_builder.constants import BUY, SELL
+from py_clob_client.client import ClobClient as CredentialsClobClient
+from py_clob_client.http_helpers import helpers as credentials_http_helpers
+
+from credential_transport import CredentialTransportRecovery
 
 # ---------------------------------------------------------------------------
 # Configuration (from environment variables)
@@ -154,7 +160,39 @@ async def verify_auth(
 # Per-funder ClobClient cache (lazy, thread-safe)
 # ---------------------------------------------------------------------------
 _client_cache: dict[str, ClobClient] = {}
+_credentials_client_cache: dict[str, CredentialsClobClient] = {}
 _client_lock = threading.Lock()
+_readiness_lock = threading.Lock()
+_readiness: dict[str, dict] = {}
+
+
+def _reset_credentials_http_transport() -> None:
+    """Replace py-clob-client's process-wide HTTP/2 client."""
+    old_client = credentials_http_helpers._http_client
+    new_client = type(old_client)(http2=True)
+    credentials_http_helpers._http_client = new_client
+    try:
+        old_client.close()
+    except Exception:
+        logger.warning("derive-creds transport reset could not close old client")
+
+
+_credential_transport_recovery = CredentialTransportRecovery(
+    _reset_credentials_http_transport
+)
+
+
+def _record_readiness(funder_key: str, ok: bool, recovered: bool = False) -> None:
+    with _readiness_lock:
+        _readiness[funder_key] = {
+            "ok": ok,
+            "recovered": recovered,
+            "checked_at": time.time(),
+        }
+
+
+def _derive_credentials(client: CredentialsClobClient):
+    return _credential_transport_recovery.run(client.create_or_derive_api_creds)
 
 
 def _resolve_funder(requested: str | None) -> str:
@@ -203,6 +241,29 @@ def _get_client(funder_key: str) -> ClobClient:
             kwargs["funder"] = funder_key
         client = ClobClient(**kwargs)
         _client_cache[funder_key] = client
+        return client
+
+
+def _get_credentials_client(funder_key: str) -> CredentialsClobClient:
+    """Return a maintained client for authenticated API credential derivation."""
+    cached = _credentials_client_cache.get(funder_key)
+    if cached is not None:
+        return cached
+    with _client_lock:
+        cached = _credentials_client_cache.get(funder_key)
+        if cached is not None:
+            return cached
+        priv = KEY_MAP[funder_key]
+        kwargs: dict = {
+            "host": HOST,
+            "chain_id": CHAIN_ID,
+            "key": priv,
+            "signature_type": SIGNATURE_TYPE,
+        }
+        if funder_key:
+            kwargs["funder"] = funder_key
+        client = CredentialsClobClient(**kwargs)
+        _credentials_client_cache[funder_key] = client
         return client
 
 
@@ -258,13 +319,57 @@ app = FastAPI(title="Polymarket Signer Server", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    with _readiness_lock:
+        statuses = list(_readiness.values())
+    ready = sum(1 for row in statuses if row.get("ok"))
+    failed = sum(1 for row in statuses if not row.get("ok"))
     return {
         "status": "ok",
         "locked": _locked,
         "funders_configured": len(KEY_MAP),
         "clients_cached": len(_client_cache),
+        "credentials_clients_cached": len(_credentials_client_cache),
+        "derive_readiness": {
+            "ready": ready,
+            "failed": failed,
+            "unknown": max(0, len(KEY_MAP) - len(statuses)),
+        },
         "time": datetime.utcnow().isoformat(),
     }
+
+
+@app.post("/ready")
+async def ready(request: Request, _=Depends(verify_auth)):
+    """Actively verify every configured account without returning credentials."""
+    _check_rate_limit()
+    results = []
+    for account_number, funder_key in enumerate(KEY_MAP, start=1):
+        client = _get_credentials_client(funder_key)
+        try:
+            _, recovered = await run_in_threadpool(_derive_credentials, client)
+            _record_readiness(funder_key, True, recovered)
+            results.append({
+                "account": account_number,
+                "ok": True,
+                "transport_recovered": recovered,
+            })
+        except Exception as exc:
+            _record_readiness(funder_key, False)
+            results.append({
+                "account": account_number,
+                "ok": False,
+                "error_type": type(exc).__name__,
+            })
+    ok = bool(results) and all(row["ok"] for row in results)
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={
+            "status": "ready" if ok else "not_ready",
+            "funders_configured": len(KEY_MAP),
+            "funders_ready": sum(1 for row in results if row["ok"]),
+            "results": results,
+        },
+    )
 
 
 @app.post("/unlock")
@@ -281,10 +386,16 @@ async def derive_creds(request: Request, body: DeriveCredsRequest | None = None,
     _check_rate_limit()
     requested_funder = body.funder if body else None
     funder_key = _resolve_funder(requested_funder)
-    client = _get_client(funder_key)
+    client = _get_credentials_client(funder_key)
     try:
-        creds = await run_in_threadpool(client.create_or_derive_api_creds)
+        creds, recovered = await run_in_threadpool(_derive_credentials, client)
         address = await run_in_threadpool(client.get_address)
+        _record_readiness(funder_key, True, recovered)
+        if recovered:
+            logger.warning(
+                f"derive-creds | funder={funder_key[:10] or 'legacy'}… "
+                "| transport=recovered"
+            )
         logger.info(f"derive-creds | funder={funder_key[:10] or 'legacy'}… | address={address[:8]}… | result=ok")
         return DeriveCredsResponse(
             api_key=creds.api_key,
@@ -293,6 +404,7 @@ async def derive_creds(request: Request, body: DeriveCredsRequest | None = None,
             address=address,
         )
     except Exception as e:
+        _record_readiness(funder_key, False)
         logger.error(f"derive-creds | funder={funder_key[:10] or 'legacy'}… | result=error | {type(e).__name__}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -314,7 +426,11 @@ async def sign_order(req: SignOrderRequest, request: Request, _=Depends(verify_a
     )
     try:
         signed = await run_in_threadpool(client.create_order, args)
-        signed_dict = signed.dict() if hasattr(signed, "dict") else signed
+        signed_dict = (
+            dataclasses.asdict(signed)
+            if dataclasses.is_dataclass(signed)
+            else (signed.dict() if hasattr(signed, "dict") else signed)
+        )
         logger.info(
             f"sign-order | funder={funder_key[:10] or 'legacy'}… "
             f"| asset={req.token_id[:16]}… | side={req.side} | size={req.size} "
