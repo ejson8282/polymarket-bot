@@ -199,7 +199,17 @@ def reconcile_once(
             "actions": len(results),
             "create": sum(1 for row in results if row.get("action") == "create"),
             "cancel": sum(1 for row in results if row.get("action") == "cancel"),
-            "failed": sum(1 for row in results if not row.get("ok")),
+            "failed": sum(
+                1
+                for row in results
+                if not row.get("ok")
+                and row.get("status") != "preflight_blocked"
+            ),
+            "blocked": sum(
+                1
+                for row in results
+                if row.get("status") == "preflight_blocked"
+            ),
             "create_suppressed": (
                 sum(1 for item in diff.get("create") or [] if isinstance(item, dict))
                 if cancel_failed
