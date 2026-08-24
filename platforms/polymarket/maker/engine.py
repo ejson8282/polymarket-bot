@@ -6569,6 +6569,10 @@ class PolyLPSMulti:
             "replaced_token_id": retire_token_id,
         }
 
+    def _stable_rotation_position_is_clear(self, position: float) -> bool:
+        """Treat exchange-defined dust as clear while failing closed on unknowns."""
+        return 0 <= position <= self._exit_dust_threshold
+
     async def _runtime_replace_from_command(
         self,
         command: Mapping[str, Any],
@@ -6638,8 +6642,13 @@ class PolyLPSMulti:
             position = await self._get_token_position(token)
             if position < 0:
                 raise ValueError("retirement market position is unknown")
-            if position > 0:
+            if not self._stable_rotation_position_is_clear(position):
                 raise ValueError("retirement market still has a position")
+            if position > 0:
+                log(
+                    f"[stable-rotation] token={token[:16]} "
+                    f"ignoring_dust={position} threshold={self._exit_dust_threshold}"
+                )
 
         for token in old_tokens:
             self._set_event_state(
@@ -6692,7 +6701,7 @@ class PolyLPSMulti:
 
         for token in old_tokens:
             position = await self._get_token_position(token)
-            if position < 0 or position > 0:
+            if not self._stable_rotation_position_is_clear(position):
                 self._drop_market_runtime_state(new_token_id)
                 self._request_market_ws_resubscribe()
                 raise ValueError("retirement position changed during replacement")

@@ -535,6 +535,7 @@ def _stable_replacement_engine(tmp_path: Path) -> PolyLPSMulti:
     engine._night_market_cfg = {}
     engine._active_exit_orders = {}
     engine._pending_unwinds = {}
+    engine._exit_dust_threshold = 0.5
     engine.client = type("Client", (), {"get_open_orders": lambda self: []})()
     engine._config_path = tmp_path / "config_1.json"
     engine._config_path.write_text(
@@ -631,6 +632,33 @@ def test_runtime_replacement_cancels_both_old_sides_before_atomic_swap(tmp_path)
     assert config["markets"][0]["enabled"] is True
     assert "pending_activation" not in config["markets"][0]
     assert config["markets"][0]["replaced_token_id"] == "101"
+
+
+def test_runtime_replacement_allows_exchange_dust(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+    engine._get_token_position = AsyncMock(
+        side_effect=[0.013336, 0.0, 0.013336, 0.0]
+    )
+
+    status = asyncio.run(
+        engine._runtime_replace_from_command(_stable_replacement_command())
+    )
+
+    assert status == "replaced"
+    assert set(engine.market_cfg) == {"201", "202"}
+
+
+def test_runtime_replacement_rejects_position_above_dust(tmp_path):
+    engine = _stable_replacement_engine(tmp_path)
+    engine._get_token_position = AsyncMock(return_value=0.500001)
+
+    with pytest.raises(ValueError, match="still has a position"):
+        asyncio.run(
+            engine._runtime_replace_from_command(_stable_replacement_command())
+        )
+
+    engine._cancel_token_orders.assert_not_awaited()
+    assert set(engine.market_cfg) == {"101", "102"}
 
 
 def test_runtime_replacement_preserves_the_retired_night_section(tmp_path):
@@ -911,6 +939,27 @@ def test_runtime_command_loop_dispatches_confirmed_replacement(tmp_path, monkeyp
             },
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [
+        (-1.0, False),
+        (0.0, True),
+        (0.013336, True),
+        (0.5, True),
+        (0.500001, False),
+        (5.0, False),
+    ],
+)
+def test_stable_rotation_position_clear_uses_exit_dust_threshold(
+    position,
+    expected,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._exit_dust_threshold = 0.5
+
+    assert engine._stable_rotation_position_is_clear(position) is expected
 
 
 def test_cancel_quotes_preserves_unregistered_sell_exit():
