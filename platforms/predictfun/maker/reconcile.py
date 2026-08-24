@@ -115,7 +115,7 @@ def recover_uncertain_submissions(
         if result.ok:
             registry.record_create(order, result)
         elif result.status == "rejected":
-            registry.discard_pending(order)
+            registry.record_submission_rejected(order)
         results.append(asdict(result))
     return results
 
@@ -133,16 +133,19 @@ def _create_with_recovery(
             registry.record_create(order, recovered)
             return recovered
         if recovered is not None and recovered.status == "rejected":
-            # A definitive rejection proves that no orphan order exists. Clear
-            # the uncertain marker, then retain the engine's existing retry
-            # behavior for this desired intent.
-            registry.discard_pending(order)
+            # A definitive rejection proves that no orphan order exists. Move
+            # this intent to a fresh key so the replacement receives a fresh
+            # signed-order expiration instead of replaying the rejected one.
+            registry.record_submission_rejected(order)
+            order = _with_submission_key(order, registry)
 
     registry.record_submission_pending(order)
     result = executor.create(order)
     if result.ok:
         registry.record_create(order, result)
     elif result.status == "rejected":
+        registry.record_submission_rejected(order)
+    elif result.status == "preflight_blocked":
         registry.discard_pending(order)
     return result
 

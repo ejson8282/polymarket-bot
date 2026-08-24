@@ -230,6 +230,9 @@ class PredictFunLiveExecutor:
                 intent_id=order.intent_id,
                 account_id=order.account_id,
             )
+        approval_block = self._sell_approval_preflight(order)
+        if approval_block is not None:
+            return approval_block
         try:
             payload = self._request(
                 "POST",
@@ -280,6 +283,64 @@ class PredictFunLiveExecutor:
             ),
             order_id=order_hash,
             status="open" if ok else "rejected",
+        )
+
+    def _sell_approval_preflight(
+        self, order: ExecutableOrder
+    ) -> ExecutionResult | None:
+        if str(order.side or "").strip().upper() != "SELL":
+            return None
+        mode = {
+            (False, False): "standard",
+            (True, False): "neg_risk",
+            (False, True): "yield_bearing",
+            (True, True): "neg_risk_yield_bearing",
+        }[(bool(order.is_neg_risk), bool(order.is_yield_bearing))]
+        try:
+            payload = self._request(
+                "GET",
+                "/trade-approval",
+                params={
+                    "is_neg_risk": str(bool(order.is_neg_risk)).lower(),
+                    "is_yield_bearing": str(
+                        bool(order.is_yield_bearing)
+                    ).lower(),
+                },
+            )
+        except Exception as exc:
+            return self._error(
+                "create",
+                (
+                    "Predict.fun SELL approval status unavailable: "
+                    f"{type(exc).__name__}"
+                ),
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                status="preflight_blocked",
+            )
+        if payload.get("sell_ready") is True:
+            return None
+        checks = payload.get("checks")
+        missing_roles = (
+            [
+                str(row.get("role") or "unknown")
+                for row in checks
+                if isinstance(row, Mapping)
+                and row.get("approved") is not True
+            ]
+            if isinstance(checks, list)
+            else []
+        )
+        detail = ", ".join(missing_roles) or "unknown"
+        return self._error(
+            "create",
+            (
+                f"Predict.fun SELL approval missing for {mode}: "
+                f"{detail}"
+            ),
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+            status="preflight_blocked",
         )
 
     def recover_submission(

@@ -603,6 +603,113 @@ def test_live_executor_separates_slot_intent_from_submission_idempotency(
     assert submitted[0]["idempotency_key"] == f"{base.intent_id}:g2"
 
 
+def test_live_executor_blocks_sell_when_trade_approval_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    calls: list[tuple[str, str, Any]] = []
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((method, suffix, params or json_body))
+        if suffix == "/trade-approval":
+            return {
+                "ok": True,
+                "sell_ready": False,
+                "checks": [{"role": "exchange", "approved": False}],
+            }
+        pytest.fail("unapproved SELL reached order submission")
+
+    monkeypatch.setattr(executor, "_request", request)
+    base = _order("account_01")
+    order = ExecutableOrder(
+        **{
+            **base.__dict__,
+            "side": "SELL",
+            "is_yield_bearing": True,
+        }
+    )
+
+    result = executor.create(order)
+
+    assert result.ok is False
+    assert result.status == "preflight_blocked"
+    assert result.message == (
+        "Predict.fun SELL approval missing for yield_bearing: exchange"
+    )
+    assert calls == [
+        (
+            "GET",
+            "/trade-approval",
+            {
+                "is_neg_risk": "false",
+                "is_yield_bearing": "true",
+            },
+        )
+    ]
+
+
+def test_live_executor_submits_sell_after_all_trade_approvals_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = PredictFunLiveExecutor(
+        signer_url="http://signer.invalid",
+        account_id="account_01",
+        max_order_notional=Decimal("8"),
+    )
+    calls: list[tuple[str, str]] = []
+
+    def request(
+        method: str,
+        suffix: str,
+        *,
+        params: Any = None,
+        json_body: Any = None,
+    ) -> dict[str, Any]:
+        del params, json_body
+        calls.append((method, suffix))
+        if suffix == "/trade-approval":
+            return {
+                "ok": True,
+                "sell_ready": True,
+                "checks": [
+                    {"role": "exchange", "approved": True},
+                    {"role": "neg_risk_adapter", "approved": True},
+                ],
+            }
+        assert suffix == "/submit-order"
+        return {"ok": True, "order_hash": "0x" + "7" * 64}
+
+    monkeypatch.setattr(executor, "_request", request)
+    base = _order("account_01")
+    order = ExecutableOrder(
+        **{
+            **base.__dict__,
+            "side": "SELL",
+            "is_neg_risk": True,
+            "is_yield_bearing": True,
+        }
+    )
+
+    result = executor.create(order)
+
+    assert result.ok is True
+    assert result.order_id == "0x" + "7" * 64
+    assert calls == [
+        ("GET", "/trade-approval"),
+        ("POST", "/submit-order"),
+    ]
+
+
 def test_live_executor_retries_idempotent_submit_after_lost_response() -> None:
     class Response:
         status_code = 200
@@ -1593,6 +1700,86 @@ def _proxy_env(max_order_notional: str = "8") -> dict[str, str]:
             }
         )
     }
+
+
+@pytest.mark.parametrize(
+    (
+        "is_neg_risk",
+        "is_yield_bearing",
+        "expected_token",
+        "expected_targets",
+    ),
+    [
+        (
+            False,
+            False,
+            "0x22DA1810B194ca018378464a58f6Ac2B10C9d244",
+            [("exchange", "0x8BC070BEdAB741406F4B1Eb65A72bee27894B689")],
+        ),
+        (
+            True,
+            False,
+            "0x22DA1810B194ca018378464a58f6Ac2B10C9d244",
+            [
+                ("exchange", "0x365fb81bd4A24D6303cd2F19c349dE6894D8d58A"),
+                (
+                    "neg_risk_adapter",
+                    "0xc3Cf7c252f65E0d8D88537dF96569AE94a7F1A6E",
+                ),
+            ],
+        ),
+        (
+            False,
+            True,
+            "0x9400F8Ad57e9e0F352345935d6D3175975eb1d9F",
+            [("exchange", "0x6bEb5a40C032AFc305961162d8204CDA16DECFa5")],
+        ),
+        (
+            True,
+            True,
+            "0xF64b0b318AAf83BD9071110af24D24445719A07F",
+            [
+                ("exchange", "0x8A289d458f5a134bA40015085A8F50Ffb681B41d"),
+                (
+                    "neg_risk_adapter",
+                    "0x41dCe1A4B8FB5e6327701750aF6231B7CD0B2A40",
+                ),
+            ],
+        ),
+    ],
+)
+def test_proxy_trade_approval_targets_match_official_market_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    is_neg_risk: bool,
+    is_yield_bearing: bool,
+    expected_token: str,
+    expected_targets: list[tuple[str, str]],
+) -> None:
+    proxy = _load_proxy_module()
+    observed: list[tuple[str, str]] = []
+
+    def approved(
+        _w3: object, *, owner: str, token: str, operator: str
+    ) -> bool:
+        assert owner == "0xowner"
+        assert token == expected_token
+        observed.append((token, operator))
+        return True
+
+    monkeypatch.setattr(proxy, "_erc1155_is_approved", approved)
+
+    checks = proxy._trade_approval_checks(
+        object(),
+        owner="0xowner",
+        is_neg_risk=is_neg_risk,
+        is_yield_bearing=is_yield_bearing,
+    )
+
+    assert [(row["role"], row["operator"]) for row in checks] == expected_targets
+    assert observed == [
+        (expected_token, operator) for _role, operator in expected_targets
+    ]
+    assert all(row["approved"] is True for row in checks)
 
 
 def _proxy_order_body() -> dict[str, object]:
