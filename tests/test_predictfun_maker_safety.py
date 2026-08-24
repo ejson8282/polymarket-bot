@@ -1403,6 +1403,10 @@ def test_preflight_blocked_inventory_exit_does_not_rotate_or_stay_pending() -> N
     assert first_executor.created[0].idempotency_key == "inventory-exit-slot"
     assert second_executor.created[0].idempotency_key == "inventory-exit-slot"
     assert first["managed_orders"]["submission_generations"] == {}
+    assert first["summary"]["failed"] == 0
+    assert first["summary"]["blocked"] == 1
+    assert second["summary"]["failed"] == 0
+    assert second["summary"]["blocked"] == 1
     assert second["managed_orders"]["submission_generations"] == {}
     assert first["managed_orders"]["summary"]["pending_submissions"] == 0
     assert second["managed_orders"]["summary"]["pending_submissions"] == 0
@@ -1609,6 +1613,7 @@ def test_normal_reconcile_suppresses_creates_when_cancel_fails() -> None:
         "create": 0,
         "cancel": 1,
         "failed": 1,
+        "blocked": 0,
         "create_suppressed": 1,
     }
     assert report["managed_orders"]["summary"]["active"] == 1
