@@ -1876,6 +1876,7 @@ def test_trade_classifier_accepts_managed_maker_buy_when_taker_side_is_sell():
         "trader_side": "MAKER",
         "maker_orders": [{
             "order_id": "bot-buy-1",
+            "asset_id": "101",
             "side": "BUY",
             "matched_amount": "50",
         }],
@@ -1945,6 +1946,31 @@ def test_trade_details_sum_multiple_managed_maker_orders():
     assert size == Decimal("50")
     assert price == Decimal("0.56")
     assert token_id == "101"
+
+
+def test_trade_details_fail_closed_when_managed_maker_asset_is_missing():
+    engine = _managed_trade_engine()
+
+    actionable, reason, size, price, token_id = (
+        engine._managed_inventory_increase_details({
+            "asset_id": "taker-asset",
+            "side": "SELL",
+            "size": "1000",
+            "price": "0.90",
+            "maker_orders": [{
+                "order_id": "bot-buy-1",
+                "side": "BUY",
+                "matched_amount": "50",
+                "price": "0.53",
+            }],
+        })
+    )
+
+    assert actionable is False
+    assert reason == "managed_maker_missing_asset"
+    assert size == 0
+    assert price == 0
+    assert token_id == ""
 
 
 def test_trade_poll_uses_attributed_maker_fill(monkeypatch):
@@ -2440,6 +2466,57 @@ def test_missing_exit_order_with_dust_resumes_other_markets():
     assert "其他市场已自动恢复" in notifications[0][1]["action"]
 
 
+def test_exit_monitor_does_not_record_completion_while_dust_remains(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine.market_cfg = {"101": {}}
+    engine._night_market_cfg = {}
+    engine._exit_reprice_interval = 30
+    engine._exit_timeout_sec = 300
+    engine._exit_stop_loss_wait_sec = 60
+    engine._exit_dust_threshold = 0.5
+    engine._active_exit_orders = {"101": "exit-1"}
+    states = []
+    resumes = []
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    async def no_wait(_seconds):
+        return None
+
+    async def dust_position(_token_id):
+        return 0.1
+
+    engine.client = Client()
+    engine._get_token_position = dust_position
+    engine._record_exit = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("dust is not a completed exit")
+    )
+    engine._set_event_state = lambda *args: states.append(args)
+    engine._resume_halted_markets = lambda trigger: resumes.append(trigger)
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token_id: token_id
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
+
+    asyncio.run(
+        engine._monitor_exit_order(
+            "101",
+            "exit-1",
+            Decimal("0.53"),
+            Decimal("50"),
+            Decimal("0.53"),
+            Decimal("0.52"),
+            "test",
+        )
+    )
+
+    assert states == [("101", EVENT_PENDING_MANUAL_EXIT, "dust_after_partial")]
+    assert resumes == ["exit_dust_resume"]
+    assert "101" not in engine._active_exit_orders
+
+
 def test_zero_position_clears_unwind_and_active_exit():
     engine = object.__new__(PolyLPSMulti)
     engine._running = True
@@ -2643,6 +2720,12 @@ def test_pause_resume_clears_only_stale_active_preemption():
     assert engine._halt_requested["102"] == "old_fill"
 
 
+def test_pending_unwind_tracks_source_and_actual_tokens():
+    engine = _exit_resume_engine()
+
+    assert engine._pending_unwind_token_ids() == {"101", "102"}
+
+
 def test_completed_exit_consumes_tracking_and_reactivates_both_event_tokens():
     engine = _exit_resume_engine()
     engine._active_exit_orders.pop("102")
@@ -2685,6 +2768,19 @@ def test_exit_record_uses_actual_exit_size_not_reported_market_trade_size():
     assert record["size"] == pytest.approx(50)
     assert record["reported_size"] == pytest.approx(40928.76)
     assert record["loss"] == pytest.approx(-0.5)
+
+
+def test_exit_record_dedupes_when_another_token_was_recorded_between_callbacks():
+    engine = _exit_resume_engine()
+    now = time.time()
+    engine._exit_records = [
+        {"token_id": "102", "ts": now - 2},
+        {"token_id": "201", "ts": now - 1},
+    ]
+
+    engine._record_exit("102")
+
+    assert [row["token_id"] for row in engine._exit_records] == ["102", "201"]
 
 
 def test_finalize_exit_with_unknown_position_keeps_tracking_and_no_record():

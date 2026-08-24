@@ -1517,14 +1517,21 @@ class PolyLPSMulti:
     def _pending_unwind_token_ids(self) -> set[str]:
         pending = getattr(self, "_pending_unwinds", [])
         if isinstance(pending, dict):
-            return {str(token_id) for token_id in pending if token_id}
-        if not isinstance(pending, list):
+            token_ids = {str(token_id) for token_id in pending if token_id}
+            values = pending.values()
+        elif isinstance(pending, list):
+            token_ids = set()
+            values = pending
+        else:
             return set()
-        return {
-            str(unwind.get("token_id") or "")
-            for unwind in pending
-            if isinstance(unwind, dict) and unwind.get("token_id")
-        }
+        for unwind in values:
+            if not isinstance(unwind, dict):
+                continue
+            for key in ("token_id", "source_token_id"):
+                token_id = str(unwind.get(key) or "")
+                if token_id:
+                    token_ids.add(token_id)
+        return token_ids
 
     def _event_has_unresolved_exit(
         self,
@@ -3148,7 +3155,7 @@ class PolyLPSMulti:
 
         # Step 2: Check actual position — scan all tokens if the attributed one has none
         position = await self._get_token_position(token_id)
-        if position is not None and position <= 0:
+        if position is None or position <= 0:
             log(f"[exit] token={token_id} position={position}, scanning all tokens...")
             all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
             found_tid, found_pos = await self._scan_for_position([t for t in all_tokens if t != token_id])
@@ -3197,7 +3204,7 @@ class PolyLPSMulti:
         for _chk in range(POS_MAX_CHECKS):
             await asyncio.sleep(POS_CHECK_INTERVAL)
             cur = await self._get_token_position(token_id)
-            if cur < 0:
+            if cur is None or cur < 0:
                 continue  # API error — skip, don't count
             delta = abs(cur - prev_pos)
             threshold = max(0.5, prev_pos * 0.05)
@@ -3943,18 +3950,19 @@ class PolyLPSMulti:
 
     def _record_exit(self, token_id: str) -> None:
         """Write an exit_record entry from the matching pending_unwind. Safe to
-        call once per completed exit; dedups by token_id against the tail of
-        _exit_records so dust-branch + finalize paths don't double-write.
+        call once per completed exit; dedups recent records by token_id.
         `loss` is signed: positive = loss, negative = benefit (profitable exit).
         """
-        # Dedup: if the most recent record for this token was written within
-        # the last 60s, skip — both the dust branch and _finalize_exit_resume
-        # can fire for the same exit.
+        # The monitor and unwind tracker may observe completion concurrently.
+        # Inspect the whole recent tail because another token can be recorded
+        # between those two observations.
         now = time.time()
         for rec in reversed(self._exit_records):
-            if rec.get("token_id") == token_id and (now - float(rec.get("ts", 0) or 0)) < 60:
+            age = now - float(rec.get("ts", 0) or 0)
+            if age >= 60:
+                break
+            if rec.get("token_id") == token_id:
                 return
-            break
         for uw in self._pending_unwinds:
             if uw.get("token_id") == token_id:
                 fp = float(uw.get("fill_price", 0) or 0)
@@ -4031,6 +4039,12 @@ class PolyLPSMulti:
             try:
                 # Check if position is gone (filled)
                 position = await self._get_token_position(token_id)
+                if position is None or position < 0:
+                    log(
+                        f"[exit] {token_id[:16]} position unavailable; "
+                        "keeping halt"
+                    )
+                    continue
                 if position == 0.0:
                     log(f"[exit] {token_id[:16]} pos=0 — running balance stability gate")
                     await self._finalize_exit_resume(token_id)
@@ -4048,6 +4062,12 @@ class PolyLPSMulti:
 
                 if order_gone:
                     new_position = await self._get_token_position(token_id)
+                    if new_position is None or new_position < 0:
+                        log(
+                            f"[exit] {token_id[:16]} order gone but position "
+                            "is unavailable; keeping halt"
+                        )
+                        continue
                     if new_position == 0.0:
                         log(f"[exit] {token_id[:16]} order gone + pos=0 — balance stability gate")
                         await self._finalize_exit_resume(token_id)
@@ -4055,13 +4075,9 @@ class PolyLPSMulti:
                     elif new_position <= self._exit_dust_threshold:
                         log(f"[exit] {token_id[:16]} dust_remains={new_position} — manual exit")
                         self._active_exit_orders.pop(token_id, None)
-                        # Record P&L BEFORE state change so dashboard benefit/loss column
-                        # picks up this exit (position is ~0, treat as realized).
-                        self._record_exit(token_id)
                         self._set_event_state(token_id, EVENT_PENDING_MANUAL_EXIT, "dust_after_partial")
-                        # Dust is effectively a successful exit — release the mass halt that
-                        # balance_drop_global_halt put on unrelated markets. Only the dust token
-                        # stays in PENDING_MANUAL_EXIT; _resume_halted_markets skips that state.
+                        # The exit record is written only after position reaches
+                        # zero. Until then the unwind tracker remains authoritative.
                         self._resume_halted_markets("exit_dust_resume")
                         self.send_discord(
                             f"退出后仍有微量仓位\n市场：{self._discord_market_name(token_id)}\n"
@@ -4619,6 +4635,7 @@ class PolyLPSMulti:
             matched_size = Decimal("0")
             matched_notional = Decimal("0")
             matched_assets: set[str] = set()
+            maker_asset_missing = False
             managed_order_seen = False
             managed_buy_seen = False
             seen_order_ids: set[str] = set()
@@ -4654,15 +4671,25 @@ class PolyLPSMulti:
                     maker_order.get("asset")
                     or maker_order.get("asset_id")
                     or maker_order.get("token_id")
-                    or raw_token
+                    or ""
                 )
                 if order_token:
                     matched_assets.add(order_token)
+                else:
+                    maker_asset_missing = True
                 if order_size > 0:
                     matched_size += order_size
                     if order_price > 0:
                         matched_notional += order_size * order_price
             if managed_buy_seen:
+                if maker_asset_missing:
+                    return (
+                        False,
+                        "managed_maker_missing_asset",
+                        Decimal("0"),
+                        Decimal("0"),
+                        "",
+                    )
                 if len(matched_assets) > 1:
                     return (
                         False,
