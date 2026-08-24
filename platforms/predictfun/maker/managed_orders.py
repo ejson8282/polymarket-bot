@@ -245,6 +245,26 @@ class ManagedOrderRegistry:
             (order.account_id, idempotency_key), None
         )
 
+    def record_submission_rejected(self, order: ExecutableOrder) -> None:
+        """Advance past one submission that the signer proved was rejected."""
+
+        self.discard_pending(order)
+        intent_id = str(order.intent_id or "").strip()
+        account_id = str(order.account_id or "").strip()
+        idempotency_key = str(
+            order.idempotency_key or intent_id
+        ).strip()
+        if not intent_id or not account_id or not idempotency_key:
+            return
+        generation = self._generation_for_key(intent_id, idempotency_key)
+        account_generations = self._submission_generations.setdefault(
+            account_id, {}
+        )
+        account_generations[intent_id] = max(
+            generation,
+            account_generations.get(intent_id, 0),
+        )
+
     def record_create(self, order: ExecutableOrder, result: ExecutionResult) -> None:
         if not result.ok or not result.order_id:
             return

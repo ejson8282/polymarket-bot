@@ -43,6 +43,9 @@ ORDER_SUBMISSION_RE = re.compile(
 )
 ORDER_REMOVE_HASH_RE = re.compile(r"^/predictfun/accounts/([^/]+)/remove-order-by-hash/?$")
 ALLOWANCES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/allowances/?$")
+TRADE_APPROVAL_RE = re.compile(
+    r"^/predictfun/accounts/([^/]+)/trade-approval/?$"
+)
 CAPABILITIES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/capabilities/?$")
 ACCOUNT_RE = re.compile(r"^/predictfun/accounts/([^/]+)/account/?$")
 ACCOUNT_STATE_RE = re.compile(r"^/predictfun/accounts/([^/]+)/state/?$")
@@ -412,6 +415,116 @@ def collateral_allowances(env: dict[str, str], alias: str) -> dict[str, object]:
     }
 
 
+def _erc1155_is_approved(
+    w3: object,
+    *,
+    owner: str,
+    token: str,
+    operator: str,
+) -> bool:
+    abi = [
+        {
+            "constant": True,
+            "inputs": [
+                {"name": "account", "type": "address"},
+                {"name": "operator", "type": "address"},
+            ],
+            "name": "isApprovedForAll",
+            "outputs": [{"name": "", "type": "bool"}],
+            "type": "function",
+        }
+    ]
+    token_contract = w3.eth.contract(
+        address=w3.to_checksum_address(token), abi=abi
+    )
+    return bool(
+        token_contract.functions.isApprovedForAll(
+            w3.to_checksum_address(owner),
+            w3.to_checksum_address(operator),
+        ).call()
+    )
+
+
+def _trade_approval_checks(
+    w3: object,
+    *,
+    owner: str,
+    is_neg_risk: bool,
+    is_yield_bearing: bool,
+) -> list[dict[str, object]]:
+    mode = (is_neg_risk, is_yield_bearing)
+    token = PREDICT_CONDITIONAL_TOKENS[mode]
+    targets = [
+        ("exchange", PREDICT_EXCHANGES[mode]),
+    ]
+    adapter = PREDICT_NEG_RISK_ADAPTERS.get(mode)
+    if adapter:
+        targets.append(("neg_risk_adapter", adapter))
+    return [
+        {
+            "role": role,
+            "token": token,
+            "operator": operator,
+            "approved": _erc1155_is_approved(
+                w3,
+                owner=owner,
+                token=token,
+                operator=operator,
+            ),
+        }
+        for role, operator in targets
+    ]
+
+
+def trade_approval_status(
+    env: dict[str, str],
+    alias: str,
+    *,
+    is_neg_risk: bool,
+    is_yield_bearing: bool,
+) -> dict[str, object]:
+    from eth_account import Account
+    from web3 import Web3
+
+    row = _account_row(env, alias)
+    if not row:
+        return {"ok": False, "error": "account_alias_not_found", "alias": alias}
+    owner = str(row.get("wallet_address") or row.get("address") or "").strip()
+    if not owner.lower().startswith("0x"):
+        private_key = normalize_private_key(row.get("private_key"))
+        owner = Account.from_key(private_key).address
+
+    rpc_url = str(
+        env.get("PREDICTFUN_BSC_RPC_URL")
+        or env.get("BSC_RPC_URL")
+        or env.get("BNB_RPC_URL")
+        or PREDICT_BSC_RPC_URL
+    )
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+    if not w3.is_connected():
+        return {"ok": False, "error": "bsc_rpc_unavailable", "alias": alias}
+
+    mode = (is_neg_risk, is_yield_bearing)
+    checks = _trade_approval_checks(
+        w3,
+        owner=owner,
+        is_neg_risk=is_neg_risk,
+        is_yield_bearing=is_yield_bearing,
+    )
+    return {
+        "ok": True,
+        "alias": alias,
+        "chain_id": PREDICT_CHAIN_ID,
+        "owner": owner,
+        "owner_masked": mask_address(owner),
+        "mode": PREDICT_EXCHANGE_MODE_NAMES[mode],
+        "is_neg_risk": is_neg_risk,
+        "is_yield_bearing": is_yield_bearing,
+        "sell_ready": all(check["approved"] is True for check in checks),
+        "checks": checks,
+    }
+
+
 def _account_predict_address(row: dict[str, object], eoa_address: str) -> str:
     configured = str(row.get("wallet_address") or row.get("address") or "").strip()
     if configured.lower().startswith("0x") and configured.lower() != eoa_address.lower():
@@ -436,6 +549,16 @@ PREDICT_EXCHANGE_MODE_NAMES = {
     (True, False): "neg_risk",
     (False, True): "yield_bearing",
     (True, True): "neg_risk_yield_bearing",
+}
+PREDICT_CONDITIONAL_TOKENS = {
+    (False, False): "0x22DA1810B194ca018378464a58f6Ac2B10C9d244",
+    (True, False): "0x22DA1810B194ca018378464a58f6Ac2B10C9d244",
+    (False, True): "0x9400F8Ad57e9e0F352345935d6D3175975eb1d9F",
+    (True, True): "0xF64b0b318AAf83BD9071110af24D24445719A07F",
+}
+PREDICT_NEG_RISK_ADAPTERS = {
+    (True, False): "0xc3Cf7c252f65E0d8D88537dF96569AE94a7F1A6E",
+    (True, True): "0x41dCe1A4B8FB5e6327701750aF6231B7CD0B2A40",
 }
 PREDICT_USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955"
 PREDICT_BSC_RPC_URL = "https://bsc-dataseed.binance.org"
@@ -1627,6 +1750,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/predictfun/accounts/{alias}/remove-order-by-hash",
                         "/predictfun/accounts/{alias}/cancel-orders",
                         "/predictfun/accounts/{alias}/allowances",
+                        "/predictfun/accounts/{alias}/trade-approval",
                         "/predictfun/accounts/{alias}/capabilities",
                         "/predictfun/accounts/{alias}/state",
                         "/predictfun/accounts/{alias}/account",
@@ -1647,6 +1771,7 @@ class Handler(BaseHTTPRequestHandler):
         positions_match = ACCOUNT_POSITIONS_RE.match(parsed.path)
         activity_match = ACCOUNT_ACTIVITY_RE.match(parsed.path)
         allowances_match = ALLOWANCES_RE.match(parsed.path)
+        trade_approval_match = TRADE_APPROVAL_RE.match(parsed.path)
         submission_match = ORDER_SUBMISSION_RE.match(parsed.path)
         account_route = (
             capabilities_match
@@ -1657,6 +1782,7 @@ class Handler(BaseHTTPRequestHandler):
             or positions_match
             or activity_match
             or allowances_match
+            or trade_approval_match
             or submission_match
         )
         if account_route:
@@ -1672,6 +1798,20 @@ class Handler(BaseHTTPRequestHandler):
                     result = account_state(env, alias)
                 elif allowances_match:
                     result = collateral_allowances(env, alias)
+                elif trade_approval_match:
+                    query_values = parse_qs(
+                        parsed.query, keep_blank_values=False
+                    )
+                    result = trade_approval_status(
+                        env,
+                        alias,
+                        is_neg_risk=_bool_value(
+                            (query_values.get("is_neg_risk") or [""])[0]
+                        ),
+                        is_yield_bearing=_bool_value(
+                            (query_values.get("is_yield_bearing") or [""])[0]
+                        ),
+                    )
                 elif account_match:
                     result = _authenticated_get(env, alias, "/v1/account")
                 elif order_match:

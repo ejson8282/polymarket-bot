@@ -1256,6 +1256,8 @@ def test_recovered_rejection_does_not_permanently_block_desired_create() -> None
         def recover_submission(
             self, order: ExecutableOrder
         ) -> ExecutionResult | None:
+            if order.idempotency_key != "stable-slot":
+                return None
             return ExecutionResult(
                 intent_id=order.intent_id,
                 account_id=order.account_id,
@@ -1289,9 +1291,121 @@ def test_recovered_rejection_does_not_permanently_block_desired_create() -> None
     )
 
     assert len(executor.created) == 1
-    assert executor.created[0].idempotency_key == "stable-slot"
+    assert executor.created[0].idempotency_key == "stable-slot:g2"
     assert report["managed_orders"]["summary"]["active"] == 1
     assert report["managed_orders"]["summary"]["pending_submissions"] == 0
+    assert report["managed_orders"]["submission_generations"] == {
+        "account_01": {"stable-slot": 2}
+    }
+
+
+def test_rejected_inventory_exit_rotates_key_after_restart() -> None:
+    class RejectedCreateExecutor(RecordingExecutor):
+        def create(self, order: ExecutableOrder) -> ExecutionResult:
+            self.created.append(order)
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=False,
+                message="order rejected",
+                status="rejected",
+            )
+
+    intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "inventory-exit-slot",
+                    "account_id": "account_01",
+                    "market_id": 10835,
+                    "outcome": "YES",
+                    "side": "SELL",
+                    "price": "0.043",
+                    "size": "33.333",
+                    "token_id": "yes-token",
+                    "purpose": "inventory_exit",
+                }
+            ]
+        }
+    }
+    first_executor = RejectedCreateExecutor()
+    first = reconcile_once(
+        intents,
+        executor=first_executor,
+        managed_state={},
+        mode="live",
+    )
+    second_executor = RecordingExecutor()
+    second = reconcile_once(
+        intents,
+        executor=second_executor,
+        managed_state=first["managed_orders"],
+        mode="live",
+    )
+
+    assert first_executor.created[0].idempotency_key == "inventory-exit-slot"
+    assert first["managed_orders"]["summary"]["pending_submissions"] == 0
+    assert first["managed_orders"]["submission_generations"] == {
+        "account_01": {"inventory-exit-slot": 1}
+    }
+    assert second_executor.created[0].idempotency_key == "inventory-exit-slot:g2"
+    assert second["managed_orders"]["submission_generations"] == {
+        "account_01": {"inventory-exit-slot": 2}
+    }
+
+
+def test_preflight_blocked_inventory_exit_does_not_rotate_or_stay_pending() -> None:
+    class PreflightBlockedExecutor(RecordingExecutor):
+        def create(self, order: ExecutableOrder) -> ExecutionResult:
+            self.created.append(order)
+            return ExecutionResult(
+                intent_id=order.intent_id,
+                account_id=order.account_id,
+                action="create",
+                ok=False,
+                message="SELL approval missing",
+                status="preflight_blocked",
+            )
+
+    intents = {
+        "diff": {
+            "create": [
+                {
+                    "intent_id": "inventory-exit-slot",
+                    "account_id": "account_01",
+                    "market_id": 10835,
+                    "outcome": "YES",
+                    "side": "SELL",
+                    "price": "0.043",
+                    "size": "33.333",
+                    "token_id": "yes-token",
+                    "purpose": "inventory_exit",
+                }
+            ]
+        }
+    }
+    first_executor = PreflightBlockedExecutor()
+    first = reconcile_once(
+        intents,
+        executor=first_executor,
+        managed_state={},
+        mode="live",
+    )
+    second_executor = PreflightBlockedExecutor()
+    second = reconcile_once(
+        intents,
+        executor=second_executor,
+        managed_state=first["managed_orders"],
+        mode="live",
+    )
+
+    assert first_executor.created[0].idempotency_key == "inventory-exit-slot"
+    assert second_executor.created[0].idempotency_key == "inventory-exit-slot"
+    assert first["managed_orders"]["submission_generations"] == {}
+    assert second["managed_orders"]["submission_generations"] == {}
+    assert first["managed_orders"]["summary"]["pending_submissions"] == 0
+    assert second["managed_orders"]["summary"]["pending_submissions"] == 0
 
 
 def test_live_registry_discards_only_dry_run_placeholders() -> None:

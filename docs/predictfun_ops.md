@@ -189,6 +189,14 @@ The separate `remove-order-by-hash` route remains `off_book_only` and must not
 be used as proof of cancellation. A real canary still requires a distinct user
 authorization after the reviewed release has been deployed.
 
+Continuous SELL submissions also fail closed on the Mac mini proxy's read-only
+`/predictfun/accounts/{alias}/trade-approval` check. The check uses the official
+conditional-token, exchange, and neg-risk adapter addresses for the order's
+market mode. A missing ERC-1155 approval blocks the SELL before signing or
+submission and does not consume a new idempotency generation. Granting or
+revoking an approval is a separate on-chain action and must never be performed
+implicitly by a deployment, restart, or retry loop.
+
 ### VPS1 limited-live profile
 
 `deploy_release.py --mode live` is deliberately narrower than the general
