@@ -155,6 +155,9 @@ def _engine(tmp_path) -> PolyLPSMulti:
     engine._aggressive_guardrail_state_path = tmp_path / "guardrail_3.json"
     engine._aggressive_guardrail_latch_path = tmp_path / ".account_3.guardrail"
     engine._aggressive_guardrail_reset_path = tmp_path / ".account_3.reset"
+    engine._aggressive_guardrail_reset_paused_path = (
+        tmp_path / ".account_3.reset_paused"
+    )
     engine._aggressive_guardrail_state = AggressiveGuardrailState(
         last_equity_usdc="84",
         daily_loss_usdc="6",
@@ -220,6 +223,30 @@ def test_reset_request_cannot_remove_an_unrelated_manual_pause(tmp_path) -> None
 
     assert asyncio.run(engine._reset_aggressive_guardrail()) is False
     assert engine._pause_flag_path.exists()
+
+
+def test_manual_reset_can_preserve_pause_for_maintenance(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine._aggressive_guardrail_state.latched = True
+    engine._aggressive_guardrail_latch_path.touch()
+    engine._pause_flag_path.touch()
+    engine._aggressive_guardrail_reset_paused_path.touch()
+
+    async def healthy_equity():
+        return Decimal("90"), Decimal("80"), Decimal("10")
+
+    engine._get_aggressive_equity_snapshot = healthy_equity
+    assert asyncio.run(
+        engine._reset_aggressive_guardrail(keep_paused=True)
+    ) is True
+    assert not engine._aggressive_guardrail_latch_path.exists()
+    assert not engine._aggressive_guardrail_reset_paused_path.exists()
+    assert engine._pause_flag_path.exists()
+    assert engine._aggressive_guardrail_state.latched is False
+    assert engine._event_bus.events[-1] == (
+        "aggressive_guardrail_reset",
+        {"account_index": 3, "equity_usdc": "90", "paused": True},
+    )
 
 
 def test_equity_snapshot_combines_cash_and_position_value(tmp_path) -> None:
