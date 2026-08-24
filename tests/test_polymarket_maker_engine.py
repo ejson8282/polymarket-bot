@@ -74,6 +74,54 @@ def test_restore_activity_records_rejects_wrong_account_or_invalid_payloads():
     ) == ([], [{"id": 2}])
 
 
+def test_restore_activity_records_drops_legacy_aggregate_trade_accounting():
+    fills, exits = _restore_activity_records(
+        {
+            "account_index": 1,
+            "fills": [
+                {
+                    "token_id": "101",
+                    "reason": "TRADES_POLL:legacy",
+                    "size": 40928.76,
+                    "price": 0.78,
+                    "ts": 100,
+                },
+                {
+                    "token_id": "102",
+                    "reason": "TRADES_POLL:attributed",
+                    "size": 50,
+                    "size_source": "account_order_fill",
+                    "ts": 200,
+                },
+                {
+                    "token_id": "103",
+                    "reason": "FILL_WS",
+                    "size": 25,
+                    "ts": 300,
+                },
+            ],
+            "exit_records": [
+                {
+                    "token_id": "999",
+                    "size": 40928.76,
+                    "fill_price": 0.22,
+                    "ts": 110,
+                },
+                {
+                    "token_id": "102",
+                    "size": 50,
+                    "size_source": "position",
+                    "ts": 210,
+                },
+            ],
+        },
+        1,
+    )
+
+    assert [row["token_id"] for row in fills] == ["102", "103"]
+    assert [row["token_id"] for row in exits] == ["102"]
+
+
 def _global_cooldown_engine() -> PolyLPSMulti:
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {"101": {}, "102": {}, "103": {}}
@@ -1672,7 +1720,12 @@ def test_paired_exit_uses_complement_of_matched_price_not_source_book(monkeypatc
     assert placed == [
         ("102", Decimal("0.47"), Decimal("517.645966"))
     ]
-    assert engine._pending_unwinds[-1]["fill_price"] == pytest.approx(0.47)
+    unwind = engine._pending_unwinds[-1]
+    assert unwind["fill_price"] == pytest.approx(0.47)
+    assert unwind["source_token_id"] == "101"
+    assert unwind["fill_size"] == pytest.approx(517.645966)
+    assert unwind["exit_size"] == pytest.approx(517.645966)
+    assert unwind["reported_fill_size"] == pytest.approx(517.63)
 
 
 @pytest.mark.parametrize(
@@ -1830,6 +1883,139 @@ def test_trade_classifier_accepts_managed_maker_buy_when_taker_side_is_sell():
 
     assert actionable is True
     assert reason == "managed_maker_buy"
+
+
+def test_trade_details_use_matching_maker_amount_not_aggregate_trade_size():
+    engine = _managed_trade_engine()
+
+    actionable, reason, size, price, token_id = (
+        engine._managed_inventory_increase_details({
+            "id": "aggregate-market-trade",
+            "side": "SELL",
+            "size": "40928.76",
+            "price": "0.78",
+            "maker_orders": [{
+                "order_id": "bot-buy-1",
+                "side": "BUY",
+                "matched_amount": "50",
+                "price": "0.53",
+                "asset_id": "101",
+            }],
+        })
+    )
+
+    assert actionable is True
+    assert reason == "managed_maker_buy"
+    assert size == Decimal("50")
+    assert price == Decimal("0.53")
+    assert token_id == "101"
+
+
+def test_trade_details_sum_multiple_managed_maker_orders():
+    engine = _managed_trade_engine()
+    engine._managed_buy_order_ids.add("bot-buy-2")
+
+    actionable, reason, size, price, token_id = (
+        engine._managed_inventory_increase_details({
+            "asset_id": "taker-asset",
+            "side": "SELL",
+            "size": "1000",
+            "price": "0.90",
+            "maker_orders": [
+                {
+                    "order_id": "bot-buy-1",
+                    "asset_id": "101",
+                    "side": "BUY",
+                    "matched_amount": "20",
+                    "price": "0.50",
+                },
+                {
+                    "order_id": "bot-buy-2",
+                    "asset_id": "101",
+                    "side": "BUY",
+                    "matched_amount": "30",
+                    "price": "0.60",
+                },
+            ],
+        })
+    )
+
+    assert actionable is True
+    assert reason == "managed_maker_buy"
+    assert size == Decimal("50")
+    assert price == Decimal("0.56")
+    assert token_id == "101"
+
+
+def test_trade_poll_uses_attributed_maker_fill(monkeypatch):
+    engine = _managed_trade_engine()
+    engine._running = True
+    engine.market_cfg = {"101": {}}
+    engine._night_market_cfg = {}
+    engine._seen_trade_ids = set()
+    engine._seen_trade_ids_order = []
+    engine._fills_seen = 0
+    engine.fill_size_threshold = Decimal("0.1")
+    engine._trade_poll_req_exc_streak = 0
+    captured = []
+    trade = {
+        "id": "aggregate-market-trade",
+        "asset_id": "taker-asset",
+        "side": "SELL",
+        "size": "40928.76",
+        "price": "0.78",
+        "maker_orders": [{
+            "order_id": "bot-buy-1",
+            "side": "BUY",
+            "matched_amount": "50",
+            "price": "0.53",
+            "asset_id": "101",
+        }],
+    }
+
+    class Client:
+        calls = 0
+
+        def get_trades(self):
+            self.calls += 1
+            return [] if self.calls == 1 else [trade]
+
+    async def trigger(
+        token_id,
+        reason,
+        size,
+        price,
+        *,
+        matched_size_source="",
+    ):
+        captured.append((
+            token_id,
+            reason,
+            size,
+            price,
+            matched_size_source,
+        ))
+        engine._running = False
+
+    async def no_wait(_seconds):
+        return None
+
+    engine.client = Client()
+    engine._allow_signal = lambda *_args: True
+    engine._trigger_event_offline = trigger
+    engine._is_req_exc = lambda _exc: False
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
+
+    asyncio.run(engine._trade_poll_watch())
+
+    assert captured == [(
+        "101",
+        "TRADES_POLL:aggregate-market-trade",
+        Decimal("50"),
+        Decimal("0.53"),
+        "account_order_fill",
+    )]
+    assert engine._fills_seen == 1
 
 
 def test_trade_classifier_ignores_unmanaged_manual_buy():
@@ -2245,7 +2431,8 @@ def test_missing_exit_order_with_dust_resumes_other_markets():
 
     asyncio.run(engine.unwind_tracking_loop())
 
-    assert engine._pending_unwinds == []
+    assert len(engine._pending_unwinds) == 1
+    assert engine._pending_unwinds[0]["dust_alerted"] is True
     assert "101" not in engine._active_exit_orders
     assert states == [("101", EVENT_PENDING_MANUAL_EXIT, "dust_position_after_unwind")]
     assert resumes == ["unwind_dust_position"]
@@ -2260,6 +2447,7 @@ def test_zero_position_clears_unwind_and_active_exit():
     engine._unwind_max_age_sec = 14_400
     engine._exit_dust_threshold = 0.5
     engine._active_exit_orders = {"101": "exit-1"}
+    engine._exit_records = []
     engine._pending_unwinds = [
         {
             "token_id": "101",
@@ -2282,12 +2470,18 @@ def test_zero_position_clears_unwind_and_active_exit():
 
     engine.client = Client()
     engine._get_token_position = position
+    activations = []
+    engine._activate_resolved_exit_tokens = (
+        lambda token_ids, trigger: activations.append((token_ids, trigger))
+    )
     engine._resume_halted_markets = lambda trigger: resumes.append(trigger)
 
     asyncio.run(engine.unwind_tracking_loop())
 
     assert engine._pending_unwinds == []
     assert engine._active_exit_orders == {}
+    assert len(engine._exit_records) == 1
+    assert activations == [({"101"}, "unwind_position_zero")]
     assert resumes == ["unwind_position_zero"]
 
 
@@ -2354,6 +2548,28 @@ def test_top_leg_defense_skips_preempted_token_before_market_reads():
     assert engine._top_leg_defense_tasks == {}
 
 
+def test_top_leg_defense_is_quiet_while_account_is_paused():
+    engine = object.__new__(PolyLPSMulti)
+    engine._top_leg_defense_active = set()
+    engine._top_leg_defense_pending = {}
+    engine._top_leg_defense_tasks = {}
+    engine._is_account_paused = lambda: True
+    engine._halt_preemption_reason = lambda _token_id: (_ for _ in ()).throw(
+        AssertionError("paused defense must stop before market checks")
+    )
+
+    asyncio.run(
+        engine._maybe_run_top_leg_defense(
+            "101",
+            "market_ws:price_change",
+            object(),
+        )
+    )
+
+    assert engine._top_leg_defense_active == set()
+    assert engine._top_leg_defense_tasks == {}
+
+
 def _paired_state_engine() -> PolyLPSMulti:
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
@@ -2368,6 +2584,133 @@ def _paired_state_engine() -> PolyLPSMulti:
     }
     engine._halt_requested = {"101": None, "102": None}
     return engine
+
+
+def _exit_resume_engine() -> PolyLPSMulti:
+    engine = _paired_state_engine()
+    engine._event_bus = _RecordingEventBus()
+    engine.market_cfg["201"] = {}
+    engine._event_states.update({
+        "101": {"state": EVENT_EXIT_PENDING, "reason": "exit_sell"},
+        "102": {"state": EVENT_HALTED_ON_FILL, "reason": "fill"},
+        "201": {"state": EVENT_HALTED_ON_FILL, "reason": "global_fill_halt"},
+    })
+    engine._halt_requested = {
+        "101": "old_fill",
+        "102": "old_fill",
+        "201": "old_fill",
+    }
+    engine._active_exit_orders = {"102": "exit-order"}
+    engine._pending_unwinds = [{
+        "token_id": "102",
+        "source_token_id": "101",
+        "fill_price": 0.53,
+        "fill_size": 50,
+        "exit_size": 50,
+        "reported_fill_size": 40928.76,
+        "sell_price": 0.54,
+    }]
+    engine._exit_records = []
+    engine._night_market_cfg = {}
+    engine._cooldown_until = time.time() + 60
+    engine._require_recovery_gate = True
+    engine._exit_recovery_protection_sec = 120
+    engine._exit_recovery_protection_until = {}
+    return engine
+
+
+def test_resume_halted_markets_clears_only_resolved_event_preemption():
+    engine = _exit_resume_engine()
+
+    engine._resume_halted_markets("unrelated_resume")
+
+    assert engine._event_state_name("101") == EVENT_EXIT_PENDING
+    assert engine._event_state_name("102") == EVENT_HALTED_ON_FILL
+    assert engine._halt_requested["102"] == "old_fill"
+    assert engine._event_state_name("201") == EVENT_ACTIVE
+    assert engine._halt_requested["201"] is None
+
+
+def test_pause_resume_clears_only_stale_active_preemption():
+    engine = _exit_resume_engine()
+    engine._event_states["201"]["state"] = EVENT_ACTIVE
+
+    cleared = engine._clear_stale_active_halt_preemptions("dashboard_resume")
+
+    assert cleared == 1
+    assert engine._halt_requested["201"] is None
+    assert engine._halt_requested["101"] == "old_fill"
+    assert engine._halt_requested["102"] == "old_fill"
+
+
+def test_completed_exit_consumes_tracking_and_reactivates_both_event_tokens():
+    engine = _exit_resume_engine()
+    engine._active_exit_orders.pop("102")
+
+    resolved = engine._consume_resolved_unwinds("102")
+    resumed = engine._activate_resolved_exit_tokens(
+        resolved,
+        "position_zero",
+    )
+
+    assert resolved == {"101", "102"}
+    assert resumed == 2
+    assert engine._pending_unwinds == []
+    assert engine._event_state_name("101") == EVENT_ACTIVE
+    assert engine._event_state_name("102") == EVENT_ACTIVE
+    assert engine._halt_requested["101"] is None
+    assert engine._halt_requested["102"] is None
+
+
+def test_completed_exit_does_not_override_intentional_watch_state():
+    engine = _exit_resume_engine()
+    engine._active_exit_orders = {}
+    engine._pending_unwinds = []
+    engine._event_states["101"]["state"] = EVENT_WATCH
+
+    resumed = engine._activate_resolved_exit_tokens({"101"}, "position_zero")
+
+    assert resumed == 0
+    assert engine._event_state_name("101") == EVENT_WATCH
+    assert engine._halt_requested["101"] == "old_fill"
+
+
+def test_exit_record_uses_actual_exit_size_not_reported_market_trade_size():
+    engine = _exit_resume_engine()
+
+    engine._record_exit("102")
+
+    assert len(engine._exit_records) == 1
+    record = engine._exit_records[0]
+    assert record["size"] == pytest.approx(50)
+    assert record["reported_size"] == pytest.approx(40928.76)
+    assert record["loss"] == pytest.approx(-0.5)
+
+
+def test_finalize_exit_with_unknown_position_keeps_tracking_and_no_record():
+    engine = _exit_resume_engine()
+
+    async def stable(_token_id):
+        return True
+
+    async def unknown_position(_token_id):
+        return None
+
+    engine._await_balance_stable = stable
+    engine._get_token_position = unknown_position
+    engine._resume_halted_markets = lambda _trigger: (_ for _ in ()).throw(
+        AssertionError("unknown position must not resume markets")
+    )
+    engine.send_fill_discord = lambda _message: (_ for _ in ()).throw(
+        AssertionError("unknown position must not report completion")
+    )
+
+    asyncio.run(engine._finalize_exit_resume("102"))
+
+    assert engine._pending_unwinds
+    assert engine._exit_records == []
+    assert engine._event_state_name("101") == EVENT_EXIT_PENDING
+    assert engine._event_state_name("102") == EVENT_HALTED_ON_FILL
 
 
 def test_exit_pending_blocks_both_sides_of_the_same_event():

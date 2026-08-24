@@ -393,9 +393,64 @@ def _restore_activity_records(
             return []
         return [dict(row) for row in value if isinstance(row, dict)][-limit:]
 
-    return recent_dicts(prior_state.get("fills")), recent_dicts(
-        prior_state.get("exit_records")
-    )
+    fills = recent_dicts(prior_state.get("fills"))
+    exits = recent_dicts(prior_state.get("exit_records"))
+
+    # Before account-order attribution was added, TRADES_POLL stored the
+    # aggregate transaction size. Do not restore those display-only records or
+    # a matching exit computed from the same untrusted size.
+    tainted_fills = [
+        row
+        for row in fills
+        if str(row.get("reason") or "").startswith("TRADES_POLL:")
+        and row.get("size_source") != "account_order_fill"
+    ]
+    fills = [row for row in fills if row not in tainted_fills]
+
+    def matches_tainted_fill(exit_row: dict) -> bool:
+        if exit_row.get("size_source"):
+            return False
+        try:
+            exit_size = float(exit_row.get("size") or 0)
+            exit_ts = float(exit_row.get("ts") or 0)
+            exit_fill_price = float(exit_row.get("fill_price") or 0)
+        except (TypeError, ValueError):
+            return False
+        for fill_row in tainted_fills:
+            try:
+                fill_size = float(fill_row.get("size") or 0)
+                fill_ts = float(fill_row.get("ts") or 0)
+                fill_price = float(fill_row.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if fill_size <= 0:
+                continue
+            size_tolerance = max(0.000001, abs(fill_size) * 0.000000001)
+            if abs(exit_size - fill_size) > size_tolerance:
+                continue
+            same_token = str(exit_row.get("token_id") or "") == str(
+                fill_row.get("token_id") or ""
+            )
+            price_tolerance = 0.000001
+            related_price = (
+                exit_fill_price > 0
+                and fill_price > 0
+                and (
+                    abs(exit_fill_price - fill_price) <= price_tolerance
+                    or abs(exit_fill_price - (1.0 - fill_price))
+                    <= price_tolerance
+                )
+            )
+            if not same_token and not related_price:
+                continue
+            if fill_ts <= 0 or exit_ts <= 0 or (
+                fill_ts - 60 <= exit_ts <= fill_ts + 7 * 24 * 60 * 60
+            ):
+                return True
+        return False
+
+    exits = [row for row in exits if not matches_tainted_fill(row)]
+    return fills, exits
 
 
 def _compute_quote_target_shares(
@@ -1458,6 +1513,125 @@ class PolyLPSMulti:
 
     def _clear_halt_preemption(self, token_id: str) -> None:
         self._halt_requested[token_id] = None
+
+    def _pending_unwind_token_ids(self) -> set[str]:
+        pending = getattr(self, "_pending_unwinds", [])
+        if isinstance(pending, dict):
+            return {str(token_id) for token_id in pending if token_id}
+        if not isinstance(pending, list):
+            return set()
+        return {
+            str(unwind.get("token_id") or "")
+            for unwind in pending
+            if isinstance(unwind, dict) and unwind.get("token_id")
+        }
+
+    def _event_has_unresolved_exit(
+        self,
+        token_id: str,
+        *,
+        ignore_state_tokens: Optional[set[str]] = None,
+    ) -> bool:
+        try:
+            event_tokens = set(self._event_token_ids(token_id))
+        except Exception:
+            event_tokens = {str(token_id)}
+        ignored_states = {str(tid) for tid in (ignore_state_tokens or set())}
+        active_exits = getattr(self, "_active_exit_orders", {})
+        if any(tid in active_exits for tid in event_tokens):
+            return True
+        if event_tokens & self._pending_unwind_token_ids():
+            return True
+        unresolved_states = {
+            EVENT_CANCELING,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }
+        return any(
+            tid not in ignored_states
+            and self._event_state_name(tid) in unresolved_states
+            for tid in event_tokens
+        )
+
+    def _clear_stale_active_halt_preemptions(self, trigger: str) -> int:
+        """Clear pause-era preemption only for otherwise active, safe markets."""
+        token_ids = set(self.market_cfg) | set(self._night_market_cfg)
+        cleared = 0
+        for token_id in token_ids:
+            if self._event_state_name(token_id) != EVENT_ACTIVE:
+                continue
+            if self._event_has_unresolved_exit(token_id):
+                continue
+            if self._halt_requested.get(token_id):
+                cleared += 1
+            self._clear_halt_preemption(token_id)
+        if cleared:
+            log(
+                f"[pause] cleared {cleared} stale active preemptions "
+                f"trigger={trigger}"
+            )
+        return cleared
+
+    def _consume_resolved_unwinds(self, token_id: str) -> set[str]:
+        """Remove completed unwind tracking and return every state it owns."""
+        resolved_tokens = {str(token_id)}
+        pending = getattr(self, "_pending_unwinds", [])
+        if not isinstance(pending, list):
+            return resolved_tokens
+        remaining = []
+        for unwind in pending:
+            if not isinstance(unwind, dict) or str(
+                unwind.get("token_id") or ""
+            ) != str(token_id):
+                remaining.append(unwind)
+                continue
+            source_token = str(unwind.get("source_token_id") or "")
+            if source_token:
+                resolved_tokens.add(source_token)
+        self._pending_unwinds = remaining
+        return resolved_tokens
+
+    def _activate_resolved_exit_tokens(
+        self,
+        token_ids: set[str],
+        trigger: str,
+    ) -> int:
+        """Reactivate only tokens covered by an authoritatively completed exit."""
+        resolved = {str(token_id) for token_id in token_ids if token_id}
+        if not resolved:
+            return 0
+        resumed = 0
+        protection_deadline = time.time() + self._exit_recovery_protection_sec
+        resolvable_states = {
+            EVENT_ACTIVE,
+            EVENT_CANCELING,
+            EVENT_COOLDOWN,
+            EVENT_HALTED_ON_FILL,
+            EVENT_EXIT_PENDING,
+            EVENT_PENDING_MANUAL_EXIT,
+        }
+        for token_id in sorted(resolved):
+            state = self._event_state_name(token_id)
+            if state not in resolvable_states:
+                log(
+                    f"[exit] token={token_id[:16]} retains intentional "
+                    f"state={state}"
+                )
+                continue
+            if self._event_has_unresolved_exit(
+                token_id,
+                ignore_state_tokens=resolved,
+            ):
+                log(
+                    f"[exit] token={token_id[:16]} remains halted; "
+                    "another exit is unresolved"
+                )
+                continue
+            self._clear_halt_preemption(token_id)
+            self._set_event_state(token_id, EVENT_ACTIVE, trigger)
+            self._exit_recovery_protection_until[token_id] = protection_deadline
+            resumed += 1
+        return resumed
 
     def _halt_preemption_reason(self, token_id: str) -> Optional[str]:
         reason = self._halt_requested.get(token_id)
@@ -2917,6 +3091,8 @@ class PolyLPSMulti:
         monitor handles the full lifecycle; a second _place_sell_order would
         over-commit tokens and break reprice with 'not enough balance'.
         """
+        source_token_id = token_id
+
         # Brief delay to let fill-ws / trade-poll settle
         await asyncio.sleep(max(1, self._exit_delay_sec))
 
@@ -3101,8 +3277,11 @@ class PolyLPSMulti:
                 self._active_exit_orders[token_id] = order_id
                 self._pending_unwinds.append({
                     "token_id": token_id,
+                    "source_token_id": source_token_id,
                     "fill_price": float(fill_price),
-                    "fill_size": float(fill_size),
+                    "fill_size": float(sell_size),
+                    "exit_size": float(sell_size),
+                    "reported_fill_size": float(fill_size),
                     "sell_price": float(sell_price),
                     "order_id": order_id,
                     "placed_at": time.time(),
@@ -3130,7 +3309,7 @@ class PolyLPSMulti:
         self.send_discord(
             f"退出单提交失败\n市场：{self._discord_market_name(token_id)}\n"
             f"已尝试：{self._exit_retry_count} 次\n"
-            f"成交价：${float(fill_price):.4f}\n数量：{float(fill_size):,.2f} 份\n"
+            f"成交价：${float(fill_price):.4f}\n数量：{float(sell_size):,.2f} 份\n"
             "需手动处理；其他市场仍暂停"
         )
 
@@ -3727,8 +3906,9 @@ class PolyLPSMulti:
         for tid in all_tokens:
             st = self._event_state_name(tid)
             if st in _resumable:
-                if tid in self._active_exit_orders:
+                if self._event_has_unresolved_exit(tid):
                     continue
+                self._clear_halt_preemption(tid)
                 self._set_event_state(tid, EVENT_ACTIVE, trigger)
                 self._exit_recovery_protection_until[tid] = protection_deadline
                 resumed += 1
@@ -3779,13 +3959,19 @@ class PolyLPSMulti:
             if uw.get("token_id") == token_id:
                 fp = float(uw.get("fill_price", 0) or 0)
                 sp = float(uw.get("sell_price", 0) or 0)
-                sz = float(uw.get("fill_size", 0) or 0)
+                sz = float(
+                    uw.get("exit_size", uw.get("fill_size", 0)) or 0
+                )
+                reported_sz = float(uw.get("reported_fill_size", sz) or 0)
                 loss = (fp - sp) * sz if fp > 0 and sp > 0 else 0.0
                 self._exit_records.append({
                     "token_id": token_id,
                     "fill_price": fp,
                     "sell_price": sp,
                     "size": sz,
+                    "reported_size": reported_sz,
+                    "size_source": "position",
+                    "reason": str(uw.get("reason") or ""),
                     "loss": round(loss, 6),
                     "ts": now,
                 })
@@ -3796,13 +3982,21 @@ class PolyLPSMulti:
     async def _finalize_exit_resume(self, token_id: str) -> None:
         """Balance-stability gate then resume only the affected event's markets."""
         self._active_exit_orders.pop(token_id, None)
-        self._record_exit(token_id)
         stable = await self._await_balance_stable(token_id)
         # Re-verify position hasn't reappeared during stability wait
         recheck = await self._get_token_position(token_id)
-        if recheck is not None and recheck > self._exit_dust_threshold:
+        if recheck is None or recheck < 0:
+            log(f"[exit] {token_id[:16]} position recheck unknown; keeping halt")
+            return
+        if recheck > self._exit_dust_threshold:
             log(f"[exit] {token_id[:16]} pos reappeared={recheck} during stability wait")
             return  # don't resume — position came back (new fill?)
+        self._record_exit(token_id)
+        resolved_tokens = self._consume_resolved_unwinds(token_id)
+        self._activate_resolved_exit_tokens(
+            resolved_tokens,
+            "exit_complete_resume",
+        )
         self._resume_halted_markets("exit_complete_resume")
         self.send_fill_discord(
             f"仓位退出完成\n市场：{self._discord_market_name(token_id)}\n"
@@ -4260,6 +4454,11 @@ class PolyLPSMulti:
                         self._health_fail_streak[token_id] = 0
                     if token_id not in self._book_req_exc_streak:
                         self._book_req_exc_streak[token_id] = 0
+                    if (
+                        self._event_state_name(token_id) == EVENT_ACTIVE
+                        and not self._event_has_unresolved_exit(token_id)
+                    ):
+                        self._clear_halt_preemption(token_id)
                 log(f"[session] {current} session started with {len(new_markets)} markets (incl. {len(carry_tokens)} carried over)")
                 return
 
@@ -4312,8 +4511,22 @@ class PolyLPSMulti:
                 self._health_fail_streak[token_id] = 0
             if token_id not in self._book_req_exc_streak:
                 self._book_req_exc_streak[token_id] = 0
-            # Reset to ACTIVE for fresh start
-            self._set_event_state(token_id, EVENT_ACTIVE, f"session_switch_to_{current}")
+            state = self._event_state_name(token_id)
+            if state == EVENT_ACTIVE:
+                if not self._event_has_unresolved_exit(token_id):
+                    self._clear_halt_preemption(token_id)
+            elif state == EVENT_COOLDOWN and not self._event_has_unresolved_exit(token_id):
+                self._clear_halt_preemption(token_id)
+                self._set_event_state(
+                    token_id,
+                    EVENT_ACTIVE,
+                    f"session_switch_to_{current}",
+                )
+            else:
+                log(
+                    f"[session] retaining token={token_id[:16]} state={state}; "
+                    "not safe to reactivate"
+                )
 
         log(f"[session] {current} session started with {len(new_markets)} markets")
 
@@ -4370,17 +4583,45 @@ class PolyLPSMulti:
         ids.discard("")
         return ids
 
-    def _trade_is_managed_inventory_increase(
-        self, trade: dict
-    ) -> tuple[bool, str]:
+    @staticmethod
+    def _trade_decimal(item: object, *keys: str) -> Decimal:
+        if not isinstance(item, dict):
+            return Decimal("0")
+        for key in keys:
+            value = item.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return Decimal(str(value))
+            except Exception:
+                continue
+        return Decimal("0")
+
+    def _managed_inventory_increase_details(
+        self,
+        trade: dict,
+    ) -> tuple[bool, str, Decimal, Decimal, str]:
         """Classify account trades before automatic exit handling.
 
         SELL trades reduce inventory and are always user-safe. BUY trades are
         actionable only when they reference an order created by this engine.
-        This keeps website/manual orders outside the bot's control surface.
+        Maker fills use the matching maker-order asset, amount and price, never
+        the aggregate top-level fields, which describe the taker side.
         """
+        raw_token = str(
+            trade.get("asset")
+            or trade.get("asset_id")
+            or trade.get("token_id")
+            or ""
+        )
         maker_orders = trade.get("maker_orders")
         if isinstance(maker_orders, list):
+            matched_size = Decimal("0")
+            matched_notional = Decimal("0")
+            matched_assets: set[str] = set()
+            managed_order_seen = False
+            managed_buy_seen = False
+            seen_order_ids: set[str] = set()
             for maker_order in maker_orders:
                 if not isinstance(maker_order, dict):
                     continue
@@ -4391,10 +4632,66 @@ class PolyLPSMulti:
                 )
                 if order_id not in self._managed_buy_order_ids:
                     continue
+                if order_id in seen_order_ids:
+                    continue
+                seen_order_ids.add(order_id)
+                managed_order_seen = True
                 maker_side = str(maker_order.get("side") or "").upper()
-                if maker_side == "BUY":
-                    return True, "managed_maker_buy"
-                return False, "managed_maker_non_buy"
+                if maker_side != "BUY":
+                    continue
+                managed_buy_seen = True
+                order_size = self._trade_decimal(
+                    maker_order,
+                    "matched_amount",
+                    "size_matched",
+                    "matched",
+                    "filled_size",
+                )
+                order_price = self._trade_decimal(maker_order, "price")
+                if order_price <= 0:
+                    order_price = self._trade_decimal(trade, "price")
+                order_token = str(
+                    maker_order.get("asset")
+                    or maker_order.get("asset_id")
+                    or maker_order.get("token_id")
+                    or raw_token
+                )
+                if order_token:
+                    matched_assets.add(order_token)
+                if order_size > 0:
+                    matched_size += order_size
+                    if order_price > 0:
+                        matched_notional += order_size * order_price
+            if managed_buy_seen:
+                if len(matched_assets) > 1:
+                    return (
+                        False,
+                        "managed_maker_multiple_assets",
+                        Decimal("0"),
+                        Decimal("0"),
+                        "",
+                    )
+                matched_price = (
+                    matched_notional / matched_size
+                    if matched_size > 0 and matched_notional > 0
+                    else self._trade_decimal(trade, "price")
+                )
+                matched_token = next(iter(matched_assets), raw_token)
+                return (
+                    True,
+                    "managed_maker_buy",
+                    matched_size,
+                    matched_price,
+                    matched_token,
+                )
+            if managed_order_seen:
+                return (
+                    False,
+                    "managed_maker_non_buy",
+                    Decimal("0"),
+                    Decimal("0"),
+                    raw_token,
+                )
 
         taker_order_id = str(
             trade.get("taker_order_id")
@@ -4405,13 +4702,39 @@ class PolyLPSMulti:
         side = str(trade.get("side") or "").upper()
         if taker_order_id in self._managed_buy_order_ids:
             if side == "BUY":
-                return True, "managed_taker_buy"
-            return False, "managed_taker_non_buy"
+                return (
+                    True,
+                    "managed_taker_buy",
+                    self._trade_decimal(trade, "size", "matched_amount"),
+                    self._trade_decimal(trade, "price"),
+                    raw_token,
+                )
+            return (
+                False,
+                "managed_taker_non_buy",
+                Decimal("0"),
+                Decimal("0"),
+                raw_token,
+            )
         if side == "SELL":
-            return False, "manual_or_external_sell"
+            return (
+                False,
+                "manual_or_external_sell",
+                Decimal("0"),
+                Decimal("0"),
+                raw_token,
+            )
         if side == "BUY":
-            return False, "unmanaged_buy"
-        return False, "unknown_side"
+            return False, "unmanaged_buy", Decimal("0"), Decimal("0"), raw_token
+        return False, "unknown_side", Decimal("0"), Decimal("0"), raw_token
+
+    def _trade_is_managed_inventory_increase(
+        self, trade: dict
+    ) -> tuple[bool, str]:
+        managed, classification, _size, _price, _token = (
+            self._managed_inventory_increase_details(trade)
+        )
+        return managed, classification
 
     def _manual_sell_orders_for_event(self, orders: list[dict], token_id: str) -> list[dict]:
         event_tokens = set(self._event_token_ids(token_id))
@@ -4711,6 +5034,7 @@ class PolyLPSMulti:
         reason: str,
         matched_size: Optional[Decimal] = None,
         matched_price: Optional[Decimal] = None,
+        matched_size_source: str = "",
         halt_key: str = "t_fill_seen",
     ) -> None:
         self._arm_halt_preemption(token_id, reason)
@@ -4734,6 +5058,7 @@ class PolyLPSMulti:
                 "token_id": token_id,
                 "price": float(matched_price) if matched_price is not None else None,
                 "size": float(matched_size) if matched_size is not None else None,
+                "size_source": matched_size_source or None,
                 "reason": reason,
                 "ts": time.time(),
                 "final_state": final_state,
@@ -6956,6 +7281,8 @@ class PolyLPSMulti:
         trigger: str,
         snapshot: Optional[MarketSnapshot] = None,
     ) -> None:
+        if self._is_account_paused():
+            return
         if token_id in self._top_leg_defense_active:
             self._top_leg_defense_pending[token_id] = (trigger, snapshot)
             return
@@ -7580,6 +7907,7 @@ class PolyLPSMulti:
         reason: str,
         matched_size: Optional[Decimal] = None,
         matched_price: Optional[Decimal] = None,
+        matched_size_source: str = "",
     ) -> None:
         log(f"[risk] FILL_HALT token={token_id} reason={reason} size={matched_size} price={matched_price}")
         self.notify_discord("检测到成交", self._format_fill_alert(token_id, reason, matched_size, matched_price), "danger")
@@ -7632,13 +7960,18 @@ class PolyLPSMulti:
 
         # Event-level handling always freezes the filled token and its YES/NO
         # pair. global_cooldown remains reserved for system-level risk.
+        halt_kwargs = {
+            "matched_size": matched_size,
+            "matched_price": matched_price,
+            "halt_key": "t_fill_seen",
+        }
+        if matched_size_source:
+            halt_kwargs["matched_size_source"] = matched_size_source
         await self._request_event_halt(
             token_id,
             EVENT_HALTED_ON_FILL,
             reason,
-            matched_size=matched_size,
-            matched_price=matched_price,
-            halt_key="t_fill_seen",
+            **halt_kwargs,
         )
         await self._enter_parent_event_shock_watch(
             token_id,
@@ -8455,7 +8788,13 @@ class PolyLPSMulti:
                 await asyncio.sleep(3)
                 continue
             if self._was_paused:
-                log(f"[pause] account {self._account_idx} resumed via dashboard — quoting will restart")
+                cleared = self._clear_stale_active_halt_preemptions(
+                    "dashboard_resume"
+                )
+                log(
+                    f"[pause] account {self._account_idx} resumed via dashboard "
+                    f"— quoting will restart, cleared_preemptions={cleared}"
+                )
                 self._was_paused = False
             active_cfg = self._active_market_cfg()
             token_ids = list(active_cfg.keys())
@@ -9944,7 +10283,9 @@ class PolyLPSMulti:
                 for t in items:
                     if not isinstance(t, dict):
                         continue
-                    token = str(t.get("asset") or t.get("asset_id") or t.get("token_id") or "")
+                    managed_increase, classification, sz, px, token = (
+                        self._managed_inventory_increase_details(t)
+                    )
                     if token not in self.market_cfg and token not in self._night_market_cfg:
                         continue
 
@@ -9970,18 +10311,6 @@ class PolyLPSMulti:
                     self._seen_trade_ids_order.append(tid)
                     new_count += 1
 
-                    try:
-                        sz = Decimal(str(t.get("size") or t.get("matched_amount") or 0))
-                    except Exception:
-                        sz = Decimal("0")
-                    try:
-                        px = Decimal(str(t.get("price") or 0))
-                    except Exception:
-                        px = Decimal("0")
-
-                    managed_increase, classification = (
-                        self._trade_is_managed_inventory_increase(t)
-                    )
                     if not managed_increase:
                         if classification == "manual_or_external_sell":
                             await self._register_manual_sell_trade(token, tid)
@@ -9992,10 +10321,23 @@ class PolyLPSMulti:
                         )
                         continue
 
-                    if sz > self.fill_size_threshold:
-                        if self._allow_signal(token, f"trade_poll:{tid}"):
-                            self._fills_seen += 1
-                            await self._trigger_event_offline(token, f"TRADES_POLL:{tid}", sz, px)
+                    if sz <= self.fill_size_threshold:
+                        log(
+                            f"[trade-poll] ignored managed trade id={tid[:16]} "
+                            f"token={token[:16]} class={classification} "
+                            f"attributed_size={sz}"
+                        )
+                        continue
+
+                    if self._allow_signal(token, f"trade_poll:{tid}"):
+                        self._fills_seen += 1
+                        await self._trigger_event_offline(
+                            token,
+                            f"TRADES_POLL:{tid}",
+                            sz,
+                            px,
+                            matched_size_source="account_order_fill",
+                        )
 
                 if not seeded:
                     seeded = True
@@ -10525,14 +10867,25 @@ class PolyLPSMulti:
                                 f"position={position} threshold={self._exit_dust_threshold} "
                                 f"age={age:.0f}s"
                             )
-                            self._notify_attention(
-                                "退出后仅剩微量仓位",
-                                market=token_id,
-                                position=f"{float(position):,.4f} 份",
-                                action="该市场等待人工检查；其他市场已自动恢复挂单",
-                            )
+                            if not uw.get("dust_alerted"):
+                                uw["dust_alerted"] = True
+                                self._notify_attention(
+                                    "退出后仅剩微量仓位",
+                                    market=token_id,
+                                    position=f"{float(position):,.4f} 份",
+                                    action="该市场等待人工检查；其他市场已自动恢复挂单",
+                                )
+                            still_pending.append(uw)
                             self._resume_halted_markets("unwind_dust_position")
                         else:
+                            self._record_exit(token_id)
+                            resolved_tokens = self._consume_resolved_unwinds(
+                                token_id
+                            )
+                            self._activate_resolved_exit_tokens(
+                                resolved_tokens,
+                                "unwind_position_zero",
+                            )
                             log(
                                 f"[unwind] cleared token={token_id} position=0 "
                                 f"age={age:.0f}s (manually sold or filled)"
