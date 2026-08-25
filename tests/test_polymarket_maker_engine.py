@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import time
+import types
 from unittest.mock import AsyncMock
 
 import pytest
