@@ -3694,6 +3694,7 @@ def test_market_ws_outage_cancels_quotes_and_preserves_exit_path(monkeypatch):
     engine._last_market_ws_ok_ts = 100.0
     engine._market_ws_down_cancel_sec = 30.0
     engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine._shared_book_cache = None
     engine.market_cfg = {"101": {}}
     engine._last_plan_sig = {"101": "quoted"}
     engine.last_quote_ts = {"101": 123.0}
@@ -3716,12 +3717,53 @@ def test_market_ws_outage_cancels_quotes_and_preserves_exit_path(monkeypatch):
     assert cancelled == [True]
     assert notices == [
         (
-            "Market WS down",
-            {"age_sec": "40", "action": "cancelled quotes; preserved SELL exits"},
+            "Market data unavailable",
+            {
+                "ws_age_sec": "40",
+                "rest_books": "stale",
+                "action": "cancelled quotes; preserved SELL exits",
+            },
         )
     ]
     assert engine._last_plan_sig["101"] == ""
     assert engine.last_quote_ts["101"] == 0.0
+
+
+def test_market_ws_outage_uses_fresh_shared_books(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_market_ws_ok_ts = 100.0
+    engine._market_ws_down_cancel_sec = 30.0
+    engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine.market_cfg = {"101": {}}
+    engine._last_plan_sig = {"101": "quoted"}
+    engine.last_quote_ts = {"101": 123.0}
+    engine._shared_book_cache = types.SimpleNamespace(
+        has_fresh_books=lambda token_ids: list(token_ids) == ["101"]
+    )
+    cancelled = []
+    open_order_checks = []
+
+    async def cancel_all_except_exit():
+        cancelled.append(True)
+
+    async def stop_after_guard_tick(_seconds):
+        engine._running = False
+
+    engine._cancel_all_except_exit = cancel_all_except_exit
+    engine._notify_attention = lambda *_args, **_kwargs: None
+    engine.client = types.SimpleNamespace(
+        get_open_orders=lambda: open_order_checks.append(True) or []
+    )
+    monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_guard_tick)
+
+    asyncio.run(engine.best_bid_guard_loop())
+
+    assert cancelled == []
+    assert open_order_checks == [True]
+    assert engine._last_plan_sig["101"] == "quoted"
+    assert engine.last_quote_ts["101"] == 123.0
 
 
 def test_latency_record_includes_cancel_clear_timing():

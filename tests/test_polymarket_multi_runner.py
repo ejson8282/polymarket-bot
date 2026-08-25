@@ -171,11 +171,33 @@ def test_shared_book_cache_pins_a_complete_quote_cycle(monkeypatch) -> None:
     assert sorted(cycle) == ["101", "102"]
     assert cycle["101"].book is books[0]
     assert cycle["101"].fetched_at == 100.0
+    assert cache.has_fresh_books(["101", "102"]) is False
     assert cache.get("101") is None
     stats = cache.stats()
     assert stats["generation"] == 1
     assert stats["cache_hits"] == 2
     assert stats["cache_misses"] == 2
+
+
+def test_shared_book_cache_reports_complete_fresh_coverage(monkeypatch) -> None:
+    now = {"value": 100.0}
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.time.time",
+        lambda: now["value"],
+    )
+    cache = SharedBookCache(ttl_sec=2.0)
+    cache.put_many(
+        [
+            types.SimpleNamespace(asset_id=token, bids=[1], asks=[1])
+            for token in ("101", "102")
+        ]
+    )
+
+    assert cache.has_fresh_books(["101", "102"]) is True
+    assert cache.has_fresh_books(["101", "missing"]) is False
+    assert cache.has_fresh_books([]) is False
+    now["value"] = 102.1
+    assert cache.has_fresh_books(["101", "102"]) is False
 
 
 def test_shared_book_cache_bounds_direct_rest_fallbacks(monkeypatch) -> None:

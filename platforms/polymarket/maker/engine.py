@@ -5382,26 +5382,39 @@ class PolyLPSMulti:
                 if self._last_market_ws_ok_ts > 0:
                     market_ws_age = time.time() - self._last_market_ws_ok_ts
                     if market_ws_age > self._market_ws_down_cancel_sec:
-                        if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
-                            asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
-                        try:
-                            await self._cancel_all_except_exit()
-                            log(
-                                f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
-                                f"{self._market_ws_down_cancel_sec:.0f}s — cancelled quotes, preserved SELL exits"
-                            )
-                            self._notify_attention(
-                                "Market WS down",
-                                age_sec=f"{market_ws_age:.0f}",
-                                action="cancelled quotes; preserved SELL exits",
-                            )
-                            for tid in self.market_cfg:
-                                self._last_plan_sig[tid] = ""
-                                self.last_quote_ts[tid] = 0.0
-                        except Exception as e:
-                            log(f"[guard-loop] market-ws-down cancel_all failed: {e}")
-                        await asyncio.sleep(guard_interval)
-                        continue
+                        shared_cache_fresh = bool(
+                            self._shared_book_cache is not None
+                            and self._shared_book_cache.has_fresh_books(self.market_cfg.keys())
+                        )
+                        if shared_cache_fresh:
+                            # Quiet markets may not emit WS events for longer than the
+                            # cancel threshold. A complete fresh REST batch means the
+                            # guard still has current prices and can continue its
+                            # normal per-order checks below.
+                            market_ws_age = 0.0
+                        else:
+                            if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
+                                asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
+                            try:
+                                await self._cancel_all_except_exit()
+                                log(
+                                    f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
+                                    f"{self._market_ws_down_cancel_sec:.0f}s and REST books stale "
+                                    "— cancelled quotes, preserved SELL exits"
+                                )
+                                self._notify_attention(
+                                    "Market data unavailable",
+                                    ws_age_sec=f"{market_ws_age:.0f}",
+                                    rest_books="stale",
+                                    action="cancelled quotes; preserved SELL exits",
+                                )
+                                for tid in self.market_cfg:
+                                    self._last_plan_sig[tid] = ""
+                                    self.last_quote_ts[tid] = 0.0
+                            except Exception as e:
+                                log(f"[guard-loop] market-data-down cancel_all failed: {e}")
+                            await asyncio.sleep(guard_interval)
+                            continue
 
                 orders = await asyncio.to_thread(self.client.get_open_orders)
                 live = [
