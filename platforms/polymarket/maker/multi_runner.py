@@ -175,6 +175,17 @@ class SharedBookCache:
         self._counters["cache_misses"] += len(requested) - len(result)
         return result
 
+    def has_fresh_books(self, token_ids: Iterable[str]) -> bool:
+        """Return whether every requested token has a fresh two-sided book."""
+        requested = tuple(dict.fromkeys(str(token_id) for token_id in token_ids))
+        if not requested:
+            return False
+        now = time.time()
+        return all(
+            token_id in self._data and (now - self._data[token_id][1]) < self._ttl
+            for token_id in requested
+        )
+
     def allow_direct_rest(self) -> bool:
         """Bound cache-miss REST fan-out across all local account engines."""
         now = time.time()
