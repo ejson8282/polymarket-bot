@@ -22,6 +22,15 @@ from zoneinfo import ZoneInfo
 
 try:
     from .pnl_ledger import fetch_realized_pnl
+    from .reward_ledger import (
+        canonical_account_uid,
+        load_reward_ledger,
+        mark_reward_scope_stale,
+        register_account_alias,
+        replace_reward_scope,
+        reward_ledger_summary,
+        save_reward_ledger,
+    )
     from .reward_observer import refresh_observer_state
     from .rewards_snapshot import (
         _build_snapshot_client,
@@ -32,6 +41,15 @@ try:
     )
 except ImportError:
     from pnl_ledger import fetch_realized_pnl  # type: ignore
+    from reward_ledger import (  # type: ignore
+        canonical_account_uid,
+        load_reward_ledger,
+        mark_reward_scope_stale,
+        register_account_alias,
+        replace_reward_scope,
+        reward_ledger_summary,
+        save_reward_ledger,
+    )
     from reward_observer import refresh_observer_state  # type: ignore
     from rewards_snapshot import (  # type: ignore
         _build_snapshot_client,
@@ -44,6 +62,8 @@ except ImportError:
 
 _BJT = ZoneInfo("Asia/Shanghai")
 _REBATES_URL = "https://clob.polymarket.com/rebates/current"
+_REWARD_EARNINGS_PATH = "/rewards/user"
+_USDC_LEDGER_ASSET = "usdc"
 
 
 def _as_utc(now: Optional[datetime] = None) -> datetime:
@@ -121,8 +141,28 @@ def _maker_address_for_config(
     return address
 
 
-def _fetch_daily_rebate_usd(maker_address: str, date_str: str) -> float:
-    """Return official maker rebates for one maker and UTC date."""
+def _account_identity_for_config(
+    config_path: Path,
+    maker_address: str,
+) -> Tuple[int, int, str]:
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        config = {}
+    account = config.get("account") if isinstance(config, dict) else {}
+    if not isinstance(account, dict):
+        account = {}
+    chain_id = int(account.get("chain_id", 137))
+    signature_type = int(account.get("signature_type", 0))
+    return (
+        chain_id,
+        signature_type,
+        canonical_account_uid(chain_id, signature_type, maker_address),
+    )
+
+
+def _fetch_daily_rebate_rows(maker_address: str, date_str: str) -> List[dict]:
+    """Return official per-market maker rebate rows."""
     query = urlencode({"date": date_str, "maker_address": maker_address})
     request = Request(
         f"{_REBATES_URL}?{query}",
@@ -138,16 +178,159 @@ def _fetch_daily_rebate_usd(maker_address: str, date_str: str) -> float:
     else:
         rows = payload
     if not isinstance(rows, list):
-        return 0.0
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _fetch_daily_rebate_usd(maker_address: str, date_str: str) -> float:
+    """Return official maker rebates for one maker and UTC date."""
     total = 0.0
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in _fetch_daily_rebate_rows(maker_address, date_str):
         try:
             total += float(row.get("rebated_fees_usdc") or 0.0)
         except (TypeError, ValueError):
             continue
     return total
+
+
+def _fetch_market_earnings(
+    client: Any,
+    signature_type: int,
+    date_str: str,
+    maker_address: str,
+    sponsored: bool,
+) -> List[dict]:
+    """Return all official per-market LP earnings for one account/day/type."""
+    from py_clob_client_v2.headers.headers import create_level_2_headers
+    from py_clob_client_v2.clob_types import RequestArgs
+    from py_clob_client_v2.http_helpers.helpers import get as clob_get
+
+    rows: List[dict] = []
+    next_cursor: Optional[str] = None
+    seen_cursors: set[str] = set()
+    for _page in range(100):
+        params = {
+            "date": date_str,
+            "signature_type": int(signature_type),
+            "maker_address": maker_address,
+            "sponsored": "true" if sponsored else "false",
+        }
+        if next_cursor:
+            params["next_cursor"] = next_cursor
+        request = RequestArgs(method="GET", request_path=_REWARD_EARNINGS_PATH)
+        headers = create_level_2_headers(client.signer, client.creds, request)
+        response = clob_get(
+            f"{client.host}{_REWARD_EARNINGS_PATH}?{urlencode(params)}",
+            headers=headers,
+        )
+        if isinstance(response, dict):
+            page_rows = response.get("data") or []
+            cursor = str(response.get("next_cursor") or "")
+        elif isinstance(response, list):
+            page_rows = response
+            cursor = ""
+        else:
+            raise TypeError("invalid per-market rewards response")
+        if not isinstance(page_rows, list):
+            raise TypeError("invalid per-market rewards rows")
+        rows.extend(dict(row) for row in page_rows if isinstance(row, dict))
+        if not cursor or cursor == "LTE=":
+            break
+        if cursor in seen_cursors:
+            raise RuntimeError("rewards pagination cursor repeated")
+        seen_cursors.add(cursor)
+        next_cursor = cursor
+    else:
+        raise RuntimeError("rewards pagination exceeded safety limit")
+    return rows
+
+
+def _lp_ledger_rows(rows: Iterable[dict], maker_address: str) -> List[dict]:
+    out: List[dict] = []
+    for row in rows:
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        asset_address = str(row.get("asset_address") or "").strip().lower()
+        if not condition_id or not asset_address:
+            continue
+        try:
+            earnings = float(row.get("earnings") or 0.0)
+            asset_rate = float(row.get("asset_rate") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        out.append(
+            {
+                "condition_id": condition_id,
+                "asset_address": asset_address,
+                "maker_address": maker_address.lower(),
+                "amount": round(earnings, 12),
+                "asset_rate": round(asset_rate, 12),
+                "usd_amount": round(earnings * asset_rate, 6),
+                "source": "official_rewards_user",
+            }
+        )
+    return out
+
+
+def _rebate_ledger_rows(rows: Iterable[dict], maker_address: str) -> List[dict]:
+    out: List[dict] = []
+    for row in rows:
+        condition_id = str(row.get("condition_id") or "").strip().lower()
+        asset_address = str(
+            row.get("asset_address") or _USDC_LEDGER_ASSET
+        ).strip().lower()
+        if not condition_id:
+            continue
+        try:
+            amount = float(row.get("rebated_fees_usdc") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        out.append(
+            {
+                "condition_id": condition_id,
+                "asset_address": asset_address,
+                "maker_address": maker_address.lower(),
+                "amount": round(amount, 6),
+                "asset_rate": 1.0,
+                "usd_amount": round(amount, 6),
+                "source": "official_rebates_current",
+            }
+        )
+    return out
+
+
+def _pnl_ledger_rows(pnl: dict) -> Dict[str, List[dict]]:
+    grouped: Dict[Tuple[str, str, str], float] = {}
+    exits = pnl.get("realized_exits") if isinstance(pnl, dict) else []
+    if not isinstance(exits, list):
+        return {}
+    for row in exits:
+        if not isinstance(row, dict) or row.get("complete") is not True:
+            continue
+        condition_id = str(row.get("market") or "").strip().lower()
+        asset_id = str(row.get("asset_id") or "").strip().lower()
+        try:
+            epoch = int(row.get("epoch"))
+            amount = float(row.get("net_pnl_usd"))
+        except (TypeError, ValueError):
+            continue
+        if not condition_id or not asset_id:
+            continue
+        day = datetime.fromtimestamp(epoch, timezone.utc).date().isoformat()
+        key = (day, condition_id, asset_id)
+        grouped[key] = grouped.get(key, 0.0) + amount
+    out: Dict[str, List[dict]] = {}
+    for (day, condition_id, asset_id), amount in grouped.items():
+        out.setdefault(day, []).append(
+            {
+                "condition_id": condition_id,
+                "asset_address": asset_id,
+                "amount": round(amount, 6),
+                "asset_rate": 1.0,
+                "usd_amount": round(amount, 6),
+                "source": "confirmed_trades_fifo_v2_market_fees",
+            }
+        )
+    return out
 
 
 def _fetch_reward_percentages(client: Any, signature_type: int) -> Dict[str, float]:
@@ -224,6 +407,8 @@ async def refresh_rewards(
         [Any, int], Dict[str, float]
     ] = _fetch_reward_percentages,
     fetch_pnl: Callable[..., dict] = fetch_realized_pnl,
+    fetch_market_earnings: Optional[Callable[..., List[dict]]] = None,
+    fetch_rebate_rows: Optional[Callable[[str, str], List[dict]]] = None,
 ) -> dict:
     """Fetch live and finalized LP rewards plus maker rebates."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +421,10 @@ async def refresh_rewards(
 
     cumulative_path = data_dir / "rewards_cumulative.json"
     live_path = data_dir / "rewards_live.json"
+    ledger_path = data_dir / "reward_ledger.json"
     cumulative = _load_state(cumulative_path)
+    ledger = load_reward_ledger(ledger_path)
+    ledger["updated_at"] = generated_at
     previous_live = {}
     try:
         previous_live = json.loads(live_path.read_text(encoding="utf-8"))
@@ -255,6 +443,18 @@ async def refresh_rewards(
     successful_rebates = 0
     successful_percentages = 0
     successful_pnl = 0
+    canonical_accounts: Dict[str, str] = {}
+    refreshed_ledger_scopes: set[str] = set()
+    detailed_fetch_enabled = fetch_market_earnings is not None or (
+        fetch_daily is _fetch_daily_reward_usd
+    )
+    market_earnings_fetcher = (
+        fetch_market_earnings or _fetch_market_earnings
+    )
+    rebate_rows_enabled = fetch_rebate_rows is not None or (
+        fetch_rebate is _fetch_daily_rebate_usd
+    )
+    rebate_rows_fetcher = fetch_rebate_rows or _fetch_daily_rebate_rows
 
     for account_idx, config_path in configs:
         account_key = str(account_idx)
@@ -284,6 +484,29 @@ async def refresh_rewards(
             build_client, config_path
         )
         maker_address = _maker_address_for_config(config_path, address)
+        account_uid: Optional[str] = None
+        if maker_address:
+            try:
+                _chain_id, _config_signature_type, account_uid = (
+                    _account_identity_for_config(config_path, maker_address)
+                )
+            except (TypeError, ValueError):
+                account_uid = None
+        row["account_uid"] = account_uid
+        row["canonical_account_index"] = account_key
+        row["duplicate_of_account"] = None
+        if account_uid:
+            register_account_alias(
+                ledger,
+                account_uid=account_uid,
+                account_index=account_idx,
+            )
+            canonical_index = canonical_accounts.setdefault(
+                account_uid, account_key
+            )
+            row["canonical_account_index"] = canonical_index
+            if canonical_index != account_key:
+                row["duplicate_of_account"] = canonical_index
 
         account_state = cumulative_accounts.get(account_key)
         if not isinstance(account_state, dict):
@@ -316,15 +539,32 @@ async def refresh_rewards(
         rebate_error: Optional[str] = None
         percentage_error: Optional[str] = None
         pnl_error: Optional[str] = None
+        ledger_errors: List[str] = []
         if client_error:
             reward_error = str(client_error).split(":", 1)[0]
             percentage_error = reward_error
             pnl_error = reward_error
+            if detailed_fetch_enabled and account_uid:
+                for reward_type in ("native_lp", "sponsored_lp"):
+                    scope_id = f"{current_key}|{account_uid}|{reward_type}"
+                    if scope_id not in refreshed_ledger_scopes:
+                        ledger_errors.append(
+                            f"{reward_type}:{current_key}:{reward_error}"
+                        )
+                        mark_reward_scope_stale(
+                            ledger,
+                            business_day=current_key,
+                            account_uid=account_uid,
+                            reward_type=reward_type,
+                            observed_at=generated_at,
+                            error=reward_error,
+                        )
         else:
             try:
-                for day_key in _missing_finalized_dates(
+                finalized_reward_dates = _missing_finalized_dates(
                     account_state, finalized_day
-                ):
+                )
+                for day_key in finalized_reward_dates:
                     amount = await asyncio.to_thread(
                         fetch_daily, client, signature_type, day_key
                     )
@@ -349,6 +589,58 @@ async def refresh_rewards(
                 successful_rewards += 1
             except Exception as exc:
                 reward_error = type(exc).__name__
+                finalized_reward_dates = [finalized_key]
+
+            if (
+                detailed_fetch_enabled
+                and account_uid
+                and maker_address
+            ):
+                ledger_days = list(dict.fromkeys(
+                    [*finalized_reward_dates, current_key]
+                ))
+                for day_key in ledger_days:
+                    for reward_type, sponsored in (
+                        ("native_lp", False),
+                        ("sponsored_lp", True),
+                    ):
+                        scope_id = f"{day_key}|{account_uid}|{reward_type}"
+                        if scope_id in refreshed_ledger_scopes:
+                            continue
+                        try:
+                            earnings_rows = await asyncio.to_thread(
+                                market_earnings_fetcher,
+                                client,
+                                signature_type,
+                                day_key,
+                                maker_address,
+                                sponsored,
+                            )
+                            replace_reward_scope(
+                                ledger,
+                                business_day=day_key,
+                                account_uid=account_uid,
+                                reward_type=reward_type,
+                                records=_lp_ledger_rows(
+                                    earnings_rows, maker_address
+                                ),
+                                observed_at=generated_at,
+                                finalized=day_key != current_key,
+                            )
+                            refreshed_ledger_scopes.add(scope_id)
+                        except Exception as exc:
+                            error = type(exc).__name__
+                            ledger_errors.append(
+                                f"{reward_type}:{day_key}:{error}"
+                            )
+                            mark_reward_scope_stale(
+                                ledger,
+                                business_day=day_key,
+                                account_uid=account_uid,
+                                reward_type=reward_type,
+                                observed_at=generated_at,
+                                error=error,
+                            )
             try:
                 percentages = await asyncio.to_thread(
                     fetch_percentages, client, signature_type
@@ -382,9 +674,10 @@ async def refresh_rewards(
         if maker_address:
             try:
                 rebate_history_errors: List[str] = []
-                for day_key in _missing_finalized_rebate_dates(
+                finalized_rebate_dates = _missing_finalized_rebate_dates(
                     account_state, finalized_day
-                ):
+                )
+                for day_key in finalized_rebate_dates:
                     try:
                         amount = await asyncio.to_thread(
                             fetch_rebate, maker_address, day_key
@@ -415,8 +708,89 @@ async def refresh_rewards(
                     rebate_error = "history-incomplete"
             except Exception as exc:
                 rebate_error = type(exc).__name__
+                finalized_rebate_dates = [finalized_key]
+
+            if (
+                rebate_rows_enabled
+                and account_uid
+            ):
+                rebate_days = list(dict.fromkeys(
+                    [*finalized_rebate_dates, current_key]
+                ))
+                for day_key in rebate_days:
+                    scope_id = f"{day_key}|{account_uid}|maker_rebate"
+                    if scope_id in refreshed_ledger_scopes:
+                        continue
+                    try:
+                        detailed_rebates = await asyncio.to_thread(
+                            rebate_rows_fetcher, maker_address, day_key
+                        )
+                        replace_reward_scope(
+                            ledger,
+                            business_day=day_key,
+                            account_uid=account_uid,
+                            reward_type="maker_rebate",
+                            records=_rebate_ledger_rows(
+                                detailed_rebates, maker_address
+                            ),
+                            observed_at=generated_at,
+                            finalized=day_key != current_key,
+                        )
+                        refreshed_ledger_scopes.add(scope_id)
+                    except Exception as exc:
+                        error = type(exc).__name__
+                        ledger_errors.append(
+                            f"maker_rebate:{day_key}:{error}"
+                        )
+                        mark_reward_scope_stale(
+                            ledger,
+                            business_day=day_key,
+                            account_uid=account_uid,
+                            reward_type="maker_rebate",
+                            observed_at=generated_at,
+                            error=error,
+                        )
         else:
             rebate_error = "maker-address-unavailable"
+
+        if (
+            account_uid
+            and isinstance(row.get("pnl"), dict)
+            and row.get("pnl_status") in {"ok", "partial", "empty"}
+        ):
+            pnl_by_day = _pnl_ledger_rows(row["pnl"])
+            for day_key in sorted(set(pnl_by_day) | {current_key}):
+                scope_id = f"{day_key}|{account_uid}|trading_pnl"
+                if scope_id in refreshed_ledger_scopes:
+                    continue
+                replace_reward_scope(
+                    ledger,
+                    business_day=day_key,
+                    account_uid=account_uid,
+                    reward_type="trading_pnl",
+                    records=pnl_by_day.get(day_key, []),
+                    observed_at=generated_at,
+                    finalized=day_key != current_key,
+                )
+                refreshed_ledger_scopes.add(scope_id)
+        elif account_uid:
+            error = pnl_error or str(row.get("pnl_status") or "unavailable")
+            scope_id = f"{current_key}|{account_uid}|trading_pnl"
+            if scope_id not in refreshed_ledger_scopes:
+                ledger_errors.append(f"trading_pnl:{current_key}:{error}")
+                mark_reward_scope_stale(
+                    ledger,
+                    business_day=current_key,
+                    account_uid=account_uid,
+                    reward_type="trading_pnl",
+                    observed_at=generated_at,
+                    error=error,
+                )
+
+        row["reward_ledger_status"] = (
+            "stale" if ledger_errors else "current"
+        )
+        row["reward_ledger_errors"] = ledger_errors
 
         account_state["cumulative_usd"] = round(
             sum(float(value or 0.0) for value in daily.values()), 6
@@ -467,29 +841,66 @@ async def refresh_rewards(
         live_accounts[account_key] = row
 
     start_bjt, end_bjt = reward_window_bjt(now_utc)
+    representative_by_uid: Dict[str, Tuple[str, dict]] = {}
+    for account_key, row in live_accounts.items():
+        uid = str(row.get("account_uid") or f"config:{account_key}")
+        existing = representative_by_uid.get(uid)
+        rank = (
+            1 if row.get("status") == "ok" else 0,
+            1 if row.get("reward_status") == "ok" else 0,
+            1 if row.get("rebate_status") in {"ok", "partial"} else 0,
+            str(row.get("updated_at") or ""),
+        )
+        existing_rank = (
+            (
+                1 if existing[1].get("status") == "ok" else 0,
+                1 if existing[1].get("reward_status") == "ok" else 0,
+                1
+                if existing[1].get("rebate_status") in {"ok", "partial"}
+                else 0,
+                str(existing[1].get("updated_at") or ""),
+            )
+            if existing
+            else None
+        )
+        if existing is None or rank > existing_rank:
+            representative_by_uid[uid] = (account_key, row)
+
+    for uid, (canonical_key, _canonical_row) in representative_by_uid.items():
+        for account_key, row in live_accounts.items():
+            row_uid = str(row.get("account_uid") or f"config:{account_key}")
+            if row_uid != uid:
+                continue
+            row["canonical_account_index"] = canonical_key
+            row["duplicate_of_account"] = (
+                None if account_key == canonical_key else canonical_key
+            )
+    canonical_live_accounts = [
+        row for _key, row in representative_by_uid.values()
+    ]
     known_today = [
         float(row["today_usd"])
-        for row in live_accounts.values()
+        for row in canonical_live_accounts
         if row.get("today_usd") is not None
     ]
     known_previous = [
         float(row["previous_day_usd"])
-        for row in live_accounts.values()
+        for row in canonical_live_accounts
         if row.get("previous_day_usd") is not None
     ]
     known_today_rebates = [
         float(row["today_rebates_usd"])
-        for row in live_accounts.values()
+        for row in canonical_live_accounts
         if row.get("today_rebates_usd") is not None
     ]
     known_previous_rebates = [
         float(row["previous_day_rebates_usd"])
-        for row in live_accounts.values()
+        for row in canonical_live_accounts
         if row.get("previous_day_rebates_usd") is not None
     ]
     known_today_income = [
         float(row["today_total_income_usd"])
-        for row in live_accounts.values()
+        for row in canonical_live_accounts
         if row.get("today_total_income_usd") is not None
     ]
     live_state = {
@@ -519,8 +930,8 @@ async def refresh_rewards(
         ),
         "total_today_income_usd": (
             round(sum(known_today_income), 6)
-            if live_accounts
-            and len(known_today_income) == len(live_accounts)
+            if canonical_live_accounts
+            and len(known_today_income) == len(canonical_live_accounts)
             else None
         ),
         "successful_accounts": successful_rewards,
@@ -529,6 +940,19 @@ async def refresh_rewards(
         "successful_percentage_accounts": successful_percentages,
         "successful_pnl_accounts": successful_pnl,
         "configured_accounts": len(live_accounts),
+        "canonical_accounts": len(canonical_live_accounts),
+        "duplicate_account_aliases": (
+            len(live_accounts) - len(canonical_live_accounts)
+        ),
+    }
+
+    ledger["updated_at"] = generated_at
+    save_reward_ledger(ledger_path, ledger)
+    live_state["reward_ledger"] = {
+        "version": ledger.get("version"),
+        "path": ledger_path.name,
+        "summary": reward_ledger_summary(ledger, current_key),
+        "account_aliases": ledger.get("account_aliases", {}),
     }
 
     cumulative["version"] = 3

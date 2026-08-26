@@ -234,3 +234,142 @@ def test_rebate_endpoint_sums_official_market_rows(monkeypatch) -> None:
     assert "date=2026-07-28" in captured["url"]
     assert "maker_address=0x" in captured["url"]
     assert captured["timeout"] == 20
+
+
+def test_detailed_ledger_deduplicates_same_maker_and_tracks_stale(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    data_dir.mkdir()
+    maker = "0x" + "a" * 40
+    for idx in (1, 2):
+        (config_dir / f"config_{idx}.json").write_text(
+            json.dumps(
+                {
+                    "account": {
+                        "funder": maker,
+                        "chain_id": 137,
+                        "signature_type": 2,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def build_client(path: Path) -> tuple:
+        idx = int(path.stem.rsplit("_", 1)[1])
+        return idx, maker, 2, None
+
+    def fetch_market(
+        _client: int,
+        _signature_type: int,
+        day: str,
+        _maker: str,
+        sponsored: bool,
+    ) -> list:
+        return [
+            {
+                "condition_id": "condition-a",
+                "asset_address": "asset-a",
+                "earnings": "2" if sponsored else "1",
+                "asset_rate": "1",
+                "day": day,
+            }
+        ]
+
+    def fetch_rebate_rows(_maker: str, day: str) -> list:
+        return [
+            {
+                "condition_id": "condition-a",
+                "asset_address": "usdc",
+                "rebated_fees_usdc": "0.4",
+                "day": day,
+            }
+        ]
+
+    def fetch_pnl(_client: int, _addresses: list, *, now: datetime) -> dict:
+        return {
+            "status": "ok",
+            "complete": True,
+            "realized_exits": [
+                {
+                    "complete": True,
+                    "market": "condition-a",
+                    "asset_id": "asset-a",
+                    "epoch": int(now.timestamp()),
+                    "net_pnl_usd": 0.25,
+                }
+            ],
+        }
+
+    kwargs = {
+        "now": datetime(2026, 8, 26, 10, 0, tzinfo=BJT),
+        "build_client": build_client,
+        "fetch_daily": lambda *_args: 3.0,
+        "fetch_rebate": lambda *_args: 0.4,
+        "fetch_percentages": lambda *_args: {"condition-a": 50.0},
+        "fetch_pnl": fetch_pnl,
+        "fetch_market_earnings": fetch_market,
+        "fetch_rebate_rows": fetch_rebate_rows,
+    }
+    state = asyncio.run(
+        rewards_live.refresh_rewards(
+            rewards_live.discover_configs(config_dir),
+            data_dir,
+            **kwargs,
+        )
+    )
+
+    assert state["configured_accounts"] == 2
+    assert state["canonical_accounts"] == 1
+    assert state["duplicate_account_aliases"] == 1
+    assert state["total_today_usd"] == 3.0
+    assert state["total_today_rebates_usd"] == 0.4
+    summary = state["reward_ledger"]["summary"]
+    assert summary["record_count"] == 4
+    assert summary["current_usd_by_type"] == {
+        "maker_rebate": 0.4,
+        "native_lp": 1.0,
+        "sponsored_lp": 2.0,
+        "trading_pnl": 0.25,
+    }
+
+    second = asyncio.run(
+        rewards_live.refresh_rewards(
+            rewards_live.discover_configs(config_dir),
+            data_dir,
+            **kwargs,
+        )
+    )
+    assert second["reward_ledger"]["summary"]["record_count"] == 4
+
+    def failing_market(*_args) -> list:
+        raise TimeoutError("market earnings unavailable")
+
+    def failing_rebates(*_args) -> list:
+        raise TimeoutError("rebates unavailable")
+
+    def failing_pnl(*_args, **_kwargs) -> dict:
+        raise TimeoutError("trades unavailable")
+
+    stale_kwargs = dict(kwargs)
+    stale_kwargs.update(
+        {
+            "fetch_market_earnings": failing_market,
+            "fetch_rebate_rows": failing_rebates,
+            "fetch_pnl": failing_pnl,
+        }
+    )
+    stale = asyncio.run(
+        rewards_live.refresh_rewards(
+            rewards_live.discover_configs(config_dir),
+            data_dir,
+            **stale_kwargs,
+        )
+    )
+    stale_summary = stale["reward_ledger"]["summary"]
+    assert stale_summary["current_total_usd"] == 0.0
+    assert stale_summary["last_known_total_usd"] == 3.65
+    assert stale_summary["stale_record_count"] == 4
