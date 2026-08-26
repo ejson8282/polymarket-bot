@@ -32,16 +32,28 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-MODEL_VERSION = 4
+MODEL_VERSION = 5
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 DEFAULT_LOWER_REWARD_RESERVE_RATIO = Decimal("0.25")
 DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC = Decimal("1")
+DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC = Decimal("2000")
+DEFAULT_STABLE_MIN_TIME_TO_END_SEC = 12 * 60 * 60
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
 HISTORY_SAMPLES_PER_MARKET = 288
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_WEATHER_MARKET_RE = re.compile(
+    r"\btemperature\b|"
+    r"\bweather\b|\brain(?:fall|y|ing)?\b|\bsnow(?:fall|y|ing)?\b|"
+    r"\bprecipitation\b|\bhumidity\b|\bwind[-\s]+(?:speed|gust)\b|"
+    r"\bdegrees?[-\s]+(?:celsius|fahrenheit)\b|\b(?:celsius|fahrenheit)\b|"
+    r"\d\s*°\s*[cf]\b|"
+    r"\bhurricane\b|\btyphoon\b|\btornado\b|\bheat[-\s]*wave\b|"
+    r"\bcold[-\s]*wave\b",
+    re.IGNORECASE,
+)
 
 
 def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -170,6 +182,39 @@ def _is_sports_market(market: Dict[str, Any]) -> bool:
         or market.get("gameStartTs")
     )
     return has_start and bool(_SPORTS_SLUG_DATE_RE.search(slug))
+
+
+def _is_weather_market(market: Dict[str, Any]) -> bool:
+    """Classify weather contracts conservatively for stable LP admission."""
+
+    category = str(market.get("category") or "").strip().lower()
+    if category in {"weather", "climate"}:
+        return True
+
+    parts = [
+        market.get("question"),
+        market.get("title"),
+        market.get("slug"),
+        _event_slug(market),
+        market.get("description"),
+        market.get("resolutionSource"),
+        market.get("resolution_source"),
+    ]
+    for key in ("tags", "categories"):
+        values = market.get(key)
+        if isinstance(values, str):
+            try:
+                values = json.loads(values)
+            except Exception:
+                values = [values]
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, dict):
+                    parts.extend((value.get("label"), value.get("name"), value.get("slug")))
+                else:
+                    parts.append(value)
+    text = " ".join(str(part or "") for part in parts).lower()
+    return bool(_WEATHER_MARKET_RE.search(text))
 
 
 def _event_slug(market: Dict[str, Any]) -> str:
@@ -451,6 +496,7 @@ def _observe_candidate(
     if market_competitiveness is None:
         market_competitiveness = market.get("market_competitiveness")
 
+    is_weather = _is_weather_market(market)
     return {
         "condition_id": str(
             market.get("conditionId")
@@ -464,7 +510,12 @@ def _observe_candidate(
         "market_url": _market_url(market),
         "token_id": rough["token_ids"][0],
         "paired_token_id": rough["token_ids"][1],
-        "market_type": "sports" if _is_sports_market(market) else "always_on",
+        "market_type": (
+            "weather"
+            if is_weather
+            else "sports" if _is_sports_market(market) else "always_on"
+        ),
+        "weather_market": is_weather,
         "market_phase": market_phase,
         "game_start_ts": game_start_ts,
         "market_active": rough.get("market_active"),
@@ -472,6 +523,11 @@ def _observe_candidate(
         "market_archived": rough.get("market_archived"),
         "accepting_orders": rough.get("accepting_orders"),
         "market_end_ts": rough.get("market_end_ts"),
+        "seconds_to_end": (
+            round(float(rough["market_end_ts"]) - time.time(), 1)
+            if rough.get("market_end_ts") is not None
+            else None
+        ),
         "seconds_to_start": (
             round(game_start_ts - time.time(), 1)
             if game_start_ts is not None
@@ -723,6 +779,7 @@ def fetch_public_book(
 
 def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
     settings: Dict[str, Any] = {}
+    stable_depths: List[Decimal] = []
     if config_dir is not None:
         for path in sorted(config_dir.glob("config_*.json")):
             try:
@@ -733,9 +790,23 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
             if not isinstance(curator, dict):
                 continue
             observer = curator.get("reward_observer")
-            if isinstance(observer, dict):
+            if isinstance(observer, dict) and not settings:
                 settings = observer
-                break
+            profile = config.get("lp_account")
+            profile_type = (
+                str(profile.get("profile_type") or "standard").strip().lower()
+                if isinstance(profile, dict)
+                else "standard"
+            )
+            if profile_type != "aggressive":
+                execution = config.get("execution")
+                if isinstance(execution, dict):
+                    depth = _decimal(
+                        execution.get("min_front_bid_notional_usdc"),
+                        Decimal("-1"),
+                    )
+                    if depth > 0:
+                        stable_depths.append(depth)
     return {
         "candidate_limit": max(
             1,
@@ -760,6 +831,22 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
             _decimal(
                 settings.get("min_estimated_daily_payout_usdc"),
                 DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC,
+            ),
+        ),
+        "stable_min_front_bid_notional_usdc": max(
+            Decimal("1"),
+            min(stable_depths)
+            if stable_depths
+            else _decimal(
+                settings.get("stable_min_front_bid_notional_usdc"),
+                DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC,
+            ),
+        ),
+        "stable_min_time_to_end_sec": max(
+            0,
+            int(
+                settings.get("stable_min_time_to_end_sec")
+                or DEFAULT_STABLE_MIN_TIME_TO_END_SEC
             ),
         ),
     }
@@ -827,7 +914,9 @@ def _apply_observation_history(
     data_dir: Path,
     state: Dict[str, Any],
     now_ts: float,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> None:
+    settings = settings or {}
     history_path = data_dir / "reward_observer_history.json"
     try:
         history = json.loads(history_path.read_text(encoding="utf-8"))
@@ -914,6 +1003,38 @@ def _apply_observation_history(
             and float(candidate.get("estimated_daily_gross_usd") or 0)
             >= float(candidate.get("min_estimated_daily_payout_usd") or 0)
         )
+        stable_rejections: List[str] = []
+        if candidate.get("weather_market") is True:
+            stable_rejections.append("weather_observe_only")
+        if str(candidate.get("front_depth_status") or "") != "verified":
+            stable_rejections.append("front_depth_unavailable")
+        min_depth = float(
+            settings.get("stable_min_front_bid_notional_usdc")
+            or DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC
+        )
+        try:
+            front_depth = float(candidate.get("min_front_bid_notional_usd"))
+        except (TypeError, ValueError):
+            front_depth = -1.0
+        if front_depth < min_depth:
+            stable_rejections.append("front_depth_below_stable_minimum")
+        min_time_to_end = float(
+            settings.get("stable_min_time_to_end_sec")
+            or DEFAULT_STABLE_MIN_TIME_TO_END_SEC
+        )
+        try:
+            seconds_to_end = float(candidate.get("market_end_ts")) - now_ts
+        except (TypeError, ValueError):
+            seconds_to_end = -1.0
+        candidate["seconds_to_end"] = round(seconds_to_end, 1)
+        if seconds_to_end < min_time_to_end:
+            stable_rejections.append("market_ends_too_soon")
+        candidate["stable_lp_min_front_bid_notional_usdc"] = round(min_depth, 2)
+        candidate["stable_lp_min_time_to_end_sec"] = round(min_time_to_end, 1)
+        candidate["stable_lp_rejection_reasons"] = stable_rejections
+        candidate["stable_lp_recommended"] = bool(
+            candidate["verification_recommended"] and not stable_rejections
+        )
 
     history_payload = {
         "version": 1,
@@ -954,7 +1075,7 @@ def refresh_observer_state(
         ],
     )
     generated_at = time.time()
-    _apply_observation_history(data_dir, state, generated_at)
+    _apply_observation_history(data_dir, state, generated_at, settings)
     state.update(
         {
             "status": "ready",

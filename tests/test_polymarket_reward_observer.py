@@ -2,6 +2,8 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from platforms.polymarket.maker import reward_observer
 from platforms.polymarket.maker.reward_observer import (
     observe_reward_markets,
@@ -43,6 +45,18 @@ def _book(size: str = "5", *, tick_size="0.01") -> dict:
     if tick_size is not None:
         book["tick_size"] = tick_size
     return book
+
+
+def _deep_book(size: str = "2500", *, tick_size: str = "0.01") -> dict:
+    return {
+        "tick_size": tick_size,
+        "bids": [
+            {"price": "0.48", "size": size},
+            {"price": "0.47", "size": size},
+            {"price": "0.46", "size": size},
+        ],
+        "asks": [{"price": "0.52", "size": size}],
+    }
 
 
 def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
@@ -371,4 +385,76 @@ def test_candidate_requires_repeated_stable_samples_before_verification(
     assert candidate["stability_score"] == 100
     assert candidate["verification_status"] == "stable"
     assert candidate["verification_recommended"] is True
+    assert candidate["stable_lp_recommended"] is False
+    assert "front_depth_below_stable_minimum" in candidate[
+        "stable_lp_rejection_reasons"
+    ]
     assert candidate["risk_adjusted_daily_roi_pct"] > 0
+
+
+def test_weather_market_remains_observe_only_for_stable_lp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
+    weather = _market(slug="highest-temperature-in-guangzhou-on-august-26")
+    weather["question"] = "What will be the highest temperature in Guangzhou?"
+
+    state = {}
+    for _ in range(12):
+        state = refresh_observer_state(
+            tmp_path,
+            fetch_markets=lambda: [weather],
+            fetch_book=lambda _token: _deep_book(),
+        )
+        now[0] += 300
+
+    candidate = state["candidates"][0]
+    assert candidate["verification_recommended"] is True
+    assert candidate["weather_market"] is True
+    assert candidate["market_type"] == "weather"
+    assert candidate["stable_lp_recommended"] is False
+    assert "weather_observe_only" in candidate["stable_lp_rejection_reasons"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Will it rain in London tomorrow?",
+        "Will New York reach 85 degrees Fahrenheit?",
+        "Will the temperature in Paris be 29 C?",
+        "Will Paris's temperature reach 29 C?",
+        "Will Hong Kong record 29°C on Friday?",
+    ],
+)
+def test_weather_classifier_covers_common_question_formats(question: str) -> None:
+    market = _market(slug="daily-city-contract")
+    market["question"] = question
+
+    assert reward_observer._is_weather_market(market) is True
+
+
+def test_stable_lp_requires_meaningful_front_depth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
+
+    state = {}
+    for _ in range(12):
+        state = refresh_observer_state(
+            tmp_path,
+            fetch_markets=lambda: [_market(reward="25")],
+            fetch_book=lambda _token: _deep_book("100"),
+        )
+        now[0] += 300
+
+    candidate = state["candidates"][0]
+    assert candidate["front_depth_status"] == "verified"
+    assert candidate["verification_recommended"] is True
+    assert candidate["stable_lp_recommended"] is False
+    assert "front_depth_below_stable_minimum" in candidate[
+        "stable_lp_rejection_reasons"
+    ]

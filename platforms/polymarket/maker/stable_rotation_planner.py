@@ -25,6 +25,7 @@ DEFAULT_MIN_STABILITY_SCORE = 70.0
 DEFAULT_MAX_FILL_RISK = 35.0
 DEFAULT_MIN_RISK_ADJUSTED_DAILY_ROI_PCT = 0.1
 DEFAULT_MIN_SPORTS_LEAD_SEC = 3 * 60 * 60
+DEFAULT_MIN_MARKET_TIME_TO_END_SEC = 12 * 60 * 60
 DEFAULT_MIN_FRONT_BID_NOTIONAL_USDC = 2_000.0
 _CONFIG_NAME_RE = re.compile(r"^config_(\d+)\.json$")
 
@@ -255,6 +256,7 @@ def _global_rejections(
     max_fill_risk: float,
     min_risk_adjusted_daily_roi_pct: float,
     min_sports_lead_sec: float,
+    min_market_time_to_end_sec: float,
 ) -> list[str]:
     reasons: list[str] = []
     token_id, paired_token_id = _token_pair(row)
@@ -271,8 +273,19 @@ def _global_rejections(
     market_end_ts = _number(row.get("market_end_ts"), -1.0)
     if market_end_ts <= now_ts:
         reasons.append("market_expired_or_end_unknown")
+    elif market_end_ts < now_ts + min_market_time_to_end_sec:
+        reasons.append("market_ends_too_soon")
     if row.get("verification_recommended") is not True:
         reasons.append("verification_not_recommended")
+    if row.get("stable_lp_recommended") is not True:
+        stable_reasons = [
+            str(reason)
+            for reason in row.get("stable_lp_rejection_reasons") or []
+            if str(reason)
+        ]
+        reasons.extend(stable_reasons)
+        if not stable_reasons:
+            reasons.append("stable_lp_not_recommended")
     if _number(row.get("stability_score")) < min_stability_score:
         reasons.append("stability_below_min")
     if _number(row.get("fill_risk"), 100.0) >= max_fill_risk:
@@ -427,6 +440,7 @@ def build_stable_rotation_proposal(
         DEFAULT_MIN_RISK_ADJUSTED_DAILY_ROI_PCT
     ),
     min_sports_lead_sec: float = DEFAULT_MIN_SPORTS_LEAD_SEC,
+    min_market_time_to_end_sec: float = DEFAULT_MIN_MARKET_TIME_TO_END_SEC,
 ) -> dict[str, Any]:
     """Return an auditable proposal with no executable configuration payload."""
 
@@ -493,6 +507,7 @@ def build_stable_rotation_proposal(
             min_risk_adjusted_daily_roi_pct, 2
         ),
         "min_sports_lead_sec": round(min_sports_lead_sec, 1),
+        "min_market_time_to_end_sec": round(min_market_time_to_end_sec, 1),
         "allocation": "independent_per_account_best_candidates",
         "cross_account_duplicate_events": "allowed",
         "candidate_ranking": [
@@ -543,6 +558,7 @@ def build_stable_rotation_proposal(
             max_fill_risk=max_fill_risk,
             min_risk_adjusted_daily_roi_pct=min_risk_adjusted_daily_roi_pct,
             min_sports_lead_sec=min_sports_lead_sec,
+            min_market_time_to_end_sec=min_market_time_to_end_sec,
         )
         if reasons:
             candidate_rejections[event_key] = reasons
