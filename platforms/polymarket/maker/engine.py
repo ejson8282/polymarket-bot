@@ -9628,6 +9628,38 @@ class PolyLPSMulti:
         except Exception:
             return False
 
+    def _prime_cycle_snapshots(self, cycle_books: Optional[Mapping[str, Any]]) -> int:
+        """Publish one coherent shared-book generation before paired planning."""
+        if not cycle_books:
+            return 0
+
+        primed = 0
+        now = time.time()
+        for token_id, cycle_entry in cycle_books.items():
+            book = getattr(cycle_entry, "book", cycle_entry)
+            observed_ts = float(getattr(cycle_entry, "fetched_at", 0.0) or now)
+            if observed_ts <= 0 or (now - observed_ts) > self._market_snapshot_stale_sec:
+                continue
+            if not book or not getattr(book, "bids", None) or not getattr(book, "asks", None):
+                continue
+            bids = self._coerce_levels(getattr(book, "bids", None))
+            asks = self._coerce_levels(getattr(book, "asks", None))
+            bids, asks = self._sort_book_levels(bids, asks)
+            best_bid, best_ask = self._best_prices_from_levels(bids, asks)
+            if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+                continue
+            if self._update_market_snapshot(
+                str(token_id),
+                best_bid=best_bid,
+                best_ask=best_ask,
+                bids=bids,
+                asks=asks,
+                source="shared_batch",
+                observed_ts=observed_ts,
+            ) is not None:
+                primed += 1
+        return primed
+
     async def book_loop(self) -> None:
         sem = asyncio.Semaphore(self._book_loop_concurrency)
 
@@ -9699,6 +9731,7 @@ class PolyLPSMulti:
                 snapshot_fn = getattr(self._shared_book_cache, "snapshot", None)
                 if callable(snapshot_fn):
                     cycle_books = snapshot_fn(token_ids)
+                    self._prime_cycle_snapshots(cycle_books)
             await asyncio.gather(*[_process(tid, cycle_books) for tid in token_ids])
             if self._shared_book_cache is not None:
                 # multi-account mode: random cycle interval to stagger accounts
@@ -11513,6 +11546,8 @@ class PolyLPSMulti:
                 avail = self._lp_effective_available(
                     await self._get_collateral_available(force_refresh=True)
                 )
+                if avail is not None:
+                    self._last_balance = avail
                 if avail is not None and prev_balance is not None:
                     change = avail - prev_balance
                     drop = prev_balance - avail
