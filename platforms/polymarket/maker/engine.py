@@ -81,6 +81,18 @@ except ImportError:
         confirmation_for_replacement,
         find_confirmed_replacement,
     )
+try:
+    from .stable_market_lifecycle import (
+        account_admission as stable_lifecycle_account_admission,
+        build_lifecycle_plan,
+        candidate_is_executable_for_account,
+    )
+except ImportError:
+    from stable_market_lifecycle import (
+        account_admission as stable_lifecycle_account_admission,
+        build_lifecycle_plan,
+        candidate_is_executable_for_account,
+    )
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -810,6 +822,10 @@ class PolyLPSMulti:
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
                 "source": str(m.get("source") or "manual"),
                 "eligibility_managed": bool(m.get("eligibility_managed", False)),
+                "lifecycle_stage": str(m.get("lifecycle_stage") or ""),
+                "lifecycle_retire_pending": bool(
+                    m.get("lifecycle_retire_pending", False)
+                ),
             }
 
         if not self.market_cfg:
@@ -818,10 +834,16 @@ class PolyLPSMulti:
         self.market_states: Dict[str, TopOfBook] = {}
         self._market_snapshots: Dict[str, MarketSnapshot] = {}
         self._market_depth_snapshots: Dict[str, MarketSnapshot] = {}
-        self._event_states: Dict[str, Dict[str, Any]] = {
-            tid: {"state": EVENT_ACTIVE, "reason": "init", "updated_at": time.time()}
-            for tid in self.market_cfg
-        }
+        self._event_states: Dict[str, Dict[str, Any]] = {}
+        for tid, market in self.market_cfg.items():
+            retire_pending = bool(market.get("lifecycle_retire_pending"))
+            self._event_states[tid] = {
+                "state": EVENT_WATCH if retire_pending else EVENT_ACTIVE,
+                "reason": (
+                    "stable_lifecycle_retire_pending" if retire_pending else "init"
+                ),
+                "updated_at": time.time(),
+            }
         self._event_locks: Dict[str, asyncio.Lock] = {tid: asyncio.Lock() for tid in self.market_cfg}
         self._latency_marks: Dict[str, Dict[str, float]] = {tid: {} for tid in self.market_cfg}
         self._latency_records: list[dict] = []
@@ -1233,9 +1255,19 @@ class PolyLPSMulti:
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
                 "source": str(m.get("source") or "manual"),
                 "eligibility_managed": bool(m.get("eligibility_managed", False)),
+                "lifecycle_stage": str(m.get("lifecycle_stage") or ""),
+                "lifecycle_retire_pending": bool(
+                    m.get("lifecycle_retire_pending", False)
+                ),
             }
             if self._night_market_cfg[token_id]["condition_id"]:
                 self._market_condition_ids[token_id] = self._night_market_cfg[token_id]["condition_id"]
+            if self._night_market_cfg[token_id]["lifecycle_retire_pending"]:
+                self._event_states[token_id] = {
+                    "state": EVENT_WATCH,
+                    "reason": "stable_lifecycle_retire_pending",
+                    "updated_at": time.time(),
+                }
 
         # state writer
         self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 3))
@@ -1314,6 +1346,46 @@ class PolyLPSMulti:
         self._stable_rotation_proposal_path = (
             self._state_path.parent / "stable_rotation_proposal.json"
         )
+        lifecycle_cfg = self.cfg.get("stable_market_lifecycle", {}) or {}
+        if not isinstance(lifecycle_cfg, dict):
+            lifecycle_cfg = {}
+        self._stable_market_lifecycle_enabled = bool(
+            lifecycle_cfg.get("enabled", False)
+            and self.lp_account_profile.profile_type != "aggressive"
+        )
+        self._stable_lifecycle_max_proposal_age_sec = max(
+            60.0,
+            float(lifecycle_cfg.get("max_proposal_age_sec", 900.0)),
+        )
+        self._stable_lifecycle_max_add_per_cycle = max(
+            0,
+            int(lifecycle_cfg.get("max_add_per_cycle", 5)),
+        )
+        self._stable_lifecycle_soft_failure_threshold = max(
+            1,
+            int(lifecycle_cfg.get("soft_failure_threshold", 3)),
+        )
+        self._stable_lifecycle_hard_failure_threshold = max(
+            1,
+            int(lifecycle_cfg.get("hard_failure_threshold", 1)),
+        )
+        self._stable_lifecycle_state_path = (
+            self._state_path.parent
+            / f"stable_market_lifecycle_state_{self._account_idx}.json"
+        )
+        self._stable_lifecycle_state: Dict[str, Any] = {}
+        try:
+            lifecycle_state = json.loads(
+                self._stable_lifecycle_state_path.read_text(encoding="utf-8")
+            )
+            if (
+                isinstance(lifecycle_state, dict)
+                and int(lifecycle_state.get("account_index") or 0)
+                == int(self._account_idx)
+            ):
+                self._stable_lifecycle_state = lifecycle_state
+        except Exception:
+            pass
         self._eligibility_state: Dict[str, Dict[str, Any]] = {}
         eligibility_cfg = self.cfg.get("eligibility_guard", {}) or {}
         aggressive_profile = self.lp_account_profile.profile_type == "aggressive"
@@ -6775,6 +6847,12 @@ class PolyLPSMulti:
                     "eligibility_managed": bool(
                         yes_cfg.get("eligibility_managed", False)
                     ),
+                    "lifecycle_stage": str(
+                        yes_cfg.get("lifecycle_stage") or ""
+                    ),
+                    "lifecycle_retire_pending": bool(
+                        yes_cfg.get("lifecycle_retire_pending", False)
+                    ),
                     "_dual_side_auto": True,
                     "game_start_ts_override": float(yes_cfg.get("game_start_ts_override", 0.0) or 0.0),
                     "pre_start_stop_sec_override": int(yes_cfg.get("pre_start_stop_sec_override", 0) or 0),
@@ -6785,7 +6863,18 @@ class PolyLPSMulti:
                     self._market_condition_ids[no_tid] = pool[no_tid]["condition_id"]
                 # Initialise runtime state for the new token
                 self._ensure_runtime_token_state(no_tid, reason="dual_side_inject")
-                self._event_states[no_tid] = {"state": EVENT_ACTIVE, "reason": "dual_side_inject", "updated_at": time.time()}
+                retire_pending = bool(
+                    pool[no_tid].get("lifecycle_retire_pending")
+                )
+                self._event_states[no_tid] = {
+                    "state": EVENT_WATCH if retire_pending else EVENT_ACTIVE,
+                    "reason": (
+                        "stable_lifecycle_retire_pending"
+                        if retire_pending
+                        else "dual_side_inject"
+                    ),
+                    "updated_at": time.time(),
+                }
                 self._dual_side_injected.add(no_tid)
                 slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
 
@@ -6811,6 +6900,7 @@ class PolyLPSMulti:
         condition_id: Optional[str] = None,
         eligibility_managed: bool = False,
         eligibility_base_risk: Optional[str] = None,
+        lifecycle_stage: str = "",
         persist: bool = True,
         notify: bool = True,
     ) -> bool:
@@ -6843,6 +6933,8 @@ class PolyLPSMulti:
             "paired_token_id": paired_token_id,
             "source": source,
             "eligibility_managed": bool(eligibility_managed),
+            "lifecycle_stage": str(lifecycle_stage or ""),
+            "lifecycle_retire_pending": False,
             "_runtime_added": True,
             "game_start_ts_override": float(game_start_ts) if game_start_ts else 0.0,
             "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
@@ -6915,6 +7007,8 @@ class PolyLPSMulti:
                 "eligibility_base_risk": str(
                     eligibility_base_risk or risk
                 ).lower(),
+                "lifecycle_stage": str(lifecycle_stage or ""),
+                "lifecycle_retire_pending": False,
                 "slug": slug or "",
                 "question": question or "",
                 "league": league or "",
@@ -7144,6 +7238,9 @@ class PolyLPSMulti:
         self,
         market: Mapping[str, Any],
         policy: Mapping[str, Any],
+        *,
+        allow_canary: bool = False,
+        require_account_execution: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
@@ -7155,7 +7252,23 @@ class PolyLPSMulti:
         max_observer_age = float(policy.get("max_observer_age_sec") or 900.0)
         if observer_age is None or observer_age > max_observer_age:
             raise ValueError("reward observer snapshot is stale")
-        if not candidate or candidate.get("stable_lp_recommended") is not True:
+        if not candidate:
+            raise ValueError("replacement market is no longer eligible")
+        admission_level = "full"
+        if allow_canary or require_account_execution:
+            eligible, admission_level, admission_reasons = (
+                candidate_is_executable_for_account(
+                    candidate,
+                    int(self._account_idx),
+                    allow_canary=allow_canary,
+                )
+            )
+            if not eligible:
+                reason = admission_reasons[0] if admission_reasons else "ineligible"
+                raise ValueError(
+                    f"replacement market is not account-executable: {reason}"
+                )
+        elif candidate.get("stable_lp_recommended") is not True:
             raise ValueError("replacement market is no longer eligible")
         if candidate.get("weather_market") is True or str(
             candidate.get("market_type") or ""
@@ -7204,21 +7317,27 @@ class PolyLPSMulti:
         no_depth = Decimal(
             str(candidate.get("no_front_bid_notional_usd") or -1)
         )
-        if min(yes_depth, no_depth) < self.min_front_bid_notional_usdc:
+        if (
+            admission_level != "canary"
+            and min(yes_depth, no_depth) < self.min_front_bid_notional_usdc
+        ):
             raise ValueError("replacement depth is below account minimum")
 
         stability = float(candidate.get("stability_score") or 0.0)
         fill_risk = float(candidate.get("fill_risk") or 100.0)
         roi = float(candidate.get("risk_adjusted_daily_roi_pct") or 0.0)
-        if stability < float(policy.get("min_stability_score") or 70.0):
-            raise ValueError("replacement stability is below minimum")
-        if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
-            raise ValueError("replacement fill risk is above stable limit")
-        if roi < float(
-            policy.get("min_risk_adjusted_daily_roi_pct") or 0.1
-        ):
-            raise ValueError("replacement expected return is below minimum")
-        return dict(candidate)
+        if admission_level != "canary":
+            if stability < float(policy.get("min_stability_score") or 70.0):
+                raise ValueError("replacement stability is below minimum")
+            if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
+                raise ValueError("replacement fill risk is above stable limit")
+            if roi < float(
+                policy.get("min_risk_adjusted_daily_roi_pct") or 0.1
+            ):
+                raise ValueError("replacement expected return is below minimum")
+        validated = dict(candidate)
+        validated["account_admission_level"] = admission_level
+        return validated
 
     def _load_stable_replacement_command(
         self,
@@ -7304,6 +7423,9 @@ class PolyLPSMulti:
         candidate: Mapping[str, Any],
         *,
         session: str = "day",
+        source: str = "dashboard_confirmed",
+        lifecycle_stage: str = "",
+        risk_override: Optional[str] = None,
         persist: bool,
         notify: bool,
     ) -> bool:
@@ -7312,7 +7434,10 @@ class PolyLPSMulti:
         spread = candidate.get("rewards_max_spread")
         if spread is None:
             spread = market.get("max_incentive_spread")
-        risk = "low" if float(candidate.get("fill_risk") or 100) < 35 else "mid"
+        risk = str(
+            risk_override
+            or ("low" if float(candidate.get("fill_risk") or 100) < 35 else "mid")
+        ).lower()
         return self.add_market_runtime(
             token_id=token_id,
             paired_token_id=paired_token_id,
@@ -7321,13 +7446,14 @@ class PolyLPSMulti:
             min_distance=market.get("min_distance_from_best_bid", 0.01),
             risk=risk,
             session=session,
-            source="dashboard_confirmed",
+            source=source,
             game_start_ts=candidate.get("game_start_ts"),
             slug=str(candidate.get("slug") or market.get("slug") or ""),
             question=str(candidate.get("question") or market.get("question") or ""),
             condition_id=str(candidate.get("condition_id") or ""),
             eligibility_managed=True,
             eligibility_base_risk=risk,
+            lifecycle_stage=lifecycle_stage,
             persist=persist,
             notify=notify,
         )
@@ -7763,6 +7889,308 @@ class PolyLPSMulti:
                 )
             await asyncio.sleep(self._order_scoring_observer_interval_sec)
 
+    def _write_stable_lifecycle_state(self, state: Mapping[str, Any]) -> None:
+        payload = dict(state)
+        temporary = self._stable_lifecycle_state_path.with_suffix(
+            ".json.tmp"
+        )
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(self._stable_lifecycle_state_path)
+        self._stable_lifecycle_state = payload
+
+    def _stable_lifecycle_managed_tokens(self) -> set[str]:
+        return {
+            str(token_id)
+            for token_id, config in (
+                list(self.market_cfg.items())
+                + list(self._night_market_cfg.items())
+            )
+            if not config.get("_dual_side_auto")
+        }
+
+    def _mark_stable_lifecycle_retire_pending(
+        self,
+        token_id: str,
+        reason_codes: Iterable[str],
+    ) -> None:
+        config = json.loads(self._config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError("account config is invalid")
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "")
+        reason_list = list(dict.fromkeys(str(reason) for reason in reason_codes))
+        requested_at = time.time()
+        changed = False
+        for section in ("markets", "night_markets"):
+            rows = config.get(section) or []
+            if not isinstance(rows, list):
+                raise ValueError(f"account config {section} is invalid")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"account config {section} contains invalid market"
+                    )
+                if str(row.get("token_id") or "") not in {
+                    token_id,
+                    paired_token_id,
+                }:
+                    continue
+                row["lifecycle_retire_pending"] = True
+                row["lifecycle_retire_reason_codes"] = reason_list
+                if not row.get("lifecycle_retire_requested_at"):
+                    row["lifecycle_retire_requested_at"] = requested_at
+                changed = True
+        if changed:
+            self._write_config_atomic(config)
+        for tid in (token_id, paired_token_id):
+            runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
+            if runtime is not None:
+                runtime["lifecycle_retire_pending"] = True
+
+    def _remove_stable_lifecycle_config(self, token_id: str) -> None:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "")
+        drop_ids = {token_id, paired_token_id} - {""}
+        config = json.loads(self._config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError("account config is invalid")
+        for section in ("markets", "night_markets"):
+            rows = config.get(section) or []
+            if not isinstance(rows, list):
+                raise ValueError(f"account config {section} is invalid")
+            kept = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise ValueError(
+                        f"account config {section} contains invalid market"
+                    )
+                if str(row.get("token_id") or "") not in drop_ids:
+                    kept.append(row)
+            config[section] = kept
+        self._write_config_atomic(config)
+        self._drop_market_runtime_state(token_id)
+        self._request_market_ws_resubscribe()
+
+    async def _retire_stable_lifecycle_market(
+        self,
+        token_id: str,
+        reason_codes: Iterable[str],
+    ) -> str:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        if not cfg:
+            return "already_removed"
+        if cfg.get("_dual_side_auto"):
+            return "paired_side_ignored"
+        paired_token_id = str(cfg.get("paired_token_id") or "")
+        event_tokens = tuple(
+            dict.fromkeys(
+                tid for tid in (token_id, paired_token_id) if tid
+            )
+        )
+        reason_list = tuple(dict.fromkeys(str(reason) for reason in reason_codes))
+        for tid in event_tokens:
+            if not self._event_has_unresolved_exit(
+                tid,
+                ignore_state_tokens=set(event_tokens),
+            ):
+                self._set_event_state(
+                    tid,
+                    EVENT_WATCH,
+                    "stable_lifecycle_retire_pending",
+                )
+
+        cancellation_confirmed = True
+        for tid in event_tokens:
+            if not await self._cancel_risk_buys(
+                tid,
+                "stable_lifecycle_retire",
+            ):
+                cancellation_confirmed = False
+        self._mark_stable_lifecycle_retire_pending(token_id, reason_list)
+        if not cancellation_confirmed:
+            return "buy_cancellation_unconfirmed"
+
+        if any(
+            self._event_has_unresolved_exit(
+                tid,
+                ignore_state_tokens=set(event_tokens),
+            )
+            for tid in event_tokens
+        ):
+            return "position_or_exit_pending"
+        for tid in event_tokens:
+            position = await self._get_token_position(tid)
+            if position < 0:
+                return "position_unknown"
+            if not self._stable_rotation_position_is_clear(position):
+                return "position_not_flat"
+
+        try:
+            open_orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception:
+            return "open_orders_unknown"
+        if not isinstance(open_orders, list):
+            return "open_orders_unknown"
+        for order in open_orders:
+            if not isinstance(order, Mapping) or not _order_is_live(order):
+                continue
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset in event_tokens:
+                return (
+                    "buy_cancellation_unconfirmed"
+                    if self._order_side(order) == "BUY"
+                    else "exit_sell_preserved"
+                )
+
+        self._remove_stable_lifecycle_config(token_id)
+        log(
+            f"[stable-lifecycle] retired token={token_id[:16]} "
+            f"reasons={','.join(reason_list)[:180]}"
+        )
+        self.send_discord(
+            "市场已自动移出\n"
+            f"市场：{self._discord_market_name(token_id)}\n"
+            f"原因：{', '.join(reason_list)[:220]}"
+        )
+        return "removed"
+
+    async def _stable_market_lifecycle_once(self) -> None:
+        if not self._stable_market_lifecycle_enabled:
+            return
+        if not getattr(self, "_runtime_market_updates_enabled", True):
+            return
+        try:
+            proposal = json.loads(
+                self._stable_rotation_proposal_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return
+        if not isinstance(proposal, dict):
+            return
+
+        configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+        plan = build_lifecycle_plan(
+            proposal,
+            account_index=int(self._account_idx),
+            configured_token_ids=configured_tokens,
+            managed_token_ids=self._stable_lifecycle_managed_tokens(),
+            previous_state=self._stable_lifecycle_state,
+            now_ts=time.time(),
+            max_proposal_age_sec=self._stable_lifecycle_max_proposal_age_sec,
+            max_add_per_cycle=self._stable_lifecycle_max_add_per_cycle,
+            soft_failure_threshold=(
+                self._stable_lifecycle_soft_failure_threshold
+            ),
+            hard_failure_threshold=(
+                self._stable_lifecycle_hard_failure_threshold
+            ),
+        )
+        retire_results = []
+        pending_tokens = [
+            token_id
+            for token_id in sorted(self._stable_lifecycle_managed_tokens())
+            if bool(
+                (
+                    self.market_cfg.get(token_id)
+                    or self._night_market_cfg.get(token_id)
+                    or {}
+                ).get("lifecycle_retire_pending")
+            )
+        ]
+        retire_rows = {
+            str(row.get("token_id") or ""): row
+            for row in plan.get("retire") or []
+            if isinstance(row, Mapping)
+        }
+        for token_id in pending_tokens:
+            retire_rows.setdefault(
+                token_id,
+                {
+                    "token_id": token_id,
+                    "reason_codes": ["retirement_already_pending"],
+                },
+            )
+        for token_id, row in retire_rows.items():
+            if not token_id:
+                continue
+            try:
+                result = await self._retire_stable_lifecycle_market(
+                    token_id,
+                    row.get("reason_codes") or [],
+                )
+            except Exception as exc:
+                result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            retire_results.append({"token_id": token_id, "status": result})
+
+        add_results = []
+        policy = proposal.get("policy") or {}
+        for action in plan.get("add") or []:
+            if not isinstance(action, Mapping):
+                continue
+            market = action.get("market")
+            if not isinstance(market, Mapping):
+                continue
+            stage = str(action.get("stage") or "")
+            token_id = str(market.get("token_id") or "")
+            try:
+                candidate = self._validate_stable_replacement_candidate(
+                    market,
+                    policy,
+                    allow_canary=True,
+                    require_account_execution=True,
+                )
+                current_admission = stable_lifecycle_account_admission(
+                    candidate,
+                    int(self._account_idx),
+                )
+                if current_admission is None or current_admission[0] != stage:
+                    raise ValueError("candidate admission changed")
+                added = self._add_runtime_candidate(
+                    market,
+                    candidate,
+                    source="stable_lifecycle_auto",
+                    lifecycle_stage=stage,
+                    risk_override="high" if stage == "canary" else None,
+                    persist=True,
+                    notify=True,
+                )
+                if added:
+                    configured_after_add = set(self.market_cfg) | set(
+                        self._night_market_cfg
+                    )
+                    paired_token_id = str(
+                        market.get("paired_token_id") or ""
+                    )
+                    if not {token_id, paired_token_id}.issubset(
+                        configured_after_add
+                    ):
+                        self._remove_stable_lifecycle_config(token_id)
+                        raise RuntimeError(
+                            "paired market injection did not complete"
+                        )
+                status = "added" if added else "already_configured"
+            except Exception as exc:
+                status = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            add_results.append({"token_id": token_id, "status": status})
+
+        plan["retire_results"] = retire_results
+        plan["add_results"] = add_results
+        self._write_stable_lifecycle_state(plan)
+        if retire_results or add_results:
+            log(
+                f"[stable-lifecycle] account={self._account_idx} "
+                f"add={add_results} retire={retire_results}"
+            )
+
     async def eligibility_guard_loop(self) -> None:
         """Keep dashboard-added markets useful without creating an all-off cliff.
 
@@ -7880,6 +8308,7 @@ class PolyLPSMulti:
                             f"[eligibility] token={token_id[:16]} "
                             f"status={status} failures={failures} risk={target_risk}"
                         )
+                await self._stable_market_lifecycle_once()
             except Exception as exc:
                 log(f"[eligibility] loop error: {type(exc).__name__}: {exc}")
             await asyncio.sleep(self._eligibility_check_interval_sec)
@@ -12106,6 +12535,12 @@ class PolyLPSMulti:
                         "sponsored_risk": self._sponsored_guard_by_token.get(tid),
                         "source": str(mcfg.get("source") or "manual"),
                         "eligibility": self._eligibility_state.get(tid),
+                        "lifecycle_stage": str(
+                            mcfg.get("lifecycle_stage") or ""
+                        ),
+                        "lifecycle_retire_pending": bool(
+                            mcfg.get("lifecycle_retire_pending")
+                        ),
                     }
 
                 # Prune curator_events_log entries older than TTL
@@ -12194,6 +12629,20 @@ class PolyLPSMulti:
                         "dynamic_market_updates": self._runtime_market_updates_enabled,
                     },
                     "market_data": market_data_state,
+                    "stable_market_lifecycle": {
+                        "enabled": self._stable_market_lifecycle_enabled,
+                        "status": self._stable_lifecycle_state.get("status"),
+                        "reason": self._stable_lifecycle_state.get("reason"),
+                        "proposal_generated_at": self._stable_lifecycle_state.get(
+                            "proposal_generated_at"
+                        ),
+                        "last_add_results": self._stable_lifecycle_state.get(
+                            "add_results", []
+                        ),
+                        "last_retire_results": self._stable_lifecycle_state.get(
+                            "retire_results", []
+                        ),
+                    },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,
