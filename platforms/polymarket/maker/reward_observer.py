@@ -13,10 +13,11 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -25,14 +26,30 @@ try:
         refresh_stable_rotation_proposal,
         write_blocked_stable_rotation_proposal,
     )
+    from .account_profiles import parse_lp_account_profile
+    from .quote_feasibility import (
+        PairExecution,
+        aggregate_bid_q,
+        distance_score,
+        evaluate_paired_quote,
+        executable_quote_boundary,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from stable_rotation_planner import (
         refresh_stable_rotation_proposal,
         write_blocked_stable_rotation_proposal,
     )
+    from account_profiles import parse_lp_account_profile
+    from quote_feasibility import (
+        PairExecution,
+        aggregate_bid_q,
+        distance_score,
+        evaluate_paired_quote,
+        executable_quote_boundary,
+    )
 
 
-MODEL_VERSION = 5
+MODEL_VERSION = 6
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 DEFAULT_LOWER_REWARD_RESERVE_RATIO = Decimal("0.25")
@@ -43,6 +60,7 @@ GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
 HISTORY_SAMPLES_PER_MARKET = 288
+ACCOUNT_STATE_MAX_AGE_SEC = 900
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _WEATHER_MARKET_RE = re.compile(
     r"\btemperature\b|"
@@ -54,6 +72,43 @@ _WEATHER_MARKET_RE = re.compile(
     r"\bcold[-\s]*wave\b",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class ObserverAccountPolicy:
+    account_index: int
+    account_id: str
+    available_usdc: Optional[Decimal]
+    available_source: str
+    min_distance_ticks: int
+    min_order_size: Decimal
+    budget_pct: Decimal
+    max_quote_shares: Decimal
+    max_notional_per_order: Decimal
+    min_front_bid_notional_usdc: Decimal
+    configured_tokens: frozenset[str]
+    market_runtime: Mapping[str, Mapping[str, Any]]
+    scoring_by_token: Mapping[str, Optional[bool]]
+    reward_percentages: Mapping[str, Decimal]
+
+
+def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
+    return ObserverAccountPolicy(
+        account_index=0,
+        account_id="probe",
+        available_usdc=max(Decimal("0"), probe_budget),
+        available_source="probe_budget",
+        min_distance_ticks=1,
+        min_order_size=Decimal("5"),
+        budget_pct=Decimal("1"),
+        max_quote_shares=Decimal("0"),
+        max_notional_per_order=Decimal("0"),
+        min_front_bid_notional_usdc=DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC,
+        configured_tokens=frozenset(),
+        market_runtime={},
+        scoring_by_token={},
+        reward_percentages={},
+    )
 
 
 def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -96,6 +151,189 @@ def _optional_bool(value: Any) -> Optional[bool]:
         if normalized in {"false", "0"}:
             return False
     return None
+
+
+def _read_mapping(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _state_is_fresh(state: Mapping[str, Any], now_ts: float) -> bool:
+    generated_at = _timestamp(state.get("generated_at") or state.get("ts"))
+    return bool(
+        generated_at is not None
+        and -30 <= now_ts - generated_at <= ACCOUNT_STATE_MAX_AGE_SEC
+    )
+
+
+def _scoring_by_token(payload: Mapping[str, Any]) -> Dict[str, Optional[bool]]:
+    grouped: Dict[str, List[Optional[bool]]] = {}
+    orders = payload.get("orders")
+    if not isinstance(orders, Mapping):
+        return {}
+    for row in orders.values():
+        if not isinstance(row, Mapping):
+            continue
+        token_id = str(row.get("token_id") or "").strip()
+        if not token_id:
+            continue
+        scoring = row.get("last_scoring")
+        grouped.setdefault(token_id, []).append(
+            scoring if isinstance(scoring, bool) else None
+        )
+    result: Dict[str, Optional[bool]] = {}
+    for token_id, values in grouped.items():
+        if any(value is True for value in values):
+            result[token_id] = True
+        elif any(value is False for value in values):
+            result[token_id] = False
+        else:
+            result[token_id] = None
+    return result
+
+
+def _load_account_policies(
+    config_dir: Optional[Path],
+    data_dir: Path,
+    *,
+    now_ts: float,
+) -> List[ObserverAccountPolicy]:
+    if config_dir is None:
+        return []
+    rewards_state = _read_mapping(data_dir / "rewards_live.json")
+    reward_accounts = rewards_state.get("accounts")
+    if not isinstance(reward_accounts, Mapping) or not _state_is_fresh(
+        rewards_state,
+        now_ts,
+    ):
+        reward_accounts = {}
+
+    policies: List[ObserverAccountPolicy] = []
+    for path in sorted(config_dir.glob("config_*.json")):
+        match = re.fullmatch(r"config_(\d+)\.json", path.name)
+        if match is None:
+            continue
+        config = _read_mapping(path)
+        if not config:
+            continue
+        account_index = int(match.group(1))
+        try:
+            profile = parse_lp_account_profile(config, account_index)
+        except ValueError:
+            continue
+        state = _read_mapping(data_dir / f"engine_state_{account_index}.json")
+        state_fresh = _state_is_fresh(state, now_ts)
+        balance = _decimal(state.get("balance"), Decimal("-1"))
+        if not state_fresh or balance < 0:
+            available = None
+            available_source = "unavailable"
+        else:
+            available = profile.effective_available(balance)
+            available_source = (
+                "engine_balance_capped_by_principal"
+                if profile.managed and available < balance
+                else "engine_balance"
+            )
+
+        strategy = config.get("strategy")
+        if not isinstance(strategy, Mapping):
+            strategy = {}
+        risk = config.get("risk")
+        if not isinstance(risk, Mapping):
+            risk = {}
+        execution = config.get("execution")
+        if not isinstance(execution, Mapping):
+            execution = {}
+
+        configured_tokens: set[str] = set()
+        for section in ("markets", "night_markets"):
+            rows = config.get(section)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping) or row.get("enabled", True) is False:
+                    continue
+                for key in ("token_id", "paired_token_id"):
+                    token_id = str(row.get(key) or "").strip()
+                    if token_id:
+                        configured_tokens.add(token_id)
+
+        market_runtime = state.get("markets")
+        if not isinstance(market_runtime, Mapping):
+            market_runtime = {}
+        scoring_state = _read_mapping(
+            data_dir / f"order_scoring_state_{account_index}.json"
+        )
+        scoring = (
+            _scoring_by_token(scoring_state)
+            if _state_is_fresh(scoring_state, now_ts)
+            else {}
+        )
+        reward_row = reward_accounts.get(str(account_index))
+        percentages: Dict[str, Decimal] = {}
+        if isinstance(reward_row, Mapping) and str(
+            reward_row.get("percentage_status") or ""
+        ) == "ok":
+            raw_percentages = reward_row.get("reward_percentages")
+            if isinstance(raw_percentages, Mapping):
+                percentages = {
+                    str(condition).strip().lower(): _decimal(value)
+                    for condition, value in raw_percentages.items()
+                    if str(condition).strip()
+                }
+
+        budget_pct = _decimal(
+            strategy.get("quote_balance_pct_min_mid"),
+            _decimal(strategy.get("quote_balance_pct_min"), Decimal("0.80")),
+        )
+        policies.append(
+            ObserverAccountPolicy(
+                account_index=account_index,
+                account_id=(
+                    profile.account_id
+                    if profile.managed
+                    else f"pm-account-{account_index}"
+                ),
+                available_usdc=available,
+                available_source=available_source,
+                min_distance_ticks=max(
+                    1,
+                    int(strategy.get("min_distance_ticks") or 1),
+                ),
+                min_order_size=max(
+                    Decimal("0"),
+                    _decimal(strategy.get("min_order_size"), Decimal("5")),
+                ),
+                budget_pct=max(Decimal("0"), min(Decimal("1"), budget_pct)),
+                max_quote_shares=max(
+                    Decimal("0"),
+                    _decimal(risk.get("max_quote_shares_per_market")),
+                ),
+                max_notional_per_order=max(
+                    Decimal("0"),
+                    _decimal(risk.get("max_notional_usdc_per_order")),
+                ),
+                min_front_bid_notional_usdc=max(
+                    Decimal("1"),
+                    _decimal(
+                        execution.get("min_front_bid_notional_usdc"),
+                        DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC,
+                    ),
+                ),
+                configured_tokens=frozenset(configured_tokens),
+                market_runtime={
+                    str(token_id): dict(row)
+                    for token_id, row in market_runtime.items()
+                    if isinstance(row, Mapping)
+                },
+                scoring_by_token=scoring,
+                reward_percentages=percentages,
+            )
+        )
+    return policies
 
 
 def _market_end_timestamp(market: Dict[str, Any]) -> Optional[float]:
@@ -297,6 +535,8 @@ def _front_depth_metrics(
     no: Dict[str, Any],
     *,
     observed_at: float,
+    max_spread: Decimal,
+    min_distance_ticks: int = 1,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "front_depth_status": "unavailable",
@@ -321,15 +561,29 @@ def _front_depth_metrics(
     if yes_tick != no_tick:
         result["front_depth_status"] = "tick_size_mismatch"
         return result
-    if len(yes["bids"]) < 2 or len(no["bids"]) < 2:
-        result["front_depth_status"] = "insufficient_bid_levels"
+    yes_boundary = executable_quote_boundary(
+        best_bid=yes["best_bid"],
+        midpoint=yes["mid"],
+        tick=yes_tick,
+        max_spread=max_spread,
+        min_distance_ticks=min_distance_ticks,
+    )
+    no_boundary = executable_quote_boundary(
+        best_bid=no["best_bid"],
+        midpoint=no["mid"],
+        tick=no_tick,
+        max_spread=max_spread,
+        min_distance_ticks=min_distance_ticks,
+    )
+    if not yes_boundary.executable or not no_boundary.executable:
+        result["front_depth_status"] = (
+            yes_boundary.blocked_reason
+            or no_boundary.blocked_reason
+            or "no_safe_quote"
+        )
         return result
-
-    yes_quote = yes["best_bid"] - yes_tick
-    no_quote = no["best_bid"] - no_tick
-    if yes_quote < yes_tick or no_quote < no_tick:
-        result["front_depth_status"] = "no_safe_quote"
-        return result
+    yes_quote = yes_boundary.quote
+    no_quote = no_boundary.quote
 
     yes_front = [(price, size) for price, size in yes["bids"] if price >= yes_quote]
     no_front = [(price, size) for price, size in no["bids"] if price >= no_quote]
@@ -351,20 +605,14 @@ def _front_depth_metrics(
 
 
 def _distance_score(max_spread: Decimal, midpoint: Decimal, price: Decimal) -> Decimal:
-    if max_spread <= 0:
-        return Decimal("0")
-    distance = abs(midpoint - price)
-    if distance >= max_spread:
-        return Decimal("0")
-    ratio = (max_spread - distance) / max_spread
-    return ratio * ratio
+    return distance_score(price, midpoint, max_spread)
 
 
 def _aggregate_bid_score(summary: Dict[str, Any], max_spread: Decimal) -> Decimal:
-    midpoint = summary["mid"]
-    return sum(
-        (_distance_score(max_spread, midpoint, price) * size for price, size in summary["bids"]),
-        Decimal("0"),
+    return aggregate_bid_q(
+        summary["bids"],
+        midpoint=summary["mid"],
+        max_spread=max_spread,
     )
 
 
@@ -433,6 +681,7 @@ def _observe_candidate(
     no_book: Optional[Dict[str, Any]],
     probe_budget: Decimal,
     min_estimated_daily_payout: Decimal,
+    account_policies: Optional[List[ObserverAccountPolicy]] = None,
 ) -> Optional[Dict[str, Any]]:
     market = rough["market"]
     yes = _book_summary(yes_book)
@@ -441,30 +690,153 @@ def _observe_candidate(
         return None
 
     spread = rough["spread"]
-    yes_unit_score = _distance_score(spread, yes["mid"], yes["best_bid"])
-    no_unit_score = _distance_score(spread, no["mid"], no["best_bid"])
-    if yes_unit_score <= 0 or no_unit_score <= 0:
-        return None
-
-    pair_cost = yes["best_bid"] + no["best_bid"]
-    if pair_cost <= 0:
-        return None
     min_size = rough["min_size"]
-    probe_shares = max(min_size, probe_budget / pair_cost)
-    probe_capital = probe_shares * pair_cost
+    policies = account_policies or [_default_probe_policy(probe_budget)]
+    condition_id = str(
+        market.get("conditionId")
+        or market.get("condition_id")
+        or market.get("market")
+        or ""
+    ).strip().lower()
+    token_ids = tuple(rough["token_ids"][:2])
+    account_execution: List[Dict[str, Any]] = []
+    executions: List[tuple[ObserverAccountPolicy, PairExecution]] = []
+    for policy in policies:
+        available = policy.available_usdc
+        capital_source = policy.available_source
+        if available is None:
+            available = probe_budget
+            capital_source = "probe_budget_fallback"
+        execution = evaluate_paired_quote(
+            yes_bids=yes["bids"],
+            no_bids=no["bids"],
+            yes_best_bid=yes["best_bid"],
+            no_best_bid=no["best_bid"],
+            yes_midpoint=yes["mid"],
+            no_midpoint=no["mid"],
+            yes_tick=yes.get("tick_size") or Decimal("0"),
+            no_tick=no.get("tick_size") or Decimal("0"),
+            max_spread=spread,
+            min_distance_ticks=policy.min_distance_ticks,
+            available=available,
+            rewards_min=min_size,
+            min_order_size=policy.min_order_size,
+            budget_pct=policy.budget_pct,
+            size_cap=Decimal("1"),
+            max_quote_shares=policy.max_quote_shares,
+            max_notional_per_order=policy.max_notional_per_order,
+        )
+        executions.append((policy, execution))
+        configured = any(token_id in policy.configured_tokens for token_id in token_ids)
+        runtime_rows = [
+            policy.market_runtime.get(token_id)
+            for token_id in token_ids
+            if isinstance(policy.market_runtime.get(token_id), Mapping)
+        ]
+        runtime_q_values = [
+            _decimal(row.get("q_min"), Decimal("-1"))
+            for row in runtime_rows
+            if isinstance(row, Mapping) and row.get("q_min") is not None
+        ]
+        observed_q_min = (
+            min(runtime_q_values) if runtime_q_values else None
+        )
+        scoring_values = [
+            policy.scoring_by_token.get(token_id)
+            for token_id in token_ids
+            if token_id in policy.scoring_by_token
+        ]
+        if any(value is False for value in scoring_values):
+            scoring = False
+        elif scoring_values and all(value is True for value in scoring_values):
+            scoring = True
+        else:
+            scoring = None
+        actual_percentage = policy.reward_percentages.get(condition_id)
+        blocked = list(execution.blocked_reasons)
+        if configured and observed_q_min is not None and observed_q_min <= 0:
+            blocked.append("observed_q_min_zero")
+        if configured and scoring is False:
+            blocked.append("official_order_scoring_false")
+        account_execution.append(
+            {
+                "account_index": policy.account_index,
+                "account_id": policy.account_id,
+                "configured": configured,
+                "capital_source": capital_source,
+                "capital_evidence_fresh": policy.available_usdc is not None,
+                "available_usdc": (
+                    round(float(policy.available_usdc), 2)
+                    if policy.available_usdc is not None
+                    else None
+                ),
+                "budget_pct": round(float(policy.budget_pct), 6),
+                "min_distance_ticks": policy.min_distance_ticks,
+                "min_front_bid_notional_usdc": round(
+                    float(policy.min_front_bid_notional_usdc), 2
+                ),
+                "target_shares": round(float(execution.target_shares), 4),
+                "collateral_required_usdc": round(
+                    float(execution.collateral_required), 2
+                ),
+                "yes_quote": round(float(execution.yes_quote), 6),
+                "no_quote": round(float(execution.no_quote), 6),
+                "theoretical_q_min": round(
+                    float(execution.theoretical_q_min), 6
+                ),
+                "executable_q_min": round(float(execution.executable_q_min), 6),
+                "theoretical_share_pct": round(
+                    float(execution.theoretical_share * 100), 4
+                ),
+                "executable_share_pct": round(
+                    float(execution.executable_share * 100), 4
+                ),
+                "estimated_daily_gross_usd": round(
+                    float(rough["reward"] * execution.executable_share), 4
+                ),
+                "yes_front_bid_notional_usd": round(
+                    float(execution.yes_front_notional), 2
+                ),
+                "no_front_bid_notional_usd": round(
+                    float(execution.no_front_notional), 2
+                ),
+                "min_front_bid_notional_usd": round(
+                    float(
+                        min(
+                            execution.yes_front_notional,
+                            execution.no_front_notional,
+                        )
+                    ),
+                    2,
+                ),
+                "observed_q_min": (
+                    round(float(observed_q_min), 6)
+                    if observed_q_min is not None
+                    else None
+                ),
+                "official_scoring": scoring,
+                "actual_reward_share_pct": (
+                    round(float(actual_percentage), 6)
+                    if actual_percentage is not None
+                    else None
+                ),
+                "blocked_reasons": list(dict.fromkeys(blocked)),
+                "executable": execution.executable and not blocked,
+            }
+        )
 
-    own_yes_q = yes_unit_score * probe_shares
-    own_no_q = no_unit_score * probe_shares
-    own_q_min = min(own_yes_q, own_no_q)
-    competition_q = min(
-        _aggregate_bid_score(yes, spread),
-        _aggregate_bid_score(no, spread),
+    policy, best_execution = max(
+        executions,
+        key=lambda item: (
+            item[1].executable_share,
+            item[1].executable_q_min,
+        ),
     )
-    estimated_share = (
-        own_q_min / (competition_q + own_q_min)
-        if own_q_min > 0 else Decimal("0")
-    )
-    estimated_share = min(Decimal("1"), max(Decimal("0"), estimated_share))
+    estimated_share = best_execution.executable_share
+    theoretical_share = best_execution.theoretical_share
+    probe_shares = best_execution.target_shares
+    probe_capital = best_execution.collateral_required
+    competition_q = best_execution.competition_q
     daily_reward = rough["reward"]
     estimated_daily_gross = daily_reward * estimated_share
     gross_daily_roi = (
@@ -474,7 +846,13 @@ def _observe_candidate(
     midpoint = yes["mid"]
     fill_risk = _fill_risk(market, midpoint)
     market_phase, game_start_ts = _market_phase(market)
-    front_depth = _front_depth_metrics(yes, no, observed_at=time.time())
+    front_depth = _front_depth_metrics(
+        yes,
+        no,
+        observed_at=time.time(),
+        max_spread=spread,
+        min_distance_ticks=policy.min_distance_ticks,
+    )
 
     reasons: List[str] = []
     if estimated_share >= Decimal("0.5"):
@@ -483,8 +861,10 @@ def _observe_candidate(
         reasons.append("estimated_meaningful_share")
     else:
         reasons.append("estimated_crowded")
-    if probe_capital > probe_budget * Decimal("1.05"):
-        reasons.append("minimum_size_raises_capital")
+    if best_execution.target_shares <= 0:
+        reasons.append("minimum_size_exceeds_executable_budget")
+    if best_execution.blocked_reasons:
+        reasons.extend(best_execution.blocked_reasons)
     if fill_risk >= 65:
         reasons.append("high_fill_risk")
     elif fill_risk >= 35:
@@ -498,12 +878,7 @@ def _observe_candidate(
 
     is_weather = _is_weather_market(market)
     return {
-        "condition_id": str(
-            market.get("conditionId")
-            or market.get("condition_id")
-            or market.get("market")
-            or ""
-        ),
+        "condition_id": condition_id,
         "question": str(market.get("question") or market.get("title") or ""),
         "slug": str(market.get("slug") or ""),
         "event_slug": _event_slug(market),
@@ -542,8 +917,16 @@ def _observe_candidate(
         "probe_budget_usd": round(float(probe_budget), 2),
         "probe_capital_usd": round(float(probe_capital), 2),
         "probe_shares_each_side": round(float(probe_shares), 4),
-        "yes_quote": round(float(yes["best_bid"]), 4),
-        "no_quote": round(float(no["best_bid"]), 4),
+        "theoretical_yes_quote": round(float(yes["best_bid"]), 6),
+        "theoretical_no_quote": round(float(no["best_bid"]), 6),
+        "yes_quote": round(float(best_execution.yes_quote), 6),
+        "no_quote": round(float(best_execution.no_quote), 6),
+        "theoretical_reward_share_pct": round(
+            float(theoretical_share * 100), 2
+        ),
+        "executable_reward_share_pct": round(float(estimated_share * 100), 2),
+        "theoretical_q_min": round(float(best_execution.theoretical_q_min), 6),
+        "executable_q_min": round(float(best_execution.executable_q_min), 6),
         "estimated_reward_share_pct": round(float(estimated_share * 100), 2),
         "estimated_daily_gross_usd": round(float(estimated_daily_gross), 2),
         "estimated_gross_daily_roi_pct": round(float(gross_daily_roi * 100), 2),
@@ -551,8 +934,29 @@ def _observe_candidate(
             float(min_estimated_daily_payout),
             2,
         ),
-        "actual_reward_share_pct": None,
-        "actual_daily_gross_usd": None,
+        "actual_reward_share_pct": next(
+            (
+                row["actual_reward_share_pct"]
+                for row in account_execution
+                if row["actual_reward_share_pct"] is not None
+            ),
+            None,
+        ),
+        "actual_daily_gross_usd": next(
+            (
+                round(
+                    float(
+                        daily_reward
+                        * Decimal(str(row["actual_reward_share_pct"]))
+                        / Decimal("100")
+                    ),
+                    4,
+                )
+                for row in account_execution
+                if row["actual_reward_share_pct"] is not None
+            ),
+            None,
+        ),
         "fill_risk": fill_risk,
         "risk_label": _risk_label(fill_risk),
         "competition_score_estimate": round(float(competition_q), 4),
@@ -560,9 +964,24 @@ def _observe_candidate(
             round(float(_decimal(market_competitiveness)), 4)
             if market_competitiveness is not None else None
         ),
-        "reasons": reasons,
+        "reasons": list(dict.fromkeys(reasons)),
+        "blocked_reason": (
+            ";".join(best_execution.blocked_reasons)
+            if best_execution.blocked_reasons
+            else None
+        ),
         "status": "observe_only",
-        "estimate_confidence": "directional",
+        "execution_status": (
+            "executable_observation"
+            if best_execution.executable
+            else "blocked_observation"
+        ),
+        "estimate_confidence": (
+            "executable_model"
+            if best_execution.executable
+            else "blocked"
+        ),
+        "account_execution": account_execution,
         "model_version": MODEL_VERSION,
         **front_depth,
     }
@@ -652,6 +1071,7 @@ def observe_reward_markets(
     min_estimated_daily_payout_usdc: Decimal = (
         DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC
     ),
+    account_policies: Optional[List[ObserverAccountPolicy]] = None,
     fetch_workers: int = 8,
 ) -> Dict[str, Any]:
     """Build a ranked, read-only opportunity list from active reward markets."""
@@ -686,6 +1106,7 @@ def observe_reward_markets(
                 min_estimated_daily_payout_usdc,
                 DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC,
             ),
+            account_policies,
         )) is not None
     ]
     observed.sort(
@@ -787,11 +1208,10 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
             except Exception:
                 continue
             curator = config.get("auto_curator")
-            if not isinstance(curator, dict):
-                continue
-            observer = curator.get("reward_observer")
-            if isinstance(observer, dict) and not settings:
-                settings = observer
+            if isinstance(curator, dict):
+                observer = curator.get("reward_observer")
+                if isinstance(observer, dict) and not settings:
+                    settings = observer
             profile = config.get("lp_account")
             profile_type = (
                 str(profile.get("profile_type") or "standard").strip().lower()
@@ -1035,6 +1455,102 @@ def _apply_observation_history(
         candidate["stable_lp_recommended"] = bool(
             candidate["verification_recommended"] and not stable_rejections
         )
+        account_admission: List[Dict[str, Any]] = []
+        for execution in candidate.get("account_execution") or []:
+            if not isinstance(execution, Mapping):
+                continue
+            rejection_reasons: List[str] = []
+            canary_reasons: List[str] = []
+            blocked = [
+                str(reason)
+                for reason in execution.get("blocked_reasons") or []
+                if str(reason)
+            ]
+            if blocked:
+                rejection_reasons.extend(blocked)
+            if candidate.get("weather_market") is True:
+                rejection_reasons.append("weather_observe_only")
+            if seconds_to_end < min_time_to_end:
+                rejection_reasons.append("market_ends_too_soon")
+            if fill_risk >= 65:
+                rejection_reasons.append("fill_risk_high")
+            if float(execution.get("executable_q_min") or 0) <= 0:
+                rejection_reasons.append("executable_q_min_zero")
+            if execution.get("configured") and execution.get("official_scoring") is False:
+                rejection_reasons.append("official_order_scoring_false")
+            observed_q = execution.get("observed_q_min")
+            if (
+                execution.get("configured")
+                and observed_q is not None
+                and float(observed_q) <= 0
+            ):
+                rejection_reasons.append("observed_q_min_zero")
+
+            try:
+                execution_depth = float(
+                    execution.get("min_front_bid_notional_usd")
+                )
+                required_depth = float(
+                    execution.get("min_front_bid_notional_usdc")
+                )
+            except (TypeError, ValueError):
+                execution_depth = -1.0
+                required_depth = float(
+                    DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC
+                )
+            if execution_depth < required_depth:
+                canary_reasons.append("front_depth_below_full_minimum")
+            if not execution.get("capital_evidence_fresh"):
+                canary_reasons.append("capital_evidence_unavailable")
+            if stability["verification_status"] not in {"stable", "confirmed"}:
+                canary_reasons.append("stability_warming")
+            if stability["stability_score"] < 70:
+                canary_reasons.append("stability_below_full_minimum")
+            if fill_risk >= 35:
+                canary_reasons.append("fill_risk_above_full_limit")
+            estimated_daily_gross = float(
+                execution.get("estimated_daily_gross_usd") or 0
+            )
+            if estimated_daily_gross > 0:
+                if estimated_daily_gross < float(
+                    candidate.get("min_estimated_daily_payout_usd") or 0
+                ):
+                    canary_reasons.append("estimated_daily_payout_below_floor")
+            else:
+                rejection_reasons.append("estimated_daily_payout_zero")
+
+            rejection_reasons = list(dict.fromkeys(rejection_reasons))
+            canary_reasons = list(dict.fromkeys(canary_reasons))
+            if rejection_reasons:
+                level = "reject"
+                reason_codes = rejection_reasons
+            elif canary_reasons:
+                level = "canary"
+                reason_codes = canary_reasons
+            else:
+                level = "full"
+                reason_codes = ["account_executable_and_verified"]
+            account_admission.append(
+                {
+                    "account_index": execution.get("account_index"),
+                    "level": level,
+                    "reason_codes": reason_codes,
+                    "canary_requires_scoring_validation": level == "canary",
+                }
+            )
+        rank = {"reject": 0, "canary": 1, "full": 2}
+        best_admission = max(
+            (
+                str(row.get("level") or "reject")
+                for row in account_admission
+            ),
+            key=lambda level: rank.get(level, 0),
+            default="reject",
+        )
+        candidate["account_admission"] = account_admission
+        candidate["admission_level"] = best_admission
+        candidate["stable_lp_recommended"] = best_admission == "full"
+        candidate["canary_proposal_eligible"] = best_admission == "canary"
 
     history_payload = {
         "version": 1,
@@ -1063,6 +1579,11 @@ def refresh_observer_state(
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = _observer_settings(config_dir)
     started = time.time()
+    account_policies = _load_account_policies(
+        config_dir,
+        data_dir,
+        now_ts=started,
+    )
     markets = fetch_markets()
     state = observe_reward_markets(
         markets,
@@ -1073,6 +1594,7 @@ def refresh_observer_state(
         min_estimated_daily_payout_usdc=settings[
             "min_estimated_daily_payout_usdc"
         ],
+        account_policies=account_policies or None,
     )
     generated_at = time.time()
     _apply_observation_history(data_dir, state, generated_at, settings)
@@ -1083,6 +1605,7 @@ def refresh_observer_state(
             "elapsed_sec": round(time.time() - started, 2),
             "markets_seen": len(markets),
             "source": "public_gamma_and_clob",
+            "accounts_evaluated": len(account_policies),
         }
     )
     if config_dir is not None:

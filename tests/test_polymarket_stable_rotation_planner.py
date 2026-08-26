@@ -152,6 +152,75 @@ def test_proposal_rejects_unverified_risky_live_and_stale_candidates() -> None:
     }
 
 
+def test_account_canary_is_separate_from_full_additions() -> None:
+    candidate = _candidate(1, yes_depth=500.0, no_depth=500.0)
+    candidate["account_admission"] = [
+        {
+            "account_index": 1,
+            "level": "canary",
+            "reason_codes": ["front_depth_below_full_minimum"],
+        }
+    ]
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    account = proposal["accounts"][0]
+    assert account["add"] == []
+    assert [row["token_id"] for row in account["canary"]] == ["1"]
+    assert account["canary"][0]["action"] == "canary"
+    assert proposal["summary"]["planned_canaries"] == 1
+
+
+def test_account_reject_never_enters_add_or_canary() -> None:
+    candidate = _candidate(1)
+    candidate["account_admission"] = [
+        {
+            "account_index": 1,
+            "level": "reject",
+            "reason_codes": ["official_order_scoring_false"],
+        }
+    ]
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    account = proposal["accounts"][0]
+    assert account["add"] == []
+    assert account["canary"] == []
+    assert "all_accounts_reject_candidate" in proposal["rejected_candidates"][0][
+        "reason_codes"
+    ]
+
+
+def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
+    candidate = _candidate(1)
+    candidate["account_admission"] = [
+        {
+            "account_index": 1,
+            "level": "canary",
+            "reason_codes": ["capital_evidence_unavailable"],
+        }
+    ]
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(1, _market(candidate))],
+        now_ts=NOW,
+    )
+
+    keep = proposal["accounts"][0]["keep"]
+    assert len(keep) == 1
+    assert keep[0]["action"] == "keep_canary"
+    assert keep[0]["reason_codes"] == ["capital_evidence_unavailable"]
+
+
 def test_proposal_never_admits_weather_market_to_stable_lp() -> None:
     weather = _candidate(1, roi=20.0)
     weather.update(
@@ -260,7 +329,7 @@ def test_proposal_pairs_best_candidates_with_old_markets_for_manual_replacement(
     assert len({row["replacement_id"] for row in account["replace"]}) == 2
     assert account["replace"][0]["selection"] == {
         "primary_metric": "risk_adjusted_daily_roi_pct",
-        "competition_metric": "estimated_reward_share_pct",
+        "competition_metric": "executable_reward_share_pct",
         "risk_metric": "fill_risk",
         "depth_guard_unchanged": True,
         "min_front_bid_notional_usdc": 2000.0,
