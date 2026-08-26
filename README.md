@@ -48,6 +48,20 @@ Polymarket 实盘做市、奖励观测、候选筛选、账户状态和风控仓
 - `LIVE`、`PAPER`、`SHADOW`、`RESEARCH` 必须明确区分。
 - Service active 只代表进程存在，不代表账户健康、订单有效或策略盈利。
 
+## 奖励观察输出
+
+奖励观察器保持只读并使用约五分钟轮询：
+
+- `reward_ledger.json` 按 canonical maker、业务日、市场、奖励类型和资产幂等记录；
+- `reward_observer_state.json` 区分 `full`、`canary`、`reject` 和未进入盘口评估的
+  `unassessed`，总盘口深度不能替代可挂价格前方的真实深度；
+- `reward_fast_lane_state.json` 只生成新池 watchlist/canary/扩容验证建议；
+- `reward_shadow_budget.json` 只比较实际或校准后的边际奖励，不修改生产 dynamic budget；
+- `reward_observer_history.json` 保存七天五分钟窗口，按时间戳去重，并为配置中但无法获取
+  盘口的市场记录 `missing_reason`。
+
+这些输出不会签名、下单、撤单、修改市场配置或发送运行命令。
+
 ## 验证入口
 
 按改动范围运行对应测试；常见入口：

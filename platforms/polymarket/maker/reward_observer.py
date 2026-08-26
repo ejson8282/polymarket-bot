@@ -9,6 +9,7 @@ public order book does not identify which levels belong to the same maker.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import time
@@ -27,6 +28,11 @@ try:
         write_blocked_stable_rotation_proposal,
     )
     from .account_profiles import parse_lp_account_profile
+    from .reward_fast_lane import (
+        forced_condition_ids as fast_lane_forced_condition_ids,
+        update_fast_lane,
+    )
+    from .reward_shadow_allocator import write_shadow_budget
     from .quote_feasibility import (
         PairExecution,
         aggregate_bid_q,
@@ -40,6 +46,11 @@ except ImportError:  # pragma: no cover - direct script execution
         write_blocked_stable_rotation_proposal,
     )
     from account_profiles import parse_lp_account_profile
+    from reward_fast_lane import (
+        forced_condition_ids as fast_lane_forced_condition_ids,
+        update_fast_lane,
+    )
+    from reward_shadow_allocator import write_shadow_budget
     from quote_feasibility import (
         PairExecution,
         aggregate_bid_q,
@@ -59,7 +70,7 @@ DEFAULT_STABLE_MIN_TIME_TO_END_SEC = 12 * 60 * 60
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
-HISTORY_SAMPLES_PER_MARKET = 288
+HISTORY_SAMPLES_PER_MARKET = 7 * 24 * 12
 ACCOUNT_STATE_MAX_AGE_SEC = 900
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _WEATHER_MARKET_RE = re.compile(
@@ -90,6 +101,8 @@ class ObserverAccountPolicy:
     market_runtime: Mapping[str, Mapping[str, Any]]
     scoring_by_token: Mapping[str, Optional[bool]]
     reward_percentages: Mapping[str, Decimal]
+    configured_market_refs: tuple[Mapping[str, Any], ...] = ()
+    account_uid: str = ""
 
 
 def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
@@ -159,6 +172,13 @@ def _read_mapping(path: Path) -> Dict[str, Any]:
     except (OSError, TypeError, ValueError):
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _account_uid_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _state_is_fresh(state: Mapping[str, Any], now_ts: float) -> bool:
@@ -249,6 +269,7 @@ def _load_account_policies(
             execution = {}
 
         configured_tokens: set[str] = set()
+        configured_market_refs: List[Dict[str, Any]] = []
         for section in ("markets", "night_markets"):
             rows = config.get(section)
             if not isinstance(rows, list):
@@ -260,6 +281,20 @@ def _load_account_policies(
                     token_id = str(row.get(key) or "").strip()
                     if token_id:
                         configured_tokens.add(token_id)
+                configured_market_refs.append(
+                    {
+                        "account_index": account_index,
+                        "condition_id": str(
+                            row.get("condition_id") or ""
+                        ).strip().lower(),
+                        "token_id": str(row.get("token_id") or "").strip(),
+                        "paired_token_id": str(
+                            row.get("paired_token_id") or ""
+                        ).strip(),
+                        "question": str(row.get("question") or "").strip(),
+                        "slug": str(row.get("slug") or "").strip(),
+                    }
+                )
 
         market_runtime = state.get("markets")
         if not isinstance(market_runtime, Mapping):
@@ -331,6 +366,12 @@ def _load_account_policies(
                 },
                 scoring_by_token=scoring,
                 reward_percentages=percentages,
+                configured_market_refs=tuple(configured_market_refs),
+                account_uid=(
+                    str(reward_row.get("account_uid") or "").strip()
+                    if isinstance(reward_row, Mapping)
+                    else ""
+                ),
             )
         )
     return policies
@@ -390,6 +431,27 @@ def _daily_reward(market: Dict[str, Any]) -> Decimal:
         if value > 0:
             return value
     return Decimal("0")
+
+
+def _public_reward_terms(market: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    rows = market.get("clobRewards") or market.get("clob_rewards") or []
+    if not isinstance(rows, list):
+        return []
+    safe_keys = (
+        "rewardsDailyRate",
+        "rewards_daily_rate",
+        "startDate",
+        "start_date",
+        "endDate",
+        "end_date",
+        "assetAddress",
+        "asset_address",
+    )
+    return [
+        {key: row.get(key) for key in safe_keys if row.get(key) is not None}
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
 
 
 def _reward_spread_decimal(market: Dict[str, Any]) -> Decimal:
@@ -671,6 +733,7 @@ def _rough_candidate(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "reward": reward,
         "spread": spread,
         "min_size": min_size,
+        "reward_terms": _public_reward_terms(market),
         "rough_efficiency": rough_efficiency,
     }
 
@@ -762,6 +825,7 @@ def _observe_candidate(
             {
                 "account_index": policy.account_index,
                 "account_id": policy.account_id,
+                "account_uid_key": _account_uid_key(policy.account_uid),
                 "configured": configured,
                 "capital_source": capital_source,
                 "capital_evidence_fresh": policy.available_usdc is not None,
@@ -909,6 +973,7 @@ def _observe_candidate(
             else None
         ),
         "daily_reward_usd": round(float(daily_reward), 2),
+        "reward_terms": list(rough.get("reward_terms") or []),
         "selection_lane": str(
             rough.get("selection_lane") or "overall_efficiency"
         ),
@@ -992,6 +1057,8 @@ def _select_rough_candidates(
     *,
     candidate_limit: int,
     lower_reward_reserve_ratio: Decimal,
+    required_token_ids: Optional[set[str]] = None,
+    required_condition_ids: Optional[set[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Reserve part of the book budget for efficient smaller reward pools.
 
@@ -1002,8 +1069,19 @@ def _select_rough_candidates(
     """
 
     limit = max(1, int(candidate_limit))
+    required_token_ids = {
+        str(token_id).strip()
+        for token_id in (required_token_ids or set())
+        if str(token_id).strip()
+    }
+    required_condition_ids = {
+        str(condition_id).strip().lower()
+        for condition_id in (required_condition_ids or set())
+        if str(condition_id).strip()
+    }
     if not rough:
         return [], {
+            "configured_or_watchlist": 0,
             "overall_efficiency": 0,
             "lower_reward_efficiency": 0,
             "lower_reward_pool_seen": 0,
@@ -1036,14 +1114,25 @@ def _select_rough_candidates(
     selected: List[Dict[str, Any]] = []
     seen: set[int] = set()
     lane_counts = {
+        "configured_or_watchlist": 0,
         "overall_efficiency": 0,
         "lower_reward_efficiency": 0,
         "lower_reward_pool_seen": len(lower_pool),
     }
 
-    def add(rows: Iterable[Dict[str, Any]], count: int, lane: str) -> None:
+    def add(
+        rows: Iterable[Dict[str, Any]],
+        count: int,
+        lane: str,
+        *,
+        ignore_total_limit: bool = False,
+    ) -> None:
         for row in rows:
-            if lane_counts[lane] >= count or len(selected) >= limit:
+            if lane_counts[lane] >= count:
+                break
+            if not ignore_total_limit and len(selected) >= limit + lane_counts[
+                "configured_or_watchlist"
+            ]:
                 break
             key = id(row)
             if key in seen:
@@ -1054,11 +1143,76 @@ def _select_rough_candidates(
             seen.add(key)
             lane_counts[lane] += 1
 
+    forced = [
+        row
+        for row in rough
+        if required_token_ids.intersection(
+            {str(token_id).strip() for token_id in row.get("token_ids") or []}
+        )
+        or str(
+            row["market"].get("conditionId")
+            or row["market"].get("condition_id")
+            or ""
+        ).strip().lower()
+        in required_condition_ids
+    ]
+    add(
+        forced,
+        len(forced),
+        "configured_or_watchlist",
+        ignore_total_limit=True,
+    )
     add(lower_ranked, reserve_count, "lower_reward_efficiency")
-    add(overall, limit - len(selected), "overall_efficiency")
-    if len(selected) < limit:
+    optional_selected = len(selected) - lane_counts["configured_or_watchlist"]
+    add(overall, limit - optional_selected, "overall_efficiency")
+    if len(selected) - lane_counts["configured_or_watchlist"] < limit:
         add(overall, limit, "overall_efficiency")
     return selected, lane_counts
+
+
+def _rough_public_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    market = row["market"]
+    token_ids = [str(token_id) for token_id in row.get("token_ids") or []]
+    return {
+        "condition_id": str(
+            market.get("conditionId") or market.get("condition_id") or ""
+        ).strip().lower(),
+        "token_id": token_ids[0] if token_ids else "",
+        "paired_token_id": token_ids[1] if len(token_ids) > 1 else "",
+        "question": str(market.get("question") or market.get("title") or ""),
+        "slug": str(market.get("slug") or ""),
+        "event_slug": _event_slug(market),
+        "market_url": _market_url(market),
+        "daily_reward_usd": round(float(row["reward"]), 2),
+        "reward_terms": list(row.get("reward_terms") or []),
+        "rewards_min_size_shares": round(float(row["min_size"]), 4),
+        "rewards_max_spread": round(float(row["spread"]), 6),
+        "assessment_status": "unassessed",
+        "admission_level": "unassessed",
+        "reason_codes": ["selection_budget_not_evaluated"],
+    }
+
+
+def _market_ref_aliases(row: Mapping[str, Any]) -> tuple[str, ...]:
+    aliases: List[str] = []
+    condition_id = str(row.get("condition_id") or "").strip().lower()
+    if condition_id:
+        aliases.append(f"condition:{condition_id}")
+    token_ids = sorted(
+        {
+            str(row.get("token_id") or "").strip(),
+            str(row.get("paired_token_id") or "").strip(),
+        }
+        - {""}
+    )
+    if token_ids:
+        aliases.append("pair:" + ":".join(token_ids))
+    return tuple(aliases)
+
+
+def _market_ref_key(row: Mapping[str, Any]) -> str:
+    aliases = _market_ref_aliases(row)
+    return aliases[0] if aliases else ""
 
 
 def observe_reward_markets(
@@ -1072,6 +1226,7 @@ def observe_reward_markets(
         DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC
     ),
     account_policies: Optional[List[ObserverAccountPolicy]] = None,
+    forced_condition_ids: Optional[set[str]] = None,
     fetch_workers: int = 8,
 ) -> Dict[str, Any]:
     """Build a ranked, read-only opportunity list from active reward markets."""
@@ -1081,11 +1236,33 @@ def observe_reward_markets(
         for market in markets
         if (candidate := _rough_candidate(market)) is not None
     ]
+    required_token_ids = {
+        token_id
+        for policy in account_policies or []
+        for token_id in policy.configured_tokens
+    }
+    configured_condition_ids = {
+        str(ref.get("condition_id") or "").strip().lower()
+        for policy in account_policies or []
+        for ref in policy.configured_market_refs
+        if isinstance(ref, Mapping)
+        and str(ref.get("condition_id") or "").strip()
+    }
     selected, selection_lanes = _select_rough_candidates(
         rough,
         candidate_limit=candidate_limit,
         lower_reward_reserve_ratio=lower_reward_reserve_ratio,
+        required_token_ids=required_token_ids,
+        required_condition_ids=configured_condition_ids
+        | set(forced_condition_ids or set()),
     )
+    selected_ids = {id(row.get("market")) for row in selected}
+    unassessed = [
+        _rough_public_row(row)
+        for row in rough
+        if id(row.get("market")) not in selected_ids
+    ]
+    rough_public = [_rough_public_row(row) for row in rough]
 
     def load_pair(row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         yes_token, no_token = row["token_ids"]
@@ -1123,8 +1300,22 @@ def observe_reward_markets(
         "rewarded_markets_seen": len(rough),
         "candidates_evaluated": len(selected),
         "candidates_ready": len(observed),
+        "candidates_unassessed": len(unassessed),
         "selection_lanes": selection_lanes,
         "candidates": observed,
+        "unassessed_candidates": unassessed,
+        "configured_market_refs": [
+            dict(ref)
+            for policy in account_policies or []
+            for ref in policy.configured_market_refs
+        ],
+        "rewarded_market_keys": sorted(
+            {
+                alias
+                for row in rough_public
+                for alias in _market_ref_aliases(row)
+            }
+        ),
     }
 
 
@@ -1282,36 +1473,212 @@ def _float_values(samples: List[Dict[str, Any]], key: str) -> List[float]:
     return values
 
 
+def _finalized_lp_earnings(
+    data_dir: Path,
+) -> Dict[tuple[str, str, str], Dict[str, Any]]:
+    """Return canonical finalized LP earnings without exposing maker addresses."""
+
+    ledger = _read_mapping(data_dir / "reward_ledger.json")
+    records = ledger.get("records")
+    if not isinstance(records, Mapping):
+        return {}
+    grouped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    for raw in records.values():
+        if not isinstance(raw, Mapping):
+            continue
+        reward_type = str(raw.get("reward_type") or "")
+        if reward_type not in {"native_lp", "sponsored_lp"}:
+            continue
+        if raw.get("fresh") is not True or raw.get("finalized") is not True:
+            continue
+        account_key = _account_uid_key(raw.get("account_uid"))
+        business_day = str(raw.get("business_day") or "").strip()
+        condition_id = str(raw.get("condition_id") or "").strip().lower()
+        if not account_key or not business_day or not condition_id:
+            continue
+        try:
+            usd_amount = float(raw.get("usd_amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        key = (account_key, business_day, condition_id)
+        row = grouped.setdefault(
+            key,
+            {
+                "business_day": business_day,
+                "condition_id": condition_id,
+                "usd_amount": 0.0,
+                "usd_by_type": {"native_lp": 0.0, "sponsored_lp": 0.0},
+            },
+        )
+        row["usd_amount"] += usd_amount
+        row["usd_by_type"][reward_type] += usd_amount
+    for row in grouped.values():
+        row["usd_amount"] = round(float(row["usd_amount"]), 6)
+        row["usd_by_type"] = {
+            key: round(float(value), 6)
+            for key, value in row["usd_by_type"].items()
+        }
+    return grouped
+
+
+def _apply_finalized_earnings(
+    samples: List[Dict[str, Any]],
+    *,
+    condition_id: str,
+    earnings: Mapping[tuple[str, str, str], Mapping[str, Any]],
+) -> None:
+    for sample in samples:
+        business_day = str(sample.get("forecast_business_day") or "").strip()
+        if not business_day:
+            continue
+        for execution in sample.get("account_execution") or []:
+            if not isinstance(execution, dict):
+                continue
+            account_key = str(execution.get("account_uid_key") or "").strip()
+            actual = earnings.get((account_key, business_day, condition_id))
+            if not isinstance(actual, Mapping):
+                continue
+            execution["official_finalized_lp_earnings_usd"] = actual.get(
+                "usd_amount"
+            )
+            execution["official_finalized_lp_earnings_by_type"] = dict(
+                actual.get("usd_by_type") or {}
+            )
+
+
+def _dedupe_history_samples(
+    samples: Iterable[Mapping[str, Any]],
+    *,
+    cutoff: float,
+) -> List[Dict[str, Any]]:
+    by_timestamp: Dict[float, Dict[str, Any]] = {}
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            continue
+        try:
+            sample_ts = round(float(sample.get("ts") or 0), 3)
+        except (TypeError, ValueError):
+            continue
+        if sample_ts < cutoff:
+            continue
+        copy = dict(sample)
+        copy["ts"] = sample_ts
+        by_timestamp[sample_ts] = copy
+    return [by_timestamp[key] for key in sorted(by_timestamp)][
+        -HISTORY_SAMPLES_PER_MARKET:
+    ]
+
+
 def _stability_fields(
     samples: List[Dict[str, Any]],
     now_ts: float,
 ) -> Dict[str, Any]:
-    if not samples:
+    valid_samples = [sample for sample in samples if not sample.get("missing_reason")]
+    missing_samples = len(samples) - len(valid_samples)
+    if not valid_samples:
         return {
             "observation_samples": 0,
+            "history_samples": len(samples),
+            "missing_samples": missing_samples,
             "observation_span_sec": 0,
             "stability_score": 0,
             "estimated_share_range_pp": None,
+            "eligible_sample_ratio": 0.0,
+            "scoring_sample_ratio": None,
+            "prediction_actual_mae_pp": None,
+            "earnings_calibration_scopes": 0,
+            "earnings_prediction_mae_usd": None,
+            "earnings_prediction_bias_usd": None,
+            "earnings_calibration_ratio": None,
             "verification_status": "collecting",
         }
-    first_ts = float(samples[0].get("ts") or now_ts)
+    first_ts = float(valid_samples[0].get("ts") or now_ts)
     span = max(0, int(now_ts - first_ts))
-    shares = _float_values(samples, "share")
-    risks = _float_values(samples, "risk")
+    shares = _float_values(valid_samples, "share")
+    risks = _float_values(valid_samples, "risk")
     share_range = max(shares) - min(shares) if shares else 100.0
     risk_range = max(risks) - min(risks) if risks else 100.0
+    executable_samples = 0
+    scoring_known = 0
+    scoring_true = 0
+    calibration_errors: List[float] = []
+    earnings_scopes: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for sample in valid_samples:
+        executions = sample.get("account_execution") or []
+        if any(
+            execution.get("executable") is True
+            for execution in executions
+            if isinstance(execution, Mapping)
+        ):
+            executable_samples += 1
+        scoring_values = [
+            execution.get("official_scoring")
+            for execution in executions
+            if isinstance(execution, Mapping)
+            and isinstance(execution.get("official_scoring"), bool)
+        ]
+        if scoring_values:
+            scoring_known += 1
+            if all(value is True for value in scoring_values):
+                scoring_true += 1
+        try:
+            predicted = float(sample.get("executable_share"))
+            actual = float(sample.get("actual_share"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            calibration_errors.append(abs(predicted - actual))
+        for execution in sample.get("account_execution") or []:
+            if not isinstance(execution, Mapping):
+                continue
+            account_key = str(execution.get("account_uid_key") or "").strip()
+            business_day = str(sample.get("forecast_business_day") or "").strip()
+            try:
+                predicted_earnings = float(
+                    execution.get("predicted_daily_gross_usd")
+                )
+                actual_earnings = float(
+                    execution.get("official_finalized_lp_earnings_usd")
+                )
+            except (TypeError, ValueError):
+                continue
+            if not account_key or not business_day:
+                continue
+            scope = earnings_scopes.setdefault(
+                (account_key, business_day),
+                {"predictions": [], "actual": actual_earnings},
+            )
+            scope["predictions"].append(predicted_earnings)
+            scope["actual"] = actual_earnings
+    earnings_errors: List[float] = []
+    earnings_biases: List[float] = []
+    predicted_total = 0.0
+    actual_total = 0.0
+    for scope in earnings_scopes.values():
+        predictions = scope["predictions"]
+        if not predictions:
+            continue
+        predicted = sum(predictions) / len(predictions)
+        actual = float(scope["actual"])
+        earnings_errors.append(abs(predicted - actual))
+        earnings_biases.append(predicted - actual)
+        predicted_total += predicted
+        actual_total += actual
     consistency = max(
         0.0,
         100.0 - min(70.0, share_range * 2.0) - min(20.0, risk_range * 0.5),
     )
-    sample_coverage = min(1.0, len(samples) / 12.0)
+    sample_coverage = min(1.0, len(valid_samples) / 12.0)
     time_coverage = min(1.0, span / 3300.0)
     score = round(consistency * (0.4 + 0.6 * min(sample_coverage, time_coverage)))
 
     latest_risk = risks[-1] if risks else 100.0
-    if len(samples) < 3:
+    latest_missing = bool(samples and samples[-1].get("missing_reason"))
+    if latest_missing:
+        status = "data_missing"
+    elif len(valid_samples) < 3:
         status = "collecting"
-    elif len(samples) < 12 or span < 3300:
+    elif len(valid_samples) < 12 or span < 3300:
         status = "warming"
     elif latest_risk >= 65:
         status = "risk_high"
@@ -1322,10 +1689,42 @@ def _stability_fields(
     else:
         status = "stable"
     return {
-        "observation_samples": len(samples),
+        "observation_samples": len(valid_samples),
+        "history_samples": len(samples),
+        "missing_samples": missing_samples,
         "observation_span_sec": span,
         "stability_score": int(score),
         "estimated_share_range_pp": round(share_range, 2),
+        "eligible_sample_ratio": round(
+            executable_samples / max(1, len(valid_samples)),
+            4,
+        ),
+        "scoring_sample_ratio": (
+            round(scoring_true / scoring_known, 4)
+            if scoring_known
+            else None
+        ),
+        "prediction_actual_mae_pp": (
+            round(sum(calibration_errors) / len(calibration_errors), 4)
+            if calibration_errors
+            else None
+        ),
+        "earnings_calibration_scopes": len(earnings_errors),
+        "earnings_prediction_mae_usd": (
+            round(sum(earnings_errors) / len(earnings_errors), 6)
+            if earnings_errors
+            else None
+        ),
+        "earnings_prediction_bias_usd": (
+            round(sum(earnings_biases) / len(earnings_biases), 6)
+            if earnings_biases
+            else None
+        ),
+        "earnings_calibration_ratio": (
+            round(actual_total / predicted_total, 6)
+            if earnings_errors and predicted_total > 0
+            else None
+        ),
         "verification_status": status,
     }
 
@@ -1347,6 +1746,7 @@ def _apply_observation_history(
         markets = {}
 
     cutoff = now_ts - HISTORY_RETENTION_SECONDS
+    finalized_earnings = _finalized_lp_earnings(data_dir)
     for condition_id, row in list(markets.items()):
         if not isinstance(row, dict):
             markets.pop(condition_id, None)
@@ -1355,29 +1755,36 @@ def _apply_observation_history(
         if not isinstance(samples, list):
             markets.pop(condition_id, None)
             continue
-        fresh: List[Dict[str, Any]] = []
-        for sample in samples:
-            if not isinstance(sample, dict):
-                continue
-            try:
-                sample_ts = float(sample.get("ts") or 0)
-            except (TypeError, ValueError):
-                continue
-            if sample_ts >= cutoff:
-                fresh.append(sample)
+        fresh = _dedupe_history_samples(samples, cutoff=cutoff)
         if fresh:
-            row["samples"] = fresh[-HISTORY_SAMPLES_PER_MARKET:]
+            row["samples"] = fresh
         else:
             markets.pop(condition_id, None)
 
+    sampled_keys: set[str] = set()
     for candidate in state.get("candidates") or []:
         if not isinstance(candidate, dict):
             continue
-        condition_id = str(candidate.get("condition_id") or "").strip().lower()
-        if not condition_id:
+        market_key = _market_ref_key(candidate)
+        if not market_key:
             continue
+        sampled_keys.update(_market_ref_aliases(candidate))
+        legacy_key = str(candidate.get("condition_id") or "").strip().lower()
+        if legacy_key and legacy_key != market_key and legacy_key in markets:
+            legacy_row = markets.pop(legacy_key)
+            target_row = markets.get(market_key)
+            if isinstance(legacy_row, Mapping) and isinstance(target_row, Mapping):
+                merged = dict(target_row)
+                merged["samples"] = _dedupe_history_samples(
+                    list(legacy_row.get("samples") or [])
+                    + list(target_row.get("samples") or []),
+                    cutoff=cutoff,
+                )
+                markets[market_key] = merged
+            elif isinstance(legacy_row, Mapping):
+                markets[market_key] = dict(legacy_row)
         row = markets.setdefault(
-            condition_id,
+            market_key,
             {
                 "question": candidate.get("question"),
                 "slug": candidate.get("slug"),
@@ -1390,6 +1797,9 @@ def _apply_observation_history(
         samples.append(
             {
                 "ts": now_ts,
+                "forecast_business_day": datetime.fromtimestamp(
+                    now_ts, timezone.utc
+                ).date().isoformat(),
                 "share": candidate.get("estimated_reward_share_pct"),
                 "gross_roi": candidate.get("estimated_gross_daily_roi_pct"),
                 "risk": candidate.get("fill_risk"),
@@ -1398,9 +1808,40 @@ def _apply_observation_history(
                 "no_quote": candidate.get("no_quote"),
                 "front_depth_status": candidate.get("front_depth_status"),
                 "min_front_bid_notional_usd": candidate.get("min_front_bid_notional_usd"),
+                "executable_share": candidate.get(
+                    "executable_reward_share_pct"
+                ),
+                "theoretical_share": candidate.get(
+                    "theoretical_reward_share_pct"
+                ),
+                "executable_q_min": candidate.get("executable_q_min"),
+                "actual_share": candidate.get("actual_reward_share_pct"),
+                "account_execution": [
+                    {
+                        "account_index": execution.get("account_index"),
+                        "account_uid_key": execution.get("account_uid_key"),
+                        "executable": execution.get("executable"),
+                        "executable_q_min": execution.get("executable_q_min"),
+                        "official_scoring": execution.get("official_scoring"),
+                        "observed_q_min": execution.get("observed_q_min"),
+                        "actual_reward_share_pct": execution.get(
+                            "actual_reward_share_pct"
+                        ),
+                        "predicted_daily_gross_usd": execution.get(
+                            "estimated_daily_gross_usd"
+                        ),
+                    }
+                    for execution in candidate.get("account_execution") or []
+                    if isinstance(execution, Mapping)
+                ],
             }
         )
-        samples = samples[-HISTORY_SAMPLES_PER_MARKET:]
+        samples = _dedupe_history_samples(samples, cutoff=cutoff)
+        _apply_finalized_earnings(
+            samples,
+            condition_id=str(candidate.get("condition_id") or "").strip().lower(),
+            earnings=finalized_earnings,
+        )
         row["samples"] = samples
         row["last_seen_at"] = now_ts
         stability = _stability_fields(samples, now_ts)
@@ -1485,6 +1926,13 @@ def _apply_observation_history(
                 and float(observed_q) <= 0
             ):
                 rejection_reasons.append("observed_q_min_zero")
+            if execution.get("configured"):
+                if execution.get("official_scoring") is None:
+                    canary_reasons.append("official_scoring_evidence_unavailable")
+                if observed_q is None:
+                    canary_reasons.append("observed_q_evidence_unavailable")
+            else:
+                canary_reasons.append("requires_canary_scoring_validation")
 
             try:
                 execution_depth = float(
@@ -1550,10 +1998,66 @@ def _apply_observation_history(
         candidate["account_admission"] = account_admission
         candidate["admission_level"] = best_admission
         candidate["stable_lp_recommended"] = best_admission == "full"
-        candidate["canary_proposal_eligible"] = best_admission == "canary"
+        candidate["canary_proposal_eligible"] = False
+
+    rewarded_market_keys = {
+        str(key) for key in state.get("rewarded_market_keys") or [] if str(key)
+    }
+    missing_refs: Dict[str, Dict[str, Any]] = {}
+    for ref in state.get("configured_market_refs") or []:
+        if not isinstance(ref, Mapping):
+            continue
+        aliases = _market_ref_aliases(ref)
+        market_key = aliases[0] if aliases else ""
+        if not market_key or sampled_keys.intersection(aliases):
+            continue
+        current = missing_refs.setdefault(
+            market_key,
+            {
+                "condition_id": str(ref.get("condition_id") or ""),
+                "question": str(ref.get("question") or ""),
+                "slug": str(ref.get("slug") or ""),
+                "account_indexes": [],
+            },
+        )
+        account_index = ref.get("account_index")
+        if account_index not in current["account_indexes"]:
+            current["account_indexes"].append(account_index)
+
+    for market_key, ref in missing_refs.items():
+        missing_reason = (
+            "order_book_unavailable_or_invalid"
+            if market_key in rewarded_market_keys
+            else "not_in_active_reward_market_feed"
+        )
+        row = markets.setdefault(
+            market_key,
+            {
+                "question": ref.get("question"),
+                "slug": ref.get("slug"),
+                "samples": [],
+            },
+        )
+        samples = row.get("samples")
+        if not isinstance(samples, list):
+            samples = []
+        samples.append(
+            {
+                "ts": now_ts,
+                "missing_reason": missing_reason,
+                "configured_account_indexes": sorted(
+                    index
+                    for index in ref.get("account_indexes") or []
+                    if isinstance(index, int)
+                ),
+            }
+        )
+        row["samples"] = _dedupe_history_samples(samples, cutoff=cutoff)
+        row["last_seen_at"] = now_ts
+        row["last_missing_reason"] = missing_reason
 
     history_payload = {
-        "version": 1,
+        "version": 2,
         "updated_at": now_ts,
         "retention_seconds": HISTORY_RETENTION_SECONDS,
         "samples_per_market": HISTORY_SAMPLES_PER_MARKET,
@@ -1584,6 +2088,10 @@ def refresh_observer_state(
         data_dir,
         now_ts=started,
     )
+    forced_conditions = fast_lane_forced_condition_ids(
+        data_dir,
+        now_ts=started,
+    )
     markets = fetch_markets()
     state = observe_reward_markets(
         markets,
@@ -1595,9 +2103,13 @@ def refresh_observer_state(
             "min_estimated_daily_payout_usdc"
         ],
         account_policies=account_policies or None,
+        forced_condition_ids=forced_conditions,
     )
     generated_at = time.time()
+    state["generated_at"] = generated_at
     _apply_observation_history(data_dir, state, generated_at, settings)
+    update_fast_lane(data_dir, state, now_ts=generated_at)
+    write_shadow_budget(data_dir, state)
     state.update(
         {
             "status": "ready",
