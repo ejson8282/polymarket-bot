@@ -2695,6 +2695,34 @@ def test_balance_change_rebalances_without_position_scan_or_global_cancel(monkey
     assert published[1][0] == "balance_drop"
     assert published[1][1]["drop"] == "50"
     assert resized == [(Decimal("100"), Decimal("50"))]
+    assert engine._last_balance == Decimal("50")
+
+
+def test_balance_watch_publishes_capital_when_quote_planning_never_runs(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_balance = None
+
+    async def available(force_refresh=False):
+        return Decimal("765.54")
+
+    async def no_wait(_seconds):
+        engine._running = False
+
+    class EventBus:
+        def publish(self, *_args, **_kwargs):
+            raise AssertionError("an initial balance sample must not emit a change event")
+
+    engine._get_collateral_available = available
+    engine._rebalance_quotes_after_balance_change = AsyncMock()
+    engine.notify_discord = lambda *_args, **_kwargs: None
+    engine._event_bus = EventBus()
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_wait)
+
+    asyncio.run(engine._balance_drop_watch())
+
+    assert engine._last_balance == Decimal("765.54")
+    engine._rebalance_quotes_after_balance_change.assert_not_awaited()
 
 
 def test_managed_balance_change_above_principal_does_not_rebalance(monkeypatch):
@@ -4157,6 +4185,65 @@ def test_cached_book_keeps_original_observation_time(monkeypatch):
     assert engine._market_depth_snapshots["101"].last_update_ts == 100.0
     monkeypatch.setattr(engine_module.time, "time", lambda: 106.0)
     assert engine._snapshot_is_stale("101", snapshot) is True
+
+
+def test_cycle_books_prime_both_pair_snapshots_before_concurrent_planning(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_snapshots = {
+        "101": engine_module.MarketSnapshot(last_update_ts=90.0),
+        "102": engine_module.MarketSnapshot(last_update_ts=90.0),
+    }
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine.market_states = {}
+    engine._token_slug_cache = {}
+    monkeypatch.setattr(engine_module.time, "time", lambda: 100.0)
+
+    def book(token_id, bid, ask):
+        return types.SimpleNamespace(
+            asset_id=token_id,
+            bids=[types.SimpleNamespace(price=bid, size="100")],
+            asks=[types.SimpleNamespace(price=ask, size="100")],
+        )
+
+    cycle_books = {
+        "101": types.SimpleNamespace(book=book("101", "0.40", "0.41"), fetched_at=99.5),
+        "102": types.SimpleNamespace(book=book("102", "0.59", "0.60"), fetched_at=99.5),
+    }
+
+    assert engine._prime_cycle_snapshots(cycle_books) == 2
+    assert engine._snapshot_is_stale("101") is False
+    assert engine._snapshot_is_stale("102") is False
+    assert engine._market_snapshots["101"].source == "shared_batch"
+    assert engine._market_snapshots["102"].best_bid == Decimal("0.59")
+
+
+def test_cycle_snapshot_prime_rejects_stale_or_invalid_books(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_snapshots = {}
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine.market_states = {}
+    engine._token_slug_cache = {}
+    monkeypatch.setattr(engine_module.time, "time", lambda: 100.0)
+
+    stale = types.SimpleNamespace(
+        book=types.SimpleNamespace(
+            bids=[types.SimpleNamespace(price="0.40", size="100")],
+            asks=[types.SimpleNamespace(price="0.41", size="100")],
+        ),
+        fetched_at=94.0,
+    )
+    crossed = types.SimpleNamespace(
+        book=types.SimpleNamespace(
+            bids=[types.SimpleNamespace(price="0.60", size="100")],
+            asks=[types.SimpleNamespace(price="0.59", size="100")],
+        ),
+        fetched_at=99.0,
+    )
+
+    assert engine._prime_cycle_snapshots({"101": stale, "102": crossed}) == 0
+    assert engine._market_snapshots == {}
 
 
 def test_signer_outage_triggers_fail_safe_after_threshold_and_throttles(monkeypatch):
