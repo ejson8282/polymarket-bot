@@ -8,7 +8,7 @@ import time
 import urllib.request
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
@@ -1153,6 +1153,33 @@ class PolyLPSMulti:
         self._exit_recovery_protection_sec: float = float(exit_cfg.get("recovery_protection_sec", 20))
         self._exit_recovery_protection_until: Dict[str, float] = {}
 
+        reconcile_cfg = self.cfg.get("position_reconcile", {}) or {}
+        stable_profile = self.lp_account_profile.profile_type != "aggressive"
+        self._position_reconcile_enabled: bool = bool(
+            reconcile_cfg.get("enabled", stable_profile)
+        )
+        self._position_reconcile_interval_sec: float = max(
+            30.0, float(reconcile_cfg.get("interval_sec", 60.0))
+        )
+        self._position_reconcile_managed_max_age_sec: float = max(
+            300.0,
+            float(reconcile_cfg.get("managed_evidence_max_age_sec", 24 * 3600)),
+        )
+        self._position_reconcile_inflight: set[str] = set()
+        self._position_reconcile_managed_tokens: set[str] = set()
+        self._position_reconcile_manual_sell_ts: Dict[str, float] = {}
+        self._position_reconcile_alerted: Dict[str, str] = {}
+        self._position_reconcile_state: Dict[str, Any] = {
+            "enabled": self._position_reconcile_enabled,
+            "last_checked_at": None,
+            "status": "waiting" if self._position_reconcile_enabled else "disabled",
+            "configured_positions": 0,
+            "managed_positions": 0,
+            "manual_review_positions": 0,
+            "last_error": None,
+            "positions": [],
+        }
+
         # # session mode (redesigned: day=scan markets, night=night_markets)
         session_cfg = self.cfg.get("session", {})
         self._session_enabled: bool = bool(session_cfg.get("enabled", False))
@@ -1347,6 +1374,30 @@ class PolyLPSMulti:
                     ]
                     self._managed_buy_order_ids_order = restored_ids
                     self._managed_buy_order_ids = set(restored_ids)
+                _prior_managed_positions = (
+                    _prior.get("managed_position_tokens") or []
+                ) if isinstance(_prior, dict) else []
+                if isinstance(_prior_managed_positions, list):
+                    self._position_reconcile_managed_tokens = {
+                        str(token_id)
+                        for token_id in _prior_managed_positions
+                        if str(token_id).isdigit()
+                    }
+                _prior_manual_sell_ts = (
+                    _prior.get("position_reconcile_manual_sell_ts") or {}
+                ) if isinstance(_prior, dict) else {}
+                if isinstance(_prior_manual_sell_ts, dict):
+                    now_ts = time.time()
+                    cutoff = now_ts - self._position_reconcile_managed_max_age_sec
+                    for token_id, raw_ts in _prior_manual_sell_ts.items():
+                        try:
+                            sell_ts = float(raw_ts)
+                        except (TypeError, ValueError):
+                            continue
+                        if str(token_id).isdigit() and cutoff <= sell_ts <= now_ts + 30:
+                            self._position_reconcile_manual_sell_ts[
+                                str(token_id)
+                            ] = sell_ts
                 restored_fills, restored_exits = _restore_activity_records(
                     _prior,
                     self._account_idx,
@@ -1447,6 +1498,12 @@ class PolyLPSMulti:
     @staticmethod
     def _floor_to_tick(px: Decimal, tick: Decimal) -> Decimal:
         return (px / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+
+    @staticmethod
+    def _ceil_to_tick(px: Decimal, tick: Decimal) -> Decimal:
+        if tick <= 0:
+            return px
+        return (px / tick).to_integral_value(rounding=ROUND_CEILING) * tick
 
     def _event_state_entry(self, token_id: str) -> Dict[str, Any]:
         return self._event_states.setdefault(
@@ -1663,6 +1720,10 @@ class PolyLPSMulti:
         resolved = {str(token_id) for token_id in token_ids if token_id}
         if not resolved:
             return 0
+        managed_positions = getattr(
+            self, "_position_reconcile_managed_tokens", set()
+        )
+        managed_positions.difference_update(resolved)
         resumed = 0
         protection_deadline = time.time() + self._exit_recovery_protection_sec
         resolvable_states = {
@@ -3075,6 +3136,406 @@ class PolyLPSMulti:
     # # P1: Fill exit strategy
     # ---------------------------------------------------------------
 
+    @staticmethod
+    def _position_order_remaining(order: Mapping[str, Any]) -> Decimal:
+        raw_remaining = order.get("remaining_size")
+        if raw_remaining not in (None, ""):
+            try:
+                return max(Decimal("0"), Decimal(str(raw_remaining)))
+            except Exception:
+                return Decimal("0")
+        try:
+            original = Decimal(
+                str(order.get("original_size") or order.get("size") or 0)
+            )
+            matched = max(
+                Decimal(str(order.get("size_matched") or 0)),
+                Decimal(str(order.get("matched") or 0)),
+                Decimal(str(order.get("filled_size") or 0)),
+            )
+            return max(Decimal("0"), original - matched)
+        except Exception:
+            return Decimal("0")
+
+    def _position_cost_basis(
+        self,
+        row: Mapping[str, Any],
+        size: Decimal,
+    ) -> tuple[Decimal, str]:
+        """Return a conservative per-share basis without trusting one API alias."""
+
+        candidates: list[tuple[Decimal, str]] = []
+        for key in ("grossInitialValue", "initialValue"):
+            try:
+                value = Decimal(str(row.get(key) or 0))
+            except Exception:
+                continue
+            if value.is_finite() and value > 0 and size > 0:
+                candidates.append((value / size, key))
+        try:
+            avg_price = Decimal(str(row.get("avgPrice") or row.get("avg_price") or 0))
+        except Exception:
+            avg_price = Decimal("0")
+        if avg_price.is_finite() and avg_price > 0:
+            candidates.append((avg_price, "avgPrice"))
+        if not candidates:
+            return Decimal("0"), "unavailable"
+
+        basis, source = max(candidates, key=lambda item: item[0])
+        for key in ("entryFeesUsdc", "entry_fee_usdc", "feesPaid"):
+            try:
+                fees = Decimal(str(row.get(key) or 0))
+            except Exception:
+                continue
+            if fees.is_finite() and fees > 0 and size > 0:
+                basis += fees / size
+                source = f"{source}+{key}"
+                break
+        if not basis.is_finite() or basis <= 0 or basis >= 1:
+            return Decimal("0"), "invalid"
+        return basis, source
+
+    def _normalize_configured_positions(
+        self,
+        payload: Any,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(payload, list):
+            raise RuntimeError("invalid positions response")
+        configured = set(self.market_cfg) | set(self._night_market_cfg)
+        funder = str(self._funder_lc or "").strip().lower()
+        positions: list[dict[str, Any]] = []
+        for row in payload:
+            if not isinstance(row, Mapping):
+                raise RuntimeError("invalid position row")
+            row_account = str(
+                row.get("proxyWallet") or row.get("proxy_wallet") or row.get("user") or ""
+            ).strip().lower()
+            if row_account and row_account != funder:
+                continue
+            redeemable = row.get("redeemable") is True or str(
+                row.get("redeemable") or ""
+            ).strip().lower() == "true"
+            if redeemable:
+                continue
+            token_id = str(
+                row.get("asset") or row.get("token_id") or row.get("tokenId") or ""
+            ).strip()
+            if token_id not in configured:
+                continue
+            try:
+                size = Decimal(str(row.get("size") or 0))
+            except Exception:
+                continue
+            if not size.is_finite() or size <= Decimal(str(self._exit_dust_threshold)):
+                continue
+            cost_basis, cost_source = self._position_cost_basis(row, size)
+            positions.append(
+                {
+                    "token_id": token_id,
+                    "size": size,
+                    "cost_basis": cost_basis,
+                    "cost_source": cost_source,
+                    "title": str(row.get("title") or row.get("question") or "")[:160],
+                }
+            )
+        positions.sort(key=lambda item: item["token_id"])
+        return positions
+
+    async def _fetch_configured_positions(self) -> list[dict[str, Any]]:
+        funder = str(self._funder_lc or "").strip().lower()
+        if not re.fullmatch(r"0x[a-f0-9]{40}", funder):
+            raise RuntimeError("invalid funder for position reconcile")
+        data_api = str(
+            self.cfg.get("data_api_url") or "https://data-api.polymarket.com"
+        ).rstrip("/")
+
+        def fetch() -> Any:
+            response = requests.get(
+                f"{data_api}/positions",
+                params={"user": funder, "sizeThreshold": "0", "limit": 500},
+                timeout=8,
+                proxies=self._read_proxies_for_token(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+        payload = await asyncio.to_thread(fetch)
+        return self._normalize_configured_positions(payload)
+
+    def _position_has_managed_evidence(self, token_id: str) -> bool:
+        token_id = str(token_id)
+        if token_id in self._pending_unwind_token_ids():
+            return True
+        if token_id in self._active_exit_orders:
+            return True
+
+        cutoff = time.time() - self._position_reconcile_managed_max_age_sec
+        latest_fill = 0.0
+        for fill in self._fills_record:
+            if not isinstance(fill, Mapping):
+                continue
+            if str(fill.get("token_id") or "") != token_id:
+                continue
+            if str(fill.get("final_state") or "") != EVENT_HALTED_ON_FILL:
+                continue
+            try:
+                size = Decimal(str(fill.get("size") or 0))
+                fill_ts = float(fill.get("ts") or 0)
+            except Exception:
+                continue
+            if size > Decimal(str(self._exit_dust_threshold)):
+                latest_fill = max(latest_fill, fill_ts)
+        latest_exit = 0.0
+        for exit_row in self._exit_records:
+            if not isinstance(exit_row, Mapping):
+                continue
+            if str(exit_row.get("token_id") or "") != token_id:
+                continue
+            try:
+                latest_exit = max(latest_exit, float(exit_row.get("ts") or 0))
+            except Exception:
+                continue
+        manual_sell_ts = float(
+            getattr(self, "_position_reconcile_manual_sell_ts", {}).get(
+                token_id, 0.0
+            )
+            or 0.0
+        )
+        return latest_fill >= cutoff and latest_fill > max(
+            latest_exit, manual_sell_ts
+        )
+
+    def _position_reconcile_notice(
+        self,
+        token_id: str,
+        status: str,
+        **details: Any,
+    ) -> None:
+        signature = json.dumps(
+            {"status": status, **details},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if self._position_reconcile_alerted.get(token_id) == signature:
+            return
+        self._position_reconcile_alerted[token_id] = signature
+        self._notify_attention("持仓对账需要检查", market=token_id, status=status, **details)
+
+    async def _position_reconcile_once(
+        self,
+        *,
+        positions: Optional[list[dict[str, Any]]] = None,
+        open_orders: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        positions = (
+            await self._fetch_configured_positions()
+            if positions is None
+            else positions
+        )
+        if open_orders is None:
+            raw_orders = await asyncio.to_thread(self.client.get_open_orders)
+            if not isinstance(raw_orders, list):
+                raise RuntimeError("invalid open orders response")
+            open_orders = raw_orders
+
+        results: list[dict[str, Any]] = []
+        managed_count = 0
+        manual_count = 0
+        position_token_ids = {
+            str(position.get("token_id") or "") for position in positions
+        }
+        tracked_exit_tokens = (
+            self._pending_unwind_token_ids() | set(self._active_exit_orders)
+        )
+        self._position_reconcile_managed_tokens.intersection_update(
+            position_token_ids | tracked_exit_tokens
+        )
+        for position in positions:
+            token_id = str(position.get("token_id") or "")
+            size = Decimal(str(position.get("size") or 0))
+            basis = Decimal(str(position.get("cost_basis") or 0))
+            tick = Decimal(str(self._get_mcfg(token_id).get("tick") or "0.01"))
+            no_loss_price = self._ceil_to_tick(basis, tick) if basis > 0 else Decimal("0")
+            managed = self._position_has_managed_evidence(token_id)
+            if managed:
+                managed_count += 1
+                self._position_reconcile_managed_tokens.update(
+                    self._event_token_ids(token_id)
+                )
+
+            live_sells = [
+                order
+                for order in open_orders
+                if isinstance(order, dict)
+                and _order_is_live(order)
+                and self._order_token_id(order) == token_id
+                and self._order_side(order) == "SELL"
+                and self._position_order_remaining(order) > 0
+            ]
+            coverage = sum(
+                (self._position_order_remaining(order) for order in live_sells),
+                Decimal("0"),
+            )
+            result = {
+                "token_id": token_id,
+                "size": float(size),
+                "cost_basis": float(basis) if basis > 0 else None,
+                "no_loss_price": float(no_loss_price) if no_loss_price > 0 else None,
+                "managed": managed,
+                "live_sell_orders": len(live_sells),
+                "live_sell_coverage": float(coverage),
+                "status": "checking",
+            }
+
+            if not managed or no_loss_price <= 0:
+                manual_count += 1
+                await self._cancel_token_orders(
+                    token_id,
+                    reason="position_reconcile_unmanaged",
+                )
+                self._set_event_state(
+                    token_id,
+                    EVENT_PENDING_MANUAL_EXIT,
+                    "unmanaged_position_detected",
+                )
+                result["status"] = "manual_review_unmanaged"
+                self._position_reconcile_notice(
+                    token_id,
+                    result["status"],
+                    position=f"{float(size):,.4f} 份",
+                    action="已停止该事件继续买入；来源不明，不自动卖出",
+                )
+                results.append(result)
+                continue
+
+            if live_sells:
+                prices = [self._order_price(order) for order in live_sells]
+                sufficient = coverage + Decimal(str(self._exit_dust_threshold)) >= size
+                prices_safe = all(price >= no_loss_price for price in prices)
+                if len(live_sells) == 1 and sufficient and prices_safe:
+                    order = live_sells[0]
+                    order_id = self._order_id(order)
+                    self._active_exit_orders[token_id] = order_id
+                    if not any(
+                        isinstance(row, dict)
+                        and str(row.get("token_id") or "") == token_id
+                        for row in self._pending_unwinds
+                    ):
+                        self._pending_unwinds.append(
+                            {
+                                "token_id": token_id,
+                                "source_token_id": token_id,
+                                "fill_price": float(basis),
+                                "fill_size": float(size),
+                                "exit_size": float(coverage),
+                                "reported_fill_size": float(size),
+                                "sell_price": float(prices[0]),
+                                "order_id": order_id,
+                                "placed_at": time.time(),
+                                "reason": "position_reconcile_rehydrated",
+                                "reconciled": True,
+                                "strict_no_loss": True,
+                            }
+                        )
+                    self._set_event_state(
+                        token_id,
+                        EVENT_EXIT_PENDING,
+                        "position_reconcile_rehydrated",
+                    )
+                    result["status"] = "exit_rehydrated"
+                    results.append(result)
+                    continue
+
+                manual_count += 1
+                await self._cancel_token_orders(
+                    token_id,
+                    reason="position_reconcile_ambiguous_sell",
+                )
+                self._set_event_state(
+                    token_id,
+                    EVENT_PENDING_MANUAL_EXIT,
+                    "ambiguous_exit_sell_coverage",
+                )
+                result["status"] = (
+                    "manual_review_sell_below_cost"
+                    if not prices_safe
+                    else "manual_review_partial_or_multiple_sells"
+                )
+                self._position_reconcile_notice(
+                    token_id,
+                    result["status"],
+                    position=f"{float(size):,.4f} 份",
+                    sell_coverage=f"{float(coverage):,.4f} 份",
+                    no_loss_price=f"${float(no_loss_price):.4f}",
+                    action="保留现有卖单并停止继续买入；需人工检查",
+                )
+                results.append(result)
+                continue
+
+            if token_id in self._position_reconcile_inflight:
+                result["status"] = "exit_request_inflight"
+                results.append(result)
+                continue
+
+            self._position_reconcile_inflight.add(token_id)
+            try:
+                self._set_event_state(
+                    token_id,
+                    EVENT_CANCELING,
+                    "position_reconcile_uncovered",
+                )
+                await self._attempt_exit_sell(
+                    token_id,
+                    basis,
+                    size,
+                    "position_reconcile_uncovered",
+                    strict_no_loss=True,
+                )
+                exit_tracked = token_id in self._active_exit_orders
+                if exit_tracked:
+                    result["status"] = "exit_requested"
+                else:
+                    manual_count += 1
+                    result["status"] = "exit_not_placed"
+                    self._position_reconcile_notice(
+                        token_id,
+                        result["status"],
+                        position=f"{float(size):,.4f} 份",
+                        no_loss_price=f"${float(no_loss_price):.4f}",
+                        action="未确认退出单已挂出；保持停止买入并等待下轮对账",
+                    )
+            finally:
+                self._position_reconcile_inflight.discard(token_id)
+            results.append(result)
+
+        self._position_reconcile_state = {
+            "enabled": True,
+            "last_checked_at": time.time(),
+            "status": "ready",
+            "configured_positions": len(positions),
+            "managed_positions": managed_count,
+            "manual_review_positions": manual_count,
+            "last_error": None,
+            "positions": results,
+        }
+
+    async def position_reconcile_loop(self) -> None:
+        await asyncio.sleep(min(10.0, self._position_reconcile_interval_sec))
+        while self._running:
+            try:
+                await self._position_reconcile_once()
+            except Exception as exc:
+                self._position_reconcile_state.update(
+                    {
+                        "last_checked_at": time.time(),
+                        "status": "error",
+                        "last_error": f"{exc.__class__.__name__}: {exc}",
+                    }
+                )
+                log(f"[position-reconcile] error={exc.__class__.__name__}:{exc}")
+            await asyncio.sleep(self._position_reconcile_interval_sec)
+
     async def _delayed_balance_drop_reconcile(self, token_id: str, reason: str, delay_sec: float = 30.0) -> None:
         await asyncio.sleep(delay_sec)
         try:
@@ -3142,7 +3603,15 @@ class PolyLPSMulti:
 
         return sell_price
 
-    async def _attempt_exit_sell(self, token_id: str, fill_price: Decimal, fill_size: Decimal, reason: str) -> None:
+    async def _attempt_exit_sell(
+        self,
+        token_id: str,
+        fill_price: Decimal,
+        fill_size: Decimal,
+        reason: str,
+        *,
+        strict_no_loss: bool = False,
+    ) -> None:
         """After fill detected:
         1. Cancel all BUY orders for this token (keep only the upcoming SELL)
         2. Place a SELL order at fill_price to recover position
@@ -3224,6 +3693,11 @@ class PolyLPSMulti:
                     fill_price = Decimal("1") - fill_price
                     log(f"[exit] {found_tid[:16]} paired token switch: fill_price {old_fp} → {fill_price}")
                 token_id = found_tid
+                managed_positions = getattr(
+                    self, "_position_reconcile_managed_tokens", set()
+                )
+                managed_positions.add(token_id)
+                self._position_reconcile_managed_tokens = managed_positions
                 position = found_pos
             else:
                 # Keep scanning until found
@@ -3241,6 +3715,11 @@ class PolyLPSMulti:
                             fill_price = Decimal("1") - fill_price
                             log(f"[exit] {found_tid[:16]} paired token switch: fill_price {old_fp} → {fill_price}")
                         token_id = found_tid
+                        managed_positions = getattr(
+                            self, "_position_reconcile_managed_tokens", set()
+                        )
+                        managed_positions.add(token_id)
+                        self._position_reconcile_managed_tokens = managed_positions
                         position = found_pos
                         break
                     if scan_attempt >= 10:
@@ -3311,9 +3790,12 @@ class PolyLPSMulti:
         # Exit pricing strategy: try to profit, accept stop-loss within max_loss_usd
         stop_loss_floor = Decimal("0")
         if fill_price > 0 and sell_size > 0:
-            stop_loss_floor = fill_price - self._exit_max_loss_usd / sell_size
-            if stop_loss_floor < Decimal("0.01"):
-                stop_loss_floor = Decimal("0.01")
+            if strict_no_loss:
+                stop_loss_floor = self._ceil_to_tick(fill_price, tick)
+            else:
+                stop_loss_floor = fill_price - self._exit_max_loss_usd / sell_size
+                if stop_loss_floor < Decimal("0.01"):
+                    stop_loss_floor = Decimal("0.01")
             log(f"[exit] {token_id[:16]} stop_loss_floor={stop_loss_floor} (fill={fill_price} max_loss={self._exit_max_loss_usd} sz={sell_size})")
 
         sell_price = self._calc_exit_price(token_id, fill_price, stop_loss_floor, market_bid, market_ask, tick)
@@ -3349,6 +3831,7 @@ class PolyLPSMulti:
                     "order_id": order_id,
                     "placed_at": time.time(),
                     "reason": reason,
+                    "strict_no_loss": strict_no_loss,
                 })
                 self.notify_discord(
                     "退出单已提交",
@@ -5021,13 +5504,25 @@ class PolyLPSMulti:
     ) -> None:
         """Keep a completed website SELL from being bought back immediately."""
         event_key = self._event_key(token_id)
+        now = time.time()
         self._manual_exit_event_until[event_key] = (
-            time.time() + self._manual_exit_cooldown_sec
+            now + self._manual_exit_cooldown_sec
         )
+        event_tokens = set(self._event_token_ids(token_id))
+        manual_sell_ts = getattr(
+            self, "_position_reconcile_manual_sell_ts", {}
+        )
+        managed_positions = getattr(
+            self, "_position_reconcile_managed_tokens", set()
+        )
+        for event_token in event_tokens:
+            manual_sell_ts[str(event_token)] = now
+        managed_positions.difference_update(event_tokens)
+        self._position_reconcile_manual_sell_ts = manual_sell_ts
+        self._position_reconcile_managed_tokens = managed_positions
         try:
             self._invalidate_all_orders_cache()
             orders = await self._get_all_orders_cached()
-            event_tokens = set(self._event_token_ids(token_id))
             managed_by_token: Dict[str, list[str]] = {}
             for order in orders:
                 order_token = self._order_token_id(order)
@@ -5279,6 +5774,12 @@ class PolyLPSMulti:
                 "ts": time.time(),
                 "final_state": final_state,
             })
+            if final_state == EVENT_HALTED_ON_FILL:
+                managed_positions = getattr(
+                    self, "_position_reconcile_managed_tokens", set()
+                )
+                managed_positions.add(str(token_id))
+                self._position_reconcile_managed_tokens = managed_positions
             if len(self._fills_record) > 200:
                 self._fills_record = self._fills_record[-100:]
             ids = [
@@ -6548,8 +7049,12 @@ class PolyLPSMulti:
         max_observer_age = float(policy.get("max_observer_age_sec") or 900.0)
         if observer_age is None or observer_age > max_observer_age:
             raise ValueError("reward observer snapshot is stale")
-        if not candidate or candidate.get("verification_recommended") is not True:
+        if not candidate or candidate.get("stable_lp_recommended") is not True:
             raise ValueError("replacement market is no longer eligible")
+        if candidate.get("weather_market") is True or str(
+            candidate.get("market_type") or ""
+        ).lower() == "weather":
+            raise ValueError("weather market is observe-only for stable LP")
         if str(candidate.get("paired_token_id") or "") != paired_token_id:
             raise ValueError("replacement token pair changed")
         expected_condition = str(market.get("condition_id") or "").strip().lower()
@@ -6569,6 +7074,11 @@ class PolyLPSMulti:
         market_end_ts = float(candidate.get("market_end_ts") or 0.0)
         if market_end_ts <= time.time():
             raise ValueError("replacement market has expired or has no end time")
+        min_time_to_end = float(
+            policy.get("min_market_time_to_end_sec") or 43200.0
+        )
+        if market_end_ts < time.time() + min_time_to_end:
+            raise ValueError("replacement market ends too soon")
         if str(candidate.get("market_phase") or "").lower() == "pregame":
             game_start_ts = float(candidate.get("game_start_ts") or 0.0)
             min_sports_lead = float(policy.get("min_sports_lead_sec") or 10800.0)
@@ -6728,14 +7238,15 @@ class PolyLPSMulti:
         if token_id in self.market_cfg or token_id in self._night_market_cfg:
             return "already_configured"
 
-        _, candidates, observer_age = self._reward_observer_snapshot()
-        candidate = candidates.get(token_id)
-        if observer_age is None or observer_age > 900:
-            raise ValueError("reward observer snapshot is stale")
-        if not candidate or candidate.get("verification_recommended") is not True:
-            raise ValueError("market is no longer eligible")
-        if str(candidate.get("market_phase") or "").lower() == "live":
-            raise ValueError("live market is observe-only")
+        admission_cfg = self.cfg.get("stable_lp_admission", {}) if isinstance(
+            getattr(self, "cfg", None), dict
+        ) else {}
+        if not isinstance(admission_cfg, dict):
+            admission_cfg = {}
+        candidate = self._validate_stable_replacement_candidate(
+            market,
+            admission_cfg,
+        )
 
         added = self._add_runtime_candidate(
             market,
@@ -8615,6 +9126,13 @@ class PolyLPSMulti:
                 asyncio.create_task(
                     self.aggressive_guardrail_loop(),
                     name="aggressive_guardrail_loop",
+                )
+            )
+        if self._position_reconcile_enabled:
+            tasks.append(
+                asyncio.create_task(
+                    self.position_reconcile_loop(),
+                    name="position_reconcile_loop",
                 )
             )
         if self._order_scoring_observer_enabled:
@@ -11496,6 +12014,13 @@ class PolyLPSMulti:
                     "markets": markets_out,
                     "fills": list(self._fills_record[-100:]),
                     "pending_unwinds": list(self._pending_unwinds),
+                    "managed_position_tokens": sorted(
+                        self._position_reconcile_managed_tokens
+                    ),
+                    "position_reconcile_manual_sell_ts": dict(
+                        self._position_reconcile_manual_sell_ts
+                    ),
+                    "position_reconcile": dict(self._position_reconcile_state),
                     "exit_records": list(self._exit_records[-100:]),
                     "managed_buy_order_ids": list(
                         self._managed_buy_order_ids_order[

@@ -398,6 +398,10 @@ def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
                         "token_id": "101",
                         "paired_token_id": "102",
                         "verification_recommended": True,
+                        "stable_lp_recommended": True,
+                        "stable_lp_rejection_reasons": [],
+                        "weather_market": False,
+                        "market_type": "always_on",
                         "market_phase": "normal",
                         "market_active": True,
                         "market_closed": False,
@@ -406,6 +410,12 @@ def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
                         "market_end_ts": time.time() + 86400,
                         "rewards_max_spread": 0.05,
                         "fill_risk": 20,
+                        "stability_score": 90,
+                        "risk_adjusted_daily_roi_pct": 2,
+                        "front_depth_status": "verified",
+                        "front_depth_observed_at": time.time(),
+                        "yes_front_bid_notional_usd": 6000,
+                        "no_front_bid_notional_usd": 6000,
                         "condition_id": "condition",
                     }
                 ],
@@ -413,6 +423,7 @@ def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
         ),
         encoding="utf-8",
     )
+    engine.min_front_bid_notional_usdc = Decimal("2000")
     captured = {}
 
     def add_market_runtime(**kwargs):
@@ -450,6 +461,10 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
                     {
                         "token_id": "101",
                         "verification_recommended": False,
+                        "stable_lp_recommended": False,
+                        "stable_lp_rejection_reasons": [
+                            "verification_not_recommended"
+                        ],
                     }
                 ],
             }
@@ -491,6 +506,10 @@ def test_stable_replacement_revalidates_account_depth(tmp_path):
                         "paired_token_id": "202",
                         "condition_id": "0xabc",
                         "verification_recommended": True,
+                        "stable_lp_recommended": True,
+                        "stable_lp_rejection_reasons": [],
+                        "weather_market": False,
+                        "market_type": "always_on",
                         "market_phase": "normal",
                         "market_active": True,
                         "market_closed": False,
@@ -526,6 +545,226 @@ def test_stable_replacement_revalidates_account_depth(tmp_path):
                 "min_risk_adjusted_daily_roi_pct": 0.1,
             },
         )
+
+
+def _position_reconcile_engine() -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"tick": Decimal("0.01"), "paired_token_id": "102"},
+        "102": {"tick": Decimal("0.01"), "paired_token_id": "101"},
+    }
+    engine._night_market_cfg = {}
+    engine._paired_token_cache = {}
+    engine._funder_lc = "0x" + "1" * 40
+    engine._exit_dust_threshold = 0.5
+    engine._position_reconcile_managed_tokens = set()
+    engine._position_reconcile_manual_sell_ts = {}
+    engine._position_reconcile_managed_max_age_sec = 24 * 3600
+    engine._position_reconcile_inflight = set()
+    engine._position_reconcile_alerted = {}
+    engine._position_reconcile_state = {}
+    engine._pending_unwinds = []
+    engine._active_exit_orders = {}
+    engine._fills_record = []
+    engine._exit_records = []
+    engine._event_states = {}
+    engine._event_bus = _RecordingEventBus()
+    engine._cancel_token_orders = AsyncMock(return_value=True)
+    engine._attempt_exit_sell = AsyncMock()
+    engine._notify_attention = lambda *_args, **_kwargs: None
+    return engine
+
+
+def test_position_reconcile_filters_redeemable_unconfigured_and_other_account() -> None:
+    engine = _position_reconcile_engine()
+    rows = engine._normalize_configured_positions(
+        [
+            {
+                "proxyWallet": engine._funder_lc,
+                "asset": "101",
+                "size": "10",
+                "avgPrice": "0.3744",
+                "redeemable": False,
+            },
+            {
+                "proxyWallet": engine._funder_lc,
+                "asset": "102",
+                "size": "10",
+                "avgPrice": "0.4",
+                "redeemable": True,
+            },
+            {
+                "proxyWallet": engine._funder_lc,
+                "asset": "999",
+                "size": "10",
+                "avgPrice": "0.4",
+                "redeemable": False,
+            },
+            {
+                "proxyWallet": "0x" + "2" * 40,
+                "asset": "101",
+                "size": "10",
+                "avgPrice": "0.4",
+                "redeemable": False,
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["token_id"] == "101"
+    assert rows[0]["cost_basis"] == Decimal("0.3744")
+    assert engine._ceil_to_tick(rows[0]["cost_basis"], Decimal("0.01")) == Decimal("0.38")
+
+
+def test_position_reconcile_never_auto_sells_unmanaged_position() -> None:
+    engine = _position_reconcile_engine()
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "101",
+                    "size": Decimal("10"),
+                    "cost_basis": Decimal("0.3744"),
+                }
+            ],
+            open_orders=[],
+        )
+    )
+
+    engine._attempt_exit_sell.assert_not_awaited()
+    engine._cancel_token_orders.assert_awaited_once()
+    assert engine._event_state_name("101") == EVENT_PENDING_MANUAL_EXIT
+    assert engine._position_reconcile_state["manual_review_positions"] == 1
+
+
+def test_position_reconcile_requests_strict_no_loss_exit_for_managed_inventory() -> None:
+    engine = _position_reconcile_engine()
+    engine._pending_unwinds.append({"token_id": "101"})
+
+    async def place_exit(*_args, **_kwargs):
+        engine._active_exit_orders["101"] = "exit-new"
+
+    engine._attempt_exit_sell = AsyncMock(side_effect=place_exit)
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "101",
+                    "size": Decimal("10"),
+                    "cost_basis": Decimal("0.3744"),
+                }
+            ],
+            open_orders=[],
+        )
+    )
+
+    engine._attempt_exit_sell.assert_awaited_once_with(
+        "101",
+        Decimal("0.3744"),
+        Decimal("10"),
+        "position_reconcile_uncovered",
+        strict_no_loss=True,
+    )
+    assert engine._position_reconcile_state["positions"][0]["no_loss_price"] == pytest.approx(0.38)
+
+
+def test_position_reconcile_does_not_treat_paired_token_as_managed() -> None:
+    engine = _position_reconcile_engine()
+    engine._pending_unwinds.append({"token_id": "101"})
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "102",
+                    "size": Decimal("10"),
+                    "cost_basis": Decimal("0.4"),
+                }
+            ],
+            open_orders=[],
+        )
+    )
+
+    engine._attempt_exit_sell.assert_not_awaited()
+    assert engine._position_reconcile_state["positions"][0]["managed"] is False
+
+
+def test_position_reconcile_manual_sell_invalidates_earlier_fill_evidence() -> None:
+    engine = _position_reconcile_engine()
+    now = time.time()
+    engine._fills_record.append(
+        {
+            "token_id": "101",
+            "size": 10,
+            "ts": now - 30,
+            "final_state": EVENT_HALTED_ON_FILL,
+        }
+    )
+    engine._position_reconcile_manual_sell_ts["101"] = now
+
+    assert engine._position_has_managed_evidence("101") is False
+
+
+def test_position_reconcile_reports_when_exit_was_not_placed() -> None:
+    engine = _position_reconcile_engine()
+    engine._pending_unwinds.append({"token_id": "101"})
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "101",
+                    "size": Decimal("10"),
+                    "cost_basis": Decimal("0.3744"),
+                }
+            ],
+            open_orders=[],
+        )
+    )
+
+    assert engine._position_reconcile_state["positions"][0]["status"] == "exit_not_placed"
+    assert engine._position_reconcile_state["manual_review_positions"] == 1
+
+
+def test_position_reconcile_rehydrates_one_safe_full_exit_order() -> None:
+    engine = _position_reconcile_engine()
+    engine._fills_record.append(
+        {
+            "token_id": "101",
+            "size": 10,
+            "ts": time.time(),
+            "final_state": EVENT_HALTED_ON_FILL,
+        }
+    )
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "101",
+                    "size": Decimal("10"),
+                    "cost_basis": Decimal("0.3744"),
+                }
+            ],
+            open_orders=[
+                {
+                    "id": "exit-1",
+                    "asset_id": "101",
+                    "side": "SELL",
+                    "status": "LIVE",
+                    "price": "0.38",
+                    "remaining_size": "10",
+                }
+            ],
+        )
+    )
+
+    engine._attempt_exit_sell.assert_not_awaited()
+    assert engine._active_exit_orders == {"101": "exit-1"}
+    assert engine._pending_unwinds[0]["strict_no_loss"] is True
+    assert engine._event_state_name("101") == EVENT_EXIT_PENDING
 
 
 def _stable_replacement_engine(tmp_path: Path) -> PolyLPSMulti:

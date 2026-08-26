@@ -48,6 +48,8 @@ def _candidate(
         "accepting_orders": accepting_orders,
         "market_end_ts": market_end_ts,
         "verification_recommended": recommended,
+        "stable_lp_recommended": recommended,
+        "stable_lp_rejection_reasons": [],
         "verification_status": "stable" if recommended else "warming",
         "stability_score": stability,
         "fill_risk": fill_risk,
@@ -148,6 +150,29 @@ def test_proposal_rejects_unverified_risky_live_and_stale_candidates() -> None:
     assert proposal["unassigned_candidates"][0]["reason_codes_by_account"] == {
         "1": "front_depth_below_account_min"
     }
+
+
+def test_proposal_never_admits_weather_market_to_stable_lp() -> None:
+    weather = _candidate(1, roi=20.0)
+    weather.update(
+        {
+            "market_type": "weather",
+            "weather_market": True,
+            "stable_lp_recommended": False,
+            "stable_lp_rejection_reasons": ["weather_observe_only"],
+        }
+    )
+
+    proposal = build_stable_rotation_proposal(
+        _observer(weather),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    assert proposal["accounts"][0]["add"] == []
+    rejected = proposal["rejected_candidates"][0]
+    assert rejected["token_id"] == "1"
+    assert "weather_observe_only" in rejected["reason_codes"]
 
 
 def test_operator_disabled_market_is_never_reintroduced() -> None:
