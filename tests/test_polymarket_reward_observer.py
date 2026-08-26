@@ -424,6 +424,7 @@ def test_weather_market_remains_observe_only_for_stable_lp(
         "Will it rain in London tomorrow?",
         "Will New York reach 85 degrees Fahrenheit?",
         "Will the temperature in Paris be 29 C?",
+        "Will Paris's temperature reach 29 C?",
         "Will Hong Kong record 29°C on Friday?",
     ],
 )

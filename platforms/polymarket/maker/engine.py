@@ -3491,6 +3491,7 @@ class PolyLPSMulti:
                     size,
                     "position_reconcile_uncovered",
                     strict_no_loss=True,
+                    allow_position_fallback=False,
                 )
                 exit_tracked = token_id in self._active_exit_orders
                 if exit_tracked:
@@ -3611,6 +3612,7 @@ class PolyLPSMulti:
         reason: str,
         *,
         strict_no_loss: bool = False,
+        allow_position_fallback: bool = True,
     ) -> None:
         """After fill detected:
         1. Cancel all BUY orders for this token (keep only the upcoming SELL)
@@ -3681,6 +3683,22 @@ class PolyLPSMulti:
         # Step 2: Check actual position — scan all tokens if the attributed one has none
         position = await self._get_token_position(token_id)
         if position is None or position <= 0:
+            if not allow_position_fallback:
+                log(
+                    f"[exit] token={token_id} exact position unavailable; "
+                    f"cross-token fallback disabled reason={reason}"
+                )
+                self._set_event_state(
+                    token_id,
+                    EVENT_PENDING_MANUAL_EXIT,
+                    f"exact_position_unavailable:{reason}",
+                )
+                self.send_discord(
+                    f"退出仓位需要复核\n市场：{self._discord_market_name(token_id)}\n"
+                    "原因：未能确认该市场的精确仓位\n"
+                    "系统处理：不扫描或卖出其他市场仓位，保持停止买入"
+                )
+                return
             log(f"[exit] token={token_id} position={position}, scanning all tokens...")
             all_tokens = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
             found_tid, found_pos = await self._scan_for_position([t for t in all_tokens if t != token_id])

@@ -45,8 +45,7 @@ HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
 HISTORY_SAMPLES_PER_MARKET = 288
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _WEATHER_MARKET_RE = re.compile(
-    r"(?:highest|lowest)[-\s]+temperature|"
-    r"temperature[-\s]+in|"
+    r"\btemperature\b|"
     r"\bweather\b|\brain(?:fall|y|ing)?\b|\bsnow(?:fall|y|ing)?\b|"
     r"\bprecipitation\b|\bhumidity\b|\bwind[-\s]+(?:speed|gust)\b|"
     r"\bdegrees?[-\s]+(?:celsius|fahrenheit)\b|\b(?:celsius|fahrenheit)\b|"

@@ -666,6 +666,7 @@ def test_position_reconcile_requests_strict_no_loss_exit_for_managed_inventory()
         Decimal("10"),
         "position_reconcile_uncovered",
         strict_no_loss=True,
+        allow_position_fallback=False,
     )
     assert engine._position_reconcile_state["positions"][0]["no_loss_price"] == pytest.approx(0.38)
 
@@ -2015,6 +2016,50 @@ def test_paired_exit_uses_complement_of_matched_price_not_source_book(monkeypatc
     assert unwind["fill_size"] == pytest.approx(517.645966)
     assert unwind["exit_size"] == pytest.approx(517.645966)
     assert unwind["reported_fill_size"] == pytest.approx(517.63)
+
+
+def test_strict_reconcile_exit_never_scans_or_sells_another_token(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._exit_delay_sec = 0
+    engine._active_exit_orders = {}
+    engine._event_states = {
+        "101": {"state": EVENT_ACTIVE, "reason": "init", "updated_at": 0},
+    }
+    engine._event_bus = _RecordingEventBus()
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {"paired_token_id": "101"},
+    }
+    engine._night_market_cfg = {}
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def cancel_token_orders(_token_id, *, reason):
+        return True
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", no_sleep)
+    engine._cancel_token_orders = cancel_token_orders
+    engine._get_token_position = AsyncMock(return_value=0.0)
+    engine._scan_for_position = AsyncMock(return_value=("102", 10.0))
+    engine._place_sell_order = AsyncMock(return_value={"orderID": "wrong-exit"})
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token_id: token_id
+
+    asyncio.run(
+        engine._attempt_exit_sell(
+            "101",
+            Decimal("0.38"),
+            Decimal("10"),
+            "position_reconcile_uncovered",
+            strict_no_loss=True,
+            allow_position_fallback=False,
+        )
+    )
+
+    engine._scan_for_position.assert_not_awaited()
+    engine._place_sell_order.assert_not_awaited()
+    assert engine._event_state_name("101") == EVENT_PENDING_MANUAL_EXIT
 
 
 @pytest.mark.parametrize(
