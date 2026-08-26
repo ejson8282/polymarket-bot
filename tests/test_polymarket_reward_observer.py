@@ -1,4 +1,6 @@
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -66,6 +68,7 @@ def _account_policy(
     min_depth: Decimal = Decimal("2000"),
     configured: bool = False,
     scoring: bool | None = None,
+    observed_q: Decimal | None = None,
 ) -> ObserverAccountPolicy:
     tokens = frozenset({"yes-token", "no-token"}) if configured else frozenset()
     scoring_by_token = (
@@ -85,7 +88,14 @@ def _account_policy(
         max_notional_per_order=Decimal("0"),
         min_front_bid_notional_usdc=min_depth,
         configured_tokens=tokens,
-        market_runtime={},
+        market_runtime=(
+            {
+                "yes-token": {"q_min": str(observed_q)},
+                "no-token": {"q_min": str(observed_q)},
+            }
+            if observed_q is not None
+            else {}
+        ),
         scoring_by_token=scoring_by_token,
         reward_percentages={},
     )
@@ -173,6 +183,87 @@ def test_observer_reserves_book_analysis_for_efficient_smaller_reward_pools() ->
         for candidate in result["candidates"]
     ) == 2
     assert any(candidate["daily_reward_usd"] == 5 for candidate in result["candidates"])
+
+
+def test_configured_markets_bypass_candidate_limit_and_others_are_unassessed() -> None:
+    markets = []
+    for index in range(3):
+        market = _market(reward=str(100 - index), slug=f"market-{index}")
+        market["conditionId"] = f"condition-{index}"
+        market["clobTokenIds"] = json.dumps(
+            [f"yes-{index}", f"no-{index}"]
+        )
+        markets.append(market)
+    policy = replace(
+        _account_policy(),
+        configured_tokens=frozenset({"yes-2", "no-2"}),
+        configured_market_refs=(
+            {
+                "account_index": 1,
+                "condition_id": "condition-2",
+                "token_id": "yes-2",
+                "paired_token_id": "no-2",
+                "question": "Market 2?",
+                "slug": "market-2",
+            },
+        ),
+    )
+
+    result = observe_reward_markets(
+        markets,
+        lambda _token: _book(),
+        candidate_limit=1,
+        account_policies=[policy],
+    )
+
+    assert result["candidates_evaluated"] == 2
+    assert result["selection_lanes"]["configured_or_watchlist"] == 1
+    assert "condition-2" in {
+        row["condition_id"] for row in result["candidates"]
+    }
+    assert result["candidates_unassessed"] == 1
+    assert result["unassessed_candidates"][0]["admission_level"] == "unassessed"
+    assert result["unassessed_candidates"][0]["reason_codes"] == [
+        "selection_budget_not_evaluated"
+    ]
+
+
+def test_configured_condition_bypasses_limit_when_token_ids_are_missing() -> None:
+    markets = []
+    for index in range(3):
+        market = _market(reward=str(100 - index), slug=f"market-{index}")
+        market["conditionId"] = f"condition-{index}"
+        market["clobTokenIds"] = json.dumps(
+            [f"yes-{index}", f"no-{index}"]
+        )
+        markets.append(market)
+    policy = replace(
+        _account_policy(),
+        configured_tokens=frozenset(),
+        configured_market_refs=(
+            {
+                "account_index": 1,
+                "condition_id": "condition-2",
+                "token_id": "",
+                "paired_token_id": "",
+                "question": "Market 2?",
+                "slug": "market-2",
+            },
+        ),
+    )
+
+    result = observe_reward_markets(
+        markets,
+        lambda _token: _book(),
+        candidate_limit=1,
+        account_policies=[policy],
+    )
+
+    assert result["candidates_evaluated"] == 2
+    assert result["selection_lanes"]["configured_or_watchlist"] == 1
+    assert "condition-2" in {
+        row["condition_id"] for row in result["candidates"]
+    }
 
 
 def test_estimated_daily_payout_floor_blocks_confirmation_not_observation(
@@ -324,7 +415,12 @@ def test_account_with_fresh_capital_and_deep_book_gets_full_admission(
     candidate = _observe_with_history(
         tmp_path,
         monkeypatch,
-        policy=_account_policy(available=Decimal("200")),
+        policy=_account_policy(
+            available=Decimal("200"),
+            configured=True,
+            scoring=True,
+            observed_q=Decimal("10"),
+        ),
         book=_deep_book(),
     )
 
@@ -353,7 +449,7 @@ def test_shallow_but_executable_book_gets_canary_not_full(
 
     assert candidate["admission_level"] == "canary"
     assert candidate["stable_lp_recommended"] is False
-    assert candidate["canary_proposal_eligible"] is True
+    assert candidate["canary_proposal_eligible"] is False
     assert "front_depth_below_full_minimum" in candidate["account_admission"][0][
         "reason_codes"
     ]
@@ -483,6 +579,181 @@ def test_rotation_planner_failure_does_not_break_reward_observer(
     assert proposal["reason"] == "planner_input_error"
     assert proposal["safety"]["trading_actions"] is False
     assert "not-json" not in json.dumps(proposal)
+
+
+def test_history_deduplicates_same_timestamp(tmp_path: Path) -> None:
+    state = observe_reward_markets([_market()], lambda _token: _book())
+
+    reward_observer._apply_observation_history(
+        tmp_path,
+        state,
+        1_800_000_000,
+    )
+    reward_observer._apply_observation_history(
+        tmp_path,
+        state,
+        1_800_000_000,
+    )
+
+    history = json.loads(
+        (tmp_path / "reward_observer_history.json").read_text(encoding="utf-8")
+    )
+    assert len(history["markets"]["condition:condition-1"]["samples"]) == 1
+
+
+def test_history_retains_full_seven_days_of_five_minute_samples(
+    tmp_path: Path,
+) -> None:
+    now_ts = 1_800_000_000.0
+    samples = [
+        {"ts": now_ts - index * 300, "share": index % 10, "risk": 10}
+        for index in range(2_017)
+    ]
+    (tmp_path / "reward_observer_history.json").write_text(
+        json.dumps(
+            {
+                "markets": {
+                    "condition:legacy": {
+                        "question": "Legacy?",
+                        "slug": "legacy",
+                        "samples": samples,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reward_observer._apply_observation_history(
+        tmp_path,
+        {"candidates": []},
+        now_ts,
+    )
+
+    history = json.loads(
+        (tmp_path / "reward_observer_history.json").read_text(encoding="utf-8")
+    )
+    retained = history["markets"]["condition:legacy"]["samples"]
+    assert len(retained) == 2_016
+    assert retained[-1]["ts"] - retained[0]["ts"] == 2_015 * 300
+
+
+def test_configured_market_records_missing_book_reason(tmp_path: Path) -> None:
+    state = {
+        "candidates": [],
+        "configured_market_refs": [
+            {
+                "account_index": 1,
+                "condition_id": "condition-1",
+                "token_id": "yes-token",
+                "paired_token_id": "no-token",
+                "question": "Market one?",
+                "slug": "market-one",
+            }
+        ],
+        "rewarded_market_keys": ["condition:condition-1"],
+    }
+
+    reward_observer._apply_observation_history(
+        tmp_path,
+        state,
+        1_800_000_000,
+    )
+
+    history = json.loads(
+        (tmp_path / "reward_observer_history.json").read_text(encoding="utf-8")
+    )
+    sample = history["markets"]["condition:condition-1"]["samples"][0]
+    assert sample["missing_reason"] == "order_book_unavailable_or_invalid"
+    assert sample["configured_account_indexes"] == [1]
+
+
+def test_finalized_market_earnings_calibrate_same_day_prediction(
+    tmp_path: Path,
+) -> None:
+    account_uid = "137:1:0x" + "a" * 40
+    policy = replace(_account_policy(), account_uid=account_uid)
+    state = observe_reward_markets(
+        [_market()],
+        lambda _token: _book(size="500"),
+        account_policies=[policy],
+    )
+    account_key = state["candidates"][0]["account_execution"][0][
+        "account_uid_key"
+    ]
+    forecast_day = "2027-01-15"
+    now_ts = datetime(2027, 1, 16, 12, tzinfo=timezone.utc).timestamp()
+    (tmp_path / "reward_observer_history.json").write_text(
+        json.dumps(
+            {
+                "markets": {
+                    "condition:condition-1": {
+                        "samples": [
+                            {
+                                "ts": now_ts - 86_400,
+                                "forecast_business_day": forecast_day,
+                                "share": 10,
+                                "risk": 20,
+                                "account_execution": [
+                                    {
+                                        "account_uid_key": account_key,
+                                        "predicted_daily_gross_usd": 4,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "reward_ledger.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "native": {
+                        "account_uid": account_uid,
+                        "business_day": forecast_day,
+                        "condition_id": "condition-1",
+                        "reward_type": "native_lp",
+                        "usd_amount": 1.5,
+                        "fresh": True,
+                        "finalized": True,
+                    },
+                    "sponsored": {
+                        "account_uid": account_uid,
+                        "business_day": forecast_day,
+                        "condition_id": "condition-1",
+                        "reward_type": "sponsored_lp",
+                        "usd_amount": 0.5,
+                        "fresh": True,
+                        "finalized": True,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reward_observer._apply_observation_history(tmp_path, state, now_ts)
+
+    candidate = state["candidates"][0]
+    assert candidate["earnings_calibration_scopes"] == 1
+    assert candidate["earnings_prediction_mae_usd"] == 2.0
+    assert candidate["earnings_prediction_bias_usd"] == 2.0
+    assert candidate["earnings_calibration_ratio"] == 0.5
+    history = json.loads(
+        (tmp_path / "reward_observer_history.json").read_text(encoding="utf-8")
+    )
+    execution = history["markets"]["condition:condition-1"]["samples"][0][
+        "account_execution"
+    ][0]
+    assert execution["official_finalized_lp_earnings_usd"] == 2.0
+    assert execution["official_finalized_lp_earnings_by_type"] == {
+        "native_lp": 1.5,
+        "sponsored_lp": 0.5,
+    }
 
 
 def test_candidate_requires_repeated_stable_samples_before_verification(

@@ -209,6 +209,18 @@ def _account_admission(
     return None
 
 
+def _canary_observation_eligible(
+    row: Mapping[str, Any],
+    account_index: int,
+) -> bool:
+    eligible_accounts = row.get("canary_proposal_eligible_account_indexes")
+    if isinstance(eligible_accounts, list):
+        return account_index in {
+            int(_number(value, -1)) for value in eligible_accounts
+        }
+    return row.get("canary_proposal_eligible") is True
+
+
 def _retirement_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
     """Put unsafe and unobservable markets ahead of merely inefficient ones."""
 
@@ -566,7 +578,7 @@ def build_stable_rotation_proposal(
         "candidate_ranking": [
             "risk_adjusted_daily_roi_pct_desc",
             "estimated_daily_gross_usd_desc",
-            "estimated_reward_share_pct_desc",
+            "executable_reward_share_pct_desc",
             "stability_score_desc",
             "fill_risk_asc",
         ],
@@ -712,6 +724,13 @@ def build_stable_rotation_proposal(
                     if admission[1]
                     else "account_admission_rejected"
                 )
+                continue
+            if (
+                admission is not None
+                and admission[0] == "canary"
+                and not _canary_observation_eligible(candidate, account_index)
+            ):
+                account_reasons[account_index] = "canary_observation_incomplete"
                 continue
             if admission is None:
                 depth_reason = _account_depth_rejection(

@@ -161,6 +161,7 @@ def test_account_canary_is_separate_from_full_additions() -> None:
             "reason_codes": ["front_depth_below_full_minimum"],
         }
     ]
+    candidate["canary_proposal_eligible"] = True
 
     proposal = build_stable_rotation_proposal(
         _observer(candidate),
@@ -173,6 +174,61 @@ def test_account_canary_is_separate_from_full_additions() -> None:
     assert [row["token_id"] for row in account["canary"]] == ["1"]
     assert account["canary"][0]["action"] == "canary"
     assert proposal["summary"]["planned_canaries"] == 1
+
+
+def test_canary_requires_fast_lane_observation_before_proposal() -> None:
+    candidate = _candidate(1, yes_depth=500.0, no_depth=500.0)
+    candidate["account_admission"] = [
+        {
+            "account_index": 1,
+            "level": "canary",
+            "reason_codes": ["front_depth_below_full_minimum"],
+        }
+    ]
+    candidate["canary_proposal_eligible"] = False
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    account = proposal["accounts"][0]
+    assert account["add"] == []
+    assert account["canary"] == []
+    assert proposal["unassigned_candidates"][0]["reason_codes_by_account"] == {
+        "1": "canary_observation_incomplete"
+    }
+
+
+def test_canary_evidence_from_another_account_does_not_authorize_proposal() -> None:
+    candidate = _candidate(1, yes_depth=500.0, no_depth=500.0)
+    candidate["account_admission"] = [
+        {
+            "account_index": 1,
+            "level": "canary",
+            "reason_codes": ["front_depth_below_full_minimum"],
+        },
+        {
+            "account_index": 2,
+            "level": "canary",
+            "reason_codes": ["front_depth_below_full_minimum"],
+        },
+    ]
+    candidate["canary_proposal_eligible"] = True
+    candidate["canary_proposal_eligible_account_indexes"] = [1]
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(2)],
+        now_ts=NOW,
+    )
+
+    account = proposal["accounts"][0]
+    assert account["canary"] == []
+    assert proposal["unassigned_candidates"][0]["reason_codes_by_account"] == {
+        "2": "canary_observation_incomplete"
+    }
 
 
 def test_account_reject_never_enters_add_or_canary() -> None:
