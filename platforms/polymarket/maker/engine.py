@@ -862,6 +862,13 @@ class PolyLPSMulti:
         # Q_min optimization: dual-side ≈ +49-200% LP rewards vs single-side.
         dual = strategy.get("dual_side", {})
         self._dual_side_enabled = bool(dual.get("enabled", True))  # default ON
+        # Stable LP rewards are event-level: a YES bid without the paired NO
+        # bid is materially penalized (and scores zero in the price tails).
+        # Keep both quote legs as one operational unit unless explicitly
+        # disabled for a non-production experiment.
+        self._dual_side_require_both_sides = bool(
+            dual.get("require_both_sides", True)
+        )
         self._dual_side_max_mid = Decimal(str(dual.get("max_mid", "0.10")))  # low-price threshold for strict both-or-none
         self._dual_side_no_risk = str(dual.get("no_side_risk", "mid")).lower()
         self._dual_side_min_book_depth = Decimal(str(dual.get("min_book_depth_usdc", "500")))
@@ -928,16 +935,35 @@ class PolyLPSMulti:
         self._per_token_last_order_ts: Dict[str, float] = {tid: 0.0 for tid in self.market_cfg}
         self._aggressive_pair_submit_timeout_sec = max(
             1.0,
-            float(execution.get("aggressive_pair_submit_timeout_sec", 5.0)),
+            float(
+                execution.get(
+                    "paired_submit_timeout_sec",
+                    execution.get("aggressive_pair_submit_timeout_sec", 5.0),
+                )
+            ),
         )
         self._aggressive_pair_retry_cooldown_sec = max(
             self._aggressive_pair_submit_timeout_sec,
-            float(execution.get("aggressive_pair_retry_cooldown_sec", 15.0)),
+            float(
+                execution.get(
+                    "paired_retry_cooldown_sec",
+                    execution.get("aggressive_pair_retry_cooldown_sec", 15.0),
+                )
+            ),
         )
         self._aggressive_pair_submit_lock = asyncio.Lock()
         self._aggressive_pair_submit_seq = 0
         self._aggressive_pair_submit_attempts: Dict[str, Dict[str, Any]] = {}
         self._aggressive_pair_submit_watchdogs: Dict[str, asyncio.Task] = {}
+        self._paired_single_leg_grace_sec = max(
+            self._aggressive_pair_submit_timeout_sec + 1.0,
+            float(execution.get("paired_single_leg_grace_sec", 6.0)),
+        )
+        self._paired_reconcile_interval_sec = max(
+            0.5,
+            float(execution.get("paired_reconcile_interval_sec", 1.0)),
+        )
+        self._paired_single_leg_since: Dict[str, float] = {}
 
         # market reward-health auto offlining
         self.health_check_interval_sec = int(execution.get("health_check_interval_sec", 600))
@@ -1445,8 +1471,34 @@ class PolyLPSMulti:
     def _aggressive_pair_token(self, token_id: str) -> str:
         if str(getattr(self, "_runtime_scope", "") or "").lower() != "aggressive":
             return ""
+        return self._coordinated_pair_token(token_id)
+
+    def _coordinated_pair_token(self, token_id: str) -> str:
+        """Return the sibling outcome that must quote with ``token_id``.
+
+        Aggressive LP has always treated its two legs atomically. Stable LP
+        now uses the same invariant whenever dual-side quoting is enabled, so
+        independent depth, defense, budget, or submit failures cannot leave a
+        reward-inefficient single BUY leg resting on the venue.
+        """
+        aggressive = (
+            str(getattr(self, "_runtime_scope", "") or "").lower()
+            == "aggressive"
+        )
+        if not aggressive and not (
+            bool(getattr(self, "_dual_side_enabled", True))
+            and bool(getattr(self, "_dual_side_require_both_sides", True))
+        ):
+            return ""
         paired = self._paired_token_id(token_id)
-        if not paired or paired == token_id or paired not in self.market_cfg:
+        if (
+            not paired
+            or paired == token_id
+            or (
+                paired not in self.market_cfg
+                and paired not in self._night_market_cfg
+            )
+        ):
             return ""
         return paired
 
@@ -2720,7 +2772,7 @@ class PolyLPSMulti:
                 self._order_id(o)
                 for o in self._cached_live_orders(token_id)
             ]
-            cleared = await self._cancel_risk_buys(
+            cleared = await self._cancel_coordinated_pair_quotes(
                 token_id,
                 f"forbid:{reason}",
             )
@@ -2749,7 +2801,7 @@ class PolyLPSMulti:
             self._order_id(o)
             for o in self._cached_live_orders(token_id)
         ]
-        cleared = await self._cancel_risk_buys(
+        cleared = await self._cancel_coordinated_pair_quotes(
             token_id,
             f"watch:{reason}",
         )
@@ -2778,7 +2830,7 @@ class PolyLPSMulti:
             self._order_id(o)
             for o in self._cached_live_orders(token_id)
         ]
-        cleared = await self._cancel_risk_buys(
+        cleared = await self._cancel_coordinated_pair_quotes(
             token_id,
             f"quarantine:{reason}",
         )
@@ -3494,13 +3546,13 @@ class PolyLPSMulti:
             )
         return confirmed
 
-    async def _cancel_aggressive_pair_quotes(
+    async def _cancel_coordinated_pair_quotes(
         self,
         token_id: str,
         reason: str,
     ) -> bool:
-        """Cancel both aggressive YES/NO quote legs as one risk unit."""
-        paired = self._aggressive_pair_token(token_id)
+        """Cancel both coordinated YES/NO BUY quote legs as one risk unit."""
+        paired = self._coordinated_pair_token(token_id)
         if not paired:
             return await self._cancel_risk_buys(token_id, reason)
 
@@ -3513,9 +3565,23 @@ class PolyLPSMulti:
             return True
 
         inflight.add(pair_key)
-        pair_reason = f"aggressive_pair:{reason}"
+        pair_reason = f"paired_quote:{reason}"
         targets = (paired, token_id)
-        block_until = time.time() + max(0.0, self._defense_requote_block_sec)
+        defense_block_sec = float(
+            getattr(self, "_defense_requote_block_sec", 0.0)
+        )
+        block_sec = (
+            float(
+                getattr(
+                    self,
+                    "_move_back_requote_block_sec",
+                    defense_block_sec,
+                )
+            )
+            if "move_back" in str(reason).lower()
+            else defense_block_sec
+        )
+        block_until = time.time() + max(0.0, block_sec)
         results: list[bool] = []
         try:
             # Preempt both planners before the first network round-trip so a
@@ -3526,7 +3592,18 @@ class PolyLPSMulti:
                     float(self._defense_block_until.get(target, 0.0)),
                     block_until,
                 )
-                self._set_event_state(target, EVENT_DEFENSIVE, pair_reason)
+                if self._event_state_name(target) not in {
+                    EVENT_CANCELING,
+                    EVENT_HALTED_ON_FILL,
+                    EVENT_HALTED_ON_DATA,
+                    EVENT_COOLDOWN,
+                    EVENT_STARTED_BLOCKED,
+                    EVENT_WATCH,
+                    EVENT_QUARANTINE,
+                    EVENT_PENDING_MANUAL_EXIT,
+                    EVENT_EXIT_PENDING,
+                }:
+                    self._set_event_state(target, EVENT_DEFENSIVE, pair_reason)
 
             # Cancel the opposite leg first: it is the leg otherwise left live
             # when the triggering side fails its feasibility gate.
@@ -3546,7 +3623,7 @@ class PolyLPSMulti:
                 return False
 
             log(
-                f"[aggressive-pair] token={token_id[:16]} "
+                f"[paired-quote] token={token_id[:16]} "
                 f"paired={paired[:16]} action=cancel_both reason={reason}"
             )
             return True
@@ -3556,6 +3633,107 @@ class PolyLPSMulti:
                     self._clear_halt_preemption(target)
             inflight.discard(pair_key)
 
+    async def _cancel_aggressive_pair_quotes(
+        self,
+        token_id: str,
+        reason: str,
+    ) -> bool:
+        """Backward-compatible wrapper for aggressive pair callers/tests."""
+        if not self._aggressive_pair_token(token_id):
+            return await self._cancel_risk_buys(token_id, reason)
+        return await self._cancel_coordinated_pair_quotes(token_id, reason)
+
+    def _live_buy_count(self, orders: Iterable[dict]) -> int:
+        return sum(
+            1
+            for order in orders
+            if _order_is_live(order) and self._order_side(order) == "BUY"
+        )
+
+    def _cached_live_buy_count(self, token_id: str) -> int:
+        return self._live_buy_count(self._market_live_orders.get(token_id, []))
+
+    async def paired_quote_invariant_loop(self) -> None:
+        """Remove any stable/aggressive LP BUY leg left live without its pair.
+
+        Pair submission is necessarily sequential at the signer, so a short
+        grace period is allowed. After that window, a locally observed single
+        leg is canceled as a fail-closed event-level unit. Exit SELL orders are
+        intentionally ignored and remain owned by the unwind workflow.
+        """
+        while self._running:
+            try:
+                now = time.time()
+                seen: set[str] = set()
+                configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+                for token_id in configured_tokens:
+                    paired = self._coordinated_pair_token(token_id)
+                    if not paired:
+                        continue
+                    pair_key = self._aggressive_pair_key(token_id, paired)
+                    if pair_key in seen:
+                        continue
+                    seen.add(pair_key)
+
+                    first_count = self._cached_live_buy_count(token_id)
+                    second_count = self._cached_live_buy_count(paired)
+                    if (first_count > 0) == (second_count > 0):
+                        self._paired_single_leg_since.pop(pair_key, None)
+                        continue
+
+                    single_since = self._paired_single_leg_since.setdefault(
+                        pair_key,
+                        now,
+                    )
+                    if now - single_since < self._paired_single_leg_grace_sec:
+                        continue
+
+                    # Cache updates for sibling tokens are not atomic. Confirm
+                    # the apparent mismatch against the venue before taking a
+                    # destructive action, otherwise a normal refresh skew can
+                    # cause needless churn of a healthy pair.
+                    try:
+                        self._invalidate_all_orders_cache()
+                        first_count = self._live_buy_count(
+                            await self._refresh_live_orders(token_id)
+                        )
+                        second_count = self._live_buy_count(
+                            await self._refresh_live_orders(paired)
+                        )
+                    except Exception as exc:
+                        log(
+                            f"[paired-invariant] pair={pair_key} "
+                            "action=defer_refresh_failed "
+                            f"error={exc.__class__.__name__}:{exc}"
+                        )
+                        continue
+
+                    if (first_count > 0) == (second_count > 0):
+                        self._paired_single_leg_since.pop(pair_key, None)
+                        continue
+
+                    live_token = token_id if first_count > 0 else paired
+                    log(
+                        f"[paired-invariant] pair={pair_key} "
+                        f"counts={first_count}/{second_count} "
+                        f"age={now - single_since:.1f}s action=cancel_both"
+                    )
+                    await self._cancel_coordinated_pair_quotes(
+                        live_token,
+                        "single_leg_invariant_timeout",
+                    )
+                    self._paired_single_leg_since.pop(pair_key, None)
+
+                for pair_key in list(self._paired_single_leg_since):
+                    if pair_key not in seen:
+                        self._paired_single_leg_since.pop(pair_key, None)
+            except Exception as exc:
+                log(
+                    "[paired-invariant] loop error: "
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+            await asyncio.sleep(self._paired_reconcile_interval_sec)
+
     @staticmethod
     def _aggressive_pair_key(token_id: str, paired_token_id: str) -> str:
         return "|".join(sorted((str(token_id), str(paired_token_id))))
@@ -3564,7 +3742,7 @@ class PolyLPSMulti:
         self,
         token_id: str,
     ) -> Optional[tuple[str, int, str]]:
-        paired = self._aggressive_pair_token(token_id)
+        paired = self._coordinated_pair_token(token_id)
         if not paired:
             return None
 
@@ -3655,7 +3833,7 @@ class PolyLPSMulti:
             attempt["leader_posted"].set()
         self._cooldown_aggressive_pair(token_id, paired)
         try:
-            await self._cancel_aggressive_pair_quotes(
+            await self._cancel_coordinated_pair_quotes(
                 token_id,
                 f"paired_submit_failed:{reason}",
             )
@@ -3687,7 +3865,7 @@ class PolyLPSMulti:
 
         if complete:
             log(
-                f"[aggressive-pair-submit] pair={pair_key} "
+                f"[paired-submit] pair={pair_key} "
                 f"attempt={attempt_id} action=both_posted"
             )
             await self._clear_aggressive_pair_submit(pair_key, attempt_id)
@@ -3700,7 +3878,7 @@ class PolyLPSMulti:
                     attempt_id,
                     token_id,
                 ),
-                name=f"aggressive_pair_submit:{attempt_id}",
+                name=f"paired_submit:{attempt_id}",
             )
             async with self._aggressive_pair_submit_lock:
                 attempt = self._aggressive_pair_submit_attempts.get(pair_key)
@@ -3728,13 +3906,14 @@ class PolyLPSMulti:
         try:
             self._invalidate_all_orders_cache()
             for target in (leader, follower):
-                live_counts[target] = len(await self._refresh_live_orders(target))
+                orders = await self._refresh_live_orders(target)
+                live_counts[target] = self._live_buy_count(orders)
         except Exception as exc:
             refresh_error = f"{exc.__class__.__name__}:{exc}"
 
         if not refresh_error and all(live_counts.get(target, 0) > 0 for target in (leader, follower)):
             log(
-                f"[aggressive-pair-submit] pair={pair_key} "
+                f"[paired-submit] pair={pair_key} "
                 f"attempt={attempt_id} action=confirmed_live"
             )
             await self._clear_aggressive_pair_submit(pair_key, attempt_id)
@@ -3749,7 +3928,7 @@ class PolyLPSMulti:
             reason = f"{reason}:refresh_error={refresh_error}"
         self._cooldown_aggressive_pair(leader, follower)
         try:
-            cleared = await self._cancel_aggressive_pair_quotes(
+            cleared = await self._cancel_coordinated_pair_quotes(
                 trigger_token_id,
                 reason,
             )
@@ -3758,8 +3937,14 @@ class PolyLPSMulti:
                 if cleared
                 else "撤单尚未确认，事件保持阻断"
             )
+            profile_label = (
+                "激进 LP"
+                if str(getattr(self, "_runtime_scope", "") or "").lower()
+                == "aggressive"
+                else "稳定 LP"
+            )
             self.notify_discord(
-                "激进 LP 双腿建单失败",
+                f"{profile_label} 双腿建单失败",
                 f"{reason}\n{result_text}，冷却 "
                 f"{self._aggressive_pair_retry_cooldown_sec:.0f} 秒",
                 "warning" if cleared else "error",
@@ -3786,7 +3971,7 @@ class PolyLPSMulti:
         self._market_budget_skip_until[token_id] = retry_at
         if paired_token_id:
             self._market_budget_skip_until[paired_token_id] = retry_at
-            await self._cancel_aggressive_pair_quotes(token_id, reason)
+            await self._cancel_coordinated_pair_quotes(token_id, reason)
             return
 
         live_token = await self._get_live_orders_fast(token_id)
@@ -5113,8 +5298,15 @@ class PolyLPSMulti:
                 "event_halt",
                 {"reason": reason, "final_state": final_state, "orders_targeted": len(ids)},
             )
-            paired = self._paired_token_cache.get(token_id)
-            if paired and paired in self.market_cfg and self._event_state_name(paired) == EVENT_ACTIVE:
+            paired = self._paired_token_id(token_id)
+            if (
+                paired
+                and (
+                    paired in self.market_cfg
+                    or paired in self._night_market_cfg
+                )
+                and self._event_state_name(paired) == EVENT_ACTIVE
+            ):
                 asyncio.create_task(
                     self._request_event_halt(
                         paired,
@@ -5141,7 +5333,15 @@ class PolyLPSMulti:
         """Unified order throttle: per-token + global.
         Must be called before every real order placement."""
         slug = self._token_slug_cache.get(token_id, token_id[:16])
-        claim = await self._claim_aggressive_pair_submit(token_id)
+        # Only the front reward leg needs atomic YES/NO admission. Back legs
+        # can differ in count and price across outcomes; pairing every layer
+        # would manufacture false failures after the event already has both
+        # required front BUY legs live.
+        claim = (
+            None
+            if "back_leg" in str(label).lower()
+            else await self._claim_aggressive_pair_submit(token_id)
+        )
         if claim is not None and claim[2] == "follower":
             attempt = await self._aggressive_pair_attempt(claim)
             if attempt is None:
@@ -5208,7 +5408,7 @@ class PolyLPSMulti:
             self._global_last_order_ts = max(self._global_last_order_ts, order_ts)
             self._per_token_last_order_ts[token_id] = order_ts
             log(
-                f"[aggressive-pair-submit] token={slug} role=follower "
+                f"[paired-submit] token={slug} role=follower "
                 f"action=fast_follow label={label}"
             )
             return claim
@@ -5804,9 +6004,9 @@ class PolyLPSMulti:
     ) -> tuple[bool, str]:
         """Validate that the paired side can also produce a valid plan.
 
-        Low-price mode checks only the risky tail by default. Aggressive LP can
-        set ``enforce_all_pairs`` so every YES/NO pair is validated before
-        either leg is allowed to quote.
+        Low-price mode checks only the risky tail by default. Coordinated
+        stable/aggressive LP sets ``enforce_all_pairs`` so every YES/NO pair
+        is validated before either leg is allowed to quote.
         """
         yes_is_low = yes_top_price <= self._dual_side_max_mid
         no_is_low = yes_top_price >= (Decimal("1") - self._dual_side_max_mid)
@@ -7399,8 +7599,8 @@ class PolyLPSMulti:
                 top_price = self._order_price(top_order)
                 gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
                 if gate.get("top_leg_action") in {"cancel", "move_back", "halt"} or legal_top is None or (legal_top is not None and top_price > legal_top):
-                    if self._aggressive_pair_token(token_id):
-                        await self._cancel_aggressive_pair_quotes(
+                    if self._coordinated_pair_token(token_id):
+                        await self._cancel_coordinated_pair_quotes(
                             token_id,
                             f"top_leg_defense:{trigger}:fast_cancel_locked",
                         )
@@ -7497,8 +7697,8 @@ class PolyLPSMulti:
                 if action == "HALT_EVENT":
                     pass
                 elif action in ("CANCEL_TOP_LEG", "MOVE_BACK_TOP_LEG"):
-                    if self._aggressive_pair_token(token_id):
-                        await self._cancel_aggressive_pair_quotes(
+                    if self._coordinated_pair_token(token_id):
+                        await self._cancel_coordinated_pair_quotes(
                             token_id,
                             f"top_leg_defense:{trigger}:{action.lower()}",
                         )
@@ -8394,6 +8594,10 @@ class PolyLPSMulti:
             asyncio.create_task(self.market_health_loop(), name="market_health_loop"),
             asyncio.create_task(self.unwind_tracking_loop(), name="unwind_tracking_loop"),
             asyncio.create_task(self.best_bid_guard_loop(), name="best_bid_guard_loop"),
+            asyncio.create_task(
+                self.paired_quote_invariant_loop(),
+                name="paired_quote_invariant_loop",
+            ),
             asyncio.create_task(self.state_write_loop(), name="state_write_loop"),
             asyncio.create_task(self.start_guard_sweep_loop(), name="start_guard_sweep_loop"),
             asyncio.create_task(self.heartbeat_loop(), name="heartbeat_loop"),
@@ -8492,6 +8696,7 @@ class PolyLPSMulti:
                 watchdog.cancel()
             self._aggressive_pair_submit_watchdogs.clear()
             self._aggressive_pair_submit_attempts.clear()
+            self._paired_single_leg_since.clear()
 
     def _read_proxies_for_token(self, token_id: str = "") -> Optional[dict]:
         p = _choose_proxy(self.cfg, for_ws=False, shard_key=str(token_id or ""))
@@ -9335,12 +9540,12 @@ class PolyLPSMulti:
             if effective_snapshot is not None:
                 tob = TopOfBook(best_bid=effective_snapshot.best_bid, best_ask=effective_snapshot.best_ask)
             depth_snapshot = self._trusted_depth_for_snapshot(token_id, effective_snapshot)
-            aggressive_paired = self._aggressive_pair_token(token_id)
+            coordinated_paired = self._coordinated_pair_token(token_id)
             can_quote, gate_reason = self._quote_gate(token_id, effective_snapshot)
             if not can_quote:
                 live_token = await self._get_live_orders_fast(token_id)
-                if aggressive_paired:
-                    await self._cancel_aggressive_pair_quotes(
+                if coordinated_paired:
+                    await self._cancel_coordinated_pair_quotes(
                         token_id,
                         f"quote_gate:{gate_reason}",
                     )
@@ -9379,6 +9584,10 @@ class PolyLPSMulti:
                             f"depth={depth_val} min={self._dual_side_min_book_depth} "
                             f" — skipping entire event"
                         )
+                        await self._cancel_coordinated_pair_quotes(
+                            token_id,
+                            f"cheap_side_depth:{depth_reason}",
+                        )
                         return
                     # Both-or-none: paired side must be ready
                     ready, skip_reason = self._paired_side_ready(
@@ -9390,6 +9599,10 @@ class PolyLPSMulti:
                             f"[dual-side-skip] token={slug} reason={skip_reason} "
                             f"paired_token={paired_token[:16]} both_or_none=1 top={current_top_price}"
                         )
+                        await self._cancel_coordinated_pair_quotes(
+                            token_id,
+                            f"paired_preflight:{skip_reason}",
+                        )
                         return
                     slug = self._token_slug_cache.get(token_id, token_id[:16])
                     if time.time() - self.last_quote_ts.get(token_id, 0) > 60:
@@ -9400,15 +9613,15 @@ class PolyLPSMulti:
                         )
             # End paired gate
 
-            if aggressive_paired:
+            if coordinated_paired:
                 paired_ready, paired_reason = self._paired_side_ready(
                     token_id,
-                    aggressive_paired,
+                    coordinated_paired,
                     prices[0] if prices else best_bid,
                     enforce_all_pairs=True,
                 )
                 if not paired_ready:
-                    await self._cancel_aggressive_pair_quotes(
+                    await self._cancel_coordinated_pair_quotes(
                         token_id,
                         f"paired_preflight:{paired_reason}",
                     )
@@ -9419,8 +9632,8 @@ class PolyLPSMulti:
             if not gate.get("can_quote", False):
                 live_token = await self._get_live_orders_fast(token_id)
                 gate_reason = f"feasibility_gate:{'|'.join(gate.get('reason', []))}"
-                if aggressive_paired:
-                    await self._cancel_aggressive_pair_quotes(
+                if coordinated_paired:
+                    await self._cancel_coordinated_pair_quotes(
                         token_id,
                         gate_reason,
                     )
@@ -9471,7 +9684,12 @@ class PolyLPSMulti:
                     "top_leg_action": "cancel",
                     "reason": list(gate.get("reason", [])) + ["empty_plan_after_gate"],
                 }
-                if live_token:
+                if coordinated_paired:
+                    await self._cancel_coordinated_pair_quotes(
+                        token_id,
+                        "empty_plan_after_gate",
+                    )
+                elif live_token:
                     await self._cancel_order_ids(token_id, [self._order_id(o) for o in live_token], "empty_plan")
                 self._last_plan_sig[token_id] = ""
                 self._last_top_plan_sig[token_id] = ""
@@ -9494,7 +9712,7 @@ class PolyLPSMulti:
                 )
                 await self._cancel_infeasible_quote_target(
                     token_id,
-                    aggressive_paired,
+                    coordinated_paired,
                     gate,
                     share_warning,
                 )
@@ -9611,6 +9829,20 @@ class PolyLPSMulti:
                     f"requested_legs={requested_legs}"
                 )
                 self._market_budget_skip_until[token_id] = time.time() + self.budget_skip_cooldown_sec
+                if coordinated_paired:
+                    self._market_budget_skip_until[coordinated_paired] = max(
+                        float(
+                            self._market_budget_skip_until.get(
+                                coordinated_paired,
+                                0.0,
+                            )
+                        ),
+                        self._market_budget_skip_until[token_id],
+                    )
+                    await self._cancel_coordinated_pair_quotes(
+                        token_id,
+                        "no_viable_plan",
+                    )
                 return
 
             self._market_budget_skip_until[token_id] = 0.0
@@ -11107,6 +11339,21 @@ class PolyLPSMulti:
                     vol_tracker = self._volatility_tracker.get(tid, {})
                     # Q_min efficiency
                     q_eff, q_details = self.calculate_q_min_efficiency(tid)
+                    coordinated_pair = self._coordinated_pair_token(tid)
+                    own_live_buys = self._cached_live_buy_count(tid)
+                    pair_live_buys = (
+                        self._cached_live_buy_count(coordinated_pair)
+                        if coordinated_pair
+                        else 0
+                    )
+                    if not coordinated_pair:
+                        paired_quote_status = "not_required"
+                    elif own_live_buys > 0 and pair_live_buys > 0:
+                        paired_quote_status = "both_live"
+                    elif own_live_buys == 0 and pair_live_buys == 0:
+                        paired_quote_status = "both_empty"
+                    else:
+                        paired_quote_status = "single_live"
                     markets_out[tid] = {
                         "mid": mid,
                         "best_bid": best_bid,
@@ -11144,6 +11391,10 @@ class PolyLPSMulti:
                         "q_min": q_details.get("q_min", 0),
                         "rewards_min_size": q_details.get("rewards_min_size", 0),
                         "has_dual_side": q_details.get("has_dual_side", False),
+                        "paired_quote_required": bool(coordinated_pair),
+                        "paired_quote_status": paired_quote_status,
+                        "paired_quote_live_buys": own_live_buys,
+                        "paired_quote_other_live_buys": pair_live_buys,
                         "sponsored_risk": self._sponsored_guard_by_token.get(tid),
                         "source": str(mcfg.get("source") or "manual"),
                         "eligibility": self._eligibility_state.get(tid),
