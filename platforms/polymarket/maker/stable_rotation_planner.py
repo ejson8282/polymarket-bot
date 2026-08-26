@@ -98,6 +98,14 @@ def _candidate_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             _number(row.get("min_front_bid_notional_usd")), 2
         ),
         "probe_capital_usd": round(_number(row.get("probe_capital_usd")), 2),
+        "theoretical_reward_share_pct": round(
+            _number(row.get("theoretical_reward_share_pct")), 2
+        ),
+        "executable_reward_share_pct": round(
+            _number(row.get("executable_reward_share_pct")), 2
+        ),
+        "executable_q_min": round(_number(row.get("executable_q_min")), 6),
+        "admission_level": str(row.get("admission_level") or "unknown"),
     }
 
 
@@ -162,13 +170,43 @@ def _review_current_row(
 
 
 def _candidate_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
+    executable_share = row.get("executable_reward_share_pct")
+    if executable_share is None:
+        executable_share = row.get("estimated_reward_share_pct")
     return (
         _number(row.get("risk_adjusted_daily_roi_pct"), -1.0),
         _number(row.get("estimated_daily_gross_usd"), -1.0),
-        _number(row.get("estimated_reward_share_pct"), -1.0),
+        _number(executable_share, -1.0),
         _number(row.get("stability_score"), -1.0),
         -_number(row.get("fill_risk"), 100.0),
     )
+
+
+def _account_admission(
+    row: Mapping[str, Any],
+    account_index: int,
+) -> tuple[str, list[str]] | None:
+    admissions = row.get("account_admission")
+    if not isinstance(admissions, Sequence) or isinstance(
+        admissions,
+        (str, bytes),
+    ):
+        return None
+    for admission in admissions:
+        if not isinstance(admission, Mapping):
+            continue
+        if int(_number(admission.get("account_index"), -1)) != account_index:
+            continue
+        level = str(admission.get("level") or "reject").strip().lower()
+        if level not in {"full", "canary", "reject"}:
+            level = "reject"
+        reasons = [
+            str(reason)
+            for reason in admission.get("reason_codes") or []
+            if str(reason)
+        ]
+        return level, reasons
+    return None
 
 
 def _retirement_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
@@ -233,7 +271,7 @@ def _replacement_row(
         "add": dict(add),
         "selection": {
             "primary_metric": "risk_adjusted_daily_roi_pct",
-            "competition_metric": "estimated_reward_share_pct",
+            "competition_metric": "executable_reward_share_pct",
             "risk_metric": "fill_risk",
             "depth_guard_unchanged": True,
             "min_front_bid_notional_usdc": round(
@@ -275,26 +313,40 @@ def _global_rejections(
         reasons.append("market_expired_or_end_unknown")
     elif market_end_ts < now_ts + min_market_time_to_end_sec:
         reasons.append("market_ends_too_soon")
-    if row.get("verification_recommended") is not True:
-        reasons.append("verification_not_recommended")
-    if row.get("stable_lp_recommended") is not True:
-        stable_reasons = [
-            str(reason)
-            for reason in row.get("stable_lp_rejection_reasons") or []
-            if str(reason)
-        ]
-        reasons.extend(stable_reasons)
-        if not stable_reasons:
-            reasons.append("stable_lp_not_recommended")
-    if _number(row.get("stability_score")) < min_stability_score:
-        reasons.append("stability_below_min")
-    if _number(row.get("fill_risk"), 100.0) >= max_fill_risk:
-        reasons.append("fill_risk_above_stable_limit")
-    if (
-        _number(row.get("risk_adjusted_daily_roi_pct"))
-        < min_risk_adjusted_daily_roi_pct
-    ):
-        reasons.append("risk_adjusted_roi_below_min")
+    account_admissions = row.get("account_admission")
+    has_account_admission = isinstance(account_admissions, Sequence) and not isinstance(
+        account_admissions,
+        (str, bytes),
+    )
+    if has_account_admission:
+        levels = {
+            str(admission.get("level") or "reject")
+            for admission in account_admissions
+            if isinstance(admission, Mapping)
+        }
+        if not levels.intersection({"full", "canary"}):
+            reasons.append("all_accounts_reject_candidate")
+    else:
+        if row.get("verification_recommended") is not True:
+            reasons.append("verification_not_recommended")
+        if row.get("stable_lp_recommended") is not True:
+            stable_reasons = [
+                str(reason)
+                for reason in row.get("stable_lp_rejection_reasons") or []
+                if str(reason)
+            ]
+            reasons.extend(stable_reasons)
+            if not stable_reasons:
+                reasons.append("stable_lp_not_recommended")
+        if _number(row.get("stability_score")) < min_stability_score:
+            reasons.append("stability_below_min")
+        if _number(row.get("fill_risk"), 100.0) >= max_fill_risk:
+            reasons.append("fill_risk_above_stable_limit")
+        if (
+            _number(row.get("risk_adjusted_daily_roi_pct"))
+            < min_risk_adjusted_daily_roi_pct
+        ):
+            reasons.append("risk_adjusted_roi_below_min")
     phase = str(row.get("market_phase") or "").strip().lower()
     if phase == "live":
         reasons.append("live_market_observe_only")
@@ -482,6 +534,7 @@ def build_stable_rotation_proposal(
                 ),
                 "current": normalized_current,
                 "add": [],
+                "canary": [],
                 "keep": [],
                 "review": [],
                 "disabled_hold": [],
@@ -541,6 +594,7 @@ def build_stable_rotation_proposal(
                 "accounts": len(account_rows),
                 "candidate_count": len(candidates),
                 "planned_additions": 0,
+                "planned_canaries": 0,
                 "planned_replacements": 0,
             },
         }
@@ -597,14 +651,19 @@ def build_stable_rotation_proposal(
                 )
                 continue
             reasons = list(candidate_rejections.get(_canonical_event_key(candidate), ()))
-            depth_reason = _account_depth_rejection(
-                candidate,
-                min_front_bid_notional_usdc=account[
-                    "min_front_bid_notional_usdc"
-                ],
-            )
-            if depth_reason is not None:
-                reasons.append(depth_reason)
+            admission = _account_admission(candidate, account_index)
+            admission_level = admission[0] if admission is not None else "legacy"
+            if admission_level == "reject":
+                reasons.extend(admission[1])
+            elif admission_level == "legacy":
+                depth_reason = _account_depth_rejection(
+                    candidate,
+                    min_front_bid_notional_usdc=account[
+                        "min_front_bid_notional_usdc"
+                    ],
+                )
+                if depth_reason is not None:
+                    reasons.append(depth_reason)
             if reasons:
                 action = "review_retire" if _hard_retire_reasons(reasons) else "review_rotate"
                 account["review"].append(
@@ -619,8 +678,16 @@ def build_stable_rotation_proposal(
                 account["keep"].append(
                     _proposal_row(
                         candidate,
-                        action="keep",
-                        reason_codes=("verified_low_risk_efficient",),
+                        action=(
+                            "keep_canary"
+                            if admission_level == "canary"
+                            else "keep"
+                        ),
+                        reason_codes=(
+                            tuple(admission[1])
+                            if admission_level == "canary" and admission is not None
+                            else ("verified_low_risk_efficient",)
+                        ),
                         config_section=str(current.get("section") or ""),
                     )
                 )
@@ -635,25 +702,39 @@ def build_stable_rotation_proposal(
             if known_aliases_by_account[account_index].intersection(aliases):
                 already_configured_accounts += 1
                 continue
-            if len(account["add"]) >= max_add_per_account:
+            if len(account["add"]) + len(account["canary"]) >= max_add_per_account:
                 account_reasons[account_index] = "account_add_limit_reached"
                 continue
-            depth_reason = _account_depth_rejection(
-                candidate,
-                min_front_bid_notional_usdc=account[
-                    "min_front_bid_notional_usdc"
-                ],
-            )
-            if depth_reason is not None:
-                account_reasons[account_index] = depth_reason
+            admission = _account_admission(candidate, account_index)
+            if admission is not None and admission[0] == "reject":
+                account_reasons[account_index] = (
+                    admission[1][0]
+                    if admission[1]
+                    else "account_admission_rejected"
+                )
                 continue
-            account["add"].append(
+            if admission is None:
+                depth_reason = _account_depth_rejection(
+                    candidate,
+                    min_front_bid_notional_usdc=account[
+                        "min_front_bid_notional_usdc"
+                    ],
+                )
+                if depth_reason is not None:
+                    account_reasons[account_index] = depth_reason
+                    continue
+            target = account["canary"] if admission and admission[0] == "canary" else account["add"]
+            target.append(
                 _proposal_row(
                     candidate,
-                    action="add",
+                    action=("canary" if admission and admission[0] == "canary" else "add"),
                     reason_codes=(
-                        "verified_low_risk_efficient",
-                        "independent_account_selection",
+                        tuple(admission[1])
+                        if admission and admission[0] == "canary"
+                        else (
+                            "verified_low_risk_efficient",
+                            "independent_account_selection",
+                        )
                     ),
                 )
             )
@@ -704,6 +785,7 @@ def build_stable_rotation_proposal(
                     account["min_front_bid_notional_usdc"], 2
                 ),
                 "add": account["add"],
+                "canary": account["canary"],
                 "keep": account["keep"],
                 "review": account["review"],
                 "replace": account["replace"],
@@ -737,6 +819,7 @@ def build_stable_rotation_proposal(
             "candidate_count": len(unique_candidates),
             "globally_eligible_candidates": len(globally_eligible),
             "planned_additions": sum(len(row["add"]) for row in output_accounts),
+            "planned_canaries": sum(len(row["canary"]) for row in output_accounts),
             "planned_replacements": sum(
                 len(row["replace"]) for row in output_accounts
             ),
@@ -808,6 +891,7 @@ def write_blocked_stable_rotation_proposal(
             "accounts": 0,
             "candidate_count": 0,
             "planned_additions": 0,
+            "planned_canaries": 0,
             "planned_replacements": 0,
         },
     }

@@ -60,6 +60,18 @@ try:
 except ImportError:
     from order_scoring_observer import OrderScoringObserver
 try:
+    from .quote_feasibility import (
+        compute_quote_target_shares as _shared_compute_quote_target_shares,
+        distance_score as _shared_distance_score,
+        executable_quote_boundary,
+    )
+except ImportError:
+    from quote_feasibility import (
+        compute_quote_target_shares as _shared_compute_quote_target_shares,
+        distance_score as _shared_distance_score,
+        executable_quote_boundary,
+    )
+try:
     from .stable_rotation_commands import (
         confirmation_for_replacement,
         find_confirmed_replacement,
@@ -462,21 +474,15 @@ def _compute_quote_target_shares(
     size_cap: Decimal,
     max_quote_shares: Decimal,
 ) -> tuple[Decimal, str]:
-    """Apply configured budget and risk caps to a market's target shares."""
-    pct = max(Decimal("0"), min(budget_pct, Decimal("1")))
-    cap = max(Decimal("0"), min(size_cap, Decimal("1")))
-    budget = max(Decimal("0"), available) * pct
-    if max_quote_shares > 0:
-        budget = min(budget, max_quote_shares)
-    budget *= cap
-    target = budget.to_integral_value(rounding=ROUND_DOWN)
-    required = max(rewards_min, min_order_size)
-    if target < required:
-        return Decimal("0"), (
-            f"budget_below_min|available={available}|budget={budget}|"
-            f"required={required}|pct={pct}|size_cap={cap}"
-        )
-    return target, ""
+    """Backward-compatible wrapper around the shared pure calculation."""
+    return _shared_compute_quote_target_shares(
+        available=available,
+        rewards_min=rewards_min,
+        min_order_size=min_order_size,
+        budget_pct=budget_pct,
+        size_cap=size_cap,
+        max_quote_shares=max_quote_shares,
+    )
 
 
 def _ws_proxy_diag(ws_proxy: Optional[str] = None) -> str:
@@ -6315,15 +6321,19 @@ class PolyLPSMulti:
         if spread > Decimal("1"):
             spread = spread / Decimal("100")
 
-        # Valid range: [reward_lower, best_bid - N ticks]
-        # best_bid itself is NEVER included — it's a fill-risk boundary
-        reward_lower = max(tick, book.mid - spread)
-        distance_ticks = max(1, cfg.get("min_distance_ticks", 1))
-        safe_top = book.best_bid - tick * Decimal(distance_ticks)  # ceiling: best_bid - N ticks
+        boundary = executable_quote_boundary(
+            best_bid=book.best_bid,
+            midpoint=book.mid,
+            tick=tick,
+            max_spread=spread,
+            min_distance_ticks=cfg.get("min_distance_ticks", 1),
+        )
+        reward_lower = boundary.reward_lower
+        safe_top = boundary.safe_top
 
-        if safe_top < reward_lower or safe_top < tick:
+        if not boundary.executable:
             # No valid position exists in reward zone; skip this market
-            log(f"[price-legs-skip] slug={_slug} token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick}")
+            log(f"[price-legs-skip] slug={_slug} token={token_id[:16]}... bid={book.best_bid} ask={book.best_ask} mid={book.mid} spread={spread} reward_lower={reward_lower} safe_top={safe_top} tick={tick} reason={boundary.blocked_reason}")
             return []
 
         reward_zone_width = safe_top - reward_lower
@@ -7911,13 +7921,7 @@ class PolyLPSMulti:
         v = max_incentive_spread, s = distance from midpoint.
         Returns 0-1, higher = closer to midpoint = more reward per share.
         """
-        if max_spread <= 0:
-            return Decimal("0")
-        s = abs(midpoint - price)
-        if s >= max_spread:
-            return Decimal("0")
-        ratio = (max_spread - s) / max_spread
-        return ratio * ratio
+        return _shared_distance_score(price, midpoint, max_spread)
 
     def _score_price_levels(
         self,
@@ -11900,12 +11904,17 @@ class PolyLPSMulti:
                         if s > Decimal("1"):
                             s = s / Decimal("100")
                         tick = mcfg["tick"]
-                        rl = max(tick, tob.mid - s)
-                        ru = tob.best_bid - tick
-                        if ru <= rl and tob.best_bid >= rl and tob.best_bid >= tick:
-                            ru = tob.best_bid
-                        reward_lower = float(rl)
-                        reward_upper = float(ru)
+                        boundary = executable_quote_boundary(
+                            best_bid=tob.best_bid,
+                            midpoint=tob.mid,
+                            tick=tick,
+                            max_spread=s,
+                            min_distance_ticks=mcfg.get("min_distance_ticks", 1),
+                        )
+                        reward_lower = float(boundary.reward_lower)
+                        reward_upper = (
+                            float(boundary.quote) if boundary.executable else None
+                        )
 
                     live_orders = self._market_live_orders.get(tid, [])
                     active_exit_order_ids = {

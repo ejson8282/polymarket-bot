@@ -6,6 +6,7 @@ import pytest
 
 from platforms.polymarket.maker import reward_observer
 from platforms.polymarket.maker.reward_observer import (
+    ObserverAccountPolicy,
     observe_reward_markets,
     refresh_observer_state,
 )
@@ -59,6 +60,63 @@ def _deep_book(size: str = "2500", *, tick_size: str = "0.01") -> dict:
     }
 
 
+def _account_policy(
+    *,
+    available: Decimal | None = Decimal("100"),
+    min_depth: Decimal = Decimal("2000"),
+    configured: bool = False,
+    scoring: bool | None = None,
+) -> ObserverAccountPolicy:
+    tokens = frozenset({"yes-token", "no-token"}) if configured else frozenset()
+    scoring_by_token = (
+        {"yes-token": scoring, "no-token": scoring}
+        if scoring is not None
+        else {}
+    )
+    return ObserverAccountPolicy(
+        account_index=1,
+        account_id="account_01",
+        available_usdc=available,
+        available_source=("engine_balance" if available is not None else "unavailable"),
+        min_distance_ticks=1,
+        min_order_size=Decimal("5"),
+        budget_pct=Decimal("1"),
+        max_quote_shares=Decimal("0"),
+        max_notional_per_order=Decimal("0"),
+        min_front_bid_notional_usdc=min_depth,
+        configured_tokens=tokens,
+        market_runtime={},
+        scoring_by_token=scoring_by_token,
+        reward_percentages={},
+    )
+
+
+def _observe_with_history(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    policy: ObserverAccountPolicy,
+    book: dict,
+) -> dict:
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
+    state = {}
+    for _ in range(12):
+        state = observe_reward_markets(
+            [_market()],
+            lambda _token: book,
+            account_policies=[policy],
+        )
+        reward_observer._apply_observation_history(
+            tmp_path,
+            state,
+            now[0],
+            {"stable_min_front_bid_notional_usdc": Decimal("2000")},
+        )
+        now[0] += 300
+    return state["candidates"][0]
+
+
 def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     result = observe_reward_markets(
         [_market(reward="25")],
@@ -71,6 +129,7 @@ def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     candidate = result["candidates"][0]
     assert candidate["daily_reward_usd"] == 25.0
     assert candidate["status"] == "observe_only"
+    assert candidate["execution_status"] == "executable_observation"
     assert candidate["actual_reward_share_pct"] is None
     assert candidate["market_type"] == "always_on"
     assert candidate["market_active"] is True
@@ -201,16 +260,20 @@ def test_low_competition_market_estimates_better_share_and_return() -> None:
     assert "estimated_majority_share" in low["reasons"]
 
 
-def test_minimum_share_size_can_raise_probe_capital_above_budget() -> None:
+def test_minimum_share_size_above_budget_is_not_reported_as_executable() -> None:
     candidate = observe_reward_markets(
         [_market(min_size="200")],
         lambda _token: _book(),
         probe_budget_usdc=Decimal("100"),
     )["candidates"][0]
 
-    assert candidate["probe_capital_usd"] > 100
-    assert candidate["probe_shares_each_side"] == 200
-    assert "minimum_size_raises_capital" in candidate["reasons"]
+    assert candidate["probe_capital_usd"] == 0
+    assert candidate["probe_shares_each_side"] == 0
+    assert candidate["executable_q_min"] == 0
+    assert candidate["executable_reward_share_pct"] == 0
+    assert candidate["status"] == "observe_only"
+    assert candidate["execution_status"] == "blocked_observation"
+    assert "minimum_size_exceeds_executable_budget" in candidate["reasons"]
 
 
 def test_observer_records_engine_aligned_front_depth_for_both_legs() -> None:
@@ -252,6 +315,66 @@ def test_observer_rejects_mismatched_leg_ticks_for_depth_preflight() -> None:
 
     assert candidate["front_depth_status"] == "tick_size_mismatch"
     assert candidate["min_front_bid_notional_usd"] is None
+
+
+def test_account_with_fresh_capital_and_deep_book_gets_full_admission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(available=Decimal("200")),
+        book=_deep_book(),
+    )
+
+    assert candidate["admission_level"] == "full"
+    assert candidate["stable_lp_recommended"] is True
+    assert candidate["account_admission"] == [
+        {
+            "account_index": 1,
+            "level": "full",
+            "reason_codes": ["account_executable_and_verified"],
+            "canary_requires_scoring_validation": False,
+        }
+    ]
+
+
+def test_shallow_but_executable_book_gets_canary_not_full(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(),
+        book=_deep_book("100"),
+    )
+
+    assert candidate["admission_level"] == "canary"
+    assert candidate["stable_lp_recommended"] is False
+    assert candidate["canary_proposal_eligible"] is True
+    assert "front_depth_below_full_minimum" in candidate["account_admission"][0][
+        "reason_codes"
+    ]
+
+
+def test_configured_market_with_failed_official_scoring_is_rejected(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(configured=True, scoring=False),
+        book=_deep_book(),
+    )
+
+    assert candidate["admission_level"] == "reject"
+    assert candidate["stable_lp_recommended"] is False
+    assert "official_order_scoring_false" in candidate["account_admission"][0][
+        "reason_codes"
+    ]
 
 
 def test_sports_market_is_classified_without_excluding_generic_markets() -> None:
@@ -411,11 +534,12 @@ def test_weather_market_remains_observe_only_for_stable_lp(
         now[0] += 300
 
     candidate = state["candidates"][0]
-    assert candidate["verification_recommended"] is True
+    assert candidate["verification_recommended"] is False
     assert candidate["weather_market"] is True
     assert candidate["market_type"] == "weather"
     assert candidate["stable_lp_recommended"] is False
     assert "weather_observe_only" in candidate["stable_lp_rejection_reasons"]
+    assert candidate["admission_level"] == "reject"
 
 
 @pytest.mark.parametrize(
