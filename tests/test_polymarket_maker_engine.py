@@ -2880,6 +2880,35 @@ def test_aggressive_pair_token_is_scoped_to_isolated_runtime():
     assert engine._aggressive_pair_token("101") == "102"
 
 
+def test_stable_pair_coordination_is_enabled_by_default():
+    engine = _paired_state_engine()
+    engine._runtime_scope = "normal"
+    engine._dual_side_enabled = True
+    engine._dual_side_require_both_sides = True
+
+    assert engine._coordinated_pair_token("101") == "102"
+    assert engine._coordinated_pair_token("102") == "101"
+    assert engine._aggressive_pair_token("101") == ""
+
+    engine._dual_side_require_both_sides = False
+    assert engine._coordinated_pair_token("101") == ""
+
+
+def test_stable_pair_coordination_covers_night_market_pool():
+    engine = _paired_state_engine()
+    engine._runtime_scope = "normal"
+    engine._dual_side_enabled = True
+    engine._dual_side_require_both_sides = True
+    engine.market_cfg = {}
+    engine._night_market_cfg = {
+        "101": {"paired_token_id": "102"},
+        "102": {"paired_token_id": "101", "_dual_side_auto": True},
+    }
+
+    assert engine._coordinated_pair_token("101") == "102"
+    assert engine._coordinated_pair_token("102") == "101"
+
+
 def test_aggressive_pair_preflight_checks_mid_price_sibling_gate():
     engine = _paired_state_engine()
     engine._dual_side_max_mid = Decimal("0.10")
@@ -2991,7 +3020,7 @@ def test_aggressive_pair_cancel_preempts_and_clears_both_quote_legs():
         )
     ) is True
     assert [token_id for token_id, _reason in canceled] == ["102", "101"]
-    assert all("aggressive_pair:" in reason for _token_id, reason in canceled)
+    assert all("paired_quote:" in reason for _token_id, reason in canceled)
     assert engine._event_state_name("101") == EVENT_DEFENSIVE
     assert engine._event_state_name("102") == EVENT_DEFENSIVE
     assert engine._halt_requested == {"101": None, "102": None}
@@ -3024,9 +3053,108 @@ def test_aggressive_pair_cancel_stays_preempted_when_either_cancel_is_unconfirme
     assert engine._halt_requested["102"]
 
 
-def _aggressive_pair_submit_engine() -> PolyLPSMulti:
+def test_stable_pair_cancel_clears_both_buys_and_uses_move_back_block():
     engine = _paired_state_engine()
-    engine._runtime_scope = "aggressive"
+    engine._runtime_scope = "normal"
+    engine._dual_side_enabled = True
+    engine._dual_side_require_both_sides = True
+    engine._top_leg_defense_tasks = {}
+    engine._defense_block_until = {}
+    engine._defense_requote_block_sec = 15
+    engine._move_back_requote_block_sec = 240
+    engine._event_bus = _RecordingEventBus()
+    engine._set_event_state("102", EVENT_WATCH, "existing_watch")
+    canceled = []
+
+    async def cancel_risk_buys(token_id, reason):
+        canceled.append((token_id, reason))
+        return True
+
+    engine._cancel_risk_buys = cancel_risk_buys
+
+    assert asyncio.run(
+        engine._cancel_coordinated_pair_quotes(
+            "101",
+            "top_leg_defense:move_back_top_leg",
+        )
+    ) is True
+    assert [token_id for token_id, _reason in canceled] == ["102", "101"]
+    assert all("paired_quote:" in reason for _token_id, reason in canceled)
+    assert engine._defense_block_until["101"] - time.time() > 230
+    assert engine._defense_block_until["102"] - time.time() > 230
+    assert engine._event_state_name("102") == EVENT_WATCH
+
+
+def test_stable_pair_invariant_cancels_a_dangling_buy_leg(monkeypatch):
+    engine = _aggressive_pair_submit_engine(runtime_scope="normal")
+    engine._running = True
+    engine._paired_single_leg_grace_sec = 0.0
+    engine._paired_reconcile_interval_sec = 0.0
+    engine._paired_single_leg_since = {"101|102": time.time() - 10}
+    engine._market_live_orders = {
+        "101": [{"id": "buy-yes", "side": "BUY", "status": "LIVE"}],
+        "102": [
+            {"id": "exit-no", "side": "SELL", "status": "LIVE"},
+        ],
+        "103": [],
+    }
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
+    engine._invalidate_all_orders_cache = lambda: None
+
+    async def refresh(token_id):
+        return engine._market_live_orders[token_id]
+
+    engine._refresh_live_orders = refresh
+
+    async def stop_after_iteration(_delay):
+        engine._running = False
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_iteration)
+
+    asyncio.run(engine.paired_quote_invariant_loop())
+
+    engine._cancel_coordinated_pair_quotes.assert_awaited_once_with(
+        "101",
+        "single_leg_invariant_timeout",
+    )
+    assert engine._paired_single_leg_since == {}
+
+
+def test_stable_pair_invariant_accepts_freshly_confirmed_pair(monkeypatch):
+    engine = _aggressive_pair_submit_engine(runtime_scope="normal")
+    engine._running = True
+    engine._paired_single_leg_grace_sec = 0.0
+    engine._paired_reconcile_interval_sec = 0.0
+    engine._paired_single_leg_since = {"101|102": time.time() - 10}
+    engine._market_live_orders = {
+        "101": [{"id": "cached-yes", "side": "BUY", "status": "LIVE"}],
+        "102": [],
+        "103": [],
+    }
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
+    engine._invalidate_all_orders_cache = lambda: None
+
+    async def refresh(token_id):
+        return [{"id": f"fresh-{token_id}", "side": "BUY", "status": "LIVE"}]
+
+    engine._refresh_live_orders = refresh
+
+    async def stop_after_iteration(_delay):
+        engine._running = False
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_iteration)
+
+    asyncio.run(engine.paired_quote_invariant_loop())
+
+    engine._cancel_coordinated_pair_quotes.assert_not_awaited()
+    assert engine._paired_single_leg_since == {}
+
+
+def _aggressive_pair_submit_engine(*, runtime_scope: str = "aggressive") -> PolyLPSMulti:
+    engine = _paired_state_engine()
+    engine._runtime_scope = runtime_scope
+    engine._dual_side_enabled = True
+    engine._dual_side_require_both_sides = True
     engine.market_cfg["103"] = {}
     engine._token_slug_cache = {
         "101": "example-yes",
@@ -3091,14 +3219,14 @@ def test_aggressive_pair_follower_bypasses_only_global_order_throttle(monkeypatc
 def test_aggressive_pair_submit_timeout_cancels_single_live_leg():
     engine = _aggressive_pair_submit_engine()
     engine._aggressive_pair_submit_timeout_sec = 0.0
-    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
     notices = []
     engine.notify_discord = lambda *args: notices.append(args)
     engine._invalidate_all_orders_cache = lambda: None
 
     async def refresh(token_id):
         if token_id == "101":
-            return [{"id": "only-live-leg"}]
+            return [{"id": "only-live-leg", "side": "BUY", "status": "LIVE"}]
         return []
 
     engine._refresh_live_orders = refresh
@@ -3117,7 +3245,7 @@ def test_aggressive_pair_submit_timeout_cancels_single_live_leg():
 
     asyncio.run(scenario())
 
-    engine._cancel_aggressive_pair_quotes.assert_awaited_once()
+    engine._cancel_coordinated_pair_quotes.assert_awaited_once()
     assert engine._aggressive_pair_submit_attempts == {}
     assert engine._market_budget_skip_until["101"] > time.time()
     assert engine._market_budget_skip_until["102"] > time.time()
@@ -3127,12 +3255,12 @@ def test_aggressive_pair_submit_timeout_cancels_single_live_leg():
 def test_aggressive_pair_submit_watchdog_keeps_confirmed_pair():
     engine = _aggressive_pair_submit_engine()
     engine._aggressive_pair_submit_timeout_sec = 0.0
-    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
     engine.notify_discord = lambda *_args: None
     engine._invalidate_all_orders_cache = lambda: None
 
     async def refresh(token_id):
-        return [{"id": f"live-{token_id}"}]
+        return [{"id": f"live-{token_id}", "side": "BUY", "status": "LIVE"}]
 
     engine._refresh_live_orders = refresh
 
@@ -3150,7 +3278,7 @@ def test_aggressive_pair_submit_watchdog_keeps_confirmed_pair():
 
     asyncio.run(scenario())
 
-    engine._cancel_aggressive_pair_quotes.assert_not_awaited()
+    engine._cancel_coordinated_pair_quotes.assert_not_awaited()
     assert engine._aggressive_pair_submit_attempts == {}
     assert engine._market_budget_skip_until == {}
 
@@ -3158,7 +3286,7 @@ def test_aggressive_pair_submit_watchdog_keeps_confirmed_pair():
 def test_aggressive_pair_both_posts_clear_watchdog_without_cancel():
     engine = _aggressive_pair_submit_engine()
     engine._aggressive_pair_submit_timeout_sec = 60.0
-    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
 
     async def scenario():
         leader_claim = await engine._claim_aggressive_pair_submit("101")
@@ -3172,9 +3300,52 @@ def test_aggressive_pair_both_posts_clear_watchdog_without_cancel():
     watchdog = asyncio.run(scenario())
 
     assert watchdog.cancelled()
-    engine._cancel_aggressive_pair_quotes.assert_not_awaited()
+    engine._cancel_coordinated_pair_quotes.assert_not_awaited()
     assert engine._aggressive_pair_submit_attempts == {}
     assert engine._aggressive_pair_submit_watchdogs == {}
+
+
+def test_stable_pair_submit_watchdog_does_not_count_exit_sell_as_quote():
+    engine = _aggressive_pair_submit_engine(runtime_scope="normal")
+    engine._aggressive_pair_submit_timeout_sec = 0.0
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
+    engine.notify_discord = lambda *_args: None
+    engine._invalidate_all_orders_cache = lambda: None
+
+    async def refresh(token_id):
+        side = "BUY" if token_id == "101" else "SELL"
+        return [{"id": f"live-{token_id}", "side": side, "status": "LIVE"}]
+
+    engine._refresh_live_orders = refresh
+
+    async def scenario():
+        claim = await engine._claim_aggressive_pair_submit("101")
+        attempt = await engine._aggressive_pair_attempt(claim)
+        attempt["posted"].add("101")
+        attempt["first_post_at"] = time.time()
+        attempt["leader_posted"].set()
+        await engine._aggressive_pair_submit_watchdog(
+            claim[0],
+            claim[1],
+            "101",
+        )
+
+    asyncio.run(scenario())
+
+    engine._cancel_coordinated_pair_quotes.assert_awaited_once()
+
+
+def test_stable_back_leg_does_not_open_a_new_pair_submit_attempt(monkeypatch):
+    engine = _aggressive_pair_submit_engine(runtime_scope="normal")
+    engine._global_order_min_sec = 0.0
+    engine._global_order_max_sec = 0.0
+    engine._per_token_order_min_sec = 0.0
+    monkeypatch.setattr(engine_module.random, "uniform", lambda _lo, _hi: 0.0)
+
+    claim = asyncio.run(engine._acquire_order_throttle("101", "back_leg_sync"))
+
+    assert claim is None
+    assert engine._aggressive_pair_submit_attempts == {}
 
 
 def test_aggressive_pair_post_throttle_validation_failure_cleans_attempt():
@@ -3213,7 +3384,7 @@ def test_infeasible_reward_minimum_cancels_both_aggressive_quote_legs():
     engine._gate_decisions = {}
     engine._market_budget_skip_until = {}
     engine.budget_skip_cooldown_sec = 120
-    engine._cancel_aggressive_pair_quotes = AsyncMock(return_value=True)
+    engine._cancel_coordinated_pair_quotes = AsyncMock(return_value=True)
     gate = {
         "can_quote": True,
         "size_cap": 0.5,
@@ -3235,7 +3406,7 @@ def test_infeasible_reward_minimum_cancels_both_aggressive_quote_legs():
     assert decision["reason"][-1].startswith("minimum_quote_infeasible:")
     assert engine._market_budget_skip_until["101"] > time.time()
     assert engine._market_budget_skip_until["102"] > time.time()
-    engine._cancel_aggressive_pair_quotes.assert_awaited_once_with(
+    engine._cancel_coordinated_pair_quotes.assert_awaited_once_with(
         "101",
         "minimum_quote_infeasible:budget_below_min|required=200|size_cap=0.5",
     )
@@ -3319,6 +3490,13 @@ def _parent_event_guard_engine():
     engine.event_ban_ttl_sec = 86400
     engine._event_banned_until = {}
     engine._paired_token_cache = {}
+    engine._runtime_scope = "normal"
+    engine._dual_side_enabled = True
+    engine._dual_side_require_both_sides = True
+    engine._halt_requested = {}
+    engine._aggressive_pair_cancel_inflight = set()
+    engine._top_leg_defense_tasks = {}
+    engine._defense_block_until = {}
     engine._event_states = {
         token_id: {
             "state": EVENT_ACTIVE,
