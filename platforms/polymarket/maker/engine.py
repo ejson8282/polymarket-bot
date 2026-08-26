@@ -3305,6 +3305,66 @@ class PolyLPSMulti:
             latest_exit, manual_sell_ts
         )
 
+    def _position_managed_capacity(self, token_id: str) -> Decimal:
+        """Return the largest exact-token inventory size supported by bot records."""
+
+        token_id = str(token_id)
+        cutoff = time.time() - self._position_reconcile_managed_max_age_sec
+        latest_exit = 0.0
+        for exit_row in self._exit_records:
+            if not isinstance(exit_row, Mapping):
+                continue
+            if str(exit_row.get("token_id") or "") != token_id:
+                continue
+            try:
+                latest_exit = max(latest_exit, float(exit_row.get("ts") or 0))
+            except Exception:
+                continue
+        manual_sell_ts = float(
+            getattr(self, "_position_reconcile_manual_sell_ts", {}).get(
+                token_id, 0.0
+            )
+            or 0.0
+        )
+        evidence_after = max(cutoff, latest_exit, manual_sell_ts)
+        capacities: list[Decimal] = []
+
+        for unwind in self._pending_unwinds:
+            if not isinstance(unwind, Mapping):
+                continue
+            if str(unwind.get("token_id") or "") != token_id:
+                continue
+            try:
+                placed_at = float(unwind.get("placed_at") or 0.0)
+            except Exception:
+                placed_at = 0.0
+            if placed_at < evidence_after:
+                continue
+            for key in ("exit_size", "fill_size", "reported_fill_size"):
+                try:
+                    size = Decimal(str(unwind.get(key) or 0))
+                except Exception:
+                    continue
+                if size.is_finite() and size > 0:
+                    capacities.append(size)
+
+        for fill in self._fills_record:
+            if not isinstance(fill, Mapping):
+                continue
+            if str(fill.get("token_id") or "") != token_id:
+                continue
+            if str(fill.get("final_state") or "") != EVENT_HALTED_ON_FILL:
+                continue
+            try:
+                fill_ts = float(fill.get("ts") or 0.0)
+                size = Decimal(str(fill.get("size") or 0))
+            except Exception:
+                continue
+            if fill_ts >= evidence_after and size.is_finite() and size > 0:
+                capacities.append(size)
+
+        return max(capacities, default=Decimal("0"))
+
     def _position_reconcile_notice(
         self,
         token_id: str,
@@ -3357,12 +3417,17 @@ class PolyLPSMulti:
             basis = Decimal(str(position.get("cost_basis") or 0))
             tick = Decimal(str(self._get_mcfg(token_id).get("tick") or "0.01"))
             no_loss_price = self._ceil_to_tick(basis, tick) if basis > 0 else Decimal("0")
-            managed = self._position_has_managed_evidence(token_id)
+            managed_evidence = self._position_has_managed_evidence(token_id)
+            managed_capacity = self._position_managed_capacity(token_id)
+            size_explained = bool(
+                managed_capacity > 0
+                and size
+                <= managed_capacity + Decimal(str(self._exit_dust_threshold))
+            )
+            managed = managed_evidence and size_explained
             if managed:
                 managed_count += 1
-                self._position_reconcile_managed_tokens.update(
-                    self._event_token_ids(token_id)
-                )
+                self._position_reconcile_managed_tokens.add(token_id)
 
             live_sells = [
                 order
@@ -3383,6 +3448,10 @@ class PolyLPSMulti:
                 "cost_basis": float(basis) if basis > 0 else None,
                 "no_loss_price": float(no_loss_price) if no_loss_price > 0 else None,
                 "managed": managed,
+                "managed_evidence": managed_evidence,
+                "managed_capacity": (
+                    float(managed_capacity) if managed_capacity > 0 else None
+                ),
                 "live_sell_orders": len(live_sells),
                 "live_sell_coverage": float(coverage),
                 "status": "checking",
@@ -3399,12 +3468,21 @@ class PolyLPSMulti:
                     EVENT_PENDING_MANUAL_EXIT,
                     "unmanaged_position_detected",
                 )
-                result["status"] = "manual_review_unmanaged"
+                result["status"] = (
+                    "manual_review_unexplained_size"
+                    if managed_evidence and not size_explained
+                    else "manual_review_unmanaged"
+                )
                 self._position_reconcile_notice(
                     token_id,
                     result["status"],
                     position=f"{float(size):,.4f} 份",
-                    action="已停止该事件继续买入；来源不明，不自动卖出",
+                    managed_capacity=(
+                        f"{float(managed_capacity):,.4f} 份"
+                        if managed_capacity > 0
+                        else "无可核验记录"
+                    ),
+                    action="已停止该事件继续买入；数量或来源不能完全核验，不自动卖出",
                 )
                 results.append(result)
                 continue

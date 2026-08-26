@@ -640,7 +640,9 @@ def test_position_reconcile_never_auto_sells_unmanaged_position() -> None:
 
 def test_position_reconcile_requests_strict_no_loss_exit_for_managed_inventory() -> None:
     engine = _position_reconcile_engine()
-    engine._pending_unwinds.append({"token_id": "101"})
+    engine._pending_unwinds.append(
+        {"token_id": "101", "exit_size": 10, "placed_at": time.time()}
+    )
 
     async def place_exit(*_args, **_kwargs):
         engine._active_exit_orders["101"] = "exit-new"
@@ -669,6 +671,36 @@ def test_position_reconcile_requests_strict_no_loss_exit_for_managed_inventory()
         allow_position_fallback=False,
     )
     assert engine._position_reconcile_state["positions"][0]["no_loss_price"] == pytest.approx(0.38)
+
+
+def test_position_reconcile_never_auto_sells_unexplained_extra_inventory() -> None:
+    engine = _position_reconcile_engine()
+    engine._fills_record.append(
+        {
+            "token_id": "101",
+            "size": 10,
+            "ts": time.time(),
+            "final_state": EVENT_HALTED_ON_FILL,
+        }
+    )
+
+    asyncio.run(
+        engine._position_reconcile_once(
+            positions=[
+                {
+                    "token_id": "101",
+                    "size": Decimal("20"),
+                    "cost_basis": Decimal("0.3744"),
+                }
+            ],
+            open_orders=[],
+        )
+    )
+
+    engine._attempt_exit_sell.assert_not_awaited()
+    result = engine._position_reconcile_state["positions"][0]
+    assert result["status"] == "manual_review_unexplained_size"
+    assert result["managed_capacity"] == pytest.approx(10)
 
 
 def test_position_reconcile_does_not_treat_paired_token_as_managed() -> None:
@@ -710,7 +742,9 @@ def test_position_reconcile_manual_sell_invalidates_earlier_fill_evidence() -> N
 
 def test_position_reconcile_reports_when_exit_was_not_placed() -> None:
     engine = _position_reconcile_engine()
-    engine._pending_unwinds.append({"token_id": "101"})
+    engine._pending_unwinds.append(
+        {"token_id": "101", "exit_size": 10, "placed_at": time.time()}
+    )
 
     asyncio.run(
         engine._position_reconcile_once(
