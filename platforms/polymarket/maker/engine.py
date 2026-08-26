@@ -9660,30 +9660,76 @@ class PolyLPSMulti:
                 primed += 1
         return primed
 
+    def _book_loop_token_groups(self, token_ids: list[str]) -> list[tuple[str, ...]]:
+        """Keep coordinated outcomes in the same scheduler slot."""
+        configured = set(token_ids)
+        grouped: set[str] = set()
+        groups: list[tuple[str, ...]] = []
+        for token_id in token_ids:
+            if token_id in grouped:
+                continue
+            paired = self._coordinated_pair_token(token_id)
+            if paired in configured and paired not in grouped:
+                groups.append((token_id, paired))
+                grouped.update((token_id, paired))
+            else:
+                groups.append((token_id,))
+                grouped.add(token_id)
+        return groups
+
+    def _refresh_group_cycle_books(
+        self,
+        token_ids: tuple[str, ...],
+        fallback: Optional[Mapping[str, Any]],
+    ) -> Optional[Mapping[str, Any]]:
+        """Read and prime the newest cached books when a scheduler slot starts."""
+        if self._shared_book_cache is None:
+            return fallback
+        snapshot_fn = getattr(self._shared_book_cache, "snapshot", None)
+        if not callable(snapshot_fn):
+            return fallback
+        latest = snapshot_fn(list(token_ids))
+        if not latest:
+            return fallback
+        self._prime_cycle_snapshots(latest)
+        return latest
+
     async def book_loop(self) -> None:
-        sem = asyncio.Semaphore(self._book_loop_concurrency)
+        # A coordinated group can run two outcome tasks at once. Cap group
+        # concurrency so the change does not double the configured token load.
+        group_concurrency = max(1, self._book_loop_concurrency // 2)
+        sem = asyncio.Semaphore(group_concurrency)
 
         async def _process(token_id: str, cycle_books: Optional[Mapping[str, Any]]) -> None:
-            async with sem:
-                try:
-                    await self.update_and_quote_market(token_id, cycle_books=cycle_books)
-                    self._book_req_exc_streak[token_id] = 0
-                except Exception as e:
-                    em = _format_exc(e)
-                    log(f"[book-loop] token={token_id} error: {em}")
-                    if self._is_req_exc(e):
-                        self._log_req_diag("book-loop", e, token_id)
-                        self._book_req_exc_streak[token_id] = self._book_req_exc_streak.get(token_id, 0) + 1
+            try:
+                await self.update_and_quote_market(token_id, cycle_books=cycle_books)
+                self._book_req_exc_streak[token_id] = 0
+            except Exception as e:
+                em = _format_exc(e)
+                log(f"[book-loop] token={token_id} error: {em}")
+                if self._is_req_exc(e):
+                    self._log_req_diag("book-loop", e, token_id)
+                    self._book_req_exc_streak[token_id] = self._book_req_exc_streak.get(token_id, 0) + 1
 
-                        # event-level hard protect
-                        if self._book_req_exc_streak[token_id] >= self.net_degraded_fail_threshold:
-                            await self._deactivate_market(token_id, "net_degraded_request_exception")
-                            self._book_req_exc_streak[token_id] = 0
-
-                        # global storm hard protect (distinct events in last window)
-                        await self._mark_req_exc_and_maybe_storm(token_id, "global_request_exception_storm")
-                    else:
+                    # event-level hard protect
+                    if self._book_req_exc_streak[token_id] >= self.net_degraded_fail_threshold:
+                        await self._deactivate_market(token_id, "net_degraded_request_exception")
                         self._book_req_exc_streak[token_id] = 0
+
+                    # global storm hard protect (distinct events in last window)
+                    await self._mark_req_exc_and_maybe_storm(token_id, "global_request_exception_storm")
+                else:
+                    self._book_req_exc_streak[token_id] = 0
+
+        async def _process_group(
+            token_group: tuple[str, ...],
+            cycle_books: Optional[Mapping[str, Any]],
+        ) -> None:
+            async with sem:
+                group_books = self._refresh_group_cycle_books(token_group, cycle_books)
+                await asyncio.gather(
+                    *[_process(token_id, group_books) for token_id in token_group]
+                )
 
         while self._running:
             # P2: check for session switch and handle cleanup/gap
@@ -9732,7 +9778,11 @@ class PolyLPSMulti:
                 if callable(snapshot_fn):
                     cycle_books = snapshot_fn(token_ids)
                     self._prime_cycle_snapshots(cycle_books)
-            await asyncio.gather(*[_process(tid, cycle_books) for tid in token_ids])
+            token_groups = self._book_loop_token_groups(token_ids)
+            random.shuffle(token_groups)
+            await asyncio.gather(
+                *[_process_group(token_group, cycle_books) for token_group in token_groups]
+            )
             if self._shared_book_cache is not None:
                 # multi-account mode: random cycle interval to stagger accounts
                 cycle_sleep = random.uniform(self._multi_cycle_sleep_min, self._multi_cycle_sleep_max)

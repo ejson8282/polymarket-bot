@@ -4246,6 +4246,55 @@ def test_cycle_snapshot_prime_rejects_stale_or_invalid_books(monkeypatch):
     assert engine._market_snapshots == {}
 
 
+def test_book_loop_groups_coordinated_outcomes_in_one_scheduler_slot():
+    engine = object.__new__(PolyLPSMulti)
+    pairs = {"101": "102", "102": "101", "201": "202", "202": "201"}
+    engine._coordinated_pair_token = lambda token_id: pairs.get(token_id, "")
+
+    groups = engine._book_loop_token_groups(["101", "201", "102", "301", "202"])
+
+    assert groups == [("101", "102"), ("201", "202"), ("301",)]
+
+
+def test_group_refresh_uses_latest_pair_snapshot_after_scheduler_wait(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_snapshots = {}
+    engine._market_depth_snapshots = {}
+    engine._market_snapshot_stale_sec = 5
+    engine.market_states = {}
+    engine._token_slug_cache = {}
+    monkeypatch.setattr(engine_module.time, "time", lambda: 110.0)
+
+    def book(token_id, bid, ask):
+        return types.SimpleNamespace(
+            asset_id=token_id,
+            bids=[types.SimpleNamespace(price=bid, size="100")],
+            asks=[types.SimpleNamespace(price=ask, size="100")],
+        )
+
+    stale_cycle = {
+        "101": types.SimpleNamespace(book=book("101", "0.40", "0.41"), fetched_at=100.0),
+        "102": types.SimpleNamespace(book=book("102", "0.59", "0.60"), fetched_at=100.0),
+    }
+    latest_cycle = {
+        "101": types.SimpleNamespace(book=book("101", "0.42", "0.43"), fetched_at=109.5),
+        "102": types.SimpleNamespace(book=book("102", "0.57", "0.58"), fetched_at=109.5),
+    }
+    calls = []
+    engine._shared_book_cache = types.SimpleNamespace(
+        snapshot=lambda token_ids: calls.append(tuple(token_ids)) or latest_cycle
+    )
+
+    refreshed = engine._refresh_group_cycle_books(("101", "102"), stale_cycle)
+
+    assert refreshed is latest_cycle
+    assert calls == [("101", "102")]
+    assert engine._market_snapshots["101"].best_bid == Decimal("0.42")
+    assert engine._market_snapshots["102"].best_bid == Decimal("0.57")
+    assert engine._snapshot_is_stale("101") is False
+    assert engine._snapshot_is_stale("102") is False
+
+
 def test_signer_outage_triggers_fail_safe_after_threshold_and_throttles(monkeypatch):
     engine = object.__new__(PolyLPSMulti)
     engine._signer_failure_since = 0.0
