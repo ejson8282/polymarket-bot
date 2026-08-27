@@ -770,8 +770,8 @@ def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
     engine._maybe_inject_dual_side_tokens = inject_pair
     dropped = []
 
-    def drop_runtime(token_id):
-        dropped.append(token_id)
+    def drop_runtime(token_id, *, preserve_tokens=()):
+        dropped.append((token_id, set(preserve_tokens)))
         engine.market_cfg.pop("101", None)
         engine.market_cfg.pop("102", None)
         return True
@@ -793,7 +793,7 @@ def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
         )
 
     assert engine.market_cfg == {}
-    assert dropped == ["101"]
+    assert dropped == [("101", set())]
     assert engine._curator_events_log == []
     assert notifications == []
     assert len(resubscribe_calls) == 2
@@ -801,6 +801,26 @@ def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
         "markets": [],
         "night_markets": [],
     }
+
+
+def test_runtime_add_rejects_preexisting_paired_token_without_mutation():
+    engine = object.__new__(PolyLPSMulti)
+    existing = {
+        "paired_token_id": "999",
+        "source": "manual",
+    }
+    engine.market_cfg = {"102": existing.copy()}
+    engine._night_market_cfg = {}
+
+    with pytest.raises(ValueError, match="paired token is already registered"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+        )
+
+    assert engine.market_cfg == {"102": existing}
+    assert engine._night_market_cfg == {}
 
 
 def _stable_lifecycle_retire_engine(tmp_path: Path) -> PolyLPSMulti:
@@ -1008,6 +1028,7 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1097,6 +1118,7 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1123,6 +1145,9 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     promoted = []
     engine._promote_stable_lifecycle_market = (
         lambda token_id, risk: promoted.append((token_id, risk)) or "promoted"
+    )
+    engine._validate_stable_lifecycle_promotion = AsyncMock(
+        return_value=(True, "promotion_live_order_set_verified")
     )
     engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
     engine._write_stable_lifecycle_state = lambda state: setattr(
@@ -1156,6 +1181,11 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
                                         "official_scoring": True,
                                         "observed_q_min": 12,
                                         "scoring_sample_id": f"{offset + 1:064x}",
+                                        "scoring_sample_observed_at": time.time(),
+                                        "scoring_live_order_ids_sha256_by_token": {
+                                            "101": "a" * 64,
+                                            "102": "b" * 64,
+                                        },
                                     },
                                 }
                             ],
@@ -1174,10 +1204,76 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     ]
 
 
+def test_stable_lifecycle_promotion_revalidates_current_live_order_set():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102", "lifecycle_stage": "canary"},
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._managed_buy_order_ids = {"yes-order", "no-order"}
+
+    class Client:
+        def __init__(self):
+            self.orders = [
+                {"id": "yes-order", "asset_id": "101", "side": "BUY"},
+                {"id": "no-order", "asset_id": "102", "side": "BUY"},
+            ]
+
+        def get_open_orders(self):
+            return list(self.orders)
+
+    engine.client = Client()
+    row = {
+        "token_id": "101",
+        "scoring_sample_observed_at": time.time(),
+        "scoring_live_order_ids_sha256_by_token": {
+            "101": engine._live_order_ids_sha256(["yes-order"]),
+            "102": engine._live_order_ids_sha256(["no-order"]),
+        },
+    }
+
+    assert asyncio.run(engine._validate_stable_lifecycle_promotion(row)) == (
+        True,
+        "promotion_live_order_set_verified",
+    )
+
+    engine.client.orders[1]["id"] = "replacement-order"
+    engine._managed_buy_order_ids.add("replacement-order")
+    assert asyncio.run(engine._validate_stable_lifecycle_promotion(row)) == (
+        False,
+        "promotion_live_order_set_changed",
+    )
+
+
+def test_stable_lifecycle_promotion_rejects_stale_scoring_sample():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {"101": {"paired_token_id": "102"}}
+    engine._night_market_cfg = {}
+
+    assert asyncio.run(
+        engine._validate_stable_lifecycle_promotion(
+            {
+                "token_id": "101",
+                "scoring_sample_observed_at": time.time() - 899,
+                "scoring_live_order_ids_sha256_by_token": {
+                    "101": "a" * 64,
+                    "102": "b" * 64,
+                },
+            }
+        )
+    ) == (False, "promotion_scoring_sample_stale")
+
+
 def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1261,7 +1357,8 @@ def test_stable_lifecycle_retirement_failure_does_not_block_other_market(
 ):
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = True
-    engine._runtime_market_updates_enabled = True
+    engine._runtime_market_updates_enabled = False
+    engine._stable_lifecycle_runtime_updates_enabled = True
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"

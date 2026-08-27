@@ -17,6 +17,7 @@ MAX_ACTIVE_CANARIES_LIMIT = 10
 MAX_CANARY_PRINCIPAL_FRACTION = 0.10
 MAX_CANARY_USDC = 100.0
 MIN_PROMOTION_SCORING_SAMPLES = 3
+MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC = 360.0
 HARD_RETIRE_REASONS = frozenset(
     {
         "market_not_active",
@@ -119,6 +120,8 @@ def scoring_sample_is_valid(
     *,
     expected_account_uid_key: str = "",
     expected_host_id: str = "",
+    now_ts: float,
+    max_sample_age_sec: float = MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
 ) -> bool:
     """Require current paired scoring, a unique sample, and positive observed Q."""
 
@@ -132,6 +135,19 @@ def scoring_sample_is_valid(
         return False
     sample_id = str(evidence.get("scoring_sample_id") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", sample_id):
+        return False
+    observed_at = _number(evidence.get("scoring_sample_observed_at"), -1.0)
+    sample_age = float(now_ts) - observed_at
+    if observed_at <= 0 or sample_age < -30 or sample_age > max_sample_age_sec:
+        return False
+    live_hashes = evidence.get("scoring_live_order_ids_sha256_by_token")
+    if not isinstance(live_hashes, Mapping) or len(live_hashes) != 2:
+        return False
+    if any(
+        not str(token_id).isdigit()
+        or not re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower())
+        for token_id, digest in live_hashes.items()
+    ):
         return False
     observed_q = evidence.get("observed_q_min")
     return observed_q is not None and _number(observed_q) > 0
@@ -253,6 +269,7 @@ def build_lifecycle_plan(
     hard_failure_threshold: int = 1,
     expected_account_uid_key: str = "",
     expected_host_id: str = "",
+    max_scoring_sample_age_sec: float = MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
 ) -> dict[str, Any]:
     """Build one idempotent plan from a fresh account-local proposal sample."""
 
@@ -445,6 +462,8 @@ def build_lifecycle_plan(
                 account_index,
                 expected_account_uid_key=expected_account_uid_key,
                 expected_host_id=expected_host_id,
+                now_ts=now_ts,
+                max_sample_age_sec=max_scoring_sample_age_sec,
             )
             sample_id = scoring_sample_id(
                 keep[token_id],
@@ -483,6 +502,12 @@ def build_lifecycle_plan(
             )
             output["markets"][token_id] = state
             if promotion_due:
+                scoring_evidence = account_scoring_evidence(
+                    keep[token_id],
+                    account_index,
+                    expected_account_uid_key=expected_account_uid_key,
+                    expected_host_id=expected_host_id,
+                ) or {}
                 output["promote"].append(
                     {
                         "token_id": token_id,
@@ -493,6 +518,16 @@ def build_lifecycle_plan(
                             else "mid"
                         ),
                         "consecutive_scoring_samples": scoring_samples,
+                        "scoring_sample_id": sample_id,
+                        "scoring_sample_observed_at": scoring_evidence.get(
+                            "scoring_sample_observed_at"
+                        ),
+                        "scoring_live_order_ids_sha256_by_token": dict(
+                            scoring_evidence.get(
+                                "scoring_live_order_ids_sha256_by_token"
+                            )
+                            or {}
+                        ),
                     }
                 )
             continue

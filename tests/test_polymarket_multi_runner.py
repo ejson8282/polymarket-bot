@@ -553,6 +553,8 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
     assert built[2]._event_bus.namespace == "account:2"
     assert built[1]._runtime_market_updates_enabled is False
     assert built[2]._runtime_market_updates_enabled is False
+    assert built[1]._stable_lifecycle_runtime_updates_enabled is True
+    assert built[2]._stable_lifecycle_runtime_updates_enabled is True
     assert built[1].cancelled is True
     assert built[2].cancelled is True
 
@@ -624,6 +626,10 @@ def test_validate_only_initializes_accounts_without_starting_workers(
 
     assert len(built) == 2
     assert all(engine._runtime_market_updates_enabled is False for engine in built)
+    assert all(
+        engine._stable_lifecycle_runtime_updates_enabled is True
+        for engine in built
+    )
 
 
 def test_aggressive_runtime_is_fully_isolated_and_starts_paused(
@@ -717,6 +723,7 @@ def test_aggressive_runtime_is_fully_isolated_and_starts_paused(
     assert len(built) == 1
     assert built[0]._runtime_scope == "aggressive"
     assert built[0]._runtime_host_id == "aggressive-a"
+    assert built[0]._stable_lifecycle_runtime_updates_enabled is False
     assert built[0]._event_bus.runtime_namespace == "aggressive"
     assert built[0]._event_bus.state_namespace == "account:1"
 

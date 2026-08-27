@@ -353,6 +353,8 @@ def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
         "executable_q_min": 15.0,
         "actual_reward_share_pct": 1.25,
         "scoring_sample_id": "a" * 64,
+        "scoring_sample_observed_at": None,
+        "scoring_live_order_ids_sha256_by_token": {},
     }
 
 

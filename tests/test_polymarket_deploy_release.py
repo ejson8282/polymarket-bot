@@ -75,11 +75,13 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         maker / "order_scoring_observer.py",
     )
     for dependency_name in (
+        "account_roster.py",
         "account_profiles.py",
         "multi_runner.py",
         "quote_feasibility.py",
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
+        "sibling_registry.py",
     ):
         shutil.copy2(MAKER_DIR / dependency_name, maker / dependency_name)
     tests = source / "tests"
@@ -720,10 +722,12 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
     required_dependencies = {}
     for dependency_name in (
+        "account_roster.py",
         "account_profiles.py",
         "quote_feasibility.py",
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
+        "sibling_registry.py",
     ):
         dependency = maker / dependency_name
         dependency.write_text(
@@ -748,6 +752,7 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
 
     manifest = _manifest_for(release, target_sha)
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
+    guard_path = "platforms/polymarket/maker/release_guard.py"
     multi_runner_path = "platforms/polymarket/maker/multi_runner.py"
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
     stable_market_lifecycle_path = (
@@ -766,6 +771,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     )
     assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
         proxy.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts_sha256"][guard_path] == hashlib.sha256(
+        (maker / "release_guard.py").read_bytes()
     ).hexdigest()
     assert manifest["artifacts_sha256"][multi_runner_path] == hashlib.sha256(
         multi_runner.read_bytes()
@@ -841,6 +849,14 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
 
+    aggressive_recovery.write_text("print('recovery')\n", encoding="utf-8")
+    (maker / "release_guard.py").write_text(
+        "print('modified guard')\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
 
 def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     target_sha = "d" * 40
@@ -863,10 +879,12 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     )
     for dependency_name in (
         "multi_runner.py",
+        "account_roster.py",
         "account_profiles.py",
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
         "quote_feasibility.py",
+        "sibling_registry.py",
     ):
         (maker / dependency_name).write_text(
             f"print({dependency_name!r})\n",
@@ -884,10 +902,12 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         ("stable_rotation_planner.py", "stable rotation planner"),
         ("order_scoring_observer.py", "order scoring observer"),
         ("multi_runner.py", "multi runner"),
+        ("account_roster.py", "account roster"),
         ("account_profiles.py", "account profiles"),
         ("reward_fast_lane.py", "reward fast lane"),
         ("reward_shadow_allocator.py", "reward shadow allocator"),
         ("quote_feasibility.py", "quote feasibility"),
+        ("sibling_registry.py", "sibling registry"),
     ),
 )
 def test_release_manifest_requires_lifecycle_inputs(
@@ -908,10 +928,12 @@ def test_release_manifest_requires_lifecycle_inputs(
         "stable_rotation_planner.py",
         "order_scoring_observer.py",
         "multi_runner.py",
+        "account_roster.py",
         "account_profiles.py",
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
         "quote_feasibility.py",
+        "sibling_registry.py",
     ):
         if name != missing_name:
             (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")

@@ -180,6 +180,22 @@ def _account_execution_evidence(
             "scoring_sample_id": str(
                 execution.get("scoring_sample_id") or ""
             ).strip(),
+            "scoring_sample_observed_at": (
+                round(_number(execution.get("scoring_sample_observed_at")), 6)
+                if execution.get("scoring_sample_observed_at") is not None
+                else None
+            ),
+            "scoring_live_order_ids_sha256_by_token": {
+                str(token_id): str(digest).strip().lower()
+                for token_id, digest in (
+                    execution.get(
+                        "scoring_live_order_ids_sha256_by_token",
+                    )
+                    or {}
+                ).items()
+                if str(token_id).isdigit()
+                and re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower())
+            },
         }
     return None
 

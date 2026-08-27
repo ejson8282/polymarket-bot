@@ -24,6 +24,32 @@ def _proposal(*, generated_at: float, account: dict) -> dict:
     }
 
 
+def _scoring_evidence(
+    token_id: str,
+    paired_token_id: str,
+    *,
+    observed_at: float,
+    sample_id: str,
+    scoring: bool = True,
+    account_uid_key: str = "",
+    host_id: str = "",
+) -> dict:
+    return {
+        "account_index": 1,
+        "account_uid_key": account_uid_key,
+        "host_id": host_id,
+        "official_scoring": scoring,
+        "observed_q_min": 12.5,
+        "executable_q_min": 15,
+        "scoring_sample_id": sample_id,
+        "scoring_sample_observed_at": observed_at,
+        "scoring_live_order_ids_sha256_by_token": {
+            token_id: "a" * 64,
+            paired_token_id: "b" * 64,
+        },
+    }
+
+
 def test_account_executable_candidate_requires_nonzero_q_and_canary_evidence():
     row = {
         "stable_lp_recommended": False,
@@ -178,13 +204,12 @@ def test_canary_promotes_only_after_three_consecutive_scoring_samples():
                         "101",
                         "102",
                         fill_risk=20,
-                        account_execution_evidence={
-                            "account_index": 1,
-                            "official_scoring": True,
-                            "observed_q_min": 12.5,
-                            "executable_q_min": 15,
-                            "scoring_sample_id": f"{offset + 1:064x}",
-                        },
+                        account_execution_evidence=_scoring_evidence(
+                            "101",
+                            "102",
+                            observed_at=now + offset * 300,
+                            sample_id=f"{offset + 1:064x}",
+                        ),
                     )
                 ],
                 "review": [],
@@ -207,8 +232,62 @@ def test_canary_promotes_only_after_three_consecutive_scoring_samples():
             "token_id": "101",
             "target_risk": "low",
             "consecutive_scoring_samples": 3,
+            "scoring_sample_id": f"{3:064x}",
+            "scoring_sample_observed_at": now + 600,
+            "scoring_live_order_ids_sha256_by_token": {
+                "101": "a" * 64,
+                "102": "b" * 64,
+            },
         }
     ]
+
+
+def test_stale_scoring_sample_cannot_advance_or_promote_canary():
+    now = time.time()
+    row = _market(
+        "101",
+        "102",
+        account_execution_evidence=_scoring_evidence(
+            "101",
+            "102",
+            observed_at=now - 899,
+            sample_id="d" * 64,
+        ),
+    )
+
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [row],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state={
+            "version": 3,
+            "account_index": 1,
+            "last_proposal_generated_at": now - 300,
+            "markets": {
+                "101": {
+                    "consecutive_scoring_samples": 2,
+                    "last_scoring_sample_id": "c" * 64,
+                }
+            },
+        },
+        now_ts=now,
+        promotion_scoring_threshold=3,
+    )
+
+    assert state["promote"] == []
+    assert state["markets"]["101"]["official_scoring_sample_valid"] is False
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 0
 
 
 def test_same_scoring_sample_is_counted_only_once_across_proposal_refreshes():
@@ -226,12 +305,12 @@ def test_same_scoring_sample_is_counted_only_once_across_proposal_refreshes():
                         _market(
                             "101",
                             "102",
-                            account_execution_evidence={
-                                "account_index": 1,
-                                "official_scoring": True,
-                                "observed_q_min": 9,
-                                "scoring_sample_id": "a" * 64,
-                            },
+                            account_execution_evidence=_scoring_evidence(
+                                "101",
+                                "102",
+                                observed_at=now + offset * 300,
+                                sample_id="a" * 64,
+                            ),
                         )
                     ],
                     "review": [],
@@ -263,12 +342,12 @@ def test_v2_scoring_counters_are_not_carried_into_v3():
                     _market(
                         "101",
                         "102",
-                        account_execution_evidence={
-                            "account_index": 1,
-                            "official_scoring": True,
-                            "observed_q_min": 9,
-                            "scoring_sample_id": "b" * 64,
-                        },
+                        account_execution_evidence=_scoring_evidence(
+                            "101",
+                            "102",
+                            observed_at=now,
+                            sample_id="b" * 64,
+                        ),
                     )
                 ],
                 "review": [],
@@ -311,12 +390,12 @@ def test_hard_canary_cap_blocks_additions_and_promotions_when_exceeded():
                     _market(
                         "101",
                         "102",
-                        account_execution_evidence={
-                            "account_index": 1,
-                            "official_scoring": True,
-                            "observed_q_min": 9,
-                            "scoring_sample_id": "c" * 64,
-                        },
+                        account_execution_evidence=_scoring_evidence(
+                            "101",
+                            "102",
+                            observed_at=now,
+                            sample_id="c" * 64,
+                        ),
                     )
                 ],
                 "review": [],
@@ -419,14 +498,14 @@ def test_lifecycle_scoring_streak_cannot_cross_account_identity():
                     _market(
                         "101",
                         "102",
-                        account_execution_evidence={
-                            "account_index": 1,
-                            "account_uid_key": "account-b",
-                            "host_id": "vps1",
-                            "official_scoring": True,
-                            "observed_q_min": 9,
-                            "scoring_sample_id": "b" * 64,
-                        },
+                        account_execution_evidence=_scoring_evidence(
+                            "101",
+                            "102",
+                            observed_at=now,
+                            sample_id="b" * 64,
+                            account_uid_key="account-b",
+                            host_id="vps1",
+                        ),
                     )
                 ],
                 "review": [],
@@ -475,14 +554,15 @@ def test_canary_promotion_streak_resets_when_scoring_is_not_true():
                         _market(
                             "101",
                             "102",
-                            account_execution_evidence={
-                                "account_index": 1,
-                                "official_scoring": scoring,
-                                "observed_q_min": 9,
-                                "scoring_sample_id": (
-                                    f"{offset + 1:064x}" if scoring else None
+                            account_execution_evidence=_scoring_evidence(
+                                "101",
+                                "102",
+                                observed_at=now + offset * 300,
+                                sample_id=(
+                                    f"{offset + 1:064x}" if scoring else ""
                                 ),
-                            },
+                                scoring=scoring,
+                            ),
                         )
                     ],
                     "review": [],
@@ -506,12 +586,12 @@ def test_canary_promotion_streak_resets_when_market_is_unassessed():
     scoring_row = _market(
         "101",
         "102",
-        account_execution_evidence={
-            "account_index": 1,
-            "official_scoring": True,
-            "observed_q_min": 9,
-            "scoring_sample_id": "1" * 64,
-        },
+        account_execution_evidence=_scoring_evidence(
+            "101",
+            "102",
+            observed_at=now,
+            sample_id="1" * 64,
+        ),
     )
     state = build_lifecycle_plan(
         _proposal(

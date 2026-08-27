@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -88,6 +89,7 @@ try:
         MAX_ACTIVE_CANARIES_LIMIT,
         MAX_CANARY_PRINCIPAL_FRACTION,
         MAX_CANARY_USDC,
+        MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
         MIN_PROMOTION_SCORING_SAMPLES,
         STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
@@ -99,6 +101,7 @@ except ImportError:
         MAX_ACTIVE_CANARIES_LIMIT,
         MAX_CANARY_PRINCIPAL_FRACTION,
         MAX_CANARY_USDC,
+        MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
         MIN_PROMOTION_SCORING_SAMPLES,
         STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
@@ -1699,6 +1702,7 @@ class PolyLPSMulti:
         self._routing_account_count = 1
         self._local_account_count = 1
         self._runtime_market_updates_enabled = True
+        self._stable_lifecycle_runtime_updates_enabled = True
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -7096,6 +7100,18 @@ class PolyLPSMulti:
         if token_id in self.market_cfg or token_id in self._night_market_cfg:
             return False
         paired_token_id = str(paired_token_id).strip()
+        if not paired_token_id.isdigit() or paired_token_id == token_id:
+            raise ValueError(f"invalid paired_token_id: {paired_token_id}")
+        if (
+            paired_token_id in self.market_cfg
+            or paired_token_id in self._night_market_cfg
+        ):
+            raise ValueError(
+                f"paired token is already registered: {paired_token_id}"
+            )
+        preexisting_runtime_tokens = set(self.market_cfg) | set(
+            self._night_market_cfg
+        )
 
         session_label = str(session).lower()
         target_cfg = self._night_market_cfg if session_label == "night" else self.market_cfg
@@ -7195,7 +7211,10 @@ class PolyLPSMulti:
                 )
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
-            self._drop_market_runtime_state(token_id)
+            self._drop_market_runtime_state(
+                token_id,
+                preserve_tokens=preexisting_runtime_tokens,
+            )
             self._request_market_ws_resubscribe()
             raise RuntimeError(
                 f"runtime market persistence failed for {token_id[:16]}"
@@ -7239,7 +7258,12 @@ class PolyLPSMulti:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _drop_market_runtime_state(self, token_id: str) -> bool:
+    def _drop_market_runtime_state(
+        self,
+        token_id: str,
+        *,
+        preserve_tokens: Iterable[str] = (),
+    ) -> bool:
         token_id = str(token_id).strip()
         if token_id in self.market_cfg:
             source_cfg = self.market_cfg
@@ -7248,8 +7272,9 @@ class PolyLPSMulti:
         else:
             return False
         paired = str(source_cfg[token_id].get("paired_token_id", ""))
+        preserved = {str(tid) for tid in preserve_tokens if str(tid)}
         for tid in (token_id, paired):
-            if not tid:
+            if not tid or tid in preserved:
                 continue
             self.market_cfg.pop(tid, None)
             self._night_market_cfg.pop(tid, None)
@@ -8059,6 +8084,78 @@ class PolyLPSMulti:
             and self._order_id(order) in self._managed_buy_order_ids
         ]
 
+    @staticmethod
+    def _live_order_ids_sha256(order_ids: Iterable[str]) -> str:
+        encoded = json.dumps(
+            sorted(str(order_id) for order_id in order_ids if str(order_id)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _validate_stable_lifecycle_promotion(
+        self,
+        row: Mapping[str, Any],
+    ) -> tuple[bool, str]:
+        """Rebind a promotion proposal to the currently live managed BUY set."""
+
+        token_id = str(row.get("token_id") or "").strip()
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "").strip()
+        if not token_id.isdigit() or not paired_token_id.isdigit():
+            return False, "promotion_market_pair_missing"
+
+        try:
+            observed_at = float(row.get("scoring_sample_observed_at"))
+        except (TypeError, ValueError):
+            return False, "promotion_scoring_sample_time_invalid"
+        sample_age = time.time() - observed_at
+        if (
+            not math.isfinite(observed_at)
+            or observed_at <= 0
+            or sample_age < -30
+            or sample_age > MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC
+        ):
+            return False, "promotion_scoring_sample_stale"
+
+        expected_raw = row.get("scoring_live_order_ids_sha256_by_token")
+        if not isinstance(expected_raw, Mapping):
+            return False, "promotion_live_order_set_missing"
+        expected = {
+            str(key): str(value).strip().lower()
+            for key, value in expected_raw.items()
+        }
+        event_tokens = {token_id, paired_token_id}
+        if set(expected) != event_tokens or any(
+            not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in expected.values()
+        ):
+            return False, "promotion_live_order_set_invalid"
+
+        try:
+            orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception:
+            return False, "promotion_live_orders_unavailable"
+        if not isinstance(orders, list):
+            return False, "promotion_live_orders_invalid"
+
+        current_ids = {tid: [] for tid in event_tokens}
+        for order in self._natural_managed_scoring_orders(orders):
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset in current_ids:
+                current_ids[asset].append(self._order_id(order))
+        if any(not order_ids for order_ids in current_ids.values()):
+            return False, "promotion_live_order_pair_missing"
+        current = {
+            tid: self._live_order_ids_sha256(order_ids)
+            for tid, order_ids in current_ids.items()
+        }
+        if current != expected:
+            return False, "promotion_live_order_set_changed"
+        return True, "promotion_live_order_set_verified"
+
     async def order_scoring_observer_loop(self) -> None:
         """Sample official scoring status for natural managed BUY orders only."""
         from py_clob_client_v2.clob_types import OrderScoringParams
@@ -8341,7 +8438,11 @@ class PolyLPSMulti:
     async def _stable_market_lifecycle_once(self) -> None:
         if not self._stable_market_lifecycle_enabled:
             return
-        if not getattr(self, "_runtime_market_updates_enabled", True):
+        if not getattr(
+            self,
+            "_stable_lifecycle_runtime_updates_enabled",
+            True,
+        ):
             return
         try:
             proposal = json.loads(
@@ -8452,10 +8553,16 @@ class PolyLPSMulti:
             if not token_id:
                 continue
             try:
-                result = self._promote_stable_lifecycle_market(
-                    token_id,
-                    str(row.get("target_risk") or "mid"),
+                valid, reason = await self._validate_stable_lifecycle_promotion(
+                    row
                 )
+                if not valid:
+                    result = f"rejected:{reason}"
+                else:
+                    result = self._promote_stable_lifecycle_market(
+                        token_id,
+                        str(row.get("target_risk") or "mid"),
+                    )
             except Exception as exc:
                 result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
             promote_results.append({"token_id": token_id, "status": result})

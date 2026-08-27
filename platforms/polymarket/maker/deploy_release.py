@@ -37,6 +37,7 @@ RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
     "tests/test_polymarket_maker_engine.py",
     "tests/test_polymarket_account_profiles.py",
+    "tests/test_polymarket_account_roster.py",
     "tests/test_polymarket_multi_runner.py",
     "tests/test_polymarket_quote_feasibility.py",
     "tests/test_polymarket_aggressive_guardrails.py",
@@ -503,7 +504,7 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     guard = release_dir / "platforms/polymarket/maker/release_guard.py"
     if not engine.is_file() or not guard.is_file():
         raise DeploymentError("release is missing maker engine or release guard")
-    artifacts = [engine]
+    artifacts = [engine, guard]
     stable_market_lifecycle = (
         release_dir / "platforms/polymarket/maker/stable_market_lifecycle.py"
     )
@@ -522,10 +523,12 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
         raise DeploymentError("release is missing reward observer")
     artifacts.append(reward_observer)
     for dependency_name, dependency_label in (
+        ("account_roster.py", "account roster"),
         ("account_profiles.py", "account profiles"),
         ("reward_fast_lane.py", "reward fast lane"),
         ("reward_shadow_allocator.py", "reward shadow allocator"),
         ("quote_feasibility.py", "quote feasibility"),
+        ("sibling_registry.py", "sibling registry"),
     ):
         dependency = (
             release_dir / "platforms/polymarket/maker" / dependency_name

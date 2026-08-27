@@ -143,6 +143,11 @@ def _account_policy(
         scoring_by_token=scoring_by_token,
         scoring_sample_by_token=scoring_sample_by_token,
         scoring_sample_at_by_token=scoring_sample_at_by_token,
+        scoring_live_order_hash_by_token=(
+            {"yes-token": "c" * 64, "no-token": "d" * 64}
+            if scoring is not None
+            else {}
+        ),
         reward_percentages={},
         account_uid="137:1:0x" + "1" * 40,
         host_id="vps1",
@@ -522,51 +527,54 @@ def test_configured_market_with_failed_official_scoring_is_rejected(
 
 
 def test_scoring_evidence_ignores_closed_orders_and_uses_current_live_order():
-    scores, samples, sample_times = reward_observer._scoring_evidence_by_token(
-        {
-            "token_samples": {
-                "yes-token": _token_sample(
-                    "yes-token",
-                    ["live-current"],
-                    observed_at=200,
-                    scoring=False,
-                )
+    scores, samples, sample_times, live_hashes = (
+        reward_observer._scoring_evidence_by_token(
+            {
+                "token_samples": {
+                    "yes-token": _token_sample(
+                        "yes-token",
+                        ["live-current"],
+                        observed_at=200,
+                        scoring=False,
+                    )
+                },
+                "orders": {
+                    "closed-old": {
+                        "order_id": "closed-old",
+                        "token_id": "yes-token",
+                        "live": False,
+                        "last_scoring": True,
+                        "observations": [
+                            {
+                                "status": "observed",
+                                "scoring": True,
+                                "observed_at": 100,
+                            }
+                        ],
+                    },
+                    "live-current": {
+                        "order_id": "live-current",
+                        "token_id": "yes-token",
+                        "live": True,
+                        "last_scoring": False,
+                        "observations": [
+                            {
+                                "status": "observed",
+                                "scoring": False,
+                                "observed_at": 200,
+                            }
+                        ],
+                    },
+                },
             },
-            "orders": {
-                "closed-old": {
-                    "order_id": "closed-old",
-                    "token_id": "yes-token",
-                    "live": False,
-                    "last_scoring": True,
-                    "observations": [
-                        {
-                            "status": "observed",
-                            "scoring": True,
-                            "observed_at": 100,
-                        }
-                    ],
-                },
-                "live-current": {
-                    "order_id": "live-current",
-                    "token_id": "yes-token",
-                    "live": True,
-                    "last_scoring": False,
-                    "observations": [
-                        {
-                            "status": "observed",
-                            "scoring": False,
-                            "observed_at": 200,
-                        }
-                    ],
-                },
-            }
-        },
-        now_ts=200,
+            now_ts=200,
+        )
     )
 
     assert scores == {"yes-token": False}
     assert set(samples) == {"yes-token"}
     assert sample_times == {"yes-token": 200.0}
+    assert set(live_hashes) == {"yes-token"}
 
 
 def test_scoring_sample_does_not_advance_when_live_membership_changes():
@@ -596,12 +604,12 @@ def test_scoring_sample_does_not_advance_when_live_membership_changes():
             for order_id in ("first", "second")
         }
     }
-    _, samples_before, _ = reward_observer._scoring_evidence_by_token(
+    _, samples_before, _, _ = reward_observer._scoring_evidence_by_token(
         payload,
         now_ts=500,
     )
     payload["orders"]["first"]["live"] = False
-    _, samples_after, _ = reward_observer._scoring_evidence_by_token(
+    _, samples_after, _, _ = reward_observer._scoring_evidence_by_token(
         payload,
         now_ts=501,
     )
@@ -638,13 +646,16 @@ def test_scoring_evidence_rejects_stale_token_sample():
         }
     }
 
-    scores, samples, sample_times = reward_observer._scoring_evidence_by_token(
-        payload,
-        now_ts=900,
+    scores, samples, sample_times, live_hashes = (
+        reward_observer._scoring_evidence_by_token(
+            payload,
+            now_ts=900,
+        )
     )
     assert scores == {"yes-token": None}
     assert samples == {}
     assert sample_times == {}
+    assert live_hashes == {}
 
 
 def test_pair_scoring_and_observed_q_require_both_current_legs():

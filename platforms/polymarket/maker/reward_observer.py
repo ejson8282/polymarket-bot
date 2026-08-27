@@ -106,6 +106,7 @@ class ObserverAccountPolicy:
     scoring_by_token: Mapping[str, Optional[bool]]
     scoring_sample_by_token: Mapping[str, str]
     scoring_sample_at_by_token: Mapping[str, float]
+    scoring_live_order_hash_by_token: Mapping[str, str]
     reward_percentages: Mapping[str, Decimal]
     configured_market_refs: tuple[Mapping[str, Any], ...] = ()
     account_uid: str = ""
@@ -129,6 +130,7 @@ def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
         scoring_by_token={},
         scoring_sample_by_token={},
         scoring_sample_at_by_token={},
+        scoring_live_order_hash_by_token={},
         reward_percentages={},
     )
 
@@ -241,12 +243,13 @@ def _scoring_evidence_by_token(
     Dict[str, Optional[bool]],
     Dict[str, str],
     Dict[str, float],
+    Dict[str, str],
 ]:
     observed_now = time.time() if now_ts is None else float(now_ts)
     live_order_ids: Dict[str, List[str]] = {}
     orders = payload.get("orders")
     if not isinstance(orders, Mapping):
-        return {}, {}, {}
+        return {}, {}, {}, {}
     for row in orders.values():
         if not isinstance(row, Mapping) or row.get("live") is not True:
             continue
@@ -257,10 +260,11 @@ def _scoring_evidence_by_token(
         live_order_ids.setdefault(token_id, []).append(order_id)
     token_samples = payload.get("token_samples")
     if not isinstance(token_samples, Mapping):
-        return {token_id: None for token_id in live_order_ids}, {}, {}
+        return {token_id: None for token_id in live_order_ids}, {}, {}, {}
     result: Dict[str, Optional[bool]] = {}
     samples: Dict[str, str] = {}
     sample_times: Dict[str, float] = {}
+    live_order_hashes: Dict[str, str] = {}
     for token_id, order_ids in live_order_ids.items():
         sample = token_samples.get(token_id)
         if not isinstance(sample, Mapping):
@@ -306,7 +310,8 @@ def _scoring_evidence_by_token(
         result[token_id] = scoring
         samples[token_id] = sample_id
         sample_times[token_id] = float(sample_at)
-    return result, samples, sample_times
+        live_order_hashes[token_id] = live_hash
+    return result, samples, sample_times, live_order_hashes
 
 
 def _scoring_by_token(payload: Mapping[str, Any]) -> Dict[str, Optional[bool]]:
@@ -423,11 +428,17 @@ def _load_account_policies(
             == host_id
         )
         if _state_is_fresh(scoring_state, now_ts) and scoring_identity_matches:
-            scoring, scoring_samples, scoring_sample_times = (
+            (
+                scoring,
+                scoring_samples,
+                scoring_sample_times,
+                scoring_live_order_hashes,
+            ) = (
                 _scoring_evidence_by_token(scoring_state, now_ts=now_ts)
             )
         else:
             scoring, scoring_samples, scoring_sample_times = {}, {}, {}
+            scoring_live_order_hashes = {}
         reward_row = reward_accounts.get(str(account_index))
         if (
             not isinstance(reward_row, Mapping)
@@ -493,6 +504,7 @@ def _load_account_policies(
                 scoring_by_token=scoring,
                 scoring_sample_by_token=scoring_samples,
                 scoring_sample_at_by_token=scoring_sample_times,
+                scoring_live_order_hash_by_token=scoring_live_order_hashes,
                 reward_percentages=percentages,
                 configured_market_refs=tuple(configured_market_refs),
                 account_uid=account_uid,
@@ -1050,6 +1062,17 @@ def _observe_candidate(
                     round(min(float(value) for value in scoring_sample_times), 6)
                     if paired_sample_is_synchronized
                     else None
+                ),
+                "scoring_live_order_ids_sha256_by_token": (
+                    {
+                        token_id: policy.scoring_live_order_hash_by_token.get(
+                            token_id,
+                            "",
+                        )
+                        for token_id in token_ids
+                    }
+                    if paired_sample_is_synchronized
+                    else {}
                 ),
                 "actual_reward_share_pct": (
                     round(float(actual_percentage), 6)
