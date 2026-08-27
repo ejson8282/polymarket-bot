@@ -364,6 +364,62 @@ def test_proposal_account_and_host_identity_must_match_runtime():
     assert host_mismatch["add"] == []
 
 
+def test_lifecycle_scoring_streak_cannot_cross_account_identity():
+    now = time.time()
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "account_uid_key": "account-b",
+                "host_id": "vps1",
+                "add": [],
+                "canary": [],
+                "keep": [
+                    _market(
+                        "101",
+                        "102",
+                        account_execution_evidence={
+                            "account_index": 1,
+                            "account_uid_key": "account-b",
+                            "host_id": "vps1",
+                            "official_scoring": True,
+                            "observed_q_min": 9,
+                            "scoring_sample_id": "b" * 64,
+                        },
+                    )
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state={
+            "version": 3,
+            "account_index": 1,
+            "account_uid_key": "account-a",
+            "host_id": "vps1",
+            "last_proposal_generated_at": now - 300,
+            "markets": {
+                "101": {
+                    "consecutive_scoring_samples": 2,
+                    "last_scoring_sample_id": "a" * 64,
+                }
+            },
+        },
+        now_ts=now + 1,
+        expected_account_uid_key="account-b",
+        expected_host_id="vps1",
+    )
+
+    assert state["account_uid_key"] == "account-b"
+    assert state["host_id"] == "vps1"
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+
+
 def test_canary_promotion_streak_resets_when_scoring_is_not_true():
     now = time.time()
     state = {}
@@ -549,7 +605,11 @@ def test_stale_or_missing_proposal_never_adds_or_retires():
         account_index=1,
         configured_token_ids={"101", "102"},
         managed_token_ids={"101"},
-        previous_state={"last_proposal_generated_at": previous_sample},
+        previous_state={
+            "version": 3,
+            "account_index": 1,
+            "last_proposal_generated_at": previous_sample,
+        },
         now_ts=now,
         max_proposal_age_sec=900,
     )

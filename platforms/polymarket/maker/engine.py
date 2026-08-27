@@ -550,6 +550,23 @@ def _stable_lifecycle_safety_limits(
     )
 
 
+def _stable_order_scoring_observer_enabled(
+    *,
+    profile_type: str,
+    lifecycle_enabled: bool,
+    scoring_cfg: Mapping[str, Any],
+) -> bool:
+    """Stable lifecycle always requires its read-only scoring producer."""
+
+    return bool(
+        lifecycle_enabled
+        or (
+            str(profile_type or "").strip().lower() == "aggressive"
+            and scoring_cfg.get("enabled", True)
+        )
+    )
+
+
 def _stable_runtime_host_id(config: Mapping[str, Any]) -> str:
     lifecycle = config.get("stable_market_lifecycle")
     if not isinstance(lifecycle, Mapping):
@@ -702,6 +719,7 @@ class PolyLPSMulti:
             if re.fullmatch(r"0x[0-9a-f]{40}", self._funder_lc)
             else ""
         )
+        self._runtime_host_id = _stable_runtime_host_id(self.cfg)
 
         # 施工包04:跨账号自成交防线。multi_runner 会用共享实例覆盖此默认值;
         # 单账号直跑时是自建空注册表(无兄弟订单,行为不变)。
@@ -1465,6 +1483,22 @@ class PolyLPSMulti:
                 isinstance(lifecycle_state, dict)
                 and int(lifecycle_state.get("account_index") or 0)
                 == int(self._account_idx)
+                and (
+                    int(lifecycle_state.get("version") or 0)
+                    != STABLE_LIFECYCLE_STATE_VERSION
+                    or (
+                        str(
+                            lifecycle_state.get("account_uid_key") or ""
+                        ).strip()
+                        == self._stable_lifecycle_account_uid_key
+                        and (
+                            str(lifecycle_state.get("host_id") or "")
+                            .strip()
+                            .lower()
+                            == self._runtime_host_id
+                        )
+                    )
+                )
             ):
                 self._stable_lifecycle_state = lifecycle_state
         except Exception:
@@ -1495,9 +1529,14 @@ class PolyLPSMulti:
             float(eligibility_cfg.get("stale_after_sec", 660.0)),
         )
         scoring_cfg = self.cfg.get("order_scoring_observer", {}) or {}
-        self._order_scoring_observer_enabled = bool(
-            self.lp_account_profile.profile_type == "aggressive"
-            and scoring_cfg.get("enabled", True)
+        if not isinstance(scoring_cfg, Mapping):
+            scoring_cfg = {}
+        self._order_scoring_observer_enabled = (
+            _stable_order_scoring_observer_enabled(
+                profile_type=self.lp_account_profile.profile_type,
+                lifecycle_enabled=self._stable_market_lifecycle_enabled,
+                scoring_cfg=scoring_cfg,
+            )
         )
         checkpoints = scoring_cfg.get("checkpoints_sec") or (10, 30, 60, 120, 180, 300)
         self._order_scoring_observer_interval_sec = max(
@@ -1508,6 +1547,14 @@ class PolyLPSMulti:
             / f"order_scoring_state_{self._account_idx or 1}.json",
             checkpoints_sec=tuple(checkpoints),
             retention_sec=float(scoring_cfg.get("retention_sec", 7 * 24 * 60 * 60)),
+            steady_state_interval_sec=float(
+                scoring_cfg.get(
+                    "steady_state_interval_sec",
+                    300.0 if self._stable_market_lifecycle_enabled else 0.0,
+                )
+            ),
+            account_uid_key=self._stable_lifecycle_account_uid_key,
+            host_id=self._runtime_host_id,
         )
 
         # Rehydrate _curator_events_log from prior engine_state so a restart
@@ -1647,7 +1694,6 @@ class PolyLPSMulti:
         )
         self._runtime_mode = "single"
         self._runtime_scope = ""
-        self._runtime_host_id = _stable_runtime_host_id(self.cfg)
         self._routing_roster_sha256 = ""
         self._routing_market_universe_sha256 = ""
         self._routing_account_count = 1
@@ -8294,6 +8340,8 @@ class PolyLPSMulti:
             self._stable_lifecycle_state = {
                 "version": STABLE_LIFECYCLE_STATE_VERSION,
                 "account_index": int(self._account_idx),
+                "account_uid_key": account_uid_key,
+                "host_id": runtime_host_id,
                 "status": "blocked",
                 "reason": "runtime_identity_unavailable",
                 "generated_at": time.time(),
@@ -9850,6 +9898,10 @@ class PolyLPSMulti:
         # Stamp this engine's account id into the per-task context so every
         # downstream log/notify call carries the [N号] prefix automatically.
         _current_account_idx_ctx.set(self._account_idx)
+        self._order_scoring_observer.bind_identity(
+            account_uid_key=self._stable_lifecycle_account_uid_key,
+            host_id=self._runtime_host_id,
+        )
         n_markets = len(self._active_market_cfg())
         log(f"[engine] starting with {n_markets} active markets")
         self.notify_discord("做市引擎已启动", f"运行市场：{n_markets} 个", "info")

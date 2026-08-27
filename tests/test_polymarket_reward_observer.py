@@ -584,6 +584,28 @@ def test_reward_percentages_cannot_cross_account_uid_boundary(tmp_path: Path):
         ),
         encoding="utf-8",
     )
+    scoring_path = data_dir / "order_scoring_state_1.json"
+    scoring_payload = {
+        "generated_at": now,
+        "account_uid_key": "wrong-account",
+        "host_id": "vps1",
+        "orders": {
+            "order-1": {
+                "order_id": "order-1",
+                "token_id": "yes-token",
+                "live": True,
+                "last_scoring": True,
+                "observations": [
+                    {
+                        "status": "observed",
+                        "scoring": True,
+                        "observed_at": now,
+                    }
+                ],
+            }
+        },
+    }
+    scoring_path.write_text(json.dumps(scoring_payload), encoding="utf-8")
 
     policy = reward_observer._load_account_policies(
         config_dir,
@@ -594,6 +616,18 @@ def test_reward_percentages_cannot_cross_account_uid_boundary(tmp_path: Path):
     assert policy.account_uid == "137:0:0x" + "1" * 40
     assert policy.host_id == "vps1"
     assert policy.reward_percentages == {}
+    assert policy.scoring_by_token == {}
+
+    scoring_payload["account_uid_key"] = reward_observer._account_uid_key(
+        policy.account_uid
+    )
+    scoring_path.write_text(json.dumps(scoring_payload), encoding="utf-8")
+    matching_policy = reward_observer._load_account_policies(
+        config_dir,
+        data_dir,
+        now_ts=now,
+    )[0]
+    assert matching_policy.scoring_by_token == {"yes-token": True}
 
 
 def test_sports_market_is_classified_without_excluding_generic_markets() -> None:

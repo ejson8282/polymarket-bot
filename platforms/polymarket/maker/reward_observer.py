@@ -369,15 +369,24 @@ def _load_account_policies(
         market_runtime = state.get("markets")
         if not isinstance(market_runtime, Mapping):
             market_runtime = {}
+        account_uid = _canonical_account_uid(config)
+        account_uid_key = _account_uid_key(account_uid)
         scoring_state = _read_mapping(
             data_dir / f"order_scoring_state_{account_index}.json"
         )
-        if _state_is_fresh(scoring_state, now_ts):
+        scoring_identity_matches = bool(
+            account_uid_key
+            and host_id
+            and str(scoring_state.get("account_uid_key") or "").strip().lower()
+            == account_uid_key
+            and str(scoring_state.get("host_id") or "").strip().lower()
+            == host_id
+        )
+        if _state_is_fresh(scoring_state, now_ts) and scoring_identity_matches:
             scoring, scoring_samples = _scoring_evidence_by_token(scoring_state)
         else:
             scoring, scoring_samples = {}, {}
         reward_row = reward_accounts.get(str(account_index))
-        account_uid = _canonical_account_uid(config)
         if (
             not isinstance(reward_row, Mapping)
             or str(reward_row.get("account_uid") or "").strip() != account_uid

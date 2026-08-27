@@ -530,8 +530,9 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     order_scoring_observer = (
         release_dir / "platforms/polymarket/maker/order_scoring_observer.py"
     )
-    if order_scoring_observer.is_file():
-        artifacts.append(order_scoring_observer)
+    if not order_scoring_observer.is_file():
+        raise DeploymentError("release is missing order scoring observer")
+    artifacts.append(order_scoring_observer)
     aggressive_recovery = (
         release_dir / "platforms/polymarket/maker/aggressive_recovery.py"
     )

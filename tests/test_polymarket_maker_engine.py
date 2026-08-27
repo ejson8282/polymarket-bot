@@ -33,6 +33,7 @@ from engine import (  # noqa: E402
     _restore_activity_records,
     _stable_runtime_host_id,
     _stable_lifecycle_safety_limits,
+    _stable_order_scoring_observer_enabled,
 )
 
 
@@ -338,6 +339,24 @@ def test_single_engine_runtime_host_id_rejects_invalid_explicit_value(
     monkeypatch.setenv("POLYMARKET_HOST_ID", "invalid host")
 
     assert _stable_runtime_host_id({}) == ""
+
+
+def test_stable_lifecycle_always_enables_read_only_scoring_observer():
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="stable",
+        lifecycle_enabled=True,
+        scoring_cfg={"enabled": False},
+    ) is True
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="stable",
+        lifecycle_enabled=False,
+        scoring_cfg={"enabled": True},
+    ) is False
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="aggressive",
+        lifecycle_enabled=False,
+        scoring_cfg={"enabled": True},
+    ) is True
 
 
 def test_price_legs_skip_when_reward_zone_has_no_passive_tick():

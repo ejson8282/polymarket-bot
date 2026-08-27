@@ -98,6 +98,101 @@ def test_state_survives_restart_and_rejects_invalid_payload(tmp_path: Path) -> N
     assert OrderScoringObserver(path).public_state(EPOCH)["orders"] == {}
 
 
+def test_bound_state_does_not_cross_account_or_host(tmp_path: Path) -> None:
+    path = tmp_path / "scoring.json"
+    observer = OrderScoringObserver(
+        path,
+        account_uid_key="account-a",
+        host_id="vps1",
+    )
+    observer.poll([_order()], lambda _oid: {"scoring": True}, now=EPOCH)
+    state = observer.poll(
+        [_order()],
+        lambda _oid: {"scoring": True},
+        now=EPOCH + 10,
+    )
+
+    assert state["schema_version"] == 2
+    assert state["account_uid_key"] == "account-a"
+    assert state["host_id"] == "vps1"
+    assert OrderScoringObserver(
+        path,
+        account_uid_key="account-a",
+        host_id="vps1",
+    ).public_state(EPOCH + 11)["orders"]
+    assert OrderScoringObserver(
+        path,
+        account_uid_key="account-b",
+        host_id="vps1",
+    ).public_state(EPOCH + 11)["orders"] == {}
+    assert OrderScoringObserver(
+        path,
+        account_uid_key="account-a",
+        host_id="vps2",
+    ).public_state(EPOCH + 11)["orders"] == {}
+
+
+def test_runtime_identity_rebind_clears_loaded_observations(tmp_path: Path) -> None:
+    observer = OrderScoringObserver(tmp_path / "scoring.json")
+    observer.poll([_order()], lambda _oid: {"scoring": True}, now=EPOCH)
+
+    observer.bind_identity(account_uid_key="account-a", host_id="vps1")
+
+    state = observer.public_state(EPOCH + 1)
+    assert state["account_uid_key"] == "account-a"
+    assert state["host_id"] == "vps1"
+    assert state["orders"] == {}
+
+
+def test_steady_state_sampling_continues_after_warmup_checkpoints(
+    tmp_path: Path,
+) -> None:
+    observer = OrderScoringObserver(
+        tmp_path / "scoring.json",
+        checkpoints_sec=(10, 30, 60),
+        steady_state_interval_sec=300,
+    )
+    observer.poll([_order()], lambda _oid: {"scoring": False}, now=EPOCH)
+    for offset in (10, 30, 60):
+        observer.poll(
+            [_order()],
+            lambda _oid: {"scoring": True},
+            now=EPOCH + offset,
+        )
+
+    state = observer.poll(
+        [_order()],
+        lambda _oid: {"scoring": True},
+        now=EPOCH + 360,
+    )
+
+    observations = state["orders"]["order-1"]["observations"]
+    assert [row["checkpoint_sec"] for row in observations] == [10, 30, 60, 360]
+    assert all(row["scoring"] is True for row in observations)
+
+
+def test_old_live_order_gets_immediate_steady_state_sample(tmp_path: Path) -> None:
+    observer = OrderScoringObserver(
+        tmp_path / "scoring.json",
+        checkpoints_sec=(10, 30),
+        steady_state_interval_sec=300,
+    )
+
+    state = observer.poll(
+        [_order(created_at=EPOCH - 1_000)],
+        lambda _order_id: {"scoring": True},
+        now=EPOCH,
+    )
+
+    observations = state["orders"]["order-1"]["observations"]
+    assert [row["status"] for row in observations] == [
+        "missed_before_observer",
+        "missed_before_observer",
+        "observed",
+    ]
+    assert observations[-1]["scoring"] is True
+
+
 @pytest.mark.parametrize("payload", [None, {}, {"scoring": "true"}, []])
 def test_invalid_official_response_fails_closed(payload) -> None:
     with pytest.raises(ValueError):

@@ -247,15 +247,25 @@ def build_lifecycle_plan(
     """Build one idempotent plan from a fresh account-local proposal sample."""
 
     previous = dict(previous_state or {})
-    if int(_number(previous.get("version"), 0)) != STATE_VERSION:
+    previous_identity_mismatch = bool(
+        (
+            expected_account_uid_key
+            and str(previous.get("account_uid_key") or "").strip()
+            != expected_account_uid_key
+        )
+        or (
+            expected_host_id
+            and str(previous.get("host_id") or "").strip().lower()
+            != expected_host_id.strip().lower()
+        )
+    )
+    if (
+        int(_number(previous.get("version"), 0)) != STATE_VERSION
+        or previous_identity_mismatch
+    ):
         # v2 counted proposal refreshes rather than distinct paired scoring
-        # samples. Preserve proposal idempotence, but do not carry promotion or
-        # retirement counters into the v3 contract.
-        previous = {
-            "last_proposal_generated_at": previous.get(
-                "last_proposal_generated_at"
-            )
-        }
+        # samples. Identity changes must also drop every accumulated counter.
+        previous = {}
     current_stages = {
         str(token): str(stage or "full").strip().lower()
         for token, stage in (managed_market_stages or {}).items()
@@ -272,6 +282,8 @@ def build_lifecycle_plan(
     output = {
         "version": STATE_VERSION,
         "account_index": account_index,
+        "account_uid_key": expected_account_uid_key,
+        "host_id": expected_host_id.strip().lower(),
         "status": "blocked",
         "reason": "proposal_invalid",
         "generated_at": now_ts,

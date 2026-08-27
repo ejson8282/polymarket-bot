@@ -58,6 +58,9 @@ class OrderScoringObserver:
     state_path: Path
     checkpoints_sec: Sequence[int] = DEFAULT_CHECKPOINTS_SEC
     retention_sec: float = DEFAULT_RETENTION_SEC
+    steady_state_interval_sec: float = 0.0
+    account_uid_key: str = ""
+    host_id: str = ""
     _orders: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _last_error: str = field(default="", init=False)
     _last_poll_at: float = field(default=0.0, init=False)
@@ -69,7 +72,28 @@ class OrderScoringObserver:
             raise ValueError("at least one positive scoring checkpoint is required")
         self.checkpoints_sec = tuple(checkpoints)
         self.retention_sec = max(float(self.retention_sec), float(checkpoints[-1]))
+        self.steady_state_interval_sec = max(
+            0.0,
+            float(self.steady_state_interval_sec),
+        )
+        self.account_uid_key = str(self.account_uid_key or "").strip().lower()
+        self.host_id = str(self.host_id or "").strip().lower()
         self._load()
+
+    def bind_identity(self, *, account_uid_key: str, host_id: str) -> None:
+        """Bind observations to one account on one host, clearing foreign state."""
+
+        identity = (
+            str(account_uid_key or "").strip().lower(),
+            str(host_id or "").strip().lower(),
+        )
+        with self._lock:
+            if identity == (self.account_uid_key, self.host_id):
+                return
+            self.account_uid_key, self.host_id = identity
+            self._orders = {}
+            self._last_error = ""
+            self._last_poll_at = 0.0
 
     def _load(self) -> None:
         try:
@@ -77,6 +101,13 @@ class OrderScoringObserver:
         except (OSError, TypeError, ValueError):
             return
         if not isinstance(payload, Mapping):
+            return
+        stored_identity = (
+            str(payload.get("account_uid_key") or "").strip().lower(),
+            str(payload.get("host_id") or "").strip().lower(),
+        )
+        expected_identity = (self.account_uid_key, self.host_id)
+        if stored_identity != expected_identity:
             return
         orders = payload.get("orders")
         if not isinstance(orders, Mapping):
@@ -142,7 +173,26 @@ class OrderScoringObserver:
         }
         due = [value for value in self.checkpoints_sec if value <= age and value not in seen]
         if not due:
-            return None
+            if (
+                self.steady_state_interval_sec <= 0
+                or age < self.checkpoints_sec[-1]
+            ):
+                return None
+            last_observed_at = max(
+                (
+                    _safe_float(observation.get("observed_at"), 0.0)
+                    for observation in row.get("observations") or []
+                    if isinstance(observation, Mapping)
+                    and observation.get("status") == "observed"
+                ),
+                default=0.0,
+            )
+            if (
+                last_observed_at > 0
+                and now - last_observed_at < self.steady_state_interval_sec
+            ):
+                return None
+            return max(self.checkpoints_sec[-1] + 1, int(age))
         # If polling was delayed, query once at the latest elapsed checkpoint.
         # Earlier checkpoints are recorded as missed, never inferred.
         selected = max(due)
@@ -246,11 +296,14 @@ class OrderScoringObserver:
             if row.get("first_scoring_age_sec") is not None
         ]
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "mode": "authenticated_read_only",
             "source": "official_order_scoring",
             "generated_at": float(now),
+            "account_uid_key": self.account_uid_key or None,
+            "host_id": self.host_id or None,
             "checkpoints_sec": list(self.checkpoints_sec),
+            "steady_state_interval_sec": self.steady_state_interval_sec,
             "last_error": self._last_error or None,
             "summary": {
                 "tracked_orders": len(rows),

@@ -70,6 +70,10 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         MAKER_DIR / "stable_rotation_planner.py",
         maker / "stable_rotation_planner.py",
     )
+    shutil.copy2(
+        MAKER_DIR / "order_scoring_observer.py",
+        maker / "order_scoring_observer.py",
+    )
     tests = source / "tests"
     tests.mkdir()
     (tests / "test_release_smoke.py").write_text(
@@ -841,6 +845,7 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     (
         ("reward_observer.py", "reward observer"),
         ("stable_rotation_planner.py", "stable rotation planner"),
+        ("order_scoring_observer.py", "order scoring observer"),
     ),
 )
 def test_release_manifest_requires_lifecycle_inputs(
@@ -859,6 +864,7 @@ def test_release_manifest_requires_lifecycle_inputs(
         "stable_rotation_commands.py",
         "reward_observer.py",
         "stable_rotation_planner.py",
+        "order_scoring_observer.py",
     ):
         if name != missing_name:
             (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")
