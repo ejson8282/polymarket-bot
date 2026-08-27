@@ -57,6 +57,17 @@ def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
     return parsed if parsed.is_finite() else default
 
 
+def _iso_ts(value: Any) -> Optional[float]:
+    """Parse an ISO-8601 timestamp (Z suffix tolerated) to unix seconds."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class MarketInfo:
     condition_id: str
@@ -68,6 +79,8 @@ class MarketInfo:
     max_spread: Decimal
     rewards_min_size: Decimal
     daily_rate_usd: Decimal
+    end_ts: Optional[float] = None
+    game_start_ts: Optional[float] = None
 
 
 def parse_sampling_market(row: Mapping[str, Any]) -> Optional[MarketInfo]:
@@ -114,7 +127,37 @@ def parse_sampling_market(row: Mapping[str, Any]) -> Optional[MarketInfo]:
         max_spread=max_spread,
         rewards_min_size=min_size,
         daily_rate_usd=daily_rate,
+        end_ts=_iso_ts(row.get("end_date_iso")),
+        game_start_ts=_iso_ts(row.get("game_start_time")),
     )
+
+
+def market_passes_guards(
+    info: MarketInfo,
+    *,
+    now_ts: float,
+    min_hours_to_end: float = 0.0,
+    min_hours_to_game_start: float = 0.0,
+    exclude_slug_keywords: Sequence[str] = (),
+) -> tuple[bool, str]:
+    """Observer-style eligibility guards for actionable candidate lists.
+
+    All guards default off so the raw scan stays a neutral measurement.
+    """
+    slug = info.slug.lower()
+    for keyword in exclude_slug_keywords:
+        needle = keyword.strip().lower()
+        if needle and needle in slug:
+            return False, f"slug_excluded:{needle}"
+    if min_hours_to_end > 0:
+        if info.end_ts is None:
+            return False, "end_date_unknown"
+        if info.end_ts - now_ts < min_hours_to_end * 3600.0:
+            return False, "too_close_to_end"
+    if min_hours_to_game_start > 0 and info.game_start_ts is not None:
+        if info.game_start_ts - now_ts < min_hours_to_game_start * 3600.0:
+            return False, "too_close_to_game_start"
+    return True, ""
 
 
 def book_levels(book: Optional[Mapping[str, Any]], side: str) -> list[tuple[Decimal, Decimal]]:
@@ -166,6 +209,12 @@ def evaluate_market(
         "rewards_max_spread": str(info.max_spread),
         "rewards_min_size": str(info.rewards_min_size),
         "daily_rate_usd": str(info.daily_rate_usd),
+        "end_ts": info.end_ts,
+        "hours_to_end": (
+            round((info.end_ts - time.time()) / 3600.0, 1)
+            if info.end_ts is not None
+            else None
+        ),
         "yes_best_bid": str(yes_best_bid),
         "yes_best_ask": str(yes_best_ask),
         "no_best_bid": str(no_best_bid),
@@ -253,16 +302,32 @@ def scan_once(
     min_daily_rate_usd: Decimal = Decimal("5"),
     max_markets: int = 0,
     min_order_size: Decimal = DEFAULT_MIN_ORDER_SIZE,
+    min_hours_to_end: float = 0.0,
+    min_hours_to_game_start: float = 0.0,
+    exclude_slug_keywords: Sequence[str] = (),
     save_books_dir: Optional[Path] = None,
     session: Any = None,
 ) -> dict[str, Any]:
     session = session or new_session()
     raw_markets = fetch_sampling_markets(session)
-    infos = [
-        info
-        for info in (parse_sampling_market(row) for row in raw_markets)
-        if info is not None and info.daily_rate_usd >= min_daily_rate_usd
-    ]
+    now_ts = time.time()
+    guards_dropped: dict[str, int] = {}
+    infos = []
+    for row in raw_markets:
+        info = parse_sampling_market(row)
+        if info is None or info.daily_rate_usd < min_daily_rate_usd:
+            continue
+        passed, guard_reason = market_passes_guards(
+            info,
+            now_ts=now_ts,
+            min_hours_to_end=min_hours_to_end,
+            min_hours_to_game_start=min_hours_to_game_start,
+            exclude_slug_keywords=exclude_slug_keywords,
+        )
+        if not passed:
+            guards_dropped[guard_reason] = guards_dropped.get(guard_reason, 0) + 1
+            continue
+        infos.append(info)
     infos.sort(key=lambda info: info.daily_rate_usd, reverse=True)
     if max_markets > 0:
         infos = infos[:max_markets]
@@ -297,7 +362,83 @@ def scan_once(
         "hour_cst": cst.hour,
         "reference_capital_usd": str(reference_capital),
         "markets_scanned": len(rows),
+        "guards_dropped": guards_dropped,
         "markets": rows,
+    }
+
+
+def portfolio_view(
+    report: Mapping[str, Any],
+    *,
+    principal_usd: Decimal,
+    top_n: int = 20,
+    min_daily_roi_pct: Decimal = ZERO,
+) -> dict[str, Any]:
+    """Stack per-market rewards on one reused principal.
+
+    Polymarket BUY orders lock no collateral until they match, so one
+    principal can quote many markets at once. This view sums the expected
+    daily reward of the top eligible markets, each quoted with the full
+    principal, and reports the over-commit multiple: how many times the
+    principal would be needed if every quoted market filled at once. The
+    over-commit multiple is the risk knob — rewards stack, but so does the
+    simultaneous-fill exposure.
+    """
+    reference = _decimal(report.get("reference_capital_usd"), principal_usd)
+    picked: list[dict[str, Any]] = []
+    total_expected = ZERO
+    total_open_collateral = ZERO
+    for row in report.get("markets") or []:
+        if row.get("blocked_reason"):
+            continue
+        entry = next(
+            (
+                item
+                for item in row.get("capital_curve") or []
+                if _decimal(item.get("capital_usd")) == reference
+            ),
+            None,
+        )
+        if entry is None or entry.get("blocked_reasons"):
+            continue
+        roi = _decimal(entry.get("daily_roi_pct"))
+        if roi < min_daily_roi_pct:
+            continue
+        expected = _decimal(entry.get("expected_daily_usd"))
+        # Dual-side collateral if both legs of the event fill: shares x $1.
+        open_collateral = _decimal(entry.get("target_shares"))
+        picked.append(
+            {
+                "slug": row.get("slug"),
+                "condition_id": row.get("condition_id"),
+                "hours_to_end": row.get("hours_to_end"),
+                "daily_rate_usd": row.get("daily_rate_usd"),
+                "competition_q_min": row.get("competition_q_min"),
+                "executable_share": entry.get("executable_share"),
+                "expected_daily_usd": str(expected),
+                "open_collateral_if_filled_usd": str(open_collateral),
+            }
+        )
+        total_expected += expected
+        total_open_collateral += open_collateral
+        if len(picked) >= top_n:
+            break
+    return {
+        "principal_usd": str(principal_usd),
+        "per_market_quote_usd": str(reference),
+        "markets_quoted": len(picked),
+        "total_expected_daily_usd": str(total_expected),
+        "stacked_daily_roi_pct": str(
+            (total_expected / principal_usd * Decimal("100"))
+            if principal_usd > ZERO
+            else ZERO
+        ),
+        "overcommit_multiple": str(
+            (total_open_collateral / principal_usd)
+            if principal_usd > ZERO
+            else ZERO
+        ),
+        "markets": picked,
     }
 
 
@@ -359,6 +500,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--max-markets", type=int, default=0)
     parser.add_argument("--save-books", type=Path, default=None)
     parser.add_argument("--top", type=int, default=20)
+    parser.add_argument("--min-hours-to-end", type=float, default=0.0,
+                        help="drop markets ending sooner (0 = off)")
+    parser.add_argument("--min-hours-to-game-start", type=float, default=0.0,
+                        help="drop markets whose game starts sooner (0 = off)")
+    parser.add_argument("--exclude-slugs", type=str, default="",
+                        help="comma-separated slug keywords to drop")
+    parser.add_argument("--portfolio-principal", type=str, default="0",
+                        help="stacked portfolio view for this principal (0 = off)")
+    parser.add_argument("--portfolio-top", type=int, default=20)
+    parser.add_argument("--portfolio-min-roi", type=str, default="0.5",
+                        help="min per-market daily ROI pct for the portfolio")
     args = parser.parse_args(argv)
 
     capital_grid = tuple(
@@ -366,13 +518,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if not capital_grid or any(value <= ZERO for value in capital_grid):
         parser.error("--capital must be positive amounts")
+    reference_capital = _decimal(args.ref_capital)
+    if reference_capital not in capital_grid:
+        capital_grid = tuple(sorted((*capital_grid, reference_capital)))
     report = scan_once(
         capital_grid=capital_grid,
-        reference_capital=_decimal(args.ref_capital),
+        reference_capital=reference_capital,
         min_daily_rate_usd=_decimal(args.min_daily_rate),
         max_markets=args.max_markets,
+        min_hours_to_end=args.min_hours_to_end,
+        min_hours_to_game_start=args.min_hours_to_game_start,
+        exclude_slug_keywords=tuple(
+            item for item in args.exclude_slugs.split(",") if item.strip()
+        ),
         save_books_dir=args.save_books,
     )
+    principal = _decimal(args.portfolio_principal)
+    if principal > ZERO:
+        report["portfolio"] = portfolio_view(
+            report,
+            principal_usd=principal,
+            top_n=args.portfolio_top,
+            min_daily_roi_pct=_decimal(args.portfolio_min_roi),
+        )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
         json.dumps(report, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
@@ -380,6 +548,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.jsonl is not None:
         _append_jsonl(args.jsonl, report)
     _print_summary(report, args.top)
+    portfolio = report.get("portfolio")
+    if portfolio:
+        print(
+            f"portfolio: principal=${portfolio['principal_usd']} "
+            f"markets={portfolio['markets_quoted']} "
+            f"expected=${_decimal(portfolio['total_expected_daily_usd']):.2f}/d "
+            f"stacked_roi={_decimal(portfolio['stacked_daily_roi_pct']):.2f}%/d "
+            f"overcommit=x{_decimal(portfolio['overcommit_multiple']):.1f}"
+        )
     return 0
 
 
