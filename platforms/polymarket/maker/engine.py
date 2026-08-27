@@ -7138,37 +7138,16 @@ class PolyLPSMulti:
         self._request_market_ws_resubscribe()
 
         slug_display = slug or self._token_slug_cache.get(token_id, token_id[:16])
-        log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
-        if notify:
-            self.send_discord(
-                f"市场已自动加入\n市场：{slug_display}\n"
-                f"价差：{spread}\n来源：{source}"
-            )
-
-        # Persist every auto-added market (day + night) for dashboard display.
-        if persist:
-            try:
-                self._curator_events_log.append({
-                    "token_id": token_id,
-                    "paired_token_id": paired_token_id,
-                    "slug": slug_display,
-                    "question": question or "",
-                    "league": league or "",
-                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
-                    "added_at": time.time(),
-                    "source": source,
-                    "session": session_label,
-                    "spread": float(spread) if spread is not None else 0.0,
-                })
-            except Exception as _ne:
-                log(f"[runtime-add] curator_events append err: {_ne}")
 
         # Persist to config.json so a restart (or crash) doesn't drop this market.
         # Mirrors the symmetric prune path in start_guard_sweep_loop at T-2h cutoff.
         try:
             if not persist:
-                return True
-            cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
+                cfg_disk = None
+            else:
+                cfg_disk = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
             section = "night_markets" if session_label == "night" else "markets"
             persisted_entry = {
                 "token_id": token_id,
@@ -7195,26 +7174,55 @@ class PolyLPSMulti:
                 "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
                 "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
             }
-            persisted = False
-            for sec in ("markets", "night_markets"):
-                for market in (cfg_disk.get(sec) or []):
-                    if str(market.get("token_id") or "") != token_id:
-                        continue
-                    market.update(persisted_entry)
-                    market.pop("pending_activation", None)
-                    market.pop("pending_command_id", None)
-                    persisted = True
-            if not persisted:
-                entries = cfg_disk.setdefault(section, []) or []
-                entries.append(persisted_entry)
-                cfg_disk[section] = entries
-            self._write_config_atomic(cfg_disk)
-            log(
-                f"[runtime-add] persisted to config.json "
-                f"section={section} token={token_id[:16]}"
-            )
+            if cfg_disk is not None:
+                persisted = False
+                for sec in ("markets", "night_markets"):
+                    for market in (cfg_disk.get(sec) or []):
+                        if str(market.get("token_id") or "") != token_id:
+                            continue
+                        market.update(persisted_entry)
+                        market.pop("pending_activation", None)
+                        market.pop("pending_command_id", None)
+                        persisted = True
+                if not persisted:
+                    entries = cfg_disk.setdefault(section, []) or []
+                    entries.append(persisted_entry)
+                    cfg_disk[section] = entries
+                self._write_config_atomic(cfg_disk)
+                log(
+                    f"[runtime-add] persisted to config.json "
+                    f"section={section} token={token_id[:16]}"
+                )
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
+            self._drop_market_runtime_state(token_id)
+            self._request_market_ws_resubscribe()
+            raise RuntimeError(
+                f"runtime market persistence failed for {token_id[:16]}"
+            ) from e
+
+        log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
+        if persist:
+            try:
+                self._curator_events_log.append({
+                    "token_id": token_id,
+                    "paired_token_id": paired_token_id,
+                    "slug": slug_display,
+                    "question": question or "",
+                    "league": league or "",
+                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
+                    "added_at": time.time(),
+                    "source": source,
+                    "session": session_label,
+                    "spread": float(spread) if spread is not None else 0.0,
+                })
+            except Exception as event_exc:
+                log(f"[runtime-add] curator_events append err: {event_exc}")
+        if notify:
+            self.send_discord(
+                f"市场已自动加入\n市场：{slug_display}\n"
+                f"价差：{spread}\n来源：{source}"
+            )
 
         return True
 
@@ -7439,6 +7447,17 @@ class PolyLPSMulti:
                     candidate,
                     int(self._account_idx),
                     allow_canary=allow_canary,
+                    expected_account_uid_key=str(
+                        getattr(
+                            self,
+                            "_stable_lifecycle_account_uid_key",
+                            "",
+                        )
+                        or ""
+                    ),
+                    expected_host_id=str(
+                        getattr(self, "_runtime_host_id", "") or ""
+                    ),
                 )
             )
             if not eligible:
@@ -12913,6 +12932,9 @@ class PolyLPSMulti:
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
+                    "account_uid_key": (
+                        self._stable_lifecycle_account_uid_key or None
+                    ),
                     "account_id": (
                         self.lp_account_profile.account_id
                         if self.lp_account_profile.managed

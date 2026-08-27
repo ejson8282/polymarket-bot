@@ -74,6 +74,14 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         MAKER_DIR / "order_scoring_observer.py",
         maker / "order_scoring_observer.py",
     )
+    for dependency_name in (
+        "account_profiles.py",
+        "multi_runner.py",
+        "quote_feasibility.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+    ):
+        shutil.copy2(MAKER_DIR / dependency_name, maker / dependency_name)
     tests = source / "tests"
     tests.mkdir()
     (tests / "test_release_smoke.py").write_text(
@@ -710,6 +718,19 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     stable_market_lifecycle.write_text("print('lifecycle')\n", encoding="utf-8")
     multi_runner = maker / "multi_runner.py"
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
+    required_dependencies = {}
+    for dependency_name in (
+        "account_profiles.py",
+        "quote_feasibility.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+    ):
+        dependency = maker / dependency_name
+        dependency.write_text(
+            f"print({dependency_name!r})\n",
+            encoding="utf-8",
+        )
+        required_dependencies[dependency_name] = dependency
     proxy = maker / "aggressive_proxy.py"
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     reward_observer = maker / "reward_observer.py"
@@ -752,6 +773,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     assert manifest["artifacts_sha256"][reward_observer_path] == hashlib.sha256(
         reward_observer.read_bytes()
     ).hexdigest()
+    for dependency_name, dependency in required_dependencies.items():
+        dependency_path = f"platforms/polymarket/maker/{dependency_name}"
+        assert manifest["artifacts_sha256"][dependency_path] == hashlib.sha256(
+            dependency.read_bytes()
+        ).hexdigest()
     assert manifest["artifacts_sha256"][
         stable_market_lifecycle_path
     ] == hashlib.sha256(stable_market_lifecycle.read_bytes()).hexdigest()
@@ -835,6 +861,17 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         "print('planner')\n",
         encoding="utf-8",
     )
+    for dependency_name in (
+        "multi_runner.py",
+        "account_profiles.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "quote_feasibility.py",
+    ):
+        (maker / dependency_name).write_text(
+            f"print({dependency_name!r})\n",
+            encoding="utf-8",
+        )
 
     with pytest.raises(DeploymentError, match="stable rotation commands"):
         _manifest_for(release, target_sha)
@@ -846,6 +883,11 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         ("reward_observer.py", "reward observer"),
         ("stable_rotation_planner.py", "stable rotation planner"),
         ("order_scoring_observer.py", "order scoring observer"),
+        ("multi_runner.py", "multi runner"),
+        ("account_profiles.py", "account profiles"),
+        ("reward_fast_lane.py", "reward fast lane"),
+        ("reward_shadow_allocator.py", "reward shadow allocator"),
+        ("quote_feasibility.py", "quote feasibility"),
     ),
 )
 def test_release_manifest_requires_lifecycle_inputs(
@@ -865,6 +907,11 @@ def test_release_manifest_requires_lifecycle_inputs(
         "reward_observer.py",
         "stable_rotation_planner.py",
         "order_scoring_observer.py",
+        "multi_runner.py",
+        "account_profiles.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "quote_feasibility.py",
     ):
         if name != missing_name:
             (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")

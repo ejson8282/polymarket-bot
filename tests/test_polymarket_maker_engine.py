@@ -650,6 +650,8 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
 ):
     engine = object.__new__(PolyLPSMulti)
     engine._account_idx = 1
+    engine._stable_lifecycle_account_uid_key = "a" * 16
+    engine._runtime_host_id = "vps1"
     engine.min_front_bid_notional_usdc = Decimal("2000")
     engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
     engine._eligibility_observer_path.write_text(
@@ -689,6 +691,8 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
                         "account_execution": [
                             {
                                 "account_index": 1,
+                                "account_uid_key": "a" * 16,
+                                "host_id": "vps1",
                                 "executable": True,
                                 "executable_q_min": 15,
                             }
@@ -716,6 +720,87 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
     )
 
     assert candidate["account_admission_level"] == "canary"
+
+    engine._stable_lifecycle_account_uid_key = "b" * 16
+    with pytest.raises(ValueError, match="account_execution_identity_mismatch"):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "201",
+                "paired_token_id": "202",
+                "condition_id": "0xabc",
+            },
+            {
+                "max_observer_age_sec": 900,
+                "max_depth_age_sec": 600,
+            },
+            allow_canary=True,
+            require_account_execution=True,
+        )
+
+
+def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine.default_tick = Decimal("0.01")
+    engine.default_min_distance = Decimal("0.01")
+    engine.default_min_distance_ticks = 1
+    engine._market_condition_ids = {}
+    engine._event_states = {}
+    engine._runtime_added_tokens = set()
+    engine._token_slug_cache = {}
+    engine._curator_events_log = []
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine._ensure_runtime_token_state = lambda *_args, **_kwargs: None
+    notifications = []
+    engine.send_discord = notifications.append
+    resubscribe_calls = []
+    engine._request_market_ws_resubscribe = lambda: resubscribe_calls.append(True)
+
+    def inject_pair():
+        engine.market_cfg["102"] = {
+            "paired_token_id": "101",
+            "_dual_side_auto": True,
+        }
+
+    engine._maybe_inject_dual_side_tokens = inject_pair
+    dropped = []
+
+    def drop_runtime(token_id):
+        dropped.append(token_id)
+        engine.market_cfg.pop("101", None)
+        engine.market_cfg.pop("102", None)
+        return True
+
+    engine._drop_market_runtime_state = drop_runtime
+
+    def fail_write(_config):
+        raise OSError("disk unavailable")
+
+    engine._write_config_atomic = fail_write
+
+    with pytest.raises(RuntimeError, match="runtime market persistence failed"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+            persist=True,
+            notify=True,
+        )
+
+    assert engine.market_cfg == {}
+    assert dropped == ["101"]
+    assert engine._curator_events_log == []
+    assert notifications == []
+    assert len(resubscribe_calls) == 2
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == {
+        "markets": [],
+        "night_markets": [],
+    }
 
 
 def _stable_lifecycle_retire_engine(tmp_path: Path) -> PolyLPSMulti:

@@ -161,6 +161,8 @@ def candidate_is_executable_for_account(
     account_index: int,
     *,
     allow_canary: bool,
+    expected_account_uid_key: str = "",
+    expected_host_id: str = "",
 ) -> tuple[bool, str, tuple[str, ...]]:
     """Fail closed unless this account can form a non-zero eligible Q."""
 
@@ -185,6 +187,14 @@ def candidate_is_executable_for_account(
     execution = account_execution(row, account_index)
     if execution is None:
         return False, level, ("account_execution_unavailable",)
+    if expected_account_uid_key and str(
+        execution.get("account_uid_key") or ""
+    ).strip() != expected_account_uid_key:
+        return False, level, ("account_execution_identity_mismatch",)
+    if expected_host_id and str(
+        execution.get("host_id") or ""
+    ).strip().lower() != expected_host_id.strip().lower():
+        return False, level, ("account_execution_host_mismatch",)
     if execution.get("executable") is not True:
         blocked = tuple(
             str(reason)
@@ -279,6 +289,21 @@ def build_lifecycle_plan(
         max(0, int(max_active_canaries)),
     )
     active_canaries = sum(stage == "canary" for stage in current_stages.values())
+    excess_canary_tokens = tuple(
+        sorted(
+            token
+            for token, stage in current_stages.items()
+            if stage == "canary" and token in managed_token_ids
+        )[max_canaries:]
+    )
+    excess_retire_rows = [
+        {
+            "token_id": token,
+            "hard_failure": True,
+            "reason_codes": ["canary_limit_exceeded"],
+        }
+        for token in excess_canary_tokens
+    ]
     output = {
         "version": STATE_VERSION,
         "account_index": account_index,
@@ -292,10 +317,11 @@ def build_lifecycle_plan(
         "new_sample": False,
         "add": [],
         "promote": [],
-        "retire": [],
+        "retire": excess_retire_rows,
         "active_canaries": active_canaries,
         "max_active_canaries": max_canaries,
         "canary_limit_exceeded": active_canaries > max_canaries,
+        "excess_canary_tokens": list(excess_canary_tokens),
         "markets": {
             str(token): dict(state)
             for token, state in markets_state.items()
@@ -400,6 +426,19 @@ def build_lifecycle_plan(
             stage = "full"
         state["lifecycle_stage"] = stage
         state["last_proposal_generated_at"] = proposal_generated_at
+        if token_id in excess_canary_tokens:
+            state.update(
+                {
+                    "status": "retire_due",
+                    "consecutive_failures": 1,
+                    "consecutive_scoring_samples": 0,
+                    "failure_threshold": 1,
+                    "hard_failure": True,
+                    "reason_codes": ["canary_limit_exceeded"],
+                }
+            )
+            output["markets"][token_id] = state
+            continue
         if token_id in keep:
             scoring_valid = scoring_sample_is_valid(
                 keep[token_id],

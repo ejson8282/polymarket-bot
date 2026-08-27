@@ -112,7 +112,7 @@ def test_bound_state_does_not_cross_account_or_host(tmp_path: Path) -> None:
         now=EPOCH + 10,
     )
 
-    assert state["schema_version"] == 2
+    assert state["schema_version"] == 3
     assert state["account_uid_key"] == "account-a"
     assert state["host_id"] == "vps1"
     assert OrderScoringObserver(
@@ -191,6 +191,29 @@ def test_old_live_order_gets_immediate_steady_state_sample(tmp_path: Path) -> No
         "observed",
     ]
     assert observations[-1]["scoring"] is True
+    assert state["token_samples"]["101"]["scoring"] is True
+
+
+def test_token_sample_requires_every_live_order_to_be_queried_in_same_poll(
+    tmp_path: Path,
+) -> None:
+    observer = OrderScoringObserver(
+        tmp_path / "scoring.json",
+        checkpoints_sec=(10, 30),
+        steady_state_interval_sec=300,
+    )
+    first = _order("first", EPOCH)
+    second = _order("second", EPOCH + 5)
+    observer.poll([first], lambda _oid: {"scoring": True}, now=EPOCH)
+    state = observer.poll(
+        [first, second],
+        lambda _oid: {"scoring": True},
+        now=EPOCH + 10,
+    )
+
+    assert state["orders"]["first"]["last_scoring"] is True
+    assert state["orders"]["second"]["last_scoring"] is None
+    assert state["token_samples"] == {}
 
 
 @pytest.mark.parametrize("payload", [None, {}, {"scoring": "true"}, []])

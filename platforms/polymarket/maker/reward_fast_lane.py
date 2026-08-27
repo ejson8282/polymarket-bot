@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 
 STATE_NAME = "reward_fast_lane_state.json"
-STATE_VERSION = 2
+STATE_VERSION = 3
 CANARY_EXECUTABLE_SAMPLES = 2
 COMPETITION_DROP_RATIO = 0.30
 MISSING_RETENTION_SEC = 7 * 24 * 60 * 60
@@ -98,8 +99,8 @@ def _account_admission_levels(row: Mapping[str, Any]) -> dict[int, str]:
 
 def _account_execution_evidence(
     row: Mapping[str, Any],
-) -> dict[int, tuple[bool, bool]]:
-    evidence: dict[int, tuple[bool, bool]] = {}
+) -> dict[int, dict[str, Any]]:
+    evidence: dict[int, dict[str, Any]] = {}
     for execution in row.get("account_execution") or []:
         if not isinstance(execution, Mapping):
             continue
@@ -109,19 +110,54 @@ def _account_execution_evidence(
             continue
         if account_index <= 0:
             continue
+        account_uid_key = str(
+            execution.get("account_uid_key") or ""
+        ).strip().lower()
+        host_id = str(execution.get("host_id") or "").strip().lower()
+        identity_valid = bool(
+            re.fullmatch(r"[0-9a-f]{16}", account_uid_key) and host_id
+        )
         try:
             observed_q = float(execution.get("observed_q_min"))
         except (TypeError, ValueError):
             observed_q = 0.0
         scoring_q_validated = bool(
-            execution.get("configured") is True
+            identity_valid
+            and execution.get("configured") is True
             and execution.get("official_scoring") is True
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(execution.get("scoring_sample_id") or "").strip().lower(),
+            )
             and observed_q > 0
         )
-        previous = evidence.get(account_index, (False, False))
-        evidence[account_index] = (
-            previous[0] or execution.get("executable") is True,
-            previous[1] or scoring_q_validated,
+        current = {
+            "account_uid_key": account_uid_key,
+            "host_id": host_id,
+            "executable": identity_valid and execution.get("executable") is True,
+            "scoring_q_validated": scoring_q_validated,
+        }
+        previous = evidence.get(account_index)
+        if previous is None:
+            evidence[account_index] = current
+            continue
+        if (
+            previous["account_uid_key"],
+            previous["host_id"],
+        ) != (account_uid_key, host_id):
+            evidence[account_index] = {
+                "account_uid_key": "",
+                "host_id": "",
+                "executable": False,
+                "scoring_q_validated": False,
+            }
+            continue
+        previous["executable"] = bool(
+            previous["executable"] or current["executable"]
+        )
+        previous["scoring_q_validated"] = bool(
+            previous["scoring_q_validated"]
+            or current["scoring_q_validated"]
         )
     return evidence
 
@@ -177,13 +213,31 @@ def update_fast_lane(
         if not isinstance(previous_accounts, Mapping):
             previous_accounts = {}
         account_states: dict[str, dict[str, Any]] = {}
-        for account_index, (executable, scoring_q_validated) in sorted(
+        for account_index, execution in sorted(
             execution_evidence.items()
         ):
+            executable = bool(execution.get("executable"))
+            scoring_q_validated = bool(
+                execution.get("scoring_q_validated")
+            )
+            account_uid_key = str(
+                execution.get("account_uid_key") or ""
+            ).strip().lower()
+            host_id = str(execution.get("host_id") or "").strip().lower()
             previous_account = previous_accounts.get(str(account_index))
             if not isinstance(previous_account, Mapping):
                 previous_account = {}
-            if executable and not config_changed:
+            same_identity = bool(
+                account_uid_key
+                and host_id
+                and str(
+                    previous_account.get("account_uid_key") or ""
+                ).strip().lower()
+                == account_uid_key
+                and str(previous_account.get("host_id") or "").strip().lower()
+                == host_id
+            )
+            if executable and not config_changed and same_identity:
                 consecutive = int(
                     previous_account.get("consecutive_executable_samples") or 0
                 ) + 1
@@ -204,6 +258,8 @@ def update_fast_lane(
                 account_stage = "watchlist"
             account_states[str(account_index)] = {
                 "account_index": account_index,
+                "account_uid_key": account_uid_key,
+                "host_id": host_id,
                 "admission_level": admission_level,
                 "stage": account_stage,
                 "consecutive_executable_samples": consecutive,

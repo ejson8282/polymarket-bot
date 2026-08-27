@@ -33,6 +33,8 @@ def test_account_executable_candidate_requires_nonzero_q_and_canary_evidence():
         "account_execution": [
             {
                 "account_index": 1,
+                "account_uid_key": "account-a",
+                "host_id": "vps1",
                 "executable": True,
                 "executable_q_min": 12.5,
             }
@@ -44,13 +46,26 @@ def test_account_executable_candidate_requires_nonzero_q_and_canary_evidence():
         row,
         1,
         allow_canary=True,
+        expected_account_uid_key="account-a",
+        expected_host_id="vps1",
     )[:2] == (True, "canary")
     row["account_execution"][0]["executable_q_min"] = 0
     assert candidate_is_executable_for_account(
         row,
         1,
         allow_canary=True,
+        expected_account_uid_key="account-a",
+        expected_host_id="vps1",
     ) == (False, "canary", ("executable_q_min_zero",))
+
+    row["account_execution"][0]["account_uid_key"] = "account-b"
+    assert candidate_is_executable_for_account(
+        row,
+        1,
+        allow_canary=True,
+        expected_account_uid_key="account-a",
+        expected_host_id="vps1",
+    ) == (False, "canary", ("account_execution_identity_mismatch",))
 
 
 def test_lifecycle_additions_are_account_local_limited_and_idempotent():
@@ -309,7 +324,7 @@ def test_hard_canary_cap_blocks_additions_and_promotions_when_exceeded():
         ),
         account_index=1,
         configured_token_ids=set(stages),
-        managed_token_ids={"101"},
+        managed_token_ids=set(stages),
         managed_market_stages=stages,
         previous_state={},
         now_ts=now + 1,
@@ -323,6 +338,31 @@ def test_hard_canary_cap_blocks_additions_and_promotions_when_exceeded():
     assert state["canary_limit_exceeded"] is True
     assert state["add"] == []
     assert state["promote"] == []
+    assert state["excess_canary_tokens"] == ["111"]
+    assert state["retire"] == [
+        {
+            "token_id": "111",
+            "hard_failure": True,
+            "reason_codes": ["canary_limit_exceeded"],
+        }
+    ]
+
+
+def test_excess_canary_is_retired_even_when_proposal_is_not_ready():
+    stages = {str(index): "canary" for index in range(101, 112)}
+    state = build_lifecycle_plan(
+        {"status": "blocked", "accounts": []},
+        account_index=1,
+        configured_token_ids=set(stages),
+        managed_token_ids=set(stages),
+        managed_market_stages=stages,
+        previous_state={},
+        now_ts=time.time(),
+        max_active_canaries=10,
+    )
+
+    assert state["reason"] == "proposal_not_ready"
+    assert [row["token_id"] for row in state["retire"]] == ["111"]
 
 
 def test_proposal_account_and_host_identity_must_match_runtime():

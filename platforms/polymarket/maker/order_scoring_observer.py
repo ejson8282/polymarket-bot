@@ -8,6 +8,7 @@ undocumented scoring warm-up window without manufacturing quote churn.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from dataclasses import dataclass, field
@@ -62,6 +63,10 @@ class OrderScoringObserver:
     account_uid_key: str = ""
     host_id: str = ""
     _orders: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _token_samples: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+    )
     _last_error: str = field(default="", init=False)
     _last_poll_at: float = field(default=0.0, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False)
@@ -92,6 +97,7 @@ class OrderScoringObserver:
                 return
             self.account_uid_key, self.host_id = identity
             self._orders = {}
+            self._token_samples = {}
             self._last_error = ""
             self._last_poll_at = 0.0
 
@@ -117,6 +123,43 @@ class OrderScoringObserver:
             for order_id, row in orders.items()
             if str(order_id) and isinstance(row, Mapping)
         }
+        token_samples = payload.get("token_samples")
+        if isinstance(token_samples, Mapping):
+            self._token_samples = {
+                str(token_id): dict(row)
+                for token_id, row in token_samples.items()
+                if str(token_id) and isinstance(row, Mapping)
+            }
+
+    @staticmethod
+    def _live_order_ids_sha256(order_ids: Iterable[str]) -> str:
+        encoded = json.dumps(
+            sorted(str(order_id) for order_id in order_ids if str(order_id)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _token_sample_id(
+        *,
+        token_id: str,
+        observed_at: float,
+        scoring: bool,
+        live_order_ids_sha256: str,
+    ) -> str:
+        encoded = json.dumps(
+            {
+                "token_id": token_id,
+                "observed_at": round(float(observed_at), 6),
+                "scoring": bool(scoring),
+                "live_order_ids_sha256": live_order_ids_sha256,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def _save(self, now: float) -> dict[str, Any]:
         payload = self.public_state(now)
@@ -280,6 +323,59 @@ class OrderScoringObserver:
             if not row.get("live") and now - last_seen > self.retention_sec:
                 self._orders.pop(order_id, None)
 
+        live_by_token: dict[str, list[dict[str, Any]]] = {}
+        for order_id in current:
+            row = self._orders.get(order_id)
+            if not isinstance(row, dict) or row.get("live") is not True:
+                continue
+            token_id = str(row.get("token_id") or "").strip()
+            if token_id:
+                live_by_token.setdefault(token_id, []).append(row)
+        for token_id, rows in live_by_token.items():
+            latest_observations: list[Mapping[str, Any]] = []
+            for row in rows:
+                observed = [
+                    item
+                    for item in row.get("observations") or []
+                    if isinstance(item, Mapping)
+                    and item.get("status") == "observed"
+                    and isinstance(item.get("scoring"), bool)
+                ]
+                if not observed:
+                    break
+                latest_observations.append(
+                    max(
+                        observed,
+                        key=lambda item: _safe_float(
+                            item.get("observed_at"),
+                            0.0,
+                        ),
+                    )
+                )
+            if len(latest_observations) != len(rows) or not all(
+                abs(_safe_float(item.get("observed_at"), 0.0) - now)
+                <= 0.000001
+                for item in latest_observations
+            ):
+                continue
+            scoring_values = [bool(item["scoring"]) for item in latest_observations]
+            scoring = all(scoring_values)
+            live_hash = self._live_order_ids_sha256(
+                str(row.get("order_id") or "") for row in rows
+            )
+            self._token_samples[token_id] = {
+                "token_id": token_id,
+                "observed_at": float(now),
+                "scoring": scoring,
+                "live_order_ids_sha256": live_hash,
+                "sample_id": self._token_sample_id(
+                    token_id=token_id,
+                    observed_at=now,
+                    scoring=scoring,
+                    live_order_ids_sha256=live_hash,
+                ),
+            }
+
         if not any(row.get("last_query_error") for row in self._orders.values()):
             self._last_error = ""
         return self._save(now)
@@ -296,7 +392,7 @@ class OrderScoringObserver:
             if row.get("first_scoring_age_sec") is not None
         ]
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "mode": "authenticated_read_only",
             "source": "official_order_scoring",
             "generated_at": float(now),
@@ -312,4 +408,5 @@ class OrderScoringObserver:
                 "earliest_confirmed_scoring_sec": min(first_scoring) if first_scoring else None,
             },
             "orders": {row["order_id"]: row for row in rows},
+            "token_samples": dict(self._token_samples),
         }

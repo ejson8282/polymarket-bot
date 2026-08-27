@@ -36,9 +36,14 @@ DEPLOYMENT_PROFILES = {"vps1": 1, "vps2": 2}
 RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
     "tests/test_polymarket_maker_engine.py",
+    "tests/test_polymarket_account_profiles.py",
+    "tests/test_polymarket_multi_runner.py",
+    "tests/test_polymarket_quote_feasibility.py",
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_order_scoring_observer.py",
     "tests/test_polymarket_reward_observer.py",
+    "tests/test_polymarket_reward_fast_lane.py",
+    "tests/test_polymarket_reward_shadow_allocator.py",
     "tests/test_polymarket_stable_market_lifecycle.py",
     "tests/test_polymarket_stable_rotation_planner.py",
     "tests/test_polymarket_stable_rotation_commands.py",
@@ -506,8 +511,9 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
         raise DeploymentError("release is missing stable market lifecycle")
     artifacts.append(stable_market_lifecycle)
     multi_runner = release_dir / "platforms/polymarket/maker/multi_runner.py"
-    if multi_runner.is_file():
-        artifacts.append(multi_runner)
+    if not multi_runner.is_file():
+        raise DeploymentError("release is missing multi runner")
+    artifacts.append(multi_runner)
     aggressive_proxy = release_dir / "platforms/polymarket/maker/aggressive_proxy.py"
     if aggressive_proxy.is_file():
         artifacts.append(aggressive_proxy)
@@ -515,6 +521,18 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     if not reward_observer.is_file():
         raise DeploymentError("release is missing reward observer")
     artifacts.append(reward_observer)
+    for dependency_name, dependency_label in (
+        ("account_profiles.py", "account profiles"),
+        ("reward_fast_lane.py", "reward fast lane"),
+        ("reward_shadow_allocator.py", "reward shadow allocator"),
+        ("quote_feasibility.py", "quote feasibility"),
+    ):
+        dependency = (
+            release_dir / "platforms/polymarket/maker" / dependency_name
+        )
+        if not dependency.is_file():
+            raise DeploymentError(f"release is missing {dependency_label}")
+        artifacts.append(dependency)
     stable_rotation_planner = (
         release_dir / "platforms/polymarket/maker/stable_rotation_planner.py"
     )

@@ -7,9 +7,14 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/account_profiles.py"
+      - "platforms/polymarket/maker/multi_runner.py"
+      - "platforms/polymarket/maker/quote_feasibility.py"
       - "platforms/polymarket/maker/stable_market_lifecycle.py"
       - "platforms/polymarket/maker/stable_rotation_planner.py"
       - "platforms/polymarket/maker/reward_observer.py"
+      - "platforms/polymarket/maker/reward_fast_lane.py"
+      - "platforms/polymarket/maker/reward_shadow_allocator.py"
       - "platforms/polymarket/maker/aggressive_market_selector.py"
       - "platforms/polymarket/maker/aggressive_recovery.py"
       - "platforms/polymarket/maker/sponsored_guard.py"
@@ -20,9 +25,14 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_account_profiles.py"
+      - "tests/test_polymarket_multi_runner.py"
+      - "tests/test_polymarket_quote_feasibility.py"
       - "tests/test_polymarket_stable_market_lifecycle.py"
       - "tests/test_polymarket_stable_rotation_planner.py"
       - "tests/test_polymarket_reward_observer.py"
+      - "tests/test_polymarket_reward_fast_lane.py"
+      - "tests/test_polymarket_reward_shadow_allocator.py"
       - "tests/test_polymarket_aggressive_market_selector.py"
       - "tests/test_polymarket_sponsored_guard.py"
       - ".github/workflows/polymarket-python-safety.yml"
@@ -33,9 +43,14 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/account_profiles.py"
+      - "platforms/polymarket/maker/multi_runner.py"
+      - "platforms/polymarket/maker/quote_feasibility.py"
       - "platforms/polymarket/maker/stable_market_lifecycle.py"
       - "platforms/polymarket/maker/stable_rotation_planner.py"
       - "platforms/polymarket/maker/reward_observer.py"
+      - "platforms/polymarket/maker/reward_fast_lane.py"
+      - "platforms/polymarket/maker/reward_shadow_allocator.py"
       - "platforms/polymarket/maker/aggressive_market_selector.py"
       - "platforms/polymarket/maker/aggressive_recovery.py"
       - "platforms/polymarket/maker/sponsored_guard.py"
@@ -46,9 +61,14 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_account_profiles.py"
+      - "tests/test_polymarket_multi_runner.py"
+      - "tests/test_polymarket_quote_feasibility.py"
       - "tests/test_polymarket_stable_market_lifecycle.py"
       - "tests/test_polymarket_stable_rotation_planner.py"
       - "tests/test_polymarket_reward_observer.py"
+      - "tests/test_polymarket_reward_fast_lane.py"
+      - "tests/test_polymarket_reward_shadow_allocator.py"
       - "tests/test_polymarket_aggressive_market_selector.py"
       - "tests/test_polymarket_sponsored_guard.py"
       - ".github/workflows/polymarket-python-safety.yml"
@@ -86,8 +106,13 @@ jobs:
           tests/test_polymarket_order_scoring_observer.py
           tests/test_polymarket_release_guard.py
           tests/test_polymarket_maker_engine.py
+          tests/test_polymarket_account_profiles.py
+          tests/test_polymarket_multi_runner.py
+          tests/test_polymarket_quote_feasibility.py
           tests/test_polymarket_stable_market_lifecycle.py
           tests/test_polymarket_stable_rotation_planner.py
           tests/test_polymarket_reward_observer.py
+          tests/test_polymarket_reward_fast_lane.py
+          tests/test_polymarket_reward_shadow_allocator.py
           tests/test_polymarket_aggressive_market_selector.py
           tests/test_polymarket_sponsored_guard.py
