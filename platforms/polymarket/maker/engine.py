@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 import os
 import random
 import re
+import socket
 import threading
 import time
 import urllib.request
@@ -83,12 +85,22 @@ except ImportError:
     )
 try:
     from .stable_market_lifecycle import (
+        MAX_ACTIVE_CANARIES_LIMIT,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        MIN_PROMOTION_SCORING_SAMPLES,
+        STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
         build_lifecycle_plan,
         candidate_is_executable_for_account,
     )
 except ImportError:
     from stable_market_lifecycle import (
+        MAX_ACTIVE_CANARIES_LIMIT,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        MIN_PROMOTION_SCORING_SAMPLES,
+        STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
         build_lifecycle_plan,
         candidate_is_executable_for_account,
@@ -497,6 +509,63 @@ def _compute_quote_target_shares(
     )
 
 
+def _stable_lifecycle_safety_limits(
+    lifecycle_cfg: Mapping[str, Any],
+) -> tuple[int, Decimal, Decimal, int]:
+    """Clamp operator config to the stable-LP canary safety contract."""
+
+    return (
+        max(
+            0,
+            min(
+                MAX_ACTIVE_CANARIES_LIMIT,
+                int(lifecycle_cfg.get("max_active_canaries", 10)),
+            ),
+        ),
+        max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_PRINCIPAL_FRACTION)),
+                Decimal(
+                    str(
+                        lifecycle_cfg.get(
+                            "canary_principal_fraction",
+                            "0.10",
+                        )
+                    )
+                ),
+            ),
+        ),
+        max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_USDC)),
+                Decimal(str(lifecycle_cfg.get("canary_max_usdc", "100"))),
+            ),
+        ),
+        max(
+            MIN_PROMOTION_SCORING_SAMPLES,
+            int(lifecycle_cfg.get("promotion_scoring_threshold", 3)),
+        ),
+    )
+
+
+def _stable_runtime_host_id(config: Mapping[str, Any]) -> str:
+    lifecycle = config.get("stable_market_lifecycle")
+    if not isinstance(lifecycle, Mapping):
+        lifecycle = {}
+    runtime = config.get("runtime")
+    if not isinstance(runtime, Mapping):
+        runtime = {}
+    candidate = (
+        os.getenv("POLYMARKET_HOST_ID", "").strip()
+        or str(lifecycle.get("host_id") or "").strip()
+        or str(runtime.get("host_id") or "").strip()
+        or socket.gethostname().strip()
+    ).lower()
+    return candidate if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", candidate) else ""
+
+
 def _ws_proxy_diag(ws_proxy: Optional[str] = None) -> str:
     sys_proxies = urllib.request.getproxies() or {}
     sys_proxy = (
@@ -627,6 +696,12 @@ class PolyLPSMulti:
         # distinguish "our maker order matched" from "someone else's order
         # matched in a market we subscribe to".
         self._funder_lc: str = funder.lower()
+        account_uid = f"{chain_id}:{signature_type}:{self._funder_lc}"
+        self._stable_lifecycle_account_uid_key = (
+            hashlib.sha256(account_uid.encode("utf-8")).hexdigest()[:16]
+            if re.fullmatch(r"0x[0-9a-f]{40}", self._funder_lc)
+            else ""
+        )
 
         # 施工包04:跨账号自成交防线。multi_runner 会用共享实例覆盖此默认值;
         # 单账号直跑时是自建空注册表(无兄弟订单,行为不变)。
@@ -1361,31 +1436,13 @@ class PolyLPSMulti:
             0,
             int(lifecycle_cfg.get("max_add_per_cycle", 5)),
         )
-        self._stable_lifecycle_max_active_canaries = max(
-            0,
-            int(lifecycle_cfg.get("max_active_canaries", 10)),
-        )
-        self._stable_lifecycle_canary_principal_fraction = max(
-            Decimal("0"),
-            min(
-                Decimal("1"),
-                Decimal(
-                    str(
-                        lifecycle_cfg.get(
-                            "canary_principal_fraction",
-                            "0.10",
-                        )
-                    )
-                ),
-            ),
-        )
-        self._stable_lifecycle_canary_max_usdc = max(
-            Decimal("0"),
-            Decimal(str(lifecycle_cfg.get("canary_max_usdc", "100"))),
-        )
-        self._stable_lifecycle_promotion_scoring_threshold = max(
-            1,
-            int(lifecycle_cfg.get("promotion_scoring_threshold", 3)),
+        (
+            self._stable_lifecycle_max_active_canaries,
+            self._stable_lifecycle_canary_principal_fraction,
+            self._stable_lifecycle_canary_max_usdc,
+            self._stable_lifecycle_promotion_scoring_threshold,
+        ) = _stable_lifecycle_safety_limits(
+            lifecycle_cfg
         )
         self._stable_lifecycle_soft_failure_threshold = max(
             1,
@@ -1590,7 +1647,7 @@ class PolyLPSMulti:
         )
         self._runtime_mode = "single"
         self._runtime_scope = ""
-        self._runtime_host_id = ""
+        self._runtime_host_id = _stable_runtime_host_id(self.cfg)
         self._routing_roster_sha256 = ""
         self._routing_market_universe_sha256 = ""
         self._routing_account_count = 1
@@ -8229,6 +8286,23 @@ class PolyLPSMulti:
             return
         if not isinstance(proposal, dict):
             return
+        runtime_host_id = str(getattr(self, "_runtime_host_id", "") or "").strip().lower()
+        account_uid_key = str(
+            getattr(self, "_stable_lifecycle_account_uid_key", "") or ""
+        ).strip()
+        if not runtime_host_id or not account_uid_key:
+            self._stable_lifecycle_state = {
+                "version": STABLE_LIFECYCLE_STATE_VERSION,
+                "account_index": int(self._account_idx),
+                "status": "blocked",
+                "reason": "runtime_identity_unavailable",
+                "generated_at": time.time(),
+                "add": [],
+                "promote": [],
+                "retire": [],
+            }
+            self._write_stable_lifecycle_state(self._stable_lifecycle_state)
+            return
 
         configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
         canary_budget = self._stable_lifecycle_canary_budget_usdc(
@@ -8263,6 +8337,8 @@ class PolyLPSMulti:
             hard_failure_threshold=(
                 self._stable_lifecycle_hard_failure_threshold
             ),
+            expected_account_uid_key=account_uid_key,
+            expected_host_id=runtime_host_id,
         )
         retire_results = []
         pending_tokens = [

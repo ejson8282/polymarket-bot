@@ -62,6 +62,14 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         MAKER_DIR / "stable_rotation_commands.py",
         maker / "stable_rotation_commands.py",
     )
+    shutil.copy2(
+        MAKER_DIR / "reward_observer.py",
+        maker / "reward_observer.py",
+    )
+    shutil.copy2(
+        MAKER_DIR / "stable_rotation_planner.py",
+        maker / "stable_rotation_planner.py",
+    )
     tests = source / "tests"
     tests.mkdir()
     (tests / "test_release_smoke.py").write_text(
@@ -815,8 +823,47 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         "print('lifecycle')\n",
         encoding="utf-8",
     )
+    (maker / "reward_observer.py").write_text(
+        "print('observer')\n",
+        encoding="utf-8",
+    )
+    (maker / "stable_rotation_planner.py").write_text(
+        "print('planner')\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(DeploymentError, match="stable rotation commands"):
+        _manifest_for(release, target_sha)
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "message"),
+    (
+        ("reward_observer.py", "reward observer"),
+        ("stable_rotation_planner.py", "stable rotation planner"),
+    ),
+)
+def test_release_manifest_requires_lifecycle_inputs(
+    tmp_path,
+    missing_name,
+    message,
+):
+    target_sha = "e" * 40
+    release = tmp_path / target_sha
+    maker = release / "platforms" / "polymarket" / "maker"
+    maker.mkdir(parents=True)
+    for name in (
+        "engine.py",
+        "release_guard.py",
+        "stable_market_lifecycle.py",
+        "stable_rotation_commands.py",
+        "reward_observer.py",
+        "stable_rotation_planner.py",
+    ):
+        if name != missing_name:
+            (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match=message):
         _manifest_for(release, target_sha)
 
 

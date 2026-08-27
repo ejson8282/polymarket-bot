@@ -168,6 +168,7 @@ def test_canary_promotes_only_after_three_consecutive_scoring_samples():
                             "official_scoring": True,
                             "observed_q_min": 12.5,
                             "executable_q_min": 15,
+                            "scoring_sample_id": f"{offset + 1:064x}",
                         },
                     )
                 ],
@@ -195,6 +196,174 @@ def test_canary_promotes_only_after_three_consecutive_scoring_samples():
     ]
 
 
+def test_same_scoring_sample_is_counted_only_once_across_proposal_refreshes():
+    now = time.time()
+    state = {}
+    for offset in range(3):
+        state = build_lifecycle_plan(
+            _proposal(
+                generated_at=now + offset * 300,
+                account={
+                    "account_index": 1,
+                    "add": [],
+                    "canary": [],
+                    "keep": [
+                        _market(
+                            "101",
+                            "102",
+                            account_execution_evidence={
+                                "account_index": 1,
+                                "official_scoring": True,
+                                "observed_q_min": 9,
+                                "scoring_sample_id": "a" * 64,
+                            },
+                        )
+                    ],
+                    "review": [],
+                },
+            ),
+            account_index=1,
+            configured_token_ids={"101", "102"},
+            managed_token_ids={"101"},
+            managed_market_stages={"101": "canary"},
+            previous_state=state,
+            now_ts=now + offset * 300 + 1,
+            promotion_scoring_threshold=1,
+        )
+
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+
+
+def test_v2_scoring_counters_are_not_carried_into_v3():
+    now = time.time()
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [
+                    _market(
+                        "101",
+                        "102",
+                        account_execution_evidence={
+                            "account_index": 1,
+                            "official_scoring": True,
+                            "observed_q_min": 9,
+                            "scoring_sample_id": "b" * 64,
+                        },
+                    )
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state={
+            "version": 2,
+            "last_proposal_generated_at": now - 300,
+            "markets": {
+                "101": {
+                    "consecutive_scoring_samples": 2,
+                    "last_scoring_sample_id": "a" * 64,
+                }
+            },
+        },
+        now_ts=now + 1,
+        promotion_scoring_threshold=1,
+    )
+
+    assert state["version"] == 3
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+
+
+def test_hard_canary_cap_blocks_additions_and_promotions_when_exceeded():
+    now = time.time()
+    stages = {str(index): "canary" for index in range(101, 112)}
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_market("301", "302", rewards_min_size_shares=1)],
+                "keep": [
+                    _market(
+                        "101",
+                        "102",
+                        account_execution_evidence={
+                            "account_index": 1,
+                            "official_scoring": True,
+                            "observed_q_min": 9,
+                            "scoring_sample_id": "c" * 64,
+                        },
+                    )
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids=set(stages),
+        managed_token_ids={"101"},
+        managed_market_stages=stages,
+        previous_state={},
+        now_ts=now + 1,
+        max_active_canaries=99,
+        canary_budget_usdc=1_000,
+        promotion_scoring_threshold=1,
+    )
+
+    assert state["max_active_canaries"] == 10
+    assert state["active_canaries"] == 11
+    assert state["canary_limit_exceeded"] is True
+    assert state["add"] == []
+    assert state["promote"] == []
+
+
+def test_proposal_account_and_host_identity_must_match_runtime():
+    now = time.time()
+    account = {
+        "account_index": 1,
+        "account_uid_key": "account-a",
+        "host_id": "vps1",
+        "add": [_market("101", "102")],
+        "canary": [],
+        "keep": [],
+        "review": [],
+    }
+
+    uid_mismatch = build_lifecycle_plan(
+        _proposal(generated_at=now, account=account),
+        account_index=1,
+        configured_token_ids=set(),
+        managed_token_ids=set(),
+        previous_state={},
+        now_ts=now + 1,
+        expected_account_uid_key="account-b",
+        expected_host_id="vps1",
+    )
+    host_mismatch = build_lifecycle_plan(
+        _proposal(generated_at=now, account=account),
+        account_index=1,
+        configured_token_ids=set(),
+        managed_token_ids=set(),
+        previous_state={},
+        now_ts=now + 1,
+        expected_account_uid_key="account-a",
+        expected_host_id="vps2",
+    )
+
+    assert uid_mismatch["reason"] == "proposal_account_identity_mismatch"
+    assert uid_mismatch["add"] == []
+    assert host_mismatch["reason"] == "proposal_host_identity_mismatch"
+    assert host_mismatch["add"] == []
+
+
 def test_canary_promotion_streak_resets_when_scoring_is_not_true():
     now = time.time()
     state = {}
@@ -214,6 +383,9 @@ def test_canary_promotion_streak_resets_when_scoring_is_not_true():
                                 "account_index": 1,
                                 "official_scoring": scoring,
                                 "observed_q_min": 9,
+                                "scoring_sample_id": (
+                                    f"{offset + 1:064x}" if scoring else None
+                                ),
                             },
                         )
                     ],
@@ -242,6 +414,7 @@ def test_canary_promotion_streak_resets_when_market_is_unassessed():
             "account_index": 1,
             "official_scoring": True,
             "observed_q_min": 9,
+            "scoring_sample_id": "1" * 64,
         },
     )
     state = build_lifecycle_plan(

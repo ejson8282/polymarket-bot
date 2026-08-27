@@ -31,6 +31,8 @@ from engine import (  # noqa: E402
     _ProxiedClobClient,
     _compute_quote_target_shares,
     _restore_activity_records,
+    _stable_runtime_host_id,
+    _stable_lifecycle_safety_limits,
 )
 
 
@@ -311,6 +313,31 @@ def test_stable_canary_does_not_exceed_small_account_ten_percent():
 
     assert (bid, ask) == (Decimal("40"), Decimal("40"))
     assert warning == ""
+
+
+def test_stable_lifecycle_safety_limits_cannot_be_relaxed_by_config():
+    assert _stable_lifecycle_safety_limits(
+        {
+            "max_active_canaries": 50,
+            "canary_principal_fraction": "0.50",
+            "canary_max_usdc": "500",
+            "promotion_scoring_threshold": 1,
+        }
+    ) == (10, Decimal("0.1"), Decimal("100.0"), 3)
+
+
+def test_single_engine_runtime_host_id_prefers_explicit_env(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "VPS2-Stable")
+
+    assert _stable_runtime_host_id({}) == "vps2-stable"
+
+
+def test_single_engine_runtime_host_id_rejects_invalid_explicit_value(
+    monkeypatch,
+):
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "invalid host")
+
+    assert _stable_runtime_host_id({}) == ""
 
 
 def test_price_legs_skip_when_reward_zone_has_no_passive_tick():
@@ -878,6 +905,8 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
     engine.market_cfg = {}
     engine._night_market_cfg = {}
     engine._stable_lifecycle_state = {}
@@ -895,6 +924,8 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
                 "accounts": [
                     {
                         "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
                         "add": [],
                         "canary": [
                             {
@@ -963,6 +994,8 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
     engine.market_cfg = {
         "101": {
             "paired_token_id": "102",
@@ -1003,6 +1036,8 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
                     "accounts": [
                         {
                             "account_index": 1,
+                            "account_uid_key": "uid-key-1",
+                            "host_id": "vps1",
                             "add": [],
                             "canary": [],
                             "keep": [
@@ -1012,8 +1047,11 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
                                     "fill_risk": 20,
                                     "account_execution_evidence": {
                                         "account_index": 1,
+                                        "account_uid_key": "uid-key-1",
+                                        "host_id": "vps1",
                                         "official_scoring": True,
                                         "observed_q_min": 12,
+                                        "scoring_sample_id": f"{offset + 1:064x}",
                                     },
                                 }
                             ],
@@ -1037,6 +1075,8 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
     engine.market_cfg = {}
     engine._night_market_cfg = {}
     engine._stable_lifecycle_state = {}
@@ -1053,6 +1093,8 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
                 "accounts": [
                     {
                         "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
                         "add": [],
                         "canary": [
                             {"token_id": "201", "paired_token_id": "202"}
@@ -1117,6 +1159,8 @@ def test_stable_lifecycle_retirement_failure_does_not_block_other_market(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
     engine.market_cfg = {
         "101": {
             "paired_token_id": "102",
@@ -1144,6 +1188,8 @@ def test_stable_lifecycle_retirement_failure_does_not_block_other_market(
                 "accounts": [
                     {
                         "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
                         "add": [],
                         "canary": [],
                         "keep": [],

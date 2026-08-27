@@ -1,8 +1,12 @@
+import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from platforms.polymarket.maker.stable_rotation_planner import (
     OUTPUT_NAME,
+    StableRotationError,
     build_stable_rotation_proposal,
     load_stable_account_configs,
     refresh_stable_rotation_proposal,
@@ -10,6 +14,14 @@ from platforms.polymarket.maker.stable_rotation_planner import (
 
 
 NOW = 1_800_000_000.0
+
+
+def _uid_key(account_index: int) -> str:
+    return f"uid-key-{account_index}"
+
+
+def _host_id(account_index: int) -> str:
+    return f"vps{account_index}"
 
 
 def _candidate(
@@ -64,6 +76,20 @@ def _candidate(
         "yes_front_bid_notional_usd": yes_depth,
         "no_front_bid_notional_usd": no_depth,
         "min_front_bid_notional_usd": min(yes_depth, no_depth),
+        "account_execution": [
+            {
+                "account_index": account_index,
+                "account_uid_key": _uid_key(account_index),
+                "host_id": _host_id(account_index),
+                "configured": False,
+                "official_scoring": None,
+                "observed_q_min": None,
+                "executable_q_min": 1.0,
+                "actual_reward_share_pct": None,
+                "scoring_sample_id": None,
+            }
+            for account_index in (1, 2)
+        ],
     }
 
 
@@ -82,6 +108,8 @@ def _account(index: int, *markets: dict, min_depth: float = 2_000.0) -> dict:
     return {
         "account_index": index,
         "config_name": f"config_{index}.json",
+        "account_uid_key": _uid_key(index),
+        "host_id": _host_id(index),
         "min_front_bid_notional_usdc": min_depth,
         "markets": list(markets),
     }
@@ -256,6 +284,22 @@ def test_account_reject_never_enters_add_or_canary() -> None:
     ]
 
 
+def test_candidate_execution_evidence_must_match_account_and_host_identity() -> None:
+    candidate = _candidate(1)
+    candidate["account_execution"][0]["account_uid_key"] = "wrong-account"
+
+    proposal = build_stable_rotation_proposal(
+        _observer(candidate),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    assert proposal["accounts"][0]["add"] == []
+    assert proposal["unassigned_candidates"][0]["reason_codes_by_account"] == {
+        "1": "account_identity_evidence_mismatch"
+    }
+
+
 def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
     candidate = _candidate(1)
     candidate["account_admission"] = [
@@ -268,14 +312,19 @@ def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
     candidate["account_execution"] = [
         {
             "account_index": 1,
+            "account_uid_key": _uid_key(1),
+            "host_id": _host_id(1),
             "configured": True,
             "official_scoring": True,
             "observed_q_min": 12.5,
             "executable_q_min": 15.0,
             "actual_reward_share_pct": 1.25,
+            "scoring_sample_id": "a" * 64,
         },
         {
             "account_index": 2,
+            "account_uid_key": _uid_key(2),
+            "host_id": _host_id(2),
             "configured": True,
             "official_scoring": False,
             "observed_q_min": 0,
@@ -296,11 +345,14 @@ def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
     assert keep[0]["rewards_min_size_shares"] == 25.0
     assert keep[0]["account_execution_evidence"] == {
         "account_index": 1,
+        "account_uid_key": _uid_key(1),
+        "host_id": _host_id(1),
         "configured": True,
         "official_scoring": True,
         "observed_q_min": 12.5,
         "executable_q_min": 15.0,
         "actual_reward_share_pct": 1.25,
+        "scoring_sample_id": "a" * 64,
     }
 
 
@@ -459,7 +511,16 @@ def test_refresh_writes_only_proposal_and_does_not_mutate_configs(tmp_path: Path
     config_dir = tmp_path / "maker"
     data_dir = tmp_path / "data"
     config_dir.mkdir()
+    data_dir.mkdir()
     candidate = _candidate(1)
+    account_uid = "137:0:0x" + "1" * 40
+    candidate["account_execution"][0]["account_uid_key"] = hashlib.sha256(
+        account_uid.encode("utf-8")
+    ).hexdigest()[:16]
+    (data_dir / "engine_state_1.json").write_text(
+        json.dumps({"ts": NOW, "runtime": {"host_id": "vps1"}}),
+        encoding="utf-8",
+    )
     config_path = config_dir / "config_1.json"
     config_path.write_text(
         json.dumps(
@@ -488,6 +549,41 @@ def test_refresh_writes_only_proposal_and_does_not_mutate_configs(tmp_path: Path
     assert payload["mode"] == "proposal_only"
     assert payload["accounts"][0]["add"][0]["token_id"] == "1"
     assert "funder" not in json.dumps(payload)
+
+
+def test_refresh_rejects_stale_runtime_host_identity(tmp_path: Path) -> None:
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    data_dir.mkdir()
+    (config_dir / "config_1.json").write_text(
+        json.dumps(
+            {
+                "account": {"funder": "0x" + "1" * 40},
+                "markets": [],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "engine_state_1.json").write_text(
+        json.dumps(
+            {
+                "ts": NOW - 901,
+                "runtime": {"host_id": "old-vps"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StableRotationError, match="runtime host identity"):
+        refresh_stable_rotation_proposal(
+            data_dir,
+            config_dir,
+            _observer(_candidate(1)),
+            now_ts=NOW,
+        )
+    assert not (data_dir / OUTPUT_NAME).exists()
 
 
 def test_aggressive_configs_are_out_of_scope(tmp_path: Path) -> None:

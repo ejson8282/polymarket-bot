@@ -76,6 +76,11 @@ def _account_policy(
         if scoring is not None
         else {}
     )
+    scoring_sample_by_token = (
+        {"yes-token": "a" * 64, "no-token": "b" * 64}
+        if scoring is not None
+        else {}
+    )
     return ObserverAccountPolicy(
         account_index=1,
         account_id="account_01",
@@ -97,7 +102,10 @@ def _account_policy(
             else {}
         ),
         scoring_by_token=scoring_by_token,
+        scoring_sample_by_token=scoring_sample_by_token,
         reward_percentages={},
+        account_uid="137:1:0x" + "1" * 40,
+        host_id="vps1",
     )
 
 
@@ -471,6 +479,121 @@ def test_configured_market_with_failed_official_scoring_is_rejected(
     assert "official_order_scoring_false" in candidate["account_admission"][0][
         "reason_codes"
     ]
+
+
+def test_scoring_evidence_ignores_closed_orders_and_uses_current_live_order():
+    scores, samples = reward_observer._scoring_evidence_by_token(
+        {
+            "orders": {
+                "closed-old": {
+                    "order_id": "closed-old",
+                    "token_id": "yes-token",
+                    "live": False,
+                    "last_scoring": True,
+                    "observations": [
+                        {
+                            "status": "observed",
+                            "scoring": True,
+                            "observed_at": 100,
+                        }
+                    ],
+                },
+                "live-current": {
+                    "order_id": "live-current",
+                    "token_id": "yes-token",
+                    "live": True,
+                    "last_scoring": False,
+                    "observations": [
+                        {
+                            "status": "observed",
+                            "scoring": False,
+                            "observed_at": 200,
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    assert scores == {"yes-token": False}
+    assert set(samples) == {"yes-token"}
+
+
+def test_pair_scoring_and_observed_q_require_both_current_legs():
+    policy = replace(
+        _account_policy(configured=True),
+        market_runtime={"yes-token": {"q_min": "10"}},
+        scoring_by_token={"yes-token": True},
+        scoring_sample_by_token={"yes-token": "a" * 64},
+    )
+
+    candidate = observe_reward_markets(
+        [_market()],
+        lambda _token: _deep_book(),
+        account_policies=[policy],
+    )["candidates"][0]
+    evidence = candidate["account_execution"][0]
+
+    assert evidence["observed_q_min"] is None
+    assert evidence["official_scoring"] is None
+    assert evidence["scoring_sample_id"] is None
+
+
+def test_reward_percentages_cannot_cross_account_uid_boundary(tmp_path: Path):
+    now = 1_800_000_000.0
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    data_dir.mkdir()
+    (config_dir / "config_1.json").write_text(
+        json.dumps(
+            {
+                "account": {
+                    "funder": "0x" + "1" * 40,
+                    "chain_id": 137,
+                    "signature_type": 0,
+                },
+                "markets": [],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "engine_state_1.json").write_text(
+        json.dumps(
+            {
+                "generated_at": now,
+                "balance": 100,
+                "runtime": {"host_id": "vps1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "rewards_live.json").write_text(
+        json.dumps(
+            {
+                "generated_at": now,
+                "accounts": {
+                    "1": {
+                        "account_uid": "137:0:0x" + "2" * 40,
+                        "percentage_status": "ok",
+                        "reward_percentages": {"condition-1": 42},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    policy = reward_observer._load_account_policies(
+        config_dir,
+        data_dir,
+        now_ts=now,
+    )[0]
+
+    assert policy.account_uid == "137:0:0x" + "1" * 40
+    assert policy.host_id == "vps1"
+    assert policy.reward_percentages == {}
 
 
 def test_sports_market_is_classified_without_excluding_generic_markets() -> None:

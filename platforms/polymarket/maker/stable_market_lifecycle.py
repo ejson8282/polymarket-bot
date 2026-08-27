@@ -8,10 +8,15 @@ gate.  This module performs no network or filesystem writes.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Mapping, Sequence
 
 
-STATE_VERSION = 2
+STATE_VERSION = 3
+MAX_ACTIVE_CANARIES_LIMIT = 10
+MAX_CANARY_PRINCIPAL_FRACTION = 0.10
+MAX_CANARY_USDC = 100.0
+MIN_PROMOTION_SCORING_SAMPLES = 3
 HARD_RETIRE_REASONS = frozenset(
     {
         "market_not_active",
@@ -86,6 +91,9 @@ def account_execution(
 def account_scoring_evidence(
     row: Mapping[str, Any],
     account_index: int,
+    *,
+    expected_account_uid_key: str = "",
+    expected_host_id: str = "",
 ) -> Mapping[str, Any] | None:
     """Return sanitized account-local scoring evidence from a proposal row."""
 
@@ -94,22 +102,58 @@ def account_scoring_evidence(
         return None
     if int(_number(evidence.get("account_index"), -1)) != account_index:
         return None
+    if expected_account_uid_key and str(
+        evidence.get("account_uid_key") or ""
+    ).strip() != expected_account_uid_key:
+        return None
+    if expected_host_id and str(evidence.get("host_id") or "").strip().lower() != (
+        expected_host_id.strip().lower()
+    ):
+        return None
     return evidence
 
 
 def scoring_sample_is_valid(
     row: Mapping[str, Any],
     account_index: int,
+    *,
+    expected_account_uid_key: str = "",
+    expected_host_id: str = "",
 ) -> bool:
-    """Require official scoring plus a positive observed or executable Q."""
+    """Require current paired scoring, a unique sample, and positive observed Q."""
 
-    evidence = account_scoring_evidence(row, account_index)
+    evidence = account_scoring_evidence(
+        row,
+        account_index,
+        expected_account_uid_key=expected_account_uid_key,
+        expected_host_id=expected_host_id,
+    )
     if evidence is None or evidence.get("official_scoring") is not True:
         return False
+    sample_id = str(evidence.get("scoring_sample_id") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sample_id):
+        return False
     observed_q = evidence.get("observed_q_min")
-    if observed_q is not None:
-        return _number(observed_q) > 0
-    return _number(evidence.get("executable_q_min")) > 0
+    return observed_q is not None and _number(observed_q) > 0
+
+
+def scoring_sample_id(
+    row: Mapping[str, Any],
+    account_index: int,
+    *,
+    expected_account_uid_key: str = "",
+    expected_host_id: str = "",
+) -> str:
+    evidence = account_scoring_evidence(
+        row,
+        account_index,
+        expected_account_uid_key=expected_account_uid_key,
+        expected_host_id=expected_host_id,
+    )
+    if evidence is None:
+        return ""
+    sample_id = str(evidence.get("scoring_sample_id") or "").strip().lower()
+    return sample_id if re.fullmatch(r"[0-9a-f]{64}", sample_id) else ""
 
 
 def candidate_is_executable_for_account(
@@ -197,10 +241,21 @@ def build_lifecycle_plan(
     promotion_scoring_threshold: int = 3,
     soft_failure_threshold: int = 3,
     hard_failure_threshold: int = 1,
+    expected_account_uid_key: str = "",
+    expected_host_id: str = "",
 ) -> dict[str, Any]:
     """Build one idempotent plan from a fresh account-local proposal sample."""
 
     previous = dict(previous_state or {})
+    if int(_number(previous.get("version"), 0)) != STATE_VERSION:
+        # v2 counted proposal refreshes rather than distinct paired scoring
+        # samples. Preserve proposal idempotence, but do not carry promotion or
+        # retirement counters into the v3 contract.
+        previous = {
+            "last_proposal_generated_at": previous.get(
+                "last_proposal_generated_at"
+            )
+        }
     current_stages = {
         str(token): str(stage or "full").strip().lower()
         for token, stage in (managed_market_stages or {}).items()
@@ -209,6 +264,11 @@ def build_lifecycle_plan(
     markets_state = previous.get("markets")
     if not isinstance(markets_state, Mapping):
         markets_state = {}
+    max_canaries = min(
+        MAX_ACTIVE_CANARIES_LIMIT,
+        max(0, int(max_active_canaries)),
+    )
+    active_canaries = sum(stage == "canary" for stage in current_stages.values())
     output = {
         "version": STATE_VERSION,
         "account_index": account_index,
@@ -221,10 +281,9 @@ def build_lifecycle_plan(
         "add": [],
         "promote": [],
         "retire": [],
-        "active_canaries": sum(
-            stage == "canary" for stage in current_stages.values()
-        ),
-        "max_active_canaries": max(0, int(max_active_canaries)),
+        "active_canaries": active_canaries,
+        "max_active_canaries": max_canaries,
+        "canary_limit_exceeded": active_canaries > max_canaries,
         "markets": {
             str(token): dict(state)
             for token, state in markets_state.items()
@@ -242,6 +301,16 @@ def build_lifecycle_plan(
     account = _proposal_account(proposal, account_index)
     if account is None:
         output["reason"] = "account_not_in_proposal"
+        return output
+    if expected_account_uid_key and str(
+        account.get("account_uid_key") or ""
+    ).strip() != expected_account_uid_key:
+        output["reason"] = "proposal_account_identity_mismatch"
+        return output
+    if expected_host_id and str(account.get("host_id") or "").strip().lower() != (
+        expected_host_id.strip().lower()
+    ):
+        output["reason"] = "proposal_host_identity_mismatch"
         return output
 
     new_sample = proposal_generated_at > last_sample + 0.001
@@ -264,8 +333,10 @@ def build_lifecycle_plan(
     add_limit = max(0, int(max_add_per_cycle))
     canary_slots = max(
         0,
-        int(max_active_canaries) - int(output["active_canaries"]),
+        max_canaries - int(output["active_canaries"]),
     )
+    if output["canary_limit_exceeded"]:
+        add_limit = 0
     for stage, key in (("full", "add"), ("canary", "canary")):
         if add_limit == 0:
             break
@@ -321,16 +392,30 @@ def build_lifecycle_plan(
             scoring_valid = scoring_sample_is_valid(
                 keep[token_id],
                 account_index,
+                expected_account_uid_key=expected_account_uid_key,
+                expected_host_id=expected_host_id,
             )
-            scoring_samples = (
-                int(prior.get("consecutive_scoring_samples") or 0) + 1
-                if stage == "canary" and scoring_valid
-                else 0
+            sample_id = scoring_sample_id(
+                keep[token_id],
+                account_index,
+                expected_account_uid_key=expected_account_uid_key,
+                expected_host_id=expected_host_id,
             )
-            promotion_threshold = max(1, int(promotion_scoring_threshold))
+            prior_sample_id = str(prior.get("last_scoring_sample_id") or "")
+            if stage == "canary" and scoring_valid:
+                scoring_samples = int(prior.get("consecutive_scoring_samples") or 0)
+                if sample_id != prior_sample_id:
+                    scoring_samples += 1
+            else:
+                scoring_samples = 0
+            promotion_threshold = max(
+                MIN_PROMOTION_SCORING_SAMPLES,
+                int(promotion_scoring_threshold),
+            )
             promotion_due = bool(
                 stage == "canary"
                 and scoring_samples >= promotion_threshold
+                and not output["canary_limit_exceeded"]
             )
             state.update(
                 {
@@ -339,6 +424,9 @@ def build_lifecycle_plan(
                     "consecutive_scoring_samples": scoring_samples,
                     "promotion_scoring_threshold": promotion_threshold,
                     "official_scoring_sample_valid": scoring_valid,
+                    "last_scoring_sample_id": (
+                        sample_id if scoring_valid else prior_sample_id
+                    ),
                     "reason_codes": [],
                 }
             )

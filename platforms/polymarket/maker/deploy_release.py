@@ -38,6 +38,8 @@ RELEASE_TESTS = (
     "tests/test_polymarket_maker_engine.py",
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_order_scoring_observer.py",
+    "tests/test_polymarket_reward_observer.py",
+    "tests/test_polymarket_stable_market_lifecycle.py",
     "tests/test_polymarket_stable_rotation_planner.py",
     "tests/test_polymarket_stable_rotation_commands.py",
 )
@@ -510,13 +512,15 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     if aggressive_proxy.is_file():
         artifacts.append(aggressive_proxy)
     reward_observer = release_dir / "platforms/polymarket/maker/reward_observer.py"
-    if reward_observer.is_file():
-        artifacts.append(reward_observer)
+    if not reward_observer.is_file():
+        raise DeploymentError("release is missing reward observer")
+    artifacts.append(reward_observer)
     stable_rotation_planner = (
         release_dir / "platforms/polymarket/maker/stable_rotation_planner.py"
     )
-    if stable_rotation_planner.is_file():
-        artifacts.append(stable_rotation_planner)
+    if not stable_rotation_planner.is_file():
+        raise DeploymentError("release is missing stable rotation planner")
+    artifacts.append(stable_rotation_planner)
     stable_rotation_commands = (
         release_dir / "platforms/polymarket/maker/stable_rotation_commands.py"
     )
