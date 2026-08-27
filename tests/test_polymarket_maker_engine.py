@@ -1003,6 +1003,22 @@ def test_stable_lifecycle_disabled_is_noop():
     asyncio.run(engine._stable_market_lifecycle_once())
 
 
+@pytest.mark.parametrize("runtime_mode", ["single", "multi_legacy"])
+def test_stable_lifecycle_requires_multi_roster(runtime_mode):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = runtime_mode
+
+    class ProposalReadTrap:
+        def read_text(self, **_kwargs):
+            raise AssertionError("non-roster runtime must not read proposals")
+
+    engine._stable_rotation_proposal_path = ProposalReadTrap()
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+
 def test_stable_lifecycle_manages_existing_active_manual_market():
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
@@ -1029,6 +1045,7 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1039,6 +1056,11 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     engine._stable_lifecycle_max_add_per_cycle = 5
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
     engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
     engine._stable_rotation_proposal_path.write_text(
         json.dumps(
@@ -1119,6 +1141,7 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1141,6 +1164,11 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     engine._stable_lifecycle_promotion_scoring_threshold = 3
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
     engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
     promoted = []
     engine._promote_stable_lifecycle_market = (
@@ -1274,6 +1302,7 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = True
     engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"
@@ -1284,6 +1313,11 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     engine._stable_lifecycle_max_add_per_cycle = 5
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
     engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
     engine._stable_rotation_proposal_path.write_text(
         json.dumps(
@@ -1323,14 +1357,16 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
         }
         return True
 
-    removed = []
+    rollbacks = []
 
-    def remove(token_id):
-        removed.append(token_id)
+    def rollback(token_id, *, config_before, runtime_tokens_before):
+        rollbacks.append(
+            (token_id, dict(config_before), set(runtime_tokens_before))
+        )
         engine.market_cfg.clear()
 
     engine._add_runtime_candidate = incomplete_add
-    engine._remove_stable_lifecycle_config = remove
+    engine._rollback_stable_lifecycle_add = rollback
     engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
     engine._write_stable_lifecycle_state = lambda state: setattr(
         engine,
@@ -1340,13 +1376,163 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
 
     asyncio.run(engine._stable_market_lifecycle_once())
 
-    assert removed == ["201"]
+    assert rollbacks == [
+        (
+            "201",
+            {"markets": [], "night_markets": []},
+            set(),
+        )
+    ]
     assert engine.market_cfg == {}
     assert engine._stable_lifecycle_state["add_results"] == [
         {
             "token_id": "201",
             "status": (
                 "rejected:RuntimeError:paired market injection did not complete"
+            ),
+        }
+    ]
+
+
+def test_stable_lifecycle_add_rollback_restores_disabled_persisted_pair(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    original_config["markets"][0],
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dropped = []
+    engine._drop_market_runtime_state = (
+        lambda token_id, *, preserve_tokens=(): dropped.append(
+            (token_id, set(preserve_tokens))
+        )
+        or True
+    )
+    resubscribed = []
+    engine._request_market_ws_resubscribe = lambda: resubscribed.append(True)
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before={"999"},
+    )
+
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == (
+        original_config
+    )
+    assert dropped == [("201", {"999"})]
+    assert resubscribed == [True]
+
+
+def test_stable_lifecycle_rejects_disabled_persisted_pair_without_mutation(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(original_config),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": time.time(),
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [
+                            {"token_id": "201", "paired_token_id": "202"}
+                        ],
+                        "keep": [],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._validate_stable_replacement_candidate = lambda *_args, **_kwargs: (
+        pytest.fail("persisted conflict must be rejected before validation")
+    )
+    engine._add_runtime_candidate = lambda *_args, **_kwargs: pytest.fail(
+        "persisted conflict must not enter runtime"
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == (
+        original_config
+    )
+    assert engine.market_cfg == {}
+    assert engine._night_market_cfg == {}
+    assert engine._stable_lifecycle_state["add_results"] == [
+        {
+            "token_id": "201",
+            "status": (
+                "rejected:ValueError:"
+                "candidate conflicts with existing persisted market"
             ),
         }
     ]
@@ -1359,6 +1545,7 @@ def test_stable_lifecycle_retirement_failure_does_not_block_other_market(
     engine._stable_market_lifecycle_enabled = True
     engine._runtime_market_updates_enabled = False
     engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
     engine._account_idx = 1
     engine._runtime_host_id = "vps1"
     engine._stable_lifecycle_account_uid_key = "uid-key-1"

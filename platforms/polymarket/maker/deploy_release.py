@@ -590,6 +590,12 @@ def _verify_release_manifest(release_dir: Path, target_sha: str) -> Dict[str, An
     artifact_hashes = manifest.get("artifacts_sha256")
     if not isinstance(artifact_hashes, dict):
         raise DeploymentError("release manifest artifact hashes are missing")
+    required_artifact_hashes = _manifest_for(
+        release_dir,
+        target_sha,
+    )["artifacts_sha256"]
+    if set(artifact_hashes) != set(required_artifact_hashes):
+        raise DeploymentError("release manifest artifact set mismatch")
     for relative_path, expected_hash in artifact_hashes.items():
         if not isinstance(relative_path, str) or not isinstance(expected_hash, str):
             raise DeploymentError("release manifest artifact hash is invalid")

@@ -1702,7 +1702,7 @@ class PolyLPSMulti:
         self._routing_account_count = 1
         self._local_account_count = 1
         self._runtime_market_updates_enabled = True
-        self._stable_lifecycle_runtime_updates_enabled = True
+        self._stable_lifecycle_runtime_updates_enabled = False
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -8350,6 +8350,31 @@ class PolyLPSMulti:
         self._drop_market_runtime_state(token_id)
         self._request_market_ws_resubscribe()
 
+    def _rollback_stable_lifecycle_add(
+        self,
+        token_id: str,
+        *,
+        config_before: Mapping[str, Any],
+        runtime_tokens_before: Iterable[str],
+    ) -> None:
+        """Restore the exact pre-add config and remove only newly added runtime state."""
+
+        write_error: Optional[Exception] = None
+        try:
+            self._write_config_atomic(config_before)
+        except Exception as exc:
+            write_error = exc
+        finally:
+            self._drop_market_runtime_state(
+                token_id,
+                preserve_tokens=runtime_tokens_before,
+            )
+            self._request_market_ws_resubscribe()
+        if write_error is not None:
+            raise RuntimeError(
+                "stable lifecycle config rollback failed"
+            ) from write_error
+
     async def _retire_stable_lifecycle_market(
         self,
         token_id: str,
@@ -8438,10 +8463,12 @@ class PolyLPSMulti:
     async def _stable_market_lifecycle_once(self) -> None:
         if not self._stable_market_lifecycle_enabled:
             return
+        if getattr(self, "_runtime_mode", "single") != "multi_roster":
+            return
         if not getattr(
             self,
             "_stable_lifecycle_runtime_updates_enabled",
-            True,
+            False,
         ):
             return
         try:
@@ -8578,6 +8605,34 @@ class PolyLPSMulti:
             stage = str(action.get("stage") or "")
             token_id = str(market.get("token_id") or "")
             try:
+                paired_token_id = str(market.get("paired_token_id") or "")
+                runtime_tokens_before = set(self.market_cfg) | set(
+                    self._night_market_cfg
+                )
+                config_before = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(config_before, dict):
+                    raise ValueError("account config is invalid")
+                persisted_tokens_before = set()
+                for section in ("markets", "night_markets"):
+                    rows = config_before.get(section) or []
+                    if not isinstance(rows, list):
+                        raise ValueError(
+                            f"account config {section} is invalid"
+                        )
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            raise ValueError(
+                                f"account config {section} contains invalid market"
+                            )
+                        persisted_token_id = str(row.get("token_id") or "")
+                        if persisted_token_id:
+                            persisted_tokens_before.add(persisted_token_id)
+                if {token_id, paired_token_id} & persisted_tokens_before:
+                    raise ValueError(
+                        "candidate conflicts with existing persisted market"
+                    )
                 candidate = self._validate_stable_replacement_candidate(
                     market,
                     policy,
@@ -8590,29 +8645,33 @@ class PolyLPSMulti:
                 )
                 if current_admission is None or current_admission[0] != stage:
                     raise ValueError("candidate admission changed")
-                added = self._add_runtime_candidate(
-                    market,
-                    candidate,
-                    source="stable_lifecycle_auto",
-                    lifecycle_stage=stage,
-                    risk_override="high" if stage == "canary" else None,
-                    persist=True,
-                    notify=True,
-                )
-                if added:
-                    configured_after_add = set(self.market_cfg) | set(
-                        self._night_market_cfg
+                try:
+                    added = self._add_runtime_candidate(
+                        market,
+                        candidate,
+                        source="stable_lifecycle_auto",
+                        lifecycle_stage=stage,
+                        risk_override="high" if stage == "canary" else None,
+                        persist=True,
+                        notify=True,
                     )
-                    paired_token_id = str(
-                        market.get("paired_token_id") or ""
-                    )
-                    if not {token_id, paired_token_id}.issubset(
-                        configured_after_add
-                    ):
-                        self._remove_stable_lifecycle_config(token_id)
-                        raise RuntimeError(
-                            "paired market injection did not complete"
+                    if added:
+                        configured_after_add = set(self.market_cfg) | set(
+                            self._night_market_cfg
                         )
+                        if not {token_id, paired_token_id}.issubset(
+                            configured_after_add
+                        ):
+                            raise RuntimeError(
+                                "paired market injection did not complete"
+                            )
+                except Exception:
+                    self._rollback_stable_lifecycle_add(
+                        token_id,
+                        config_before=config_before,
+                        runtime_tokens_before=runtime_tokens_before,
+                    )
+                    raise
                 status = "added" if added else "already_configured"
             except Exception as exc:
                 status = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"

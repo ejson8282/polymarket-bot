@@ -810,6 +810,19 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     )
     assert _verify_release_manifest(release, target_sha) == manifest
 
+    guard_hash = manifest["artifacts_sha256"].pop(guard_path)
+    (release / ".release-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentError, match="artifact set mismatch"):
+        _verify_release_manifest(release, target_sha)
+    manifest["artifacts_sha256"][guard_path] = guard_hash
+    (release / ".release-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
     proxy.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
