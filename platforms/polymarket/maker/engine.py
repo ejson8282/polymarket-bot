@@ -8459,6 +8459,7 @@ class PolyLPSMulti:
                         and row.get("enabled") is not False
                         and isinstance(runtime, Mapping)
                         and not runtime.get("_dual_side_auto")
+                        and str(runtime.get("paired_token_id") or "") == pair
                         and isinstance(paired_runtime, Mapping)
                         and str(paired_runtime.get("paired_token_id") or "")
                         == token

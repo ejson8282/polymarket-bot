@@ -1091,6 +1091,52 @@ def test_stable_lifecycle_retirement_rejects_disk_only_survivor(tmp_path):
     assert [row["token_id"] for row in config["markets"]] == ["101", "201"]
 
 
+def test_stable_lifecycle_retirement_rejects_incoherent_runtime_survivor(
+    tmp_path,
+):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+    engine.market_cfg.update(
+        {
+            "201": {
+                "paired_token_id": "999",
+                "source": "operator",
+            },
+            "202": {
+                "paired_token_id": "201",
+                "source": "operator",
+                "_dual_side_auto": True,
+            },
+        }
+    )
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102", "201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["101", "201"]
+
+
 def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
     engine = _stable_lifecycle_retire_engine(tmp_path)
     engine._get_token_position = AsyncMock(return_value=4.5)
