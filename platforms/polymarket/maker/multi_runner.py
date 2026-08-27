@@ -929,6 +929,9 @@ async def multi_run(
         eng._routing_account_count = len(global_profiles)
         eng._local_account_count = len(engines)
         eng._runtime_market_updates_enabled = roster_path is None
+        eng._stable_lifecycle_runtime_updates_enabled = (
+            roster_path is not None and requested_scope != "aggressive"
+        )
         eng._event_bus.set_runtime_namespace(requested_scope)
         eng._event_bus.set_state_namespace(f"account:{eng._account_idx}")
     log(f"[multi] sibling order registry shared across {len(engines)} local account(s)")

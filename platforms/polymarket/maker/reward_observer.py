@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -60,7 +62,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-MODEL_VERSION = 6
+MODEL_VERSION = 7
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 DEFAULT_LOWER_REWARD_RESERVE_RATIO = Decimal("0.25")
@@ -72,6 +74,8 @@ CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
 HISTORY_SAMPLES_PER_MARKET = 7 * 24 * 12
 ACCOUNT_STATE_MAX_AGE_SEC = 900
+SCORING_SAMPLE_MAX_AGE_SEC = 360
+SCORING_SAMPLE_MAX_SKEW_SEC = 0.001
 _SPORTS_SLUG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _WEATHER_MARKET_RE = re.compile(
     r"\btemperature\b|"
@@ -100,9 +104,13 @@ class ObserverAccountPolicy:
     configured_tokens: frozenset[str]
     market_runtime: Mapping[str, Mapping[str, Any]]
     scoring_by_token: Mapping[str, Optional[bool]]
+    scoring_sample_by_token: Mapping[str, str]
+    scoring_sample_at_by_token: Mapping[str, float]
+    scoring_live_order_hash_by_token: Mapping[str, str]
     reward_percentages: Mapping[str, Decimal]
     configured_market_refs: tuple[Mapping[str, Any], ...] = ()
     account_uid: str = ""
+    host_id: str = ""
 
 
 def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
@@ -120,6 +128,9 @@ def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
         configured_tokens=frozenset(),
         market_runtime={},
         scoring_by_token={},
+        scoring_sample_by_token={},
+        scoring_sample_at_by_token={},
+        scoring_live_order_hash_by_token={},
         reward_percentages={},
     )
 
@@ -181,6 +192,41 @@ def _account_uid_key(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _canonical_account_uid(config: Mapping[str, Any]) -> str:
+    account = config.get("account")
+    if not isinstance(account, Mapping):
+        return ""
+    funder = str(account.get("funder") or "").strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{40}", funder):
+        return ""
+    try:
+        chain_id = int(account.get("chain_id", 137))
+        signature_type = int(account.get("signature_type", 0))
+    except (TypeError, ValueError):
+        return ""
+    return f"{chain_id}:{signature_type}:{funder}"
+
+
+def _expected_runtime_host_id(config: Mapping[str, Any]) -> str:
+    lifecycle = config.get("stable_market_lifecycle")
+    if not isinstance(lifecycle, Mapping):
+        lifecycle = {}
+    runtime = config.get("runtime")
+    if not isinstance(runtime, Mapping):
+        runtime = {}
+    candidate = (
+        os.getenv("POLYMARKET_HOST_ID", "").strip()
+        or str(lifecycle.get("host_id") or "").strip()
+        or str(runtime.get("host_id") or "").strip()
+        or socket.gethostname().strip()
+    ).lower()
+    return (
+        candidate
+        if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", candidate)
+        else ""
+    )
+
+
 def _state_is_fresh(state: Mapping[str, Any], now_ts: float) -> bool:
     generated_at = _timestamp(state.get("generated_at") or state.get("ts"))
     return bool(
@@ -189,30 +235,87 @@ def _state_is_fresh(state: Mapping[str, Any], now_ts: float) -> bool:
     )
 
 
-def _scoring_by_token(payload: Mapping[str, Any]) -> Dict[str, Optional[bool]]:
-    grouped: Dict[str, List[Optional[bool]]] = {}
+def _scoring_evidence_by_token(
+    payload: Mapping[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[
+    Dict[str, Optional[bool]],
+    Dict[str, str],
+    Dict[str, float],
+    Dict[str, str],
+]:
+    observed_now = time.time() if now_ts is None else float(now_ts)
+    live_order_ids: Dict[str, List[str]] = {}
     orders = payload.get("orders")
     if not isinstance(orders, Mapping):
-        return {}
+        return {}, {}, {}, {}
     for row in orders.values():
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or row.get("live") is not True:
             continue
         token_id = str(row.get("token_id") or "").strip()
-        if not token_id:
+        order_id = str(row.get("order_id") or "").strip()
+        if not token_id or not order_id:
             continue
-        scoring = row.get("last_scoring")
-        grouped.setdefault(token_id, []).append(
-            scoring if isinstance(scoring, bool) else None
-        )
+        live_order_ids.setdefault(token_id, []).append(order_id)
+    token_samples = payload.get("token_samples")
+    if not isinstance(token_samples, Mapping):
+        return {token_id: None for token_id in live_order_ids}, {}, {}, {}
     result: Dict[str, Optional[bool]] = {}
-    for token_id, values in grouped.items():
-        if any(value is True for value in values):
-            result[token_id] = True
-        elif any(value is False for value in values):
-            result[token_id] = False
-        else:
+    samples: Dict[str, str] = {}
+    sample_times: Dict[str, float] = {}
+    live_order_hashes: Dict[str, str] = {}
+    for token_id, order_ids in live_order_ids.items():
+        sample = token_samples.get(token_id)
+        if not isinstance(sample, Mapping):
             result[token_id] = None
-    return result
+            continue
+        sample_at = _timestamp(sample.get("observed_at"))
+        scoring = sample.get("scoring")
+        live_hash = hashlib.sha256(
+            json.dumps(
+                sorted(order_ids),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        sample_id = str(sample.get("sample_id") or "").strip().lower()
+        expected_sample_id = hashlib.sha256(
+            json.dumps(
+                {
+                    "token_id": token_id,
+                    "observed_at": (
+                        round(float(sample_at), 6)
+                        if sample_at is not None
+                        else None
+                    ),
+                    "scoring": scoring,
+                    "live_order_ids_sha256": live_hash,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if not (
+            isinstance(scoring, bool)
+            and sample_at is not None
+            and -30 <= observed_now - sample_at <= SCORING_SAMPLE_MAX_AGE_SEC
+            and str(sample.get("live_order_ids_sha256") or "").strip().lower()
+            == live_hash
+            and sample_id == expected_sample_id
+        ):
+            result[token_id] = None
+            continue
+        result[token_id] = scoring
+        samples[token_id] = sample_id
+        sample_times[token_id] = float(sample_at)
+        live_order_hashes[token_id] = live_hash
+    return result, samples, sample_times, live_order_hashes
+
+
+def _scoring_by_token(payload: Mapping[str, Any]) -> Dict[str, Optional[bool]]:
+    return _scoring_evidence_by_token(payload)[0]
 
 
 def _load_account_policies(
@@ -246,8 +349,22 @@ def _load_account_policies(
             continue
         state = _read_mapping(data_dir / f"engine_state_{account_index}.json")
         state_fresh = _state_is_fresh(state, now_ts)
+        runtime = state.get("runtime")
+        if not isinstance(runtime, Mapping):
+            runtime = {}
+        account_uid = _canonical_account_uid(config)
+        account_uid_key = _account_uid_key(account_uid)
+        host_id = _expected_runtime_host_id(config)
+        state_identity_matches = bool(
+            state_fresh
+            and account_uid_key
+            and host_id
+            and str(state.get("account_uid_key") or "").strip().lower()
+            == account_uid_key
+            and str(runtime.get("host_id") or "").strip().lower() == host_id
+        )
         balance = _decimal(state.get("balance"), Decimal("-1"))
-        if not state_fresh or balance < 0:
+        if not state_identity_matches or balance < 0:
             available = None
             available_source = "unavailable"
         else:
@@ -297,17 +414,37 @@ def _load_account_policies(
                 )
 
         market_runtime = state.get("markets")
-        if not isinstance(market_runtime, Mapping):
+        if not state_identity_matches or not isinstance(market_runtime, Mapping):
             market_runtime = {}
         scoring_state = _read_mapping(
             data_dir / f"order_scoring_state_{account_index}.json"
         )
-        scoring = (
-            _scoring_by_token(scoring_state)
-            if _state_is_fresh(scoring_state, now_ts)
-            else {}
+        scoring_identity_matches = bool(
+            account_uid_key
+            and host_id
+            and str(scoring_state.get("account_uid_key") or "").strip().lower()
+            == account_uid_key
+            and str(scoring_state.get("host_id") or "").strip().lower()
+            == host_id
         )
+        if _state_is_fresh(scoring_state, now_ts) and scoring_identity_matches:
+            (
+                scoring,
+                scoring_samples,
+                scoring_sample_times,
+                scoring_live_order_hashes,
+            ) = (
+                _scoring_evidence_by_token(scoring_state, now_ts=now_ts)
+            )
+        else:
+            scoring, scoring_samples, scoring_sample_times = {}, {}, {}
+            scoring_live_order_hashes = {}
         reward_row = reward_accounts.get(str(account_index))
+        if (
+            not isinstance(reward_row, Mapping)
+            or str(reward_row.get("account_uid") or "").strip() != account_uid
+        ):
+            reward_row = {}
         percentages: Dict[str, Decimal] = {}
         if isinstance(reward_row, Mapping) and str(
             reward_row.get("percentage_status") or ""
@@ -365,13 +502,13 @@ def _load_account_policies(
                     if isinstance(row, Mapping)
                 },
                 scoring_by_token=scoring,
+                scoring_sample_by_token=scoring_samples,
+                scoring_sample_at_by_token=scoring_sample_times,
+                scoring_live_order_hash_by_token=scoring_live_order_hashes,
                 reward_percentages=percentages,
                 configured_market_refs=tuple(configured_market_refs),
-                account_uid=(
-                    str(reward_row.get("account_uid") or "").strip()
-                    if isinstance(reward_row, Mapping)
-                    else ""
-                ),
+                account_uid=account_uid,
+                host_id=host_id,
             )
         )
     return policies
@@ -791,30 +928,66 @@ def _observe_candidate(
         )
         executions.append((policy, execution))
         configured = any(token_id in policy.configured_tokens for token_id in token_ids)
-        runtime_rows = [
-            policy.market_runtime.get(token_id)
-            for token_id in token_ids
-            if isinstance(policy.market_runtime.get(token_id), Mapping)
-        ]
+        runtime_rows = [policy.market_runtime.get(token_id) for token_id in token_ids]
         runtime_q_values = [
             _decimal(row.get("q_min"), Decimal("-1"))
             for row in runtime_rows
             if isinstance(row, Mapping) and row.get("q_min") is not None
         ]
-        observed_q_min = (
-            min(runtime_q_values) if runtime_q_values else None
+        runtime_pair_complete = bool(
+            len(token_ids) == 2
+            and token_ids[0] != token_ids[1]
+            and len(runtime_q_values) == 2
         )
-        scoring_values = [
-            policy.scoring_by_token.get(token_id)
-            for token_id in token_ids
-            if token_id in policy.scoring_by_token
-        ]
+        observed_q_min = min(runtime_q_values) if runtime_pair_complete else None
+        scoring_values = [policy.scoring_by_token.get(token_id) for token_id in token_ids]
         if any(value is False for value in scoring_values):
             scoring = False
-        elif scoring_values and all(value is True for value in scoring_values):
+        elif (
+            len(token_ids) == 2
+            and token_ids[0] != token_ids[1]
+            and len(scoring_values) == 2
+            and all(value is True for value in scoring_values)
+        ):
             scoring = True
         else:
             scoring = None
+        scoring_samples = [
+            policy.scoring_sample_by_token.get(token_id, "") for token_id in token_ids
+        ]
+        scoring_sample_times = [
+            policy.scoring_sample_at_by_token.get(token_id)
+            for token_id in token_ids
+        ]
+        scoring_sample_id = ""
+        paired_sample_is_synchronized = bool(
+            scoring is True
+            and len(scoring_samples) == 2
+            and all(scoring_samples)
+            and len(scoring_sample_times) == 2
+            and all(value is not None for value in scoring_sample_times)
+            and max(float(value) for value in scoring_sample_times)
+            - min(float(value) for value in scoring_sample_times)
+            <= SCORING_SAMPLE_MAX_SKEW_SEC
+        )
+        if paired_sample_is_synchronized:
+            sample_material = json.dumps(
+                {
+                    "account_uid_key": _account_uid_key(policy.account_uid),
+                    "condition_id": condition_id,
+                    "observed_at": round(
+                        min(float(value) for value in scoring_sample_times),
+                        6,
+                    ),
+                    "legs": sorted(zip(token_ids, scoring_samples)),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            scoring_sample_id = hashlib.sha256(
+                sample_material.encode("utf-8")
+            ).hexdigest()
         actual_percentage = policy.reward_percentages.get(condition_id)
         blocked = list(execution.blocked_reasons)
         if configured and observed_q_min is not None and observed_q_min <= 0:
@@ -826,6 +999,7 @@ def _observe_candidate(
                 "account_index": policy.account_index,
                 "account_id": policy.account_id,
                 "account_uid_key": _account_uid_key(policy.account_uid),
+                "host_id": policy.host_id,
                 "configured": configured,
                 "capital_source": capital_source,
                 "capital_evidence_fresh": policy.available_usdc is not None,
@@ -879,6 +1053,27 @@ def _observe_candidate(
                     else None
                 ),
                 "official_scoring": scoring,
+                "official_scoring_legs": {
+                    token_id: policy.scoring_by_token.get(token_id)
+                    for token_id in token_ids
+                },
+                "scoring_sample_id": scoring_sample_id or None,
+                "scoring_sample_observed_at": (
+                    round(min(float(value) for value in scoring_sample_times), 6)
+                    if paired_sample_is_synchronized
+                    else None
+                ),
+                "scoring_live_order_ids_sha256_by_token": (
+                    {
+                        token_id: policy.scoring_live_order_hash_by_token.get(
+                            token_id,
+                            "",
+                        )
+                        for token_id in token_ids
+                    }
+                    if paired_sample_is_synchronized
+                    else {}
+                ),
                 "actual_reward_share_pct": (
                     round(float(actual_percentage), 6)
                     if actual_percentage is not None

@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 import types
@@ -31,6 +32,9 @@ from engine import (  # noqa: E402
     _ProxiedClobClient,
     _compute_quote_target_shares,
     _restore_activity_records,
+    _stable_runtime_host_id,
+    _stable_lifecycle_safety_limits,
+    _stable_order_scoring_observer_enabled,
 )
 
 
@@ -259,6 +263,125 @@ def test_legacy_lp_account_still_uses_full_live_balance():
 
     assert (bid, ask) == (Decimal("950"), Decimal("950"))
     assert warning == ""
+
+
+def test_stable_canary_caps_each_market_at_ten_percent_or_one_hundred():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine.market_cfg = {"101": {"lifecycle_stage": "canary"}}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("1500")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(
+        engine._compute_target_shares("101", budget_pct=Decimal("0.95"))
+    )
+
+    assert (bid, ask) == (Decimal("100"), Decimal("100"))
+    assert warning == ""
+
+
+def test_stable_canary_does_not_exceed_small_account_ten_percent():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine.market_cfg = {"101": {"lifecycle_stage": "canary"}}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("400")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(engine._compute_target_shares("101"))
+
+    assert (bid, ask) == (Decimal("40"), Decimal("40"))
+    assert warning == ""
+
+
+@pytest.mark.parametrize(
+    ("principal", "per_event_cap"),
+    [
+        (Decimal("50"), Decimal("5")),
+        (Decimal("400"), Decimal("40")),
+        (Decimal("1000"), Decimal("100")),
+        (Decimal("1500"), Decimal("100")),
+    ],
+)
+def test_ten_stable_canaries_never_target_more_than_account_principal(
+    principal,
+    per_event_cap,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    cap = engine._stable_lifecycle_canary_budget_usdc(principal)
+
+    assert cap == per_event_cap
+    assert cap * 10 <= principal
+
+
+def test_stable_lifecycle_safety_limits_cannot_be_relaxed_by_config():
+    assert _stable_lifecycle_safety_limits(
+        {
+            "max_active_canaries": 50,
+            "canary_principal_fraction": "0.50",
+            "canary_max_usdc": "500",
+            "promotion_scoring_threshold": 1,
+        }
+    ) == (10, Decimal("0.1"), Decimal("100.0"), 3)
+
+
+def test_single_engine_runtime_host_id_prefers_explicit_env(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "VPS2-Stable")
+
+    assert _stable_runtime_host_id({}) == "vps2-stable"
+
+
+def test_single_engine_runtime_host_id_rejects_invalid_explicit_value(
+    monkeypatch,
+):
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "invalid host")
+
+    assert _stable_runtime_host_id({}) == ""
+
+
+def test_stable_lifecycle_always_enables_read_only_scoring_observer():
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="stable",
+        lifecycle_enabled=True,
+        scoring_cfg={"enabled": False},
+    ) is True
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="stable",
+        lifecycle_enabled=False,
+        scoring_cfg={"enabled": True},
+    ) is False
+    assert _stable_order_scoring_observer_enabled(
+        profile_type="aggressive",
+        lifecycle_enabled=False,
+        scoring_cfg={"enabled": True},
+    ) is True
 
 
 def test_price_legs_skip_when_reward_zone_has_no_passive_tick():
@@ -545,6 +668,1321 @@ def test_stable_replacement_revalidates_account_depth(tmp_path):
                 "min_risk_adjusted_daily_roi_pct": 0.1,
             },
         )
+
+
+def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._account_idx = 1
+    engine._stable_lifecycle_account_uid_key = "a" * 16
+    engine._runtime_host_id = "vps1"
+    engine.min_front_bid_notional_usdc = Decimal("2000")
+    engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": time.time(),
+                "candidates": [
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "condition_id": "0xabc",
+                        "stable_lp_recommended": False,
+                        "weather_market": False,
+                        "market_type": "always_on",
+                        "market_phase": "normal",
+                        "market_active": True,
+                        "market_closed": False,
+                        "market_archived": False,
+                        "accepting_orders": True,
+                        "market_end_ts": time.time() + 86400,
+                        "front_depth_status": "verified",
+                        "front_depth_observed_at": time.time(),
+                        "yes_front_bid_notional_usd": 100,
+                        "no_front_bid_notional_usd": 100,
+                        "stability_score": 60,
+                        "fill_risk": 50,
+                        "risk_adjusted_daily_roi_pct": 0.2,
+                        "account_admission": [
+                            {
+                                "account_index": 1,
+                                "level": "canary",
+                                "reason_codes": [
+                                    "front_depth_below_full_minimum"
+                                ],
+                            }
+                        ],
+                        "account_execution": [
+                            {
+                                "account_index": 1,
+                                "account_uid_key": "a" * 16,
+                                "host_id": "vps1",
+                                "executable": True,
+                                "executable_q_min": 15,
+                            }
+                        ],
+                        "canary_proposal_eligible_account_indexes": [1],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    candidate = engine._validate_stable_replacement_candidate(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "condition_id": "0xabc",
+        },
+        {
+            "max_observer_age_sec": 900,
+            "max_depth_age_sec": 600,
+        },
+        allow_canary=True,
+        require_account_execution=True,
+    )
+
+    assert candidate["account_admission_level"] == "canary"
+
+    engine._stable_lifecycle_account_uid_key = "b" * 16
+    with pytest.raises(ValueError, match="account_execution_identity_mismatch"):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "201",
+                "paired_token_id": "202",
+                "condition_id": "0xabc",
+            },
+            {
+                "max_observer_age_sec": 900,
+                "max_depth_age_sec": 600,
+            },
+            allow_canary=True,
+            require_account_execution=True,
+        )
+
+
+def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine.default_tick = Decimal("0.01")
+    engine.default_min_distance = Decimal("0.01")
+    engine.default_min_distance_ticks = 1
+    engine._market_condition_ids = {}
+    engine._event_states = {}
+    engine._runtime_added_tokens = set()
+    engine._token_slug_cache = {}
+    engine._curator_events_log = []
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine._ensure_runtime_token_state = lambda *_args, **_kwargs: None
+    notifications = []
+    engine.send_discord = notifications.append
+    resubscribe_calls = []
+    engine._request_market_ws_resubscribe = lambda: resubscribe_calls.append(True)
+
+    def inject_pair():
+        engine.market_cfg["102"] = {
+            "paired_token_id": "101",
+            "_dual_side_auto": True,
+        }
+
+    engine._maybe_inject_dual_side_tokens = inject_pair
+    dropped = []
+
+    def drop_runtime(token_id, *, preserve_tokens=()):
+        dropped.append((token_id, set(preserve_tokens)))
+        engine.market_cfg.pop("101", None)
+        engine.market_cfg.pop("102", None)
+        return True
+
+    engine._drop_market_runtime_state = drop_runtime
+
+    def fail_write(_config):
+        raise OSError("disk unavailable")
+
+    engine._write_config_atomic = fail_write
+
+    with pytest.raises(RuntimeError, match="runtime market persistence failed"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+            persist=True,
+            notify=True,
+        )
+
+    assert engine.market_cfg == {}
+    assert dropped == [("101", set())]
+    assert engine._curator_events_log == []
+    assert notifications == []
+    assert len(resubscribe_calls) == 2
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == {
+        "markets": [],
+        "night_markets": [],
+    }
+
+
+def test_lifecycle_runtime_add_rechecks_latest_persisted_pair(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine.default_tick = Decimal("0.01")
+    engine.default_min_distance = Decimal("0.01")
+    engine.default_min_distance_ticks = 1
+    engine._market_condition_ids = {}
+    engine._event_states = {}
+    engine._runtime_added_tokens = set()
+    engine._token_slug_cache = {}
+    engine._curator_events_log = []
+    engine._config_path = tmp_path / "config_1.json"
+    original = {
+        "markets": [
+            {
+                "token_id": "102",
+                "paired_token_id": "101",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path.write_text(json.dumps(original), encoding="utf-8")
+    engine._ensure_runtime_token_state = lambda *_args, **_kwargs: None
+    engine._request_market_ws_resubscribe = lambda: None
+    engine.send_discord = lambda *_args, **_kwargs: None
+
+    def inject_pair():
+        engine.market_cfg["102"] = {
+            "paired_token_id": "101",
+            "_dual_side_auto": True,
+        }
+
+    engine._maybe_inject_dual_side_tokens = inject_pair
+
+    def drop_runtime(token_id, *, preserve_tokens=()):
+        engine.market_cfg.pop(token_id, None)
+        engine.market_cfg.pop("102", None)
+        return True
+
+    engine._drop_market_runtime_state = drop_runtime
+
+    with pytest.raises(RuntimeError, match="runtime market persistence failed"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+            source="stable_lifecycle_auto",
+            persist=True,
+            notify=False,
+            require_new_persisted_pair=True,
+        )
+
+    assert engine.market_cfg == {}
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == original
+
+
+def test_runtime_add_rejects_preexisting_paired_token_without_mutation():
+    engine = object.__new__(PolyLPSMulti)
+    existing = {
+        "paired_token_id": "999",
+        "source": "manual",
+    }
+    engine.market_cfg = {"102": existing.copy()}
+    engine._night_market_cfg = {}
+
+    with pytest.raises(ValueError, match="paired token is already registered"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+        )
+
+    assert engine.market_cfg == {"102": existing}
+    assert engine._night_market_cfg == {}
+
+
+def _stable_lifecycle_retire_engine(tmp_path: Path) -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "eligibility_managed": True,
+        },
+        "102": {
+            "paired_token_id": "101",
+            "eligibility_managed": True,
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "101",
+                        "paired_token_id": "102",
+                        "eligibility_managed": True,
+                    }
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._event_has_unresolved_exit = lambda *_args, **_kwargs: False
+    engine._set_event_state = lambda *_args, **_kwargs: None
+    engine._cancel_risk_buys = AsyncMock(return_value=True)
+    engine._get_token_position = AsyncMock(return_value=0.0)
+    engine._exit_dust_threshold = 0.5
+    engine.client = type("Client", (), {"get_open_orders": lambda self: []})()
+    engine._request_market_ws_resubscribe = lambda: None
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token: token
+
+    def drop_market(token_id):
+        pair = str(
+            (engine.market_cfg.get(token_id) or {}).get("paired_token_id") or ""
+        )
+        engine.market_cfg.pop(token_id, None)
+        engine.market_cfg.pop(pair, None)
+        return True
+
+    engine._drop_market_runtime_state = drop_market
+    return engine
+
+
+def test_stable_lifecycle_retirement_preserves_live_exit_sell(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    engine.client = type(
+        "Client",
+        (),
+        {
+            "get_open_orders": lambda self: [
+                {
+                    "id": "exit-1",
+                    "asset_id": "101",
+                    "side": "SELL",
+                    "status": "LIVE",
+                }
+            ]
+        },
+    )()
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["official_order_scoring_false"],
+        )
+    )
+
+    assert status == "exit_sell_preserved"
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["lifecycle_retire_pending"] is True
+    assert engine._cancel_risk_buys.await_count == 2
+
+
+@pytest.mark.parametrize("pair_failure", ["missing", "not_reciprocal"])
+def test_stable_lifecycle_retirement_requires_valid_runtime_pair(
+    tmp_path,
+    pair_failure,
+):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    if pair_failure == "missing":
+        engine.market_cfg.pop("102")
+    else:
+        engine.market_cfg["102"]["paired_token_id"] = "999"
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["official_order_scoring_false"],
+        )
+    )
+
+    assert status == "paired_market_invalid"
+    assert engine._cancel_risk_buys.await_count == 0
+    assert engine._get_token_position.await_count == 0
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert "lifecycle_retire_pending" not in config["markets"][0]
+
+
+def test_stable_lifecycle_retirement_removes_only_after_flat(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+    engine.market_cfg.update(
+        {
+            "201": {
+                "paired_token_id": "202",
+                "source": "operator",
+            },
+            "202": {
+                "paired_token_id": "201",
+                "source": "operator",
+                "_dual_side_auto": True,
+            },
+        }
+    )
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "removed"
+    assert set(engine.market_cfg) == {"201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["201"]
+    assert engine._get_token_position.await_count == 2
+
+
+def test_stable_lifecycle_retirement_rejects_disk_only_survivor(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["101", "201"]
+
+
+def test_stable_lifecycle_retirement_rejects_incoherent_runtime_survivor(
+    tmp_path,
+):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+    engine.market_cfg.update(
+        {
+            "201": {
+                "paired_token_id": "999",
+                "source": "operator",
+            },
+            "202": {
+                "paired_token_id": "201",
+                "source": "operator",
+                "_dual_side_auto": True,
+            },
+        }
+    )
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102", "201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["101", "201"]
+
+
+def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    engine._get_token_position = AsyncMock(return_value=4.5)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "position_not_flat"
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["lifecycle_retire_pending"] is True
+
+
+def test_stable_lifecycle_retirement_does_not_treat_dust_as_flat(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    engine._get_token_position = AsyncMock(return_value=0.1)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "position_not_flat"
+    assert set(engine.market_cfg) == {"101", "102"}
+
+
+def test_stable_lifecycle_retirement_keeps_last_primary_market(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["101"]
+    assert config["markets"][0]["lifecycle_retire_pending"] is True
+
+
+def test_stable_lifecycle_promotion_updates_runtime_and_persisted_pair(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "lifecycle_stage": "canary",
+            "risk": "high",
+            "base_risk": "high",
+        },
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "risk": "high",
+            "base_risk": "high",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "101",
+                        "paired_token_id": "102",
+                        "lifecycle_stage": "canary",
+                        "risk": "high",
+                        "eligibility_base_risk": "high",
+                    }
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._market_budget_pct = {"101": Decimal("0.6"), "102": Decimal("0.6")}
+    engine._last_budget_rebalance_ts = 100
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token: token
+
+    status = engine._promote_stable_lifecycle_market("101", "low")
+
+    assert status == "promoted"
+    assert engine.market_cfg["101"]["lifecycle_stage"] == "full"
+    assert engine.market_cfg["102"]["lifecycle_stage"] == "full"
+    assert engine.market_cfg["101"]["risk"] == "low"
+    assert engine.market_cfg["102"]["risk"] == "low"
+    assert engine._market_budget_pct == {}
+    persisted = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert persisted["markets"][0]["lifecycle_stage"] == "full"
+    assert persisted["markets"][0]["risk"] == "low"
+
+
+def test_stable_lifecycle_disabled_is_noop():
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = False
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+
+@pytest.mark.parametrize("runtime_mode", ["single", "multi_legacy"])
+def test_stable_lifecycle_requires_multi_roster(runtime_mode):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = runtime_mode
+
+    class ProposalReadTrap:
+        def read_text(self, **_kwargs):
+            raise AssertionError("non-roster runtime must not read proposals")
+
+    engine._stable_rotation_proposal_path = ProposalReadTrap()
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+
+def test_stable_lifecycle_manages_existing_active_manual_market():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "source": "manual",
+            "eligibility_managed": False,
+        },
+        "102": {
+            "paired_token_id": "101",
+            "source": "manual",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+
+    assert engine._stable_lifecycle_managed_tokens() == {"101"}
+
+
+def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": time.time(),
+                "policy": {"max_observer_age_sec": 900},
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [
+                            {
+                                "token_id": "201",
+                                "paired_token_id": "202",
+                            }
+                        ],
+                        "keep": [],
+                        "review": [],
+                    },
+                    {
+                        "account_index": 2,
+                        "add": [{"token_id": "901", "paired_token_id": "902"}],
+                        "canary": [],
+                        "keep": [],
+                        "review": [],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = {
+        "token_id": "201",
+        "paired_token_id": "202",
+        "account_admission": [
+            {"account_index": 1, "level": "canary", "reason_codes": []}
+        ],
+    }
+    engine._validate_stable_replacement_candidate = lambda *_args, **_kwargs: candidate
+    captured = {}
+
+    def add_candidate(market, _candidate, **kwargs):
+        captured.update(kwargs)
+        engine.market_cfg[str(market["token_id"])] = {
+            "paired_token_id": str(market["paired_token_id"]),
+        }
+        engine.market_cfg[str(market["paired_token_id"])] = {
+            "paired_token_id": str(market["token_id"]),
+            "_dual_side_auto": True,
+        }
+        return True
+
+    engine._add_runtime_candidate = add_candidate
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert captured["source"] == "stable_lifecycle_auto"
+    assert captured["lifecycle_stage"] == "canary"
+    assert captured["risk_override"] == "high"
+    assert captured["require_new_persisted_pair"] is True
+    assert engine._stable_lifecycle_state["add_results"] == [
+        {"token_id": "201", "status": "added"}
+    ]
+
+
+def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "lifecycle_stage": "canary",
+        },
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_max_active_canaries = 10
+    engine._stable_lifecycle_promotion_scoring_threshold = 3
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    promoted = []
+    engine._promote_stable_lifecycle_market = (
+        lambda token_id, risk: promoted.append((token_id, risk)) or "promoted"
+    )
+    engine._validate_stable_lifecycle_promotion = AsyncMock(
+        return_value=(True, "promotion_live_order_set_verified")
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    for offset in range(3):
+        engine._stable_rotation_proposal_path.write_text(
+            json.dumps(
+                {
+                    "status": "ready",
+                    "generated_at": time.time() + offset,
+                    "accounts": [
+                        {
+                            "account_index": 1,
+                            "account_uid_key": "uid-key-1",
+                            "host_id": "vps1",
+                            "add": [],
+                            "canary": [],
+                            "keep": [
+                                {
+                                    "token_id": "101",
+                                    "paired_token_id": "102",
+                                    "fill_risk": 20,
+                                    "account_execution_evidence": {
+                                        "account_index": 1,
+                                        "account_uid_key": "uid-key-1",
+                                        "host_id": "vps1",
+                                        "official_scoring": True,
+                                        "observed_q_min": 12,
+                                        "scoring_sample_id": f"{offset + 1:064x}",
+                                        "scoring_sample_observed_at": time.time(),
+                                        "scoring_live_order_ids_sha256_by_token": {
+                                            "101": "a" * 64,
+                                            "102": "b" * 64,
+                                        },
+                                    },
+                                }
+                            ],
+                            "review": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert promoted == [("101", "low")]
+    assert engine._stable_lifecycle_state["promote_results"] == [
+        {"token_id": "101", "status": "promoted"}
+    ]
+
+
+def test_stable_lifecycle_promotion_revalidates_current_live_order_set():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102", "lifecycle_stage": "canary"},
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._managed_buy_order_ids = {"yes-order", "no-order"}
+
+    class Client:
+        def __init__(self):
+            self.orders = [
+                {"id": "yes-order", "asset_id": "101", "side": "BUY"},
+                {"id": "no-order", "asset_id": "102", "side": "BUY"},
+            ]
+
+        def get_open_orders(self):
+            return list(self.orders)
+
+    engine.client = Client()
+    row = {
+        "token_id": "101",
+        "scoring_sample_observed_at": time.time(),
+        "scoring_live_order_ids_sha256_by_token": {
+            "101": engine._live_order_ids_sha256(["yes-order"]),
+            "102": engine._live_order_ids_sha256(["no-order"]),
+        },
+    }
+
+    assert asyncio.run(engine._validate_stable_lifecycle_promotion(row)) == (
+        True,
+        "promotion_live_order_set_verified",
+    )
+
+    engine.client.orders[1]["id"] = "replacement-order"
+    engine._managed_buy_order_ids.add("replacement-order")
+    assert asyncio.run(engine._validate_stable_lifecycle_promotion(row)) == (
+        False,
+        "promotion_live_order_set_changed",
+    )
+
+
+def test_stable_lifecycle_promotion_rejects_stale_scoring_sample():
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {"101": {"paired_token_id": "102"}}
+    engine._night_market_cfg = {}
+
+    assert asyncio.run(
+        engine._validate_stable_lifecycle_promotion(
+            {
+                "token_id": "101",
+                "scoring_sample_observed_at": time.time() - 899,
+                "scoring_live_order_ids_sha256_by_token": {
+                    "101": "a" * 64,
+                    "102": "b" * 64,
+                },
+            }
+        )
+    ) == (False, "promotion_scoring_sample_stale")
+
+
+def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": time.time(),
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [
+                            {"token_id": "201", "paired_token_id": "202"}
+                        ],
+                        "keep": [],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._validate_stable_replacement_candidate = (
+        lambda *_args, **_kwargs: {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "account_admission": [
+                {"account_index": 1, "level": "canary", "reason_codes": []}
+            ],
+        }
+    )
+
+    def incomplete_add(market, _candidate, **_kwargs):
+        engine.market_cfg[str(market["token_id"])] = {
+            "paired_token_id": str(market["paired_token_id"]),
+        }
+        return True
+
+    rollbacks = []
+
+    def rollback(token_id, *, config_before, runtime_tokens_before):
+        rollbacks.append(
+            (token_id, dict(config_before), set(runtime_tokens_before))
+        )
+        engine.market_cfg.clear()
+
+    engine._add_runtime_candidate = incomplete_add
+    engine._rollback_stable_lifecycle_add = rollback
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert rollbacks == [
+        (
+            "201",
+            {"markets": [], "night_markets": []},
+            set(),
+        )
+    ]
+    assert engine.market_cfg == {}
+    assert engine._stable_lifecycle_state["add_results"] == [
+        {
+            "token_id": "201",
+            "status": (
+                "rejected:RuntimeError:paired market injection did not complete"
+            ),
+        }
+    ]
+
+
+def test_stable_lifecycle_add_rollback_preserves_disabled_persisted_pair(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    original_config["markets"][0],
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dropped = []
+    engine._drop_market_runtime_state = (
+        lambda token_id, *, preserve_tokens=(): dropped.append(
+            (token_id, set(preserve_tokens))
+        )
+        or True
+    )
+    resubscribed = []
+    engine._request_market_ws_resubscribe = lambda: resubscribed.append(True)
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before={"999"},
+    )
+
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == (
+        original_config
+    )
+    assert dropped == [("201", {"999"})]
+    assert resubscribed == [True]
+
+
+def test_stable_lifecycle_add_rollback_preserves_concurrent_config_row(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    original_config["markets"][0],
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                    {
+                        "token_id": "303",
+                        "paired_token_id": "304",
+                        "enabled": True,
+                        "source": "dashboard_confirmed",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._drop_market_runtime_state = lambda *_args, **_kwargs: True
+    engine._request_market_ws_resubscribe = lambda: None
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before=set(),
+    )
+
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["202", "303"]
+
+
+def test_stable_lifecycle_add_rollback_does_not_restore_concurrent_delete(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                    {
+                        "token_id": "303",
+                        "paired_token_id": "304",
+                        "enabled": True,
+                        "source": "dashboard_confirmed",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._drop_market_runtime_state = lambda *_args, **_kwargs: True
+    engine._request_market_ws_resubscribe = lambda: None
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before=set(),
+    )
+
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["303"]
+
+
+def test_config_transaction_lock_blocks_a_second_process(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text("{}", encoding="utf-8")
+    lock_path = tmp_path / ".config_1.json.lock"
+    contender = (
+        "import fcntl, os, sys; "
+        "fd=os.open(sys.argv[1], os.O_CREAT|os.O_RDWR, 0o600); "
+        "\ntry:\n fcntl.flock(fd, fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        "\nexcept BlockingIOError:\n sys.exit(23)"
+        "\nelse:\n sys.exit(0)"
+    )
+
+    with engine._config_transaction_lock():
+        with engine._config_transaction_lock():
+            engine._write_config_atomic({"nested": True})
+        result = subprocess.run(
+            [sys.executable, "-c", contender, str(lock_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode == 23
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == {
+        "nested": True
+    }
+
+
+def test_stable_lifecycle_rejects_disabled_persisted_pair_without_mutation(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(original_config),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": time.time(),
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [
+                            {"token_id": "201", "paired_token_id": "202"}
+                        ],
+                        "keep": [],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._validate_stable_replacement_candidate = lambda *_args, **_kwargs: (
+        pytest.fail("persisted conflict must be rejected before validation")
+    )
+    engine._add_runtime_candidate = lambda *_args, **_kwargs: pytest.fail(
+        "persisted conflict must not enter runtime"
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == (
+        original_config
+    )
+    assert engine.market_cfg == {}
+    assert engine._night_market_cfg == {}
+    assert engine._stable_lifecycle_state["add_results"] == [
+        {
+            "token_id": "201",
+            "status": (
+                "rejected:ValueError:"
+                "candidate conflicts with existing persisted market"
+            ),
+        }
+    ]
+
+
+def test_stable_lifecycle_retirement_failure_does_not_block_other_market(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = False
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "eligibility_managed": True,
+            "lifecycle_retire_pending": True,
+        },
+        "201": {
+            "paired_token_id": "202",
+            "eligibility_managed": True,
+            "lifecycle_retire_pending": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": time.time(),
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [],
+                        "keep": [],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(
+        side_effect=[RuntimeError("first failed"), "removed"]
+    )
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert engine._retire_stable_lifecycle_market.await_count == 2
+    assert engine._stable_lifecycle_state["retire_results"] == [
+        {"token_id": "101", "status": "rejected:RuntimeError:first failed"},
+        {"token_id": "201", "status": "removed"},
+    ]
 
 
 def _position_reconcile_engine() -> PolyLPSMulti:

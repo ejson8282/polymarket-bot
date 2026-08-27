@@ -1,8 +1,13 @@
 import asyncio
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
+import math
 import os
 import random
 import re
+import socket
 import threading
 import time
 import urllib.request
@@ -10,7 +15,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 import contextvars
@@ -80,6 +85,30 @@ except ImportError:
     from stable_rotation_commands import (
         confirmation_for_replacement,
         find_confirmed_replacement,
+    )
+try:
+    from .stable_market_lifecycle import (
+        MAX_ACTIVE_CANARIES_LIMIT,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
+        MIN_PROMOTION_SCORING_SAMPLES,
+        STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
+        account_admission as stable_lifecycle_account_admission,
+        build_lifecycle_plan,
+        candidate_is_executable_for_account,
+    )
+except ImportError:
+    from stable_market_lifecycle import (
+        MAX_ACTIVE_CANARIES_LIMIT,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
+        MIN_PROMOTION_SCORING_SAMPLES,
+        STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
+        account_admission as stable_lifecycle_account_admission,
+        build_lifecycle_plan,
+        candidate_is_executable_for_account,
     )
 
 
@@ -485,6 +514,80 @@ def _compute_quote_target_shares(
     )
 
 
+def _stable_lifecycle_safety_limits(
+    lifecycle_cfg: Mapping[str, Any],
+) -> tuple[int, Decimal, Decimal, int]:
+    """Clamp operator config to the stable-LP canary safety contract."""
+
+    return (
+        max(
+            0,
+            min(
+                MAX_ACTIVE_CANARIES_LIMIT,
+                int(lifecycle_cfg.get("max_active_canaries", 10)),
+            ),
+        ),
+        max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_PRINCIPAL_FRACTION)),
+                Decimal(
+                    str(
+                        lifecycle_cfg.get(
+                            "canary_principal_fraction",
+                            "0.10",
+                        )
+                    )
+                ),
+            ),
+        ),
+        max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_USDC)),
+                Decimal(str(lifecycle_cfg.get("canary_max_usdc", "100"))),
+            ),
+        ),
+        max(
+            MIN_PROMOTION_SCORING_SAMPLES,
+            int(lifecycle_cfg.get("promotion_scoring_threshold", 3)),
+        ),
+    )
+
+
+def _stable_order_scoring_observer_enabled(
+    *,
+    profile_type: str,
+    lifecycle_enabled: bool,
+    scoring_cfg: Mapping[str, Any],
+) -> bool:
+    """Stable lifecycle always requires its read-only scoring producer."""
+
+    return bool(
+        lifecycle_enabled
+        or (
+            str(profile_type or "").strip().lower() == "aggressive"
+            and scoring_cfg.get("enabled", True)
+        )
+    )
+
+
+def _stable_runtime_host_id(config: Mapping[str, Any]) -> str:
+    lifecycle = config.get("stable_market_lifecycle")
+    if not isinstance(lifecycle, Mapping):
+        lifecycle = {}
+    runtime = config.get("runtime")
+    if not isinstance(runtime, Mapping):
+        runtime = {}
+    candidate = (
+        os.getenv("POLYMARKET_HOST_ID", "").strip()
+        or str(lifecycle.get("host_id") or "").strip()
+        or str(runtime.get("host_id") or "").strip()
+        or socket.gethostname().strip()
+    ).lower()
+    return candidate if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", candidate) else ""
+
+
 def _ws_proxy_diag(ws_proxy: Optional[str] = None) -> str:
     sys_proxies = urllib.request.getproxies() or {}
     sys_proxy = (
@@ -588,6 +691,8 @@ class PolyLPSMulti:
     def __init__(self, config_path: str = "config.json") -> None:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
+        self._config_lock = threading.RLock()
+        self._config_lock_state = threading.local()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         _cfg_stem = cfg_path.stem
         self._account_idx = (
@@ -615,6 +720,13 @@ class PolyLPSMulti:
         # distinguish "our maker order matched" from "someone else's order
         # matched in a market we subscribe to".
         self._funder_lc: str = funder.lower()
+        account_uid = f"{chain_id}:{signature_type}:{self._funder_lc}"
+        self._stable_lifecycle_account_uid_key = (
+            hashlib.sha256(account_uid.encode("utf-8")).hexdigest()[:16]
+            if re.fullmatch(r"0x[0-9a-f]{40}", self._funder_lc)
+            else ""
+        )
+        self._runtime_host_id = _stable_runtime_host_id(self.cfg)
 
         # 施工包04:跨账号自成交防线。multi_runner 会用共享实例覆盖此默认值;
         # 单账号直跑时是自建空注册表(无兄弟订单,行为不变)。
@@ -810,6 +922,10 @@ class PolyLPSMulti:
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
                 "source": str(m.get("source") or "manual"),
                 "eligibility_managed": bool(m.get("eligibility_managed", False)),
+                "lifecycle_stage": str(m.get("lifecycle_stage") or ""),
+                "lifecycle_retire_pending": bool(
+                    m.get("lifecycle_retire_pending", False)
+                ),
             }
 
         if not self.market_cfg:
@@ -818,10 +934,16 @@ class PolyLPSMulti:
         self.market_states: Dict[str, TopOfBook] = {}
         self._market_snapshots: Dict[str, MarketSnapshot] = {}
         self._market_depth_snapshots: Dict[str, MarketSnapshot] = {}
-        self._event_states: Dict[str, Dict[str, Any]] = {
-            tid: {"state": EVENT_ACTIVE, "reason": "init", "updated_at": time.time()}
-            for tid in self.market_cfg
-        }
+        self._event_states: Dict[str, Dict[str, Any]] = {}
+        for tid, market in self.market_cfg.items():
+            retire_pending = bool(market.get("lifecycle_retire_pending"))
+            self._event_states[tid] = {
+                "state": EVENT_WATCH if retire_pending else EVENT_ACTIVE,
+                "reason": (
+                    "stable_lifecycle_retire_pending" if retire_pending else "init"
+                ),
+                "updated_at": time.time(),
+            }
         self._event_locks: Dict[str, asyncio.Lock] = {tid: asyncio.Lock() for tid in self.market_cfg}
         self._latency_marks: Dict[str, Dict[str, float]] = {tid: {} for tid in self.market_cfg}
         self._latency_records: list[dict] = []
@@ -1233,9 +1355,19 @@ class PolyLPSMulti:
                 "condition_id": str(m.get("condition_id", "")).strip().lower(),
                 "source": str(m.get("source") or "manual"),
                 "eligibility_managed": bool(m.get("eligibility_managed", False)),
+                "lifecycle_stage": str(m.get("lifecycle_stage") or ""),
+                "lifecycle_retire_pending": bool(
+                    m.get("lifecycle_retire_pending", False)
+                ),
             }
             if self._night_market_cfg[token_id]["condition_id"]:
                 self._market_condition_ids[token_id] = self._night_market_cfg[token_id]["condition_id"]
+            if self._night_market_cfg[token_id]["lifecycle_retire_pending"]:
+                self._event_states[token_id] = {
+                    "state": EVENT_WATCH,
+                    "reason": "stable_lifecycle_retire_pending",
+                    "updated_at": time.time(),
+                }
 
         # state writer
         self._state_write_interval_sec: int = int(execution.get("state_write_interval_sec", 3))
@@ -1314,6 +1446,70 @@ class PolyLPSMulti:
         self._stable_rotation_proposal_path = (
             self._state_path.parent / "stable_rotation_proposal.json"
         )
+        lifecycle_cfg = self.cfg.get("stable_market_lifecycle", {}) or {}
+        if not isinstance(lifecycle_cfg, dict):
+            lifecycle_cfg = {}
+        self._stable_market_lifecycle_enabled = bool(
+            lifecycle_cfg.get("enabled", False)
+            and self.lp_account_profile.profile_type != "aggressive"
+        )
+        self._stable_lifecycle_max_proposal_age_sec = max(
+            60.0,
+            float(lifecycle_cfg.get("max_proposal_age_sec", 900.0)),
+        )
+        self._stable_lifecycle_max_add_per_cycle = max(
+            0,
+            int(lifecycle_cfg.get("max_add_per_cycle", 5)),
+        )
+        (
+            self._stable_lifecycle_max_active_canaries,
+            self._stable_lifecycle_canary_principal_fraction,
+            self._stable_lifecycle_canary_max_usdc,
+            self._stable_lifecycle_promotion_scoring_threshold,
+        ) = _stable_lifecycle_safety_limits(
+            lifecycle_cfg
+        )
+        self._stable_lifecycle_soft_failure_threshold = max(
+            1,
+            int(lifecycle_cfg.get("soft_failure_threshold", 3)),
+        )
+        self._stable_lifecycle_hard_failure_threshold = max(
+            1,
+            int(lifecycle_cfg.get("hard_failure_threshold", 1)),
+        )
+        self._stable_lifecycle_state_path = (
+            self._state_path.parent
+            / f"stable_market_lifecycle_state_{self._account_idx}.json"
+        )
+        self._stable_lifecycle_state: Dict[str, Any] = {}
+        try:
+            lifecycle_state = json.loads(
+                self._stable_lifecycle_state_path.read_text(encoding="utf-8")
+            )
+            if (
+                isinstance(lifecycle_state, dict)
+                and int(lifecycle_state.get("account_index") or 0)
+                == int(self._account_idx)
+                and (
+                    int(lifecycle_state.get("version") or 0)
+                    != STABLE_LIFECYCLE_STATE_VERSION
+                    or (
+                        str(
+                            lifecycle_state.get("account_uid_key") or ""
+                        ).strip()
+                        == self._stable_lifecycle_account_uid_key
+                        and (
+                            str(lifecycle_state.get("host_id") or "")
+                            .strip()
+                            .lower()
+                            == self._runtime_host_id
+                        )
+                    )
+                )
+            ):
+                self._stable_lifecycle_state = lifecycle_state
+        except Exception:
+            pass
         self._eligibility_state: Dict[str, Dict[str, Any]] = {}
         eligibility_cfg = self.cfg.get("eligibility_guard", {}) or {}
         aggressive_profile = self.lp_account_profile.profile_type == "aggressive"
@@ -1340,9 +1536,14 @@ class PolyLPSMulti:
             float(eligibility_cfg.get("stale_after_sec", 660.0)),
         )
         scoring_cfg = self.cfg.get("order_scoring_observer", {}) or {}
-        self._order_scoring_observer_enabled = bool(
-            self.lp_account_profile.profile_type == "aggressive"
-            and scoring_cfg.get("enabled", True)
+        if not isinstance(scoring_cfg, Mapping):
+            scoring_cfg = {}
+        self._order_scoring_observer_enabled = (
+            _stable_order_scoring_observer_enabled(
+                profile_type=self.lp_account_profile.profile_type,
+                lifecycle_enabled=self._stable_market_lifecycle_enabled,
+                scoring_cfg=scoring_cfg,
+            )
         )
         checkpoints = scoring_cfg.get("checkpoints_sec") or (10, 30, 60, 120, 180, 300)
         self._order_scoring_observer_interval_sec = max(
@@ -1353,6 +1554,14 @@ class PolyLPSMulti:
             / f"order_scoring_state_{self._account_idx or 1}.json",
             checkpoints_sec=tuple(checkpoints),
             retention_sec=float(scoring_cfg.get("retention_sec", 7 * 24 * 60 * 60)),
+            steady_state_interval_sec=float(
+                scoring_cfg.get(
+                    "steady_state_interval_sec",
+                    300.0 if self._stable_market_lifecycle_enabled else 0.0,
+                )
+            ),
+            account_uid_key=self._stable_lifecycle_account_uid_key,
+            host_id=self._runtime_host_id,
         )
 
         # Rehydrate _curator_events_log from prior engine_state so a restart
@@ -1492,12 +1701,12 @@ class PolyLPSMulti:
         )
         self._runtime_mode = "single"
         self._runtime_scope = ""
-        self._runtime_host_id = ""
         self._routing_roster_sha256 = ""
         self._routing_market_universe_sha256 = ""
         self._routing_account_count = 1
         self._local_account_count = 1
         self._runtime_market_updates_enabled = True
+        self._stable_lifecycle_runtime_updates_enabled = False
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -6446,6 +6655,48 @@ class PolyLPSMulti:
             return available
         return profile.effective_available(available)
 
+    def _stable_lifecycle_canary_budget_usdc(
+        self,
+        available: Optional[Decimal],
+    ) -> Optional[Decimal]:
+        """Return the per-event canary cap without expanding account capital.
+
+        The lifecycle hard limit is ten active canaries. Therefore ten markets
+        at ``min(10% of principal, $100)`` can never target more than the
+        account principal in aggregate.
+        """
+
+        profile = getattr(self, "lp_account_profile", None)
+        principal: Optional[Decimal] = None
+        if profile is not None and getattr(profile, "managed", False):
+            principal = Decimal(str(profile.target_principal_usdc))
+        elif available is not None:
+            principal = max(Decimal("0"), Decimal(str(available)))
+        if principal is None:
+            return None
+        fraction = Decimal(
+            str(
+                getattr(
+                    self,
+                    "_stable_lifecycle_canary_principal_fraction",
+                    Decimal("0.10"),
+                )
+            )
+        )
+        absolute_cap = Decimal(
+            str(
+                getattr(
+                    self,
+                    "_stable_lifecycle_canary_max_usdc",
+                    Decimal("100"),
+                )
+            )
+        )
+        return max(
+            Decimal("0"),
+            min(principal * fraction, absolute_cap),
+        )
+
     async def _compute_target_shares(
         self,
         token_id: str,
@@ -6470,6 +6721,18 @@ class PolyLPSMulti:
         )
         if avail is None or avail <= 0:
             return Decimal("0"), Decimal("0"), "no_balance"
+
+        market_cfg = (
+            getattr(self, "market_cfg", {}).get(token_id)
+            or getattr(self, "_night_market_cfg", {}).get(token_id)
+            or {}
+        )
+        if str(market_cfg.get("lifecycle_stage") or "").lower() == "canary":
+            canary_cap = self._stable_lifecycle_canary_budget_usdc(avail)
+            if canary_cap is None or canary_cap <= 0:
+                return Decimal("0"), Decimal("0"), "canary_budget_unavailable"
+            avail = min(avail, canary_cap)
+            budget_pct = Decimal("1")
 
         target, warning = _compute_quote_target_shares(
             available=avail,
@@ -6775,6 +7038,12 @@ class PolyLPSMulti:
                     "eligibility_managed": bool(
                         yes_cfg.get("eligibility_managed", False)
                     ),
+                    "lifecycle_stage": str(
+                        yes_cfg.get("lifecycle_stage") or ""
+                    ),
+                    "lifecycle_retire_pending": bool(
+                        yes_cfg.get("lifecycle_retire_pending", False)
+                    ),
                     "_dual_side_auto": True,
                     "game_start_ts_override": float(yes_cfg.get("game_start_ts_override", 0.0) or 0.0),
                     "pre_start_stop_sec_override": int(yes_cfg.get("pre_start_stop_sec_override", 0) or 0),
@@ -6785,7 +7054,18 @@ class PolyLPSMulti:
                     self._market_condition_ids[no_tid] = pool[no_tid]["condition_id"]
                 # Initialise runtime state for the new token
                 self._ensure_runtime_token_state(no_tid, reason="dual_side_inject")
-                self._event_states[no_tid] = {"state": EVENT_ACTIVE, "reason": "dual_side_inject", "updated_at": time.time()}
+                retire_pending = bool(
+                    pool[no_tid].get("lifecycle_retire_pending")
+                )
+                self._event_states[no_tid] = {
+                    "state": EVENT_WATCH if retire_pending else EVENT_ACTIVE,
+                    "reason": (
+                        "stable_lifecycle_retire_pending"
+                        if retire_pending
+                        else "dual_side_inject"
+                    ),
+                    "updated_at": time.time(),
+                }
                 self._dual_side_injected.add(no_tid)
                 slug = self._token_slug_cache.get(yes_tid, yes_tid[:16])
 
@@ -6811,8 +7091,10 @@ class PolyLPSMulti:
         condition_id: Optional[str] = None,
         eligibility_managed: bool = False,
         eligibility_base_risk: Optional[str] = None,
+        lifecycle_stage: str = "",
         persist: bool = True,
         notify: bool = True,
+        require_new_persisted_pair: bool = False,
     ) -> bool:
         """Register a new market at runtime (no restart). Mirrors the init-time
         market_cfg schema + minimum per-token state (same 5 dicts that dual-side
@@ -6828,6 +7110,18 @@ class PolyLPSMulti:
         if token_id in self.market_cfg or token_id in self._night_market_cfg:
             return False
         paired_token_id = str(paired_token_id).strip()
+        if not paired_token_id.isdigit() or paired_token_id == token_id:
+            raise ValueError(f"invalid paired_token_id: {paired_token_id}")
+        if (
+            paired_token_id in self.market_cfg
+            or paired_token_id in self._night_market_cfg
+        ):
+            raise ValueError(
+                f"paired token is already registered: {paired_token_id}"
+            )
+        preexisting_runtime_tokens = set(self.market_cfg) | set(
+            self._night_market_cfg
+        )
 
         session_label = str(session).lower()
         target_cfg = self._night_market_cfg if session_label == "night" else self.market_cfg
@@ -6843,6 +7137,8 @@ class PolyLPSMulti:
             "paired_token_id": paired_token_id,
             "source": source,
             "eligibility_managed": bool(eligibility_managed),
+            "lifecycle_stage": str(lifecycle_stage or ""),
+            "lifecycle_retire_pending": False,
             "_runtime_added": True,
             "game_start_ts_override": float(game_start_ts) if game_start_ts else 0.0,
             "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
@@ -6868,37 +7164,10 @@ class PolyLPSMulti:
         self._request_market_ws_resubscribe()
 
         slug_display = slug or self._token_slug_cache.get(token_id, token_id[:16])
-        log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
-        if notify:
-            self.send_discord(
-                f"市场已自动加入\n市场：{slug_display}\n"
-                f"价差：{spread}\n来源：{source}"
-            )
-
-        # Persist every auto-added market (day + night) for dashboard display.
-        if persist:
-            try:
-                self._curator_events_log.append({
-                    "token_id": token_id,
-                    "paired_token_id": paired_token_id,
-                    "slug": slug_display,
-                    "question": question or "",
-                    "league": league or "",
-                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
-                    "added_at": time.time(),
-                    "source": source,
-                    "session": session_label,
-                    "spread": float(spread) if spread is not None else 0.0,
-                })
-            except Exception as _ne:
-                log(f"[runtime-add] curator_events append err: {_ne}")
 
         # Persist to config.json so a restart (or crash) doesn't drop this market.
         # Mirrors the symmetric prune path in start_guard_sweep_loop at T-2h cutoff.
         try:
-            if not persist:
-                return True
-            cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
             section = "night_markets" if session_label == "night" else "markets"
             persisted_entry = {
                 "token_id": token_id,
@@ -6915,6 +7184,8 @@ class PolyLPSMulti:
                 "eligibility_base_risk": str(
                     eligibility_base_risk or risk
                 ).lower(),
+                "lifecycle_stage": str(lifecycle_stage or ""),
+                "lifecycle_retire_pending": False,
                 "slug": slug or "",
                 "question": question or "",
                 "league": league or "",
@@ -6923,43 +7194,146 @@ class PolyLPSMulti:
                 "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
                 "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
             }
-            persisted = False
-            for sec in ("markets", "night_markets"):
-                for market in (cfg_disk.get(sec) or []):
-                    if str(market.get("token_id") or "") != token_id:
-                        continue
-                    market.update(persisted_entry)
-                    market.pop("pending_activation", None)
-                    market.pop("pending_command_id", None)
-                    persisted = True
-            if not persisted:
-                entries = cfg_disk.setdefault(section, []) or []
-                entries.append(persisted_entry)
-                cfg_disk[section] = entries
-            self._write_config_atomic(cfg_disk)
-            log(
-                f"[runtime-add] persisted to config.json "
-                f"section={section} token={token_id[:16]}"
-            )
+            if persist:
+                with self._config_transaction_lock():
+                    cfg_disk = json.loads(
+                        self._config_path.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(cfg_disk, dict):
+                        raise ValueError("account config is invalid")
+                    persisted_tokens = set()
+                    for sec in ("markets", "night_markets"):
+                        rows = cfg_disk.get(sec) or []
+                        if not isinstance(rows, list):
+                            raise ValueError(
+                                f"account config {sec} is invalid"
+                            )
+                        for market in rows:
+                            if not isinstance(market, dict):
+                                raise ValueError(
+                                    f"account config {sec} contains invalid market"
+                                )
+                            persisted_token = str(
+                                market.get("token_id") or ""
+                            )
+                            if persisted_token:
+                                persisted_tokens.add(persisted_token)
+                    if require_new_persisted_pair and {
+                        token_id,
+                        paired_token_id,
+                    } & persisted_tokens:
+                        raise ValueError(
+                            "candidate conflicts with existing persisted market"
+                        )
+
+                    persisted = False
+                    for sec in ("markets", "night_markets"):
+                        for market in cfg_disk.get(sec) or []:
+                            if str(market.get("token_id") or "") != token_id:
+                                continue
+                            market.update(persisted_entry)
+                            market.pop("pending_activation", None)
+                            market.pop("pending_command_id", None)
+                            persisted = True
+                    if not persisted:
+                        entries = cfg_disk.setdefault(section, []) or []
+                        entries.append(persisted_entry)
+                        cfg_disk[section] = entries
+                    self._write_config_atomic(cfg_disk)
+                    log(
+                        f"[runtime-add] persisted to config.json "
+                        f"section={section} token={token_id[:16]}"
+                    )
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
+            self._drop_market_runtime_state(
+                token_id,
+                preserve_tokens=preexisting_runtime_tokens,
+            )
+            self._request_market_ws_resubscribe()
+            raise RuntimeError(
+                f"runtime market persistence failed for {token_id[:16]}"
+            ) from e
+
+        log(f"[runtime-add] token={token_id[:16]} paired={paired_token_id[:16]} spread={spread} side=YES src={source}")
+        if persist:
+            try:
+                self._curator_events_log.append({
+                    "token_id": token_id,
+                    "paired_token_id": paired_token_id,
+                    "slug": slug_display,
+                    "question": question or "",
+                    "league": league or "",
+                    "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
+                    "added_at": time.time(),
+                    "source": source,
+                    "session": session_label,
+                    "spread": float(spread) if spread is not None else 0.0,
+                })
+            except Exception as event_exc:
+                log(f"[runtime-add] curator_events append err: {event_exc}")
+        if notify:
+            self.send_discord(
+                f"市场已自动加入\n市场：{slug_display}\n"
+                f"价差：{spread}\n来源：{source}"
+            )
 
         return True
 
-    def _write_config_atomic(self, config: Mapping[str, Any]) -> None:
-        temporary = self._config_path.with_name(
-            f".{self._config_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
-        )
-        try:
-            temporary.write_text(
-                json.dumps(config, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temporary.replace(self._config_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    @contextmanager
+    def _config_transaction_lock(self) -> Iterator[None]:
+        lock = getattr(self, "_config_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._config_lock = lock
+        state = getattr(self, "_config_lock_state", None)
+        if state is None:
+            state = threading.local()
+            self._config_lock_state = state
 
-    def _drop_market_runtime_state(self, token_id: str) -> bool:
+        with lock:
+            depth = int(getattr(state, "depth", 0))
+            if depth:
+                state.depth = depth + 1
+                try:
+                    yield
+                finally:
+                    state.depth = depth
+                return
+
+            lock_path = self._config_path.with_name(
+                f".{self._config_path.name}.lock"
+            )
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                state.depth = 1
+                yield
+            finally:
+                state.depth = 0
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+
+    def _write_config_atomic(self, config: Mapping[str, Any]) -> None:
+        with self._config_transaction_lock():
+            temporary = self._config_path.with_name(
+                f".{self._config_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
+            )
+            try:
+                temporary.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(self._config_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def _drop_market_runtime_state(
+        self,
+        token_id: str,
+        *,
+        preserve_tokens: Iterable[str] = (),
+    ) -> bool:
         token_id = str(token_id).strip()
         if token_id in self.market_cfg:
             source_cfg = self.market_cfg
@@ -6968,8 +7342,9 @@ class PolyLPSMulti:
         else:
             return False
         paired = str(source_cfg[token_id].get("paired_token_id", ""))
+        preserved = {str(tid) for tid in preserve_tokens if str(tid)}
         for tid in (token_id, paired):
-            if not tid:
+            if not tid or tid in preserved:
                 continue
             self.market_cfg.pop(tid, None)
             self._night_market_cfg.pop(tid, None)
@@ -7048,30 +7423,33 @@ class PolyLPSMulti:
         if not token_id and not command_id:
             return
         try:
-            config = json.loads(self._config_path.read_text(encoding="utf-8"))
-            changed = False
-            for section in ("markets", "night_markets"):
-                for market in config.get(section) or []:
-                    pending_command_id = str(
-                        market.get("pending_command_id") or ""
-                    )
-                    if token_id:
-                        if str(market.get("token_id") or "") != token_id:
-                            continue
-                        if pending_command_id and pending_command_id != command_id:
-                            continue
-                    elif pending_command_id != command_id:
-                        continue
-                    market["enabled"] = False
-                    market["pending_activation"] = False
-                    market["activation_error"] = error[:180]
-                    market["activation_failed_at"] = time.time()
-                    changed = True
-            if changed:
-                self._config_path.write_text(
-                    json.dumps(config, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+            with self._config_transaction_lock():
+                config = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
                 )
+                changed = False
+                for section in ("markets", "night_markets"):
+                    for market in config.get(section) or []:
+                        pending_command_id = str(
+                            market.get("pending_command_id") or ""
+                        )
+                        if token_id:
+                            if str(market.get("token_id") or "") != token_id:
+                                continue
+                            if (
+                                pending_command_id
+                                and pending_command_id != command_id
+                            ):
+                                continue
+                        elif pending_command_id != command_id:
+                            continue
+                        market["enabled"] = False
+                        market["pending_activation"] = False
+                        market["activation_error"] = error[:180]
+                        market["activation_failed_at"] = time.time()
+                        changed = True
+                if changed:
+                    self._write_config_atomic(config)
         except Exception as exc:
             log(f"[runtime-command] failed-state persist error: {exc}")
 
@@ -7144,6 +7522,9 @@ class PolyLPSMulti:
         self,
         market: Mapping[str, Any],
         policy: Mapping[str, Any],
+        *,
+        allow_canary: bool = False,
+        require_account_execution: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
@@ -7155,7 +7536,34 @@ class PolyLPSMulti:
         max_observer_age = float(policy.get("max_observer_age_sec") or 900.0)
         if observer_age is None or observer_age > max_observer_age:
             raise ValueError("reward observer snapshot is stale")
-        if not candidate or candidate.get("stable_lp_recommended") is not True:
+        if not candidate:
+            raise ValueError("replacement market is no longer eligible")
+        admission_level = "full"
+        if allow_canary or require_account_execution:
+            eligible, admission_level, admission_reasons = (
+                candidate_is_executable_for_account(
+                    candidate,
+                    int(self._account_idx),
+                    allow_canary=allow_canary,
+                    expected_account_uid_key=str(
+                        getattr(
+                            self,
+                            "_stable_lifecycle_account_uid_key",
+                            "",
+                        )
+                        or ""
+                    ),
+                    expected_host_id=str(
+                        getattr(self, "_runtime_host_id", "") or ""
+                    ),
+                )
+            )
+            if not eligible:
+                reason = admission_reasons[0] if admission_reasons else "ineligible"
+                raise ValueError(
+                    f"replacement market is not account-executable: {reason}"
+                )
+        elif candidate.get("stable_lp_recommended") is not True:
             raise ValueError("replacement market is no longer eligible")
         if candidate.get("weather_market") is True or str(
             candidate.get("market_type") or ""
@@ -7204,21 +7612,27 @@ class PolyLPSMulti:
         no_depth = Decimal(
             str(candidate.get("no_front_bid_notional_usd") or -1)
         )
-        if min(yes_depth, no_depth) < self.min_front_bid_notional_usdc:
+        if (
+            admission_level != "canary"
+            and min(yes_depth, no_depth) < self.min_front_bid_notional_usdc
+        ):
             raise ValueError("replacement depth is below account minimum")
 
         stability = float(candidate.get("stability_score") or 0.0)
         fill_risk = float(candidate.get("fill_risk") or 100.0)
         roi = float(candidate.get("risk_adjusted_daily_roi_pct") or 0.0)
-        if stability < float(policy.get("min_stability_score") or 70.0):
-            raise ValueError("replacement stability is below minimum")
-        if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
-            raise ValueError("replacement fill risk is above stable limit")
-        if roi < float(
-            policy.get("min_risk_adjusted_daily_roi_pct") or 0.1
-        ):
-            raise ValueError("replacement expected return is below minimum")
-        return dict(candidate)
+        if admission_level != "canary":
+            if stability < float(policy.get("min_stability_score") or 70.0):
+                raise ValueError("replacement stability is below minimum")
+            if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
+                raise ValueError("replacement fill risk is above stable limit")
+            if roi < float(
+                policy.get("min_risk_adjusted_daily_roi_pct") or 0.1
+            ):
+                raise ValueError("replacement expected return is below minimum")
+        validated = dict(candidate)
+        validated["account_admission_level"] = admission_level
+        return validated
 
     def _load_stable_replacement_command(
         self,
@@ -7304,15 +7718,22 @@ class PolyLPSMulti:
         candidate: Mapping[str, Any],
         *,
         session: str = "day",
+        source: str = "dashboard_confirmed",
+        lifecycle_stage: str = "",
+        risk_override: Optional[str] = None,
         persist: bool,
         notify: bool,
+        require_new_persisted_pair: bool = False,
     ) -> bool:
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
         spread = candidate.get("rewards_max_spread")
         if spread is None:
             spread = market.get("max_incentive_spread")
-        risk = "low" if float(candidate.get("fill_risk") or 100) < 35 else "mid"
+        risk = str(
+            risk_override
+            or ("low" if float(candidate.get("fill_risk") or 100) < 35 else "mid")
+        ).lower()
         return self.add_market_runtime(
             token_id=token_id,
             paired_token_id=paired_token_id,
@@ -7321,15 +7742,17 @@ class PolyLPSMulti:
             min_distance=market.get("min_distance_from_best_bid", 0.01),
             risk=risk,
             session=session,
-            source="dashboard_confirmed",
+            source=source,
             game_start_ts=candidate.get("game_start_ts"),
             slug=str(candidate.get("slug") or market.get("slug") or ""),
             question=str(candidate.get("question") or market.get("question") or ""),
             condition_id=str(candidate.get("condition_id") or ""),
             eligibility_managed=True,
             eligibility_base_risk=risk,
+            lifecycle_stage=lifecycle_stage,
             persist=persist,
             notify=notify,
+            require_new_persisted_pair=require_new_persisted_pair,
         )
 
     def _runtime_add_from_command(self, market: Dict[str, Any]) -> str:
@@ -7402,6 +7825,15 @@ class PolyLPSMulti:
     def _stable_rotation_position_is_clear(self, position: float) -> bool:
         """Treat exchange-defined dust as clear while failing closed on unknowns."""
         return 0 <= position <= self._exit_dust_threshold
+
+    @staticmethod
+    def _stable_lifecycle_position_is_flat(position: float) -> bool:
+        """Require an exact zero before lifecycle removal from the config."""
+        try:
+            value = float(position)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(value) and value == 0.0
 
     async def _runtime_replace_from_command(
         self,
@@ -7544,25 +7976,30 @@ class PolyLPSMulti:
             retire_token_id=retire_token_id,
         )
         try:
-            config = json.loads(self._config_path.read_text(encoding="utf-8"))
-            if not isinstance(config, dict):
-                raise ValueError("account config is invalid")
-            drop_ids = set(old_tokens) | {
-                token for token in (new_token_id, new_pair_id) if token
-            }
-            for section in ("markets", "night_markets"):
-                rows = config.get(section) or []
-                if not isinstance(rows, list):
-                    raise ValueError(f"account config {section} is invalid")
-                kept = []
-                for row in rows:
-                    if not isinstance(row, Mapping):
-                        raise ValueError(f"account config {section} contains invalid market")
-                    if str(row.get("token_id") or "") not in drop_ids:
-                        kept.append(row)
-                config[section] = kept
-            config.setdefault(target_section, []).append(new_entry)
-            self._write_config_atomic(config)
+            with self._config_transaction_lock():
+                config = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(config, dict):
+                    raise ValueError("account config is invalid")
+                drop_ids = set(old_tokens) | {
+                    token for token in (new_token_id, new_pair_id) if token
+                }
+                for section in ("markets", "night_markets"):
+                    rows = config.get(section) or []
+                    if not isinstance(rows, list):
+                        raise ValueError(f"account config {section} is invalid")
+                    kept = []
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            raise ValueError(
+                                f"account config {section} contains invalid market"
+                            )
+                        if str(row.get("token_id") or "") not in drop_ids:
+                            kept.append(row)
+                    config[section] = kept
+                config.setdefault(target_section, []).append(new_entry)
+                self._write_config_atomic(config)
         except Exception:
             self._drop_market_runtime_state(new_token_id)
             for token in old_tokens:
@@ -7736,6 +8173,78 @@ class PolyLPSMulti:
             and self._order_id(order) in self._managed_buy_order_ids
         ]
 
+    @staticmethod
+    def _live_order_ids_sha256(order_ids: Iterable[str]) -> str:
+        encoded = json.dumps(
+            sorted(str(order_id) for order_id in order_ids if str(order_id)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _validate_stable_lifecycle_promotion(
+        self,
+        row: Mapping[str, Any],
+    ) -> tuple[bool, str]:
+        """Rebind a promotion proposal to the currently live managed BUY set."""
+
+        token_id = str(row.get("token_id") or "").strip()
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "").strip()
+        if not token_id.isdigit() or not paired_token_id.isdigit():
+            return False, "promotion_market_pair_missing"
+
+        try:
+            observed_at = float(row.get("scoring_sample_observed_at"))
+        except (TypeError, ValueError):
+            return False, "promotion_scoring_sample_time_invalid"
+        sample_age = time.time() - observed_at
+        if (
+            not math.isfinite(observed_at)
+            or observed_at <= 0
+            or sample_age < -30
+            or sample_age > MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC
+        ):
+            return False, "promotion_scoring_sample_stale"
+
+        expected_raw = row.get("scoring_live_order_ids_sha256_by_token")
+        if not isinstance(expected_raw, Mapping):
+            return False, "promotion_live_order_set_missing"
+        expected = {
+            str(key): str(value).strip().lower()
+            for key, value in expected_raw.items()
+        }
+        event_tokens = {token_id, paired_token_id}
+        if set(expected) != event_tokens or any(
+            not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in expected.values()
+        ):
+            return False, "promotion_live_order_set_invalid"
+
+        try:
+            orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception:
+            return False, "promotion_live_orders_unavailable"
+        if not isinstance(orders, list):
+            return False, "promotion_live_orders_invalid"
+
+        current_ids = {tid: [] for tid in event_tokens}
+        for order in self._natural_managed_scoring_orders(orders):
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset in current_ids:
+                current_ids[asset].append(self._order_id(order))
+        if any(not order_ids for order_ids in current_ids.values()):
+            return False, "promotion_live_order_pair_missing"
+        current = {
+            tid: self._live_order_ids_sha256(order_ids)
+            for tid, order_ids in current_ids.items()
+        }
+        if current != expected:
+            return False, "promotion_live_order_set_changed"
+        return True, "promotion_live_order_set_verified"
+
     async def order_scoring_observer_loop(self) -> None:
         """Sample official scoring status for natural managed BUY orders only."""
         from py_clob_client_v2.clob_types import OrderScoringParams
@@ -7762,6 +8271,622 @@ class PolyLPSMulti:
                     f"{type(exc).__name__}: {str(exc)[:160]}"
                 )
             await asyncio.sleep(self._order_scoring_observer_interval_sec)
+
+    def _write_stable_lifecycle_state(self, state: Mapping[str, Any]) -> None:
+        payload = dict(state)
+        temporary = self._stable_lifecycle_state_path.with_suffix(
+            ".json.tmp"
+        )
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(self._stable_lifecycle_state_path)
+        self._stable_lifecycle_state = payload
+
+    def _stable_lifecycle_managed_tokens(self) -> set[str]:
+        return {
+            str(token_id)
+            for token_id, config in (
+                list(self.market_cfg.items())
+                + list(self._night_market_cfg.items())
+            )
+            if not config.get("_dual_side_auto")
+        }
+
+    def _stable_lifecycle_managed_stages(self) -> dict[str, str]:
+        return {
+            str(token_id): str(
+                config.get("lifecycle_stage") or "full"
+            ).lower()
+            for token_id, config in (
+                list(self.market_cfg.items())
+                + list(self._night_market_cfg.items())
+            )
+            if not config.get("_dual_side_auto")
+        }
+
+    def _promote_stable_lifecycle_market(
+        self,
+        token_id: str,
+        target_risk: str,
+    ) -> str:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        if not cfg:
+            return "market_missing"
+        if cfg.get("_dual_side_auto"):
+            return "paired_side_ignored"
+        if str(cfg.get("lifecycle_stage") or "full").lower() == "full":
+            return "already_full"
+        risk = str(target_risk or "mid").lower()
+        if risk not in {"low", "mid"}:
+            risk = "mid"
+        paired_token_id = str(cfg.get("paired_token_id") or "")
+        promoted_at = time.time()
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            changed = False
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in {
+                        token_id,
+                        paired_token_id,
+                    }:
+                        continue
+                    row["lifecycle_stage"] = "full"
+                    row["risk"] = risk
+                    row["eligibility_base_risk"] = risk
+                    row["lifecycle_promoted_at"] = promoted_at
+                    changed = True
+            if not changed:
+                raise ValueError("managed market is missing from account config")
+            self._write_config_atomic(config)
+        for tid in (token_id, paired_token_id):
+            runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
+            if runtime is None:
+                continue
+            runtime["lifecycle_stage"] = "full"
+            runtime["risk"] = risk
+            runtime["base_risk"] = risk
+            runtime["lifecycle_promoted_at"] = promoted_at
+            self._market_budget_pct.pop(tid, None)
+        self._last_budget_rebalance_ts = 0.0
+        log(
+            f"[stable-lifecycle] promoted token={token_id[:16]} "
+            f"risk={risk}"
+        )
+        self.send_discord(
+            "市场已升级为完整挂单\n"
+            f"市场：{self._discord_market_name(token_id)}\n"
+            f"风险档位：{risk}"
+        )
+        return "promoted"
+
+    def _mark_stable_lifecycle_retire_pending(
+        self,
+        token_id: str,
+        reason_codes: Iterable[str],
+    ) -> None:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "")
+        reason_list = list(dict.fromkeys(str(reason) for reason in reason_codes))
+        requested_at = time.time()
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            changed = False
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in {
+                        token_id,
+                        paired_token_id,
+                    }:
+                        continue
+                    row["lifecycle_retire_pending"] = True
+                    row["lifecycle_retire_reason_codes"] = reason_list
+                    if not row.get("lifecycle_retire_requested_at"):
+                        row["lifecycle_retire_requested_at"] = requested_at
+                    changed = True
+            if changed:
+                self._write_config_atomic(config)
+        for tid in (token_id, paired_token_id):
+            runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
+            if runtime is not None:
+                runtime["lifecycle_retire_pending"] = True
+
+    def _remove_stable_lifecycle_config(
+        self,
+        token_id: str,
+        *,
+        preserve_startup_market: bool = False,
+    ) -> bool:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        paired_token_id = str((cfg or {}).get("paired_token_id") or "")
+        drop_ids = {token_id, paired_token_id} - {""}
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                kept = []
+                for row in rows:
+                    if not isinstance(row, Mapping):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in drop_ids:
+                        kept.append(row)
+                config[section] = kept
+            if preserve_startup_market:
+                loaded_primary_survives = False
+                for row in config.get("markets") or []:
+                    token = str(row.get("token_id") or "")
+                    pair = str(row.get("paired_token_id") or "")
+                    runtime = self.market_cfg.get(token)
+                    paired_runtime = (
+                        self.market_cfg.get(pair)
+                        or self._night_market_cfg.get(pair)
+                    )
+                    if (
+                        token.isdigit()
+                        and pair.isdigit()
+                        and row.get("enabled") is not False
+                        and isinstance(runtime, Mapping)
+                        and not runtime.get("_dual_side_auto")
+                        and str(runtime.get("paired_token_id") or "") == pair
+                        and isinstance(paired_runtime, Mapping)
+                        and str(paired_runtime.get("paired_token_id") or "")
+                        == token
+                    ):
+                        loaded_primary_survives = True
+                        break
+                if not loaded_primary_survives:
+                    return False
+            self._write_config_atomic(config)
+        self._drop_market_runtime_state(token_id)
+        self._request_market_ws_resubscribe()
+        return True
+
+    def _rollback_stable_lifecycle_add(
+        self,
+        token_id: str,
+        *,
+        config_before: Mapping[str, Any],
+        runtime_tokens_before: Iterable[str],
+    ) -> None:
+        """Undo this lifecycle add without erasing concurrent config edits."""
+
+        write_error: Optional[Exception] = None
+        try:
+            with self._config_transaction_lock():
+                current = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(current, dict):
+                    raise ValueError("account config is invalid")
+                for section in ("markets", "night_markets"):
+                    current_rows = current.get(section) or []
+                    original_rows = config_before.get(section) or []
+                    if not isinstance(current_rows, list) or not isinstance(
+                        original_rows,
+                        list,
+                    ):
+                        raise ValueError(
+                            f"account config {section} is invalid"
+                        )
+                    if any(not isinstance(row, Mapping) for row in current_rows):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if any(not isinstance(row, Mapping) for row in original_rows):
+                        raise ValueError(
+                            f"original config {section} contains invalid market"
+                        )
+                    original_tokens = {
+                        str(row.get("token_id") or "")
+                        for row in original_rows
+                        if str(row.get("token_id") or "")
+                    }
+                    kept = [
+                        row
+                        for row in current_rows
+                        if not (
+                            str(row.get("token_id") or "") == token_id
+                            and str(row.get("source") or "")
+                            == "stable_lifecycle_auto"
+                            and token_id not in original_tokens
+                        )
+                    ]
+                    current[section] = kept
+                self._write_config_atomic(current)
+        except Exception as exc:
+            write_error = exc
+        finally:
+            self._drop_market_runtime_state(
+                token_id,
+                preserve_tokens=runtime_tokens_before,
+            )
+            self._request_market_ws_resubscribe()
+        if write_error is not None:
+            raise RuntimeError(
+                "stable lifecycle config rollback failed"
+            ) from write_error
+
+    async def _retire_stable_lifecycle_market(
+        self,
+        token_id: str,
+        reason_codes: Iterable[str],
+    ) -> str:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        if not cfg:
+            return "already_removed"
+        if cfg.get("_dual_side_auto"):
+            return "paired_side_ignored"
+        paired_token_id = str(cfg.get("paired_token_id") or "")
+        paired_cfg = self.market_cfg.get(
+            paired_token_id
+        ) or self._night_market_cfg.get(paired_token_id)
+        if (
+            not token_id.isdigit()
+            or not paired_token_id.isdigit()
+            or paired_token_id == token_id
+            or not isinstance(paired_cfg, Mapping)
+            or str(paired_cfg.get("paired_token_id") or "") != token_id
+        ):
+            return "paired_market_invalid"
+        event_tokens = (token_id, paired_token_id)
+        reason_list = tuple(dict.fromkeys(str(reason) for reason in reason_codes))
+        for tid in event_tokens:
+            if not self._event_has_unresolved_exit(
+                tid,
+                ignore_state_tokens=set(event_tokens),
+            ):
+                self._set_event_state(
+                    tid,
+                    EVENT_WATCH,
+                    "stable_lifecycle_retire_pending",
+                )
+
+        cancellation_confirmed = True
+        for tid in event_tokens:
+            if not await self._cancel_risk_buys(
+                tid,
+                "stable_lifecycle_retire",
+            ):
+                cancellation_confirmed = False
+        self._mark_stable_lifecycle_retire_pending(token_id, reason_list)
+        if not cancellation_confirmed:
+            return "buy_cancellation_unconfirmed"
+
+        if any(
+            self._event_has_unresolved_exit(
+                tid,
+                ignore_state_tokens=set(event_tokens),
+            )
+            for tid in event_tokens
+        ):
+            return "position_or_exit_pending"
+        for tid in event_tokens:
+            position = await self._get_token_position(tid)
+            if position < 0:
+                return "position_unknown"
+            if not self._stable_lifecycle_position_is_flat(position):
+                return "position_not_flat"
+
+        try:
+            open_orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception:
+            return "open_orders_unknown"
+        if not isinstance(open_orders, list):
+            return "open_orders_unknown"
+        for order in open_orders:
+            if not isinstance(order, Mapping) or not _order_is_live(order):
+                continue
+            asset = str(order.get("asset_id") or order.get("token_id") or "")
+            if asset in event_tokens:
+                return (
+                    "buy_cancellation_unconfirmed"
+                    if self._order_side(order) == "BUY"
+                    else "exit_sell_preserved"
+                )
+
+        if not self._remove_stable_lifecycle_config(
+            token_id,
+            preserve_startup_market=True,
+        ):
+            return "minimum_market_guard"
+        log(
+            f"[stable-lifecycle] retired token={token_id[:16]} "
+            f"reasons={','.join(reason_list)[:180]}"
+        )
+        self.send_discord(
+            "市场已自动移出\n"
+            f"市场：{self._discord_market_name(token_id)}\n"
+            f"原因：{', '.join(reason_list)[:220]}"
+        )
+        return "removed"
+
+    async def _stable_market_lifecycle_once(self) -> None:
+        if not self._stable_market_lifecycle_enabled:
+            return
+        if getattr(self, "_runtime_mode", "single") != "multi_roster":
+            return
+        if not getattr(
+            self,
+            "_stable_lifecycle_runtime_updates_enabled",
+            False,
+        ):
+            return
+        try:
+            proposal = json.loads(
+                self._stable_rotation_proposal_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return
+        if not isinstance(proposal, dict):
+            return
+        runtime_host_id = str(getattr(self, "_runtime_host_id", "") or "").strip().lower()
+        account_uid_key = str(
+            getattr(self, "_stable_lifecycle_account_uid_key", "") or ""
+        ).strip()
+        if not runtime_host_id or not account_uid_key:
+            self._stable_lifecycle_state = {
+                "version": STABLE_LIFECYCLE_STATE_VERSION,
+                "account_index": int(self._account_idx),
+                "account_uid_key": account_uid_key,
+                "host_id": runtime_host_id,
+                "status": "blocked",
+                "reason": "runtime_identity_unavailable",
+                "generated_at": time.time(),
+                "add": [],
+                "promote": [],
+                "retire": [],
+            }
+            self._write_stable_lifecycle_state(self._stable_lifecycle_state)
+            return
+
+        configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+        canary_budget = self._stable_lifecycle_canary_budget_usdc(
+            getattr(self, "_last_balance", None)
+        )
+        plan = build_lifecycle_plan(
+            proposal,
+            account_index=int(self._account_idx),
+            configured_token_ids=configured_tokens,
+            managed_token_ids=self._stable_lifecycle_managed_tokens(),
+            managed_market_stages=self._stable_lifecycle_managed_stages(),
+            previous_state=self._stable_lifecycle_state,
+            now_ts=time.time(),
+            max_proposal_age_sec=self._stable_lifecycle_max_proposal_age_sec,
+            max_add_per_cycle=self._stable_lifecycle_max_add_per_cycle,
+            max_active_canaries=getattr(
+                self,
+                "_stable_lifecycle_max_active_canaries",
+                10,
+            ),
+            canary_budget_usdc=(
+                float(canary_budget) if canary_budget is not None else None
+            ),
+            promotion_scoring_threshold=getattr(
+                self,
+                "_stable_lifecycle_promotion_scoring_threshold",
+                3,
+            ),
+            soft_failure_threshold=(
+                self._stable_lifecycle_soft_failure_threshold
+            ),
+            hard_failure_threshold=(
+                self._stable_lifecycle_hard_failure_threshold
+            ),
+            expected_account_uid_key=account_uid_key,
+            expected_host_id=runtime_host_id,
+        )
+        retire_results = []
+        pending_tokens = [
+            token_id
+            for token_id in sorted(self._stable_lifecycle_managed_tokens())
+            if bool(
+                (
+                    self.market_cfg.get(token_id)
+                    or self._night_market_cfg.get(token_id)
+                    or {}
+                ).get("lifecycle_retire_pending")
+            )
+        ]
+        retire_rows = {
+            str(row.get("token_id") or ""): row
+            for row in plan.get("retire") or []
+            if isinstance(row, Mapping)
+        }
+        for token_id in pending_tokens:
+            retire_rows.setdefault(
+                token_id,
+                {
+                    "token_id": token_id,
+                    "reason_codes": ["retirement_already_pending"],
+                },
+            )
+        for token_id, row in retire_rows.items():
+            if not token_id:
+                continue
+            try:
+                result = await self._retire_stable_lifecycle_market(
+                    token_id,
+                    row.get("reason_codes") or [],
+                )
+            except Exception as exc:
+                result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            retire_results.append({"token_id": token_id, "status": result})
+
+        promote_results = []
+        for row in plan.get("promote") or []:
+            if not isinstance(row, Mapping):
+                continue
+            token_id = str(row.get("token_id") or "")
+            if not token_id:
+                continue
+            try:
+                valid, reason = await self._validate_stable_lifecycle_promotion(
+                    row
+                )
+                if not valid:
+                    result = f"rejected:{reason}"
+                else:
+                    result = self._promote_stable_lifecycle_market(
+                        token_id,
+                        str(row.get("target_risk") or "mid"),
+                    )
+            except Exception as exc:
+                result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            promote_results.append({"token_id": token_id, "status": result})
+
+        add_results = []
+        policy = proposal.get("policy") or {}
+        for action in plan.get("add") or []:
+            if not isinstance(action, Mapping):
+                continue
+            market = action.get("market")
+            if not isinstance(market, Mapping):
+                continue
+            stage = str(action.get("stage") or "")
+            token_id = str(market.get("token_id") or "")
+            try:
+                paired_token_id = str(market.get("paired_token_id") or "")
+                with self._config_transaction_lock():
+                    runtime_tokens_before = set(self.market_cfg) | set(
+                        self._night_market_cfg
+                    )
+                    config_before = json.loads(
+                        self._config_path.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(config_before, dict):
+                        raise ValueError("account config is invalid")
+                    persisted_tokens_before = set()
+                    for section in ("markets", "night_markets"):
+                        rows = config_before.get(section) or []
+                        if not isinstance(rows, list):
+                            raise ValueError(
+                                f"account config {section} is invalid"
+                            )
+                        for row in rows:
+                            if not isinstance(row, Mapping):
+                                raise ValueError(
+                                    f"account config {section} contains invalid market"
+                                )
+                            persisted_token_id = str(row.get("token_id") or "")
+                            if persisted_token_id:
+                                persisted_tokens_before.add(persisted_token_id)
+                    if {token_id, paired_token_id} & persisted_tokens_before:
+                        raise ValueError(
+                            "candidate conflicts with existing persisted market"
+                        )
+                    candidate = self._validate_stable_replacement_candidate(
+                        market,
+                        policy,
+                        allow_canary=True,
+                        require_account_execution=True,
+                    )
+                    current_admission = stable_lifecycle_account_admission(
+                        candidate,
+                        int(self._account_idx),
+                    )
+                    if (
+                        current_admission is None
+                        or current_admission[0] != stage
+                    ):
+                        raise ValueError("candidate admission changed")
+                    try:
+                        added = self._add_runtime_candidate(
+                            market,
+                            candidate,
+                            source="stable_lifecycle_auto",
+                            lifecycle_stage=stage,
+                            risk_override=(
+                                "high" if stage == "canary" else None
+                            ),
+                            persist=True,
+                            notify=False,
+                            require_new_persisted_pair=True,
+                        )
+                        if added:
+                            configured_after_add = set(self.market_cfg) | set(
+                                self._night_market_cfg
+                            )
+                            if not {token_id, paired_token_id}.issubset(
+                                configured_after_add
+                            ):
+                                raise RuntimeError(
+                                    "paired market injection did not complete"
+                                )
+                    except Exception:
+                        self._rollback_stable_lifecycle_add(
+                            token_id,
+                            config_before=config_before,
+                            runtime_tokens_before=runtime_tokens_before,
+                        )
+                        raise
+                if added:
+                    try:
+                        self.send_discord(
+                            "市场已自动加入\n"
+                            f"市场：{self._discord_market_name(token_id)}\n"
+                            f"阶段：{stage}"
+                        )
+                    except Exception as notify_exc:
+                        log(
+                            "[stable-lifecycle] add notification failed: "
+                            f"{type(notify_exc).__name__}: {notify_exc}"
+                        )
+                status = "added" if added else "already_configured"
+            except Exception as exc:
+                status = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            add_results.append({"token_id": token_id, "status": status})
+
+        plan["retire_results"] = retire_results
+        plan["promote_results"] = promote_results
+        plan["add_results"] = add_results
+        plan["active_canaries"] = sum(
+            stage == "canary"
+            for stage in self._stable_lifecycle_managed_stages().values()
+        )
+        plan["canary_budget_usdc"] = (
+            float(canary_budget) if canary_budget is not None else None
+        )
+        self._write_stable_lifecycle_state(plan)
+        if retire_results or promote_results or add_results:
+            log(
+                f"[stable-lifecycle] account={self._account_idx} "
+                f"add={add_results} promote={promote_results} "
+                f"retire={retire_results}"
+            )
 
     async def eligibility_guard_loop(self) -> None:
         """Keep dashboard-added markets useful without creating an all-off cliff.
@@ -7880,6 +9005,7 @@ class PolyLPSMulti:
                             f"[eligibility] token={token_id[:16]} "
                             f"status={status} failures={failures} risk={target_risk}"
                         )
+                await self._stable_market_lifecycle_once()
             except Exception as exc:
                 log(f"[eligibility] loop error: {type(exc).__name__}: {exc}")
             await asyncio.sleep(self._eligibility_check_interval_sec)
@@ -8655,12 +9781,15 @@ class PolyLPSMulti:
 
         # persist disabled in config markets
         try:
-            cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
-            for section in ("markets", "night_markets"):
-                for m in cfg.get(section, []):
-                    if str(m.get("token_id", "")) in event_token_ids:
-                        m["enabled"] = False
-            self._config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            with self._config_transaction_lock():
+                cfg = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                for section in ("markets", "night_markets"):
+                    for m in cfg.get(section, []):
+                        if str(m.get("token_id", "")) in event_token_ids:
+                            m["enabled"] = False
+                self._write_config_atomic(cfg)
         except Exception as e:
             log(f"[health] config disable fail token={token_id} err={e}")
 
@@ -9150,6 +10279,10 @@ class PolyLPSMulti:
         # Stamp this engine's account id into the per-task context so every
         # downstream log/notify call carries the [N号] prefix automatically.
         _current_account_idx_ctx.set(self._account_idx)
+        self._order_scoring_observer.bind_identity(
+            account_uid_key=self._stable_lifecycle_account_uid_key,
+            host_id=self._runtime_host_id,
+        )
         n_markets = len(self._active_market_cfg())
         log(f"[engine] starting with {n_markets} active markets")
         self.notify_discord("做市引擎已启动", f"运行市场：{n_markets} 个", "info")
@@ -11749,22 +12882,30 @@ class PolyLPSMulti:
                         # the dead game. Remove both YES and paired NO entries across
                         # markets / night_markets.
                         try:
-                            cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
-                            drop_ids = {tid}
-                            if paired_for_cfg:
-                                drop_ids.add(paired_for_cfg)
-                            removed = 0
-                            for section in ("markets", "night_markets"):
-                                before = cfg_disk.get(section, []) or []
-                                after = [m for m in before if str(m.get("token_id", "")) not in drop_ids]
-                                removed += len(before) - len(after)
-                                cfg_disk[section] = after
-                            if removed > 0:
-                                self._config_path.write_text(
-                                    json.dumps(cfg_disk, ensure_ascii=False, indent=2),
-                                    encoding="utf-8",
+                            with self._config_transaction_lock():
+                                cfg_disk = json.loads(
+                                    self._config_path.read_text(encoding="utf-8")
                                 )
-                                log(f"[start-guard] config.json pruned {removed} entries for token={tid[:16]}")
+                                drop_ids = {tid}
+                                if paired_for_cfg:
+                                    drop_ids.add(paired_for_cfg)
+                                removed = 0
+                                for section in ("markets", "night_markets"):
+                                    before = cfg_disk.get(section, []) or []
+                                    after = [
+                                        m
+                                        for m in before
+                                        if str(m.get("token_id", ""))
+                                        not in drop_ids
+                                    ]
+                                    removed += len(before) - len(after)
+                                    cfg_disk[section] = after
+                                if removed > 0:
+                                    self._write_config_atomic(cfg_disk)
+                                    log(
+                                        "[start-guard] config.json pruned "
+                                        f"{removed} entries for token={tid[:16]}"
+                                    )
                         except Exception as e:
                             log(f"[start-guard] config.json prune err token={tid[:16]}: {e}")
                     except Exception as e:
@@ -12106,6 +13247,12 @@ class PolyLPSMulti:
                         "sponsored_risk": self._sponsored_guard_by_token.get(tid),
                         "source": str(mcfg.get("source") or "manual"),
                         "eligibility": self._eligibility_state.get(tid),
+                        "lifecycle_stage": str(
+                            mcfg.get("lifecycle_stage") or ""
+                        ),
+                        "lifecycle_retire_pending": bool(
+                            mcfg.get("lifecycle_retire_pending")
+                        ),
                     }
 
                 # Prune curator_events_log entries older than TTL
@@ -12155,6 +13302,9 @@ class PolyLPSMulti:
                 state = {
                     "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "account_index": self._account_idx,
+                    "account_uid_key": (
+                        self._stable_lifecycle_account_uid_key or None
+                    ),
                     "account_id": (
                         self.lp_account_profile.account_id
                         if self.lp_account_profile.managed
@@ -12194,6 +13344,34 @@ class PolyLPSMulti:
                         "dynamic_market_updates": self._runtime_market_updates_enabled,
                     },
                     "market_data": market_data_state,
+                    "stable_market_lifecycle": {
+                        "enabled": self._stable_market_lifecycle_enabled,
+                        "status": self._stable_lifecycle_state.get("status"),
+                        "reason": self._stable_lifecycle_state.get("reason"),
+                        "proposal_generated_at": self._stable_lifecycle_state.get(
+                            "proposal_generated_at"
+                        ),
+                        "last_add_results": self._stable_lifecycle_state.get(
+                            "add_results", []
+                        ),
+                        "last_promote_results": self._stable_lifecycle_state.get(
+                            "promote_results", []
+                        ),
+                        "last_retire_results": self._stable_lifecycle_state.get(
+                            "retire_results", []
+                        ),
+                        "active_canaries": self._stable_lifecycle_state.get(
+                            "active_canaries", 0
+                        ),
+                        "max_active_canaries": getattr(
+                            self,
+                            "_stable_lifecycle_max_active_canaries",
+                            10,
+                        ),
+                        "canary_budget_usdc": self._stable_lifecycle_state.get(
+                            "canary_budget_usdc"
+                        ),
+                    },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,

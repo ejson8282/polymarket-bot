@@ -55,9 +55,35 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
     (maker / "engine.py").write_text("print('maker')\n", encoding="utf-8")
     shutil.copy2(MAKER_DIR / "release_guard.py", maker / "release_guard.py")
     shutil.copy2(
+        MAKER_DIR / "stable_market_lifecycle.py",
+        maker / "stable_market_lifecycle.py",
+    )
+    shutil.copy2(
         MAKER_DIR / "stable_rotation_commands.py",
         maker / "stable_rotation_commands.py",
     )
+    shutil.copy2(
+        MAKER_DIR / "reward_observer.py",
+        maker / "reward_observer.py",
+    )
+    shutil.copy2(
+        MAKER_DIR / "stable_rotation_planner.py",
+        maker / "stable_rotation_planner.py",
+    )
+    shutil.copy2(
+        MAKER_DIR / "order_scoring_observer.py",
+        maker / "order_scoring_observer.py",
+    )
+    for dependency_name in (
+        "account_roster.py",
+        "account_profiles.py",
+        "multi_runner.py",
+        "quote_feasibility.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "sibling_registry.py",
+    ):
+        shutil.copy2(MAKER_DIR / dependency_name, maker / dependency_name)
     tests = source / "tests"
     tests.mkdir()
     (tests / "test_release_smoke.py").write_text(
@@ -690,8 +716,25 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     maker.mkdir(parents=True)
     (maker / "engine.py").write_text("print('engine')\n", encoding="utf-8")
     (maker / "release_guard.py").write_text("print('guard')\n", encoding="utf-8")
+    stable_market_lifecycle = maker / "stable_market_lifecycle.py"
+    stable_market_lifecycle.write_text("print('lifecycle')\n", encoding="utf-8")
     multi_runner = maker / "multi_runner.py"
     multi_runner.write_text("print('multi')\n", encoding="utf-8")
+    required_dependencies = {}
+    for dependency_name in (
+        "account_roster.py",
+        "account_profiles.py",
+        "quote_feasibility.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "sibling_registry.py",
+    ):
+        dependency = maker / dependency_name
+        dependency.write_text(
+            f"print({dependency_name!r})\n",
+            encoding="utf-8",
+        )
+        required_dependencies[dependency_name] = dependency
     proxy = maker / "aggressive_proxy.py"
     proxy.write_text("print('proxy')\n", encoding="utf-8")
     reward_observer = maker / "reward_observer.py"
@@ -709,8 +752,12 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
 
     manifest = _manifest_for(release, target_sha)
     proxy_path = "platforms/polymarket/maker/aggressive_proxy.py"
+    guard_path = "platforms/polymarket/maker/release_guard.py"
     multi_runner_path = "platforms/polymarket/maker/multi_runner.py"
     reward_observer_path = "platforms/polymarket/maker/reward_observer.py"
+    stable_market_lifecycle_path = (
+        "platforms/polymarket/maker/stable_market_lifecycle.py"
+    )
     stable_rotation_planner_path = (
         "platforms/polymarket/maker/stable_rotation_planner.py"
     )
@@ -725,12 +772,23 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     assert manifest["artifacts_sha256"][proxy_path] == hashlib.sha256(
         proxy.read_bytes()
     ).hexdigest()
+    assert manifest["artifacts_sha256"][guard_path] == hashlib.sha256(
+        (maker / "release_guard.py").read_bytes()
+    ).hexdigest()
     assert manifest["artifacts_sha256"][multi_runner_path] == hashlib.sha256(
         multi_runner.read_bytes()
     ).hexdigest()
     assert manifest["artifacts_sha256"][reward_observer_path] == hashlib.sha256(
         reward_observer.read_bytes()
     ).hexdigest()
+    for dependency_name, dependency in required_dependencies.items():
+        dependency_path = f"platforms/polymarket/maker/{dependency_name}"
+        assert manifest["artifacts_sha256"][dependency_path] == hashlib.sha256(
+            dependency.read_bytes()
+        ).hexdigest()
+    assert manifest["artifacts_sha256"][
+        stable_market_lifecycle_path
+    ] == hashlib.sha256(stable_market_lifecycle.read_bytes()).hexdigest()
     assert manifest["artifacts_sha256"][
         stable_rotation_planner_path
     ] == hashlib.sha256(stable_rotation_planner.read_bytes()).hexdigest()
@@ -752,6 +810,19 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     )
     assert _verify_release_manifest(release, target_sha) == manifest
 
+    guard_hash = manifest["artifacts_sha256"].pop(guard_path)
+    (release / ".release-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentError, match="artifact set mismatch"):
+        _verify_release_manifest(release, target_sha)
+    manifest["artifacts_sha256"][guard_path] = guard_hash
+    (release / ".release-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
     proxy.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
@@ -767,6 +838,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
         _verify_release_manifest(release, target_sha)
 
     reward_observer.write_text("print('observer')\n", encoding="utf-8")
+    stable_market_lifecycle.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    stable_market_lifecycle.write_text("print('lifecycle')\n", encoding="utf-8")
     stable_rotation_planner.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
@@ -786,6 +862,14 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
 
+    aggressive_recovery.write_text("print('recovery')\n", encoding="utf-8")
+    (maker / "release_guard.py").write_text(
+        "print('modified guard')\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
 
 def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     target_sha = "d" * 40
@@ -794,8 +878,92 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     maker.mkdir(parents=True)
     (maker / "engine.py").write_text("print('engine')\n", encoding="utf-8")
     (maker / "release_guard.py").write_text("print('guard')\n", encoding="utf-8")
+    (maker / "stable_market_lifecycle.py").write_text(
+        "print('lifecycle')\n",
+        encoding="utf-8",
+    )
+    (maker / "reward_observer.py").write_text(
+        "print('observer')\n",
+        encoding="utf-8",
+    )
+    (maker / "stable_rotation_planner.py").write_text(
+        "print('planner')\n",
+        encoding="utf-8",
+    )
+    for dependency_name in (
+        "multi_runner.py",
+        "account_roster.py",
+        "account_profiles.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "quote_feasibility.py",
+        "sibling_registry.py",
+    ):
+        (maker / dependency_name).write_text(
+            f"print({dependency_name!r})\n",
+            encoding="utf-8",
+        )
 
     with pytest.raises(DeploymentError, match="stable rotation commands"):
+        _manifest_for(release, target_sha)
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "message"),
+    (
+        ("reward_observer.py", "reward observer"),
+        ("stable_rotation_planner.py", "stable rotation planner"),
+        ("order_scoring_observer.py", "order scoring observer"),
+        ("multi_runner.py", "multi runner"),
+        ("account_roster.py", "account roster"),
+        ("account_profiles.py", "account profiles"),
+        ("reward_fast_lane.py", "reward fast lane"),
+        ("reward_shadow_allocator.py", "reward shadow allocator"),
+        ("quote_feasibility.py", "quote feasibility"),
+        ("sibling_registry.py", "sibling registry"),
+    ),
+)
+def test_release_manifest_requires_lifecycle_inputs(
+    tmp_path,
+    missing_name,
+    message,
+):
+    target_sha = "e" * 40
+    release = tmp_path / target_sha
+    maker = release / "platforms" / "polymarket" / "maker"
+    maker.mkdir(parents=True)
+    for name in (
+        "engine.py",
+        "release_guard.py",
+        "stable_market_lifecycle.py",
+        "stable_rotation_commands.py",
+        "reward_observer.py",
+        "stable_rotation_planner.py",
+        "order_scoring_observer.py",
+        "multi_runner.py",
+        "account_roster.py",
+        "account_profiles.py",
+        "reward_fast_lane.py",
+        "reward_shadow_allocator.py",
+        "quote_feasibility.py",
+        "sibling_registry.py",
+    ):
+        if name != missing_name:
+            (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match=message):
+        _manifest_for(release, target_sha)
+
+
+def test_release_manifest_requires_stable_market_lifecycle(tmp_path):
+    target_sha = "e" * 40
+    release = tmp_path / target_sha
+    maker = release / "platforms" / "polymarket" / "maker"
+    maker.mkdir(parents=True)
+    (maker / "engine.py").write_text("print('engine')\n", encoding="utf-8")
+    (maker / "release_guard.py").write_text("print('guard')\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match="stable market lifecycle"):
         _manifest_for(release, target_sha)
 
 

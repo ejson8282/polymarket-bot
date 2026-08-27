@@ -12,11 +12,12 @@ import json
 import math
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 OUTPUT_NAME = "stable_rotation_proposal.json"
 DEFAULT_MAX_OBSERVER_AGE_SEC = 900.0
 DEFAULT_MAX_DEPTH_AGE_SEC = 600.0
@@ -27,6 +28,7 @@ DEFAULT_MIN_RISK_ADJUSTED_DAILY_ROI_PCT = 0.1
 DEFAULT_MIN_SPORTS_LEAD_SEC = 3 * 60 * 60
 DEFAULT_MIN_MARKET_TIME_TO_END_SEC = 12 * 60 * 60
 DEFAULT_MIN_FRONT_BID_NOTIONAL_USDC = 2_000.0
+DEFAULT_MAX_ENGINE_STATE_AGE_SEC = 900.0
 _CONFIG_NAME_RE = re.compile(r"^config_(\d+)\.json$")
 
 
@@ -40,6 +42,20 @@ def _number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return number if math.isfinite(number) else default
+
+
+def _timestamp(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _token_pair(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -105,8 +121,83 @@ def _candidate_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             _number(row.get("executable_reward_share_pct")), 2
         ),
         "executable_q_min": round(_number(row.get("executable_q_min")), 6),
+        "rewards_min_size_shares": round(
+            _number(row.get("rewards_min_size_shares")),
+            4,
+        ),
         "admission_level": str(row.get("admission_level") or "unknown"),
     }
+
+
+def _account_execution_evidence(
+    row: Mapping[str, Any],
+    account_index: int,
+    *,
+    account_uid_key: str = "",
+    host_id: str = "",
+) -> dict[str, Any] | None:
+    executions = row.get("account_execution")
+    if not isinstance(executions, Sequence) or isinstance(
+        executions,
+        (str, bytes),
+    ):
+        return None
+    for execution in executions:
+        if not isinstance(execution, Mapping):
+            continue
+        if int(_number(execution.get("account_index"), -1)) != account_index:
+            continue
+        evidence_uid = str(execution.get("account_uid_key") or "").strip()
+        evidence_host = str(execution.get("host_id") or "").strip().lower()
+        if account_uid_key and evidence_uid != account_uid_key:
+            continue
+        if host_id and evidence_host != host_id:
+            continue
+        return {
+            "account_index": account_index,
+            "account_uid_key": evidence_uid,
+            "host_id": evidence_host,
+            "configured": execution.get("configured") is True,
+            "official_scoring": (
+                execution.get("official_scoring")
+                if isinstance(execution.get("official_scoring"), bool)
+                else None
+            ),
+            "observed_q_min": (
+                round(_number(execution.get("observed_q_min")), 6)
+                if execution.get("observed_q_min") is not None
+                else None
+            ),
+            "executable_q_min": round(
+                _number(execution.get("executable_q_min")),
+                6,
+            ),
+            "actual_reward_share_pct": (
+                round(_number(execution.get("actual_reward_share_pct")), 6)
+                if execution.get("actual_reward_share_pct") is not None
+                else None
+            ),
+            "scoring_sample_id": str(
+                execution.get("scoring_sample_id") or ""
+            ).strip(),
+            "scoring_sample_observed_at": (
+                round(_number(execution.get("scoring_sample_observed_at")), 6)
+                if execution.get("scoring_sample_observed_at") is not None
+                else None
+            ),
+            "scoring_live_order_ids_sha256_by_token": {
+                str(token_id): str(digest).strip().lower()
+                for token_id, digest in (
+                    execution.get(
+                        "scoring_live_order_ids_sha256_by_token",
+                    )
+                    or {}
+                ).items()
+                if str(token_id).isdigit()
+                and re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower())
+            },
+        }
+    return None
 
 
 def _proposal_row(
@@ -115,6 +206,9 @@ def _proposal_row(
     action: str,
     reason_codes: Sequence[str],
     config_section: str = "",
+    account_index: int | None = None,
+    account_uid_key: str = "",
+    host_id: str = "",
 ) -> dict[str, Any]:
     proposal = {
         "action": action,
@@ -124,6 +218,15 @@ def _proposal_row(
     }
     if config_section in {"markets", "night_markets"}:
         proposal["config_section"] = config_section
+    if account_index is not None:
+        evidence = _account_execution_evidence(
+            row,
+            account_index,
+            account_uid_key=account_uid_key,
+            host_id=host_id,
+        )
+        if evidence is not None:
+            proposal["account_execution_evidence"] = evidence
     return proposal
 
 
@@ -151,6 +254,9 @@ def _review_current_row(
     *,
     action: str,
     reason_codes: Sequence[str],
+    account_index: int,
+    account_uid_key: str = "",
+    host_id: str = "",
 ) -> dict[str, Any]:
     """Keep the configured token pair while attaching current observer metrics."""
 
@@ -166,6 +272,14 @@ def _review_current_row(
     section = str(current.get("section") or "")
     if section in {"markets", "night_markets"}:
         row["config_section"] = section
+    evidence = _account_execution_evidence(
+        candidate,
+        account_index,
+        account_uid_key=account_uid_key,
+        host_id=host_id,
+    )
+    if evidence is not None:
+        row["account_execution_evidence"] = evidence
     return row
 
 
@@ -387,6 +501,25 @@ def _account_depth_rejection(
     return None
 
 
+def _account_identity_rejection(
+    row: Mapping[str, Any],
+    account: Mapping[str, Any],
+) -> str | None:
+    account_uid_key = str(account.get("account_uid_key") or "").strip()
+    host_id = str(account.get("host_id") or "").strip().lower()
+    if not account_uid_key or not host_id:
+        return "account_identity_binding_unavailable"
+    evidence = _account_execution_evidence(
+        row,
+        int(account.get("account_index") or 0),
+        account_uid_key=account_uid_key,
+        host_id=host_id,
+    )
+    if evidence is None:
+        return "account_identity_evidence_mismatch"
+    return None
+
+
 def _profile_type(config: Mapping[str, Any]) -> str:
     account = config.get("account")
     if not isinstance(account, Mapping):
@@ -397,7 +530,59 @@ def _profile_type(config: Mapping[str, Any]) -> str:
     return str(profile.get("profile_type") or "").strip().lower()
 
 
-def load_stable_account_configs(config_dir: Path) -> list[dict[str, Any]]:
+def _config_account_uid_key(config: Mapping[str, Any]) -> str:
+    account = config.get("account")
+    if not isinstance(account, Mapping):
+        return ""
+    funder = str(account.get("funder") or "").strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{40}", funder):
+        return ""
+    try:
+        chain_id = int(account.get("chain_id", 137))
+        signature_type = int(account.get("signature_type", 0))
+    except (TypeError, ValueError):
+        return ""
+    account_uid = f"{chain_id}:{signature_type}:{funder}"
+    return hashlib.sha256(account_uid.encode("utf-8")).hexdigest()[:16]
+
+
+def _runtime_host_id(
+    data_dir: Path | None,
+    account_index: int,
+    *,
+    now_ts: float | None = None,
+) -> str:
+    if data_dir is None:
+        return ""
+    try:
+        state = json.loads(
+            (data_dir / f"engine_state_{account_index}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(state, Mapping):
+        return ""
+    generated_at = _timestamp(state.get("generated_at") or state.get("ts"))
+    if now_ts is not None and (
+        generated_at is None
+        or now_ts - generated_at < -30
+        or now_ts - generated_at > DEFAULT_MAX_ENGINE_STATE_AGE_SEC
+    ):
+        return ""
+    runtime = state.get("runtime")
+    if not isinstance(runtime, Mapping):
+        return ""
+    return str(runtime.get("host_id") or "").strip().lower()
+
+
+def load_stable_account_configs(
+    config_dir: Path,
+    data_dir: Path | None = None,
+    *,
+    now_ts: float | None = None,
+) -> list[dict[str, Any]]:
     """Load only stable/legacy account market rows without retaining secrets."""
 
     accounts: list[dict[str, Any]] = []
@@ -437,10 +622,27 @@ def load_stable_account_configs(config_dir: Path) -> list[dict[str, Any]]:
             execution.get("min_front_bid_notional_usdc"),
             DEFAULT_MIN_FRONT_BID_NOTIONAL_USDC,
         )
+        account_index = int(match.group(1))
+        account_uid_key = _config_account_uid_key(config)
+        host_id = _runtime_host_id(
+            data_dir,
+            account_index,
+            now_ts=now_ts,
+        )
+        if data_dir is not None and not account_uid_key:
+            raise StableRotationError(
+                f"{path.name} is missing a valid stable account identity"
+            )
+        if data_dir is not None and not host_id:
+            raise StableRotationError(
+                f"{path.name} is missing runtime host identity"
+            )
         accounts.append(
             {
-                "account_index": int(match.group(1)),
+                "account_index": account_index,
                 "config_name": path.name,
+                "account_uid_key": account_uid_key,
+                "host_id": host_id,
                 "min_front_bid_notional_usdc": max(1.0, min_depth),
                 "markets": markets,
             }
@@ -537,6 +739,10 @@ def build_stable_rotation_proposal(
             {
                 "account_index": account_index,
                 "config_name": str(account.get("config_name") or ""),
+                "account_uid_key": str(
+                    account.get("account_uid_key") or ""
+                ).strip(),
+                "host_id": str(account.get("host_id") or "").strip().lower(),
                 "min_front_bid_notional_usdc": max(
                     1.0,
                     _number(
@@ -663,6 +869,9 @@ def build_stable_rotation_proposal(
                 )
                 continue
             reasons = list(candidate_rejections.get(_canonical_event_key(candidate), ()))
+            identity_reason = _account_identity_rejection(candidate, account)
+            if identity_reason is not None:
+                reasons.append(identity_reason)
             admission = _account_admission(candidate, account_index)
             admission_level = admission[0] if admission is not None else "legacy"
             if admission_level == "reject":
@@ -684,6 +893,9 @@ def build_stable_rotation_proposal(
                         candidate,
                         action=action,
                         reason_codes=reasons,
+                        account_index=account_index,
+                        account_uid_key=account["account_uid_key"],
+                        host_id=account["host_id"],
                     )
                 )
             else:
@@ -701,6 +913,9 @@ def build_stable_rotation_proposal(
                             else ("verified_low_risk_efficient",)
                         ),
                         config_section=str(current.get("section") or ""),
+                        account_index=account_index,
+                        account_uid_key=account["account_uid_key"],
+                        host_id=account["host_id"],
                     )
                 )
     unassigned: list[dict[str, Any]] = []
@@ -716,6 +931,10 @@ def build_stable_rotation_proposal(
                 continue
             if len(account["add"]) + len(account["canary"]) >= max_add_per_account:
                 account_reasons[account_index] = "account_add_limit_reached"
+                continue
+            identity_reason = _account_identity_rejection(candidate, account)
+            if identity_reason is not None:
+                account_reasons[account_index] = identity_reason
                 continue
             admission = _account_admission(candidate, account_index)
             if admission is not None and admission[0] == "reject":
@@ -755,6 +974,9 @@ def build_stable_rotation_proposal(
                             "independent_account_selection",
                         )
                     ),
+                    account_index=account_index,
+                    account_uid_key=account["account_uid_key"],
+                    host_id=account["host_id"],
                 )
             )
             known_aliases_by_account[account_index].update(aliases)
@@ -798,6 +1020,8 @@ def build_stable_rotation_proposal(
             {
                 "account_index": account["account_index"],
                 "config_name": account["config_name"],
+                "account_uid_key": account["account_uid_key"],
+                "host_id": account["host_id"],
                 "configured_enabled": enabled_count,
                 "configured_disabled": disabled_count,
                 "min_front_bid_notional_usdc": round(
@@ -870,7 +1094,11 @@ def refresh_stable_rotation_proposal(
     *,
     now_ts: float | None = None,
 ) -> dict[str, Any] | None:
-    accounts = load_stable_account_configs(config_dir)
+    accounts = load_stable_account_configs(
+        config_dir,
+        data_dir,
+        now_ts=now_ts,
+    )
     if not accounts:
         return None
     proposal = build_stable_rotation_proposal(observer, accounts, now_ts=now_ts)

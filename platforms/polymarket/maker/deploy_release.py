@@ -36,8 +36,16 @@ DEPLOYMENT_PROFILES = {"vps1": 1, "vps2": 2}
 RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
     "tests/test_polymarket_maker_engine.py",
+    "tests/test_polymarket_account_profiles.py",
+    "tests/test_polymarket_account_roster.py",
+    "tests/test_polymarket_multi_runner.py",
+    "tests/test_polymarket_quote_feasibility.py",
     "tests/test_polymarket_aggressive_guardrails.py",
     "tests/test_polymarket_order_scoring_observer.py",
+    "tests/test_polymarket_reward_observer.py",
+    "tests/test_polymarket_reward_fast_lane.py",
+    "tests/test_polymarket_reward_shadow_allocator.py",
+    "tests/test_polymarket_stable_market_lifecycle.py",
     "tests/test_polymarket_stable_rotation_planner.py",
     "tests/test_polymarket_stable_rotation_commands.py",
 )
@@ -496,21 +504,44 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     guard = release_dir / "platforms/polymarket/maker/release_guard.py"
     if not engine.is_file() or not guard.is_file():
         raise DeploymentError("release is missing maker engine or release guard")
-    artifacts = [engine]
+    artifacts = [engine, guard]
+    stable_market_lifecycle = (
+        release_dir / "platforms/polymarket/maker/stable_market_lifecycle.py"
+    )
+    if not stable_market_lifecycle.is_file():
+        raise DeploymentError("release is missing stable market lifecycle")
+    artifacts.append(stable_market_lifecycle)
     multi_runner = release_dir / "platforms/polymarket/maker/multi_runner.py"
-    if multi_runner.is_file():
-        artifacts.append(multi_runner)
+    if not multi_runner.is_file():
+        raise DeploymentError("release is missing multi runner")
+    artifacts.append(multi_runner)
     aggressive_proxy = release_dir / "platforms/polymarket/maker/aggressive_proxy.py"
     if aggressive_proxy.is_file():
         artifacts.append(aggressive_proxy)
     reward_observer = release_dir / "platforms/polymarket/maker/reward_observer.py"
-    if reward_observer.is_file():
-        artifacts.append(reward_observer)
+    if not reward_observer.is_file():
+        raise DeploymentError("release is missing reward observer")
+    artifacts.append(reward_observer)
+    for dependency_name, dependency_label in (
+        ("account_roster.py", "account roster"),
+        ("account_profiles.py", "account profiles"),
+        ("reward_fast_lane.py", "reward fast lane"),
+        ("reward_shadow_allocator.py", "reward shadow allocator"),
+        ("quote_feasibility.py", "quote feasibility"),
+        ("sibling_registry.py", "sibling registry"),
+    ):
+        dependency = (
+            release_dir / "platforms/polymarket/maker" / dependency_name
+        )
+        if not dependency.is_file():
+            raise DeploymentError(f"release is missing {dependency_label}")
+        artifacts.append(dependency)
     stable_rotation_planner = (
         release_dir / "platforms/polymarket/maker/stable_rotation_planner.py"
     )
-    if stable_rotation_planner.is_file():
-        artifacts.append(stable_rotation_planner)
+    if not stable_rotation_planner.is_file():
+        raise DeploymentError("release is missing stable rotation planner")
+    artifacts.append(stable_rotation_planner)
     stable_rotation_commands = (
         release_dir / "platforms/polymarket/maker/stable_rotation_commands.py"
     )
@@ -520,8 +551,9 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     order_scoring_observer = (
         release_dir / "platforms/polymarket/maker/order_scoring_observer.py"
     )
-    if order_scoring_observer.is_file():
-        artifacts.append(order_scoring_observer)
+    if not order_scoring_observer.is_file():
+        raise DeploymentError("release is missing order scoring observer")
+    artifacts.append(order_scoring_observer)
     aggressive_recovery = (
         release_dir / "platforms/polymarket/maker/aggressive_recovery.py"
     )
@@ -558,6 +590,12 @@ def _verify_release_manifest(release_dir: Path, target_sha: str) -> Dict[str, An
     artifact_hashes = manifest.get("artifacts_sha256")
     if not isinstance(artifact_hashes, dict):
         raise DeploymentError("release manifest artifact hashes are missing")
+    required_artifact_hashes = _manifest_for(
+        release_dir,
+        target_sha,
+    )["artifacts_sha256"]
+    if set(artifact_hashes) != set(required_artifact_hashes):
+        raise DeploymentError("release manifest artifact set mismatch")
     for relative_path, expected_hash in artifact_hashes.items():
         if not isinstance(relative_path, str) or not isinstance(expected_hash, str):
             raise DeploymentError("release manifest artifact hash is invalid")

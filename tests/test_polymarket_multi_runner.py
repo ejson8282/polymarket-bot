@@ -465,6 +465,49 @@ def test_one_initialization_failure_prevents_all_workers(monkeypatch, tmp_path: 
     assert constructed == [1, 2]
 
 
+def test_legacy_multi_runtime_cannot_enable_stable_lifecycle_updates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from platforms.polymarket.maker.account_profiles import parse_lp_account_profile
+
+    (tmp_path / "config_1.json").write_text("{}", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    built = []
+
+    class Bus:
+        def set_runtime_namespace(self, _namespace: str) -> None:
+            return None
+
+        def set_state_namespace(self, _namespace: str) -> None:
+            return None
+
+    class Engine:
+        def __init__(self, config_path: str):
+            self._account_idx = 1
+            self.cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.lp_account_profile = parse_lp_account_profile(self.cfg, 1)
+            self.market_cfg = {}
+            self._night_market_cfg = {}
+            self._event_bus = Bus()
+            self._state_path = data_dir / "engine_state_1.json"
+            built.append(self)
+
+        async def run(self) -> None:
+            raise AssertionError("validate-only must not start account workers")
+
+    monkeypatch.setattr(
+        "platforms.polymarket.maker.multi_runner.PolyLPSMulti",
+        Engine,
+    )
+
+    asyncio.run(multi_run(tmp_path, data_dir=data_dir, validate_only=True))
+
+    assert len(built) == 1
+    assert built[0]._runtime_mode == "multi_legacy"
+    assert built[0]._stable_lifecycle_runtime_updates_enabled is False
+
+
 def test_worker_failure_stops_all_local_accounts_with_global_routing(
     monkeypatch,
     tmp_path: Path,
@@ -553,6 +596,8 @@ def test_worker_failure_stops_all_local_accounts_with_global_routing(
     assert built[2]._event_bus.namespace == "account:2"
     assert built[1]._runtime_market_updates_enabled is False
     assert built[2]._runtime_market_updates_enabled is False
+    assert built[1]._stable_lifecycle_runtime_updates_enabled is True
+    assert built[2]._stable_lifecycle_runtime_updates_enabled is True
     assert built[1].cancelled is True
     assert built[2].cancelled is True
 
@@ -624,6 +669,10 @@ def test_validate_only_initializes_accounts_without_starting_workers(
 
     assert len(built) == 2
     assert all(engine._runtime_market_updates_enabled is False for engine in built)
+    assert all(
+        engine._stable_lifecycle_runtime_updates_enabled is True
+        for engine in built
+    )
 
 
 def test_aggressive_runtime_is_fully_isolated_and_starts_paused(
@@ -717,6 +766,7 @@ def test_aggressive_runtime_is_fully_isolated_and_starts_paused(
     assert len(built) == 1
     assert built[0]._runtime_scope == "aggressive"
     assert built[0]._runtime_host_id == "aggressive-a"
+    assert built[0]._stable_lifecycle_runtime_updates_enabled is False
     assert built[0]._event_bus.runtime_namespace == "aggressive"
     assert built[0]._event_bus.state_namespace == "account:1"
 

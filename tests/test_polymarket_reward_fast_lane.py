@@ -28,10 +28,15 @@ def _candidate(
         "account_execution": [
             {
                 "account_index": 1,
+                "account_uid_key": "a" * 16,
+                "host_id": "vps1",
                 "configured": scoring is not None,
                 "executable": True,
                 "official_scoring": scoring,
                 "observed_q_min": observed_q,
+                "scoring_sample_id": (
+                    "1" * 64 if scoring is not None else None
+                ),
             }
         ],
     }
@@ -166,6 +171,8 @@ def test_canary_evidence_is_tracked_per_account(tmp_path: Path) -> None:
     first_candidate["account_execution"] = [
         {
             "account_index": 1,
+            "account_uid_key": "a" * 16,
+            "host_id": "vps1",
             "configured": False,
             "executable": True,
             "official_scoring": None,
@@ -173,6 +180,8 @@ def test_canary_evidence_is_tracked_per_account(tmp_path: Path) -> None:
         },
         {
             "account_index": 2,
+            "account_uid_key": "b" * 16,
+            "host_id": "vps2",
             "configured": False,
             "executable": False,
             "official_scoring": None,
@@ -202,3 +211,39 @@ def test_canary_evidence_is_tracked_per_account(tmp_path: Path) -> None:
     assert row["accounts"]["2"]["consecutive_executable_samples"] == 1
     assert row["canary_proposal_eligible_account_indexes"] == [1]
     assert second_candidate["canary_proposal_eligible_account_indexes"] == [1]
+
+
+def test_account_replacement_resets_fast_lane_streak(tmp_path: Path) -> None:
+    first = {"candidates": [_candidate()], "unassessed_candidates": []}
+    update_fast_lane(tmp_path, first, now_ts=1_800_000_000)
+
+    replacement = _candidate()
+    replacement["account_execution"][0]["account_uid_key"] = "c" * 16
+    fast = update_fast_lane(
+        tmp_path,
+        {"candidates": [replacement], "unassessed_candidates": []},
+        now_ts=1_800_000_300,
+    )
+
+    account = fast["markets"]["condition:condition-1"]["accounts"]["1"]
+    assert account["account_uid_key"] == "c" * 16
+    assert account["consecutive_executable_samples"] == 1
+    assert account["stage"] == "watchlist"
+
+
+def test_missing_account_identity_cannot_build_fast_lane_evidence(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(scoring=True, observed_q=12.5)
+    candidate["account_execution"][0]["account_uid_key"] = ""
+
+    fast = update_fast_lane(
+        tmp_path,
+        {"candidates": [candidate], "unassessed_candidates": []},
+        now_ts=1_800_000_000,
+    )
+
+    account = fast["markets"]["condition:condition-1"]["accounts"]["1"]
+    assert account["consecutive_executable_samples"] == 0
+    assert account["scoring_q_validated"] is False
+    assert account["stage"] == "watchlist"
