@@ -13,6 +13,7 @@ on:
       - "platforms/polymarket/maker/sibling_registry.py"
       - "platforms/polymarket/maker/quote_feasibility.py"
       - "platforms/polymarket/maker/stable_market_lifecycle.py"
+      - "platforms/polymarket/maker/stable_rotation_commands.py"
       - "platforms/polymarket/maker/stable_rotation_planner.py"
       - "platforms/polymarket/maker/reward_observer.py"
       - "platforms/polymarket/maker/reward_fast_lane.py"
@@ -32,6 +33,7 @@ on:
       - "tests/test_polymarket_multi_runner.py"
       - "tests/test_polymarket_quote_feasibility.py"
       - "tests/test_polymarket_stable_market_lifecycle.py"
+      - "tests/test_polymarket_stable_rotation_commands.py"
       - "tests/test_polymarket_stable_rotation_planner.py"
       - "tests/test_polymarket_reward_observer.py"
       - "tests/test_polymarket_reward_fast_lane.py"
@@ -52,6 +54,7 @@ on:
       - "platforms/polymarket/maker/sibling_registry.py"
       - "platforms/polymarket/maker/quote_feasibility.py"
       - "platforms/polymarket/maker/stable_market_lifecycle.py"
+      - "platforms/polymarket/maker/stable_rotation_commands.py"
       - "platforms/polymarket/maker/stable_rotation_planner.py"
       - "platforms/polymarket/maker/reward_observer.py"
       - "platforms/polymarket/maker/reward_fast_lane.py"
@@ -71,6 +74,7 @@ on:
       - "tests/test_polymarket_multi_runner.py"
       - "tests/test_polymarket_quote_feasibility.py"
       - "tests/test_polymarket_stable_market_lifecycle.py"
+      - "tests/test_polymarket_stable_rotation_commands.py"
       - "tests/test_polymarket_stable_rotation_planner.py"
       - "tests/test_polymarket_reward_observer.py"
       - "tests/test_polymarket_reward_fast_lane.py"
@@ -117,6 +121,7 @@ jobs:
           tests/test_polymarket_multi_runner.py
           tests/test_polymarket_quote_feasibility.py
           tests/test_polymarket_stable_market_lifecycle.py
+          tests/test_polymarket_stable_rotation_commands.py
           tests/test_polymarket_stable_rotation_planner.py
           tests/test_polymarket_reward_observer.py
           tests/test_polymarket_reward_fast_lane.py

@@ -242,6 +242,48 @@ def test_canary_promotes_only_after_three_consecutive_scoring_samples():
     ]
 
 
+def test_canary_repeated_older_sample_restarts_distinct_scoring_streak():
+    now = time.time()
+    state = {}
+    for offset, sample_id in enumerate(("a" * 64, "b" * 64, "a" * 64)):
+        state = build_lifecycle_plan(
+            _proposal(
+                generated_at=now + offset * 120,
+                account={
+                    "account_index": 1,
+                    "add": [],
+                    "canary": [],
+                    "keep": [
+                        _market(
+                            "101",
+                            "102",
+                            account_execution_evidence=_scoring_evidence(
+                                "101",
+                                "102",
+                                observed_at=now + offset * 120,
+                                sample_id=sample_id,
+                            ),
+                        )
+                    ],
+                    "review": [],
+                },
+            ),
+            account_index=1,
+            configured_token_ids={"101", "102"},
+            managed_token_ids={"101"},
+            managed_market_stages={"101": "canary"},
+            previous_state=state,
+            now_ts=now + offset * 120 + 1,
+            promotion_scoring_threshold=3,
+        )
+
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+    assert state["markets"]["101"]["consecutive_scoring_sample_ids"] == [
+        "a" * 64
+    ]
+
+
 def test_stale_scoring_sample_cannot_advance_or_promote_canary():
     now = time.time()
     row = _market(
@@ -271,7 +313,7 @@ def test_stale_scoring_sample_cannot_advance_or_promote_canary():
         managed_token_ids={"101"},
         managed_market_stages={"101": "canary"},
         previous_state={
-            "version": 3,
+            "version": 4,
             "account_index": 1,
             "last_proposal_generated_at": now - 300,
             "markets": {
@@ -329,7 +371,7 @@ def test_same_scoring_sample_is_counted_only_once_across_proposal_refreshes():
     assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
 
 
-def test_v2_scoring_counters_are_not_carried_into_v3():
+def test_legacy_scoring_counters_are_not_carried_into_v4():
     now = time.time()
     state = build_lifecycle_plan(
         _proposal(
@@ -371,7 +413,7 @@ def test_v2_scoring_counters_are_not_carried_into_v3():
         promotion_scoring_threshold=1,
     )
 
-    assert state["version"] == 3
+    assert state["version"] == 4
     assert state["promote"] == []
     assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
 
@@ -516,7 +558,7 @@ def test_lifecycle_scoring_streak_cannot_cross_account_identity():
         managed_token_ids={"101"},
         managed_market_stages={"101": "canary"},
         previous_state={
-            "version": 3,
+            "version": 4,
             "account_index": 1,
             "account_uid_key": "account-a",
             "host_id": "vps1",
@@ -726,7 +768,7 @@ def test_stale_or_missing_proposal_never_adds_or_retires():
         configured_token_ids={"101", "102"},
         managed_token_ids={"101"},
         previous_state={
-            "version": 3,
+            "version": 4,
             "account_index": 1,
             "last_proposal_generated_at": previous_sample,
         },

@@ -12,7 +12,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 
-STATE_VERSION = 3
+STATE_VERSION = 4
 MAX_ACTIVE_CANARIES_LIMIT = 10
 MAX_CANARY_PRINCIPAL_FRACTION = 0.10
 MAX_CANARY_USDC = 100.0
@@ -290,8 +290,8 @@ def build_lifecycle_plan(
         int(_number(previous.get("version"), 0)) != STATE_VERSION
         or previous_identity_mismatch
     ):
-        # v2 counted proposal refreshes rather than distinct paired scoring
-        # samples. Identity changes must also drop every accumulated counter.
+        # Older states did not retain the full distinct-sample streak.
+        # Identity changes must also drop every accumulated counter.
         previous = {}
     current_stages = {
         str(token): str(stage or "full").strip().lower()
@@ -472,12 +472,30 @@ def build_lifecycle_plan(
                 expected_host_id=expected_host_id,
             )
             prior_sample_id = str(prior.get("last_scoring_sample_id") or "")
-            if stage == "canary" and scoring_valid:
-                scoring_samples = int(prior.get("consecutive_scoring_samples") or 0)
-                if sample_id != prior_sample_id:
-                    scoring_samples += 1
+            prior_sample_ids_raw = prior.get(
+                "consecutive_scoring_sample_ids"
+            )
+            if isinstance(prior_sample_ids_raw, Sequence) and not isinstance(
+                prior_sample_ids_raw,
+                (str, bytes),
+            ):
+                prior_sample_ids = [
+                    str(value)
+                    for value in prior_sample_ids_raw
+                    if re.fullmatch(r"[0-9a-f]{64}", str(value))
+                ]
             else:
-                scoring_samples = 0
+                prior_sample_ids = []
+            if stage == "canary" and scoring_valid:
+                if sample_id == prior_sample_id:
+                    scoring_sample_ids = prior_sample_ids
+                elif sample_id in prior_sample_ids:
+                    scoring_sample_ids = [sample_id]
+                else:
+                    scoring_sample_ids = [*prior_sample_ids, sample_id]
+            else:
+                scoring_sample_ids = []
+            scoring_samples = len(scoring_sample_ids)
             promotion_threshold = max(
                 MIN_PROMOTION_SCORING_SAMPLES,
                 int(promotion_scoring_threshold),
@@ -492,6 +510,7 @@ def build_lifecycle_plan(
                     "status": "promotion_due" if promotion_due else "eligible",
                     "consecutive_failures": 0,
                     "consecutive_scoring_samples": scoring_samples,
+                    "consecutive_scoring_sample_ids": scoring_sample_ids,
                     "promotion_scoring_threshold": promotion_threshold,
                     "official_scoring_sample_valid": scoring_valid,
                     "last_scoring_sample_id": (

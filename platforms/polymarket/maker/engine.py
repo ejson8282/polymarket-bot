@@ -689,6 +689,7 @@ class PolyLPSMulti:
     def __init__(self, config_path: str = "config.json") -> None:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
+        self._config_lock = threading.RLock()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         _cfg_stem = cfg_path.stem
         self._account_idx = (
@@ -6655,7 +6656,12 @@ class PolyLPSMulti:
         self,
         available: Optional[Decimal],
     ) -> Optional[Decimal]:
-        """Return the account-local canary cap without expanding capital."""
+        """Return the per-event canary cap without expanding account capital.
+
+        The lifecycle hard limit is ten active canaries. Therefore ten markets
+        at ``min(10% of principal, $100)`` can never target more than the
+        account principal in aggregate.
+        """
 
         profile = getattr(self, "lp_account_profile", None)
         principal: Optional[Decimal] = None
@@ -7085,6 +7091,7 @@ class PolyLPSMulti:
         lifecycle_stage: str = "",
         persist: bool = True,
         notify: bool = True,
+        require_new_persisted_pair: bool = False,
     ) -> bool:
         """Register a new market at runtime (no restart). Mirrors the init-time
         market_cfg schema + minimum per-token state (same 5 dicts that dual-side
@@ -7158,12 +7165,6 @@ class PolyLPSMulti:
         # Persist to config.json so a restart (or crash) doesn't drop this market.
         # Mirrors the symmetric prune path in start_guard_sweep_loop at T-2h cutoff.
         try:
-            if not persist:
-                cfg_disk = None
-            else:
-                cfg_disk = json.loads(
-                    self._config_path.read_text(encoding="utf-8")
-                )
             section = "night_markets" if session_label == "night" else "markets"
             persisted_entry = {
                 "token_id": token_id,
@@ -7190,25 +7191,56 @@ class PolyLPSMulti:
                 "game_start_ts": float(game_start_ts) if game_start_ts else 0.0,
                 "pre_start_stop_sec_override": int(pre_start_stop_sec_override or 0),
             }
-            if cfg_disk is not None:
-                persisted = False
-                for sec in ("markets", "night_markets"):
-                    for market in (cfg_disk.get(sec) or []):
-                        if str(market.get("token_id") or "") != token_id:
-                            continue
-                        market.update(persisted_entry)
-                        market.pop("pending_activation", None)
-                        market.pop("pending_command_id", None)
-                        persisted = True
-                if not persisted:
-                    entries = cfg_disk.setdefault(section, []) or []
-                    entries.append(persisted_entry)
-                    cfg_disk[section] = entries
-                self._write_config_atomic(cfg_disk)
-                log(
-                    f"[runtime-add] persisted to config.json "
-                    f"section={section} token={token_id[:16]}"
-                )
+            if persist:
+                with self._config_transaction_lock():
+                    cfg_disk = json.loads(
+                        self._config_path.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(cfg_disk, dict):
+                        raise ValueError("account config is invalid")
+                    persisted_tokens = set()
+                    for sec in ("markets", "night_markets"):
+                        rows = cfg_disk.get(sec) or []
+                        if not isinstance(rows, list):
+                            raise ValueError(
+                                f"account config {sec} is invalid"
+                            )
+                        for market in rows:
+                            if not isinstance(market, dict):
+                                raise ValueError(
+                                    f"account config {sec} contains invalid market"
+                                )
+                            persisted_token = str(
+                                market.get("token_id") or ""
+                            )
+                            if persisted_token:
+                                persisted_tokens.add(persisted_token)
+                    if require_new_persisted_pair and {
+                        token_id,
+                        paired_token_id,
+                    } & persisted_tokens:
+                        raise ValueError(
+                            "candidate conflicts with existing persisted market"
+                        )
+
+                    persisted = False
+                    for sec in ("markets", "night_markets"):
+                        for market in cfg_disk.get(sec) or []:
+                            if str(market.get("token_id") or "") != token_id:
+                                continue
+                            market.update(persisted_entry)
+                            market.pop("pending_activation", None)
+                            market.pop("pending_command_id", None)
+                            persisted = True
+                    if not persisted:
+                        entries = cfg_disk.setdefault(section, []) or []
+                        entries.append(persisted_entry)
+                        cfg_disk[section] = entries
+                    self._write_config_atomic(cfg_disk)
+                    log(
+                        f"[runtime-add] persisted to config.json "
+                        f"section={section} token={token_id[:16]}"
+                    )
         except Exception as e:
             log(f"[runtime-add] config.json persist err: {e}")
             self._drop_market_runtime_state(
@@ -7245,18 +7277,26 @@ class PolyLPSMulti:
 
         return True
 
+    def _config_transaction_lock(self) -> threading.RLock:
+        lock = getattr(self, "_config_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._config_lock = lock
+        return lock
+
     def _write_config_atomic(self, config: Mapping[str, Any]) -> None:
-        temporary = self._config_path.with_name(
-            f".{self._config_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
-        )
-        try:
-            temporary.write_text(
-                json.dumps(config, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+        with self._config_transaction_lock():
+            temporary = self._config_path.with_name(
+                f".{self._config_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
             )
-            temporary.replace(self._config_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(self._config_path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def _drop_market_runtime_state(
         self,
@@ -7353,30 +7393,33 @@ class PolyLPSMulti:
         if not token_id and not command_id:
             return
         try:
-            config = json.loads(self._config_path.read_text(encoding="utf-8"))
-            changed = False
-            for section in ("markets", "night_markets"):
-                for market in config.get(section) or []:
-                    pending_command_id = str(
-                        market.get("pending_command_id") or ""
-                    )
-                    if token_id:
-                        if str(market.get("token_id") or "") != token_id:
-                            continue
-                        if pending_command_id and pending_command_id != command_id:
-                            continue
-                    elif pending_command_id != command_id:
-                        continue
-                    market["enabled"] = False
-                    market["pending_activation"] = False
-                    market["activation_error"] = error[:180]
-                    market["activation_failed_at"] = time.time()
-                    changed = True
-            if changed:
-                self._config_path.write_text(
-                    json.dumps(config, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+            with self._config_transaction_lock():
+                config = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
                 )
+                changed = False
+                for section in ("markets", "night_markets"):
+                    for market in config.get(section) or []:
+                        pending_command_id = str(
+                            market.get("pending_command_id") or ""
+                        )
+                        if token_id:
+                            if str(market.get("token_id") or "") != token_id:
+                                continue
+                            if (
+                                pending_command_id
+                                and pending_command_id != command_id
+                            ):
+                                continue
+                        elif pending_command_id != command_id:
+                            continue
+                        market["enabled"] = False
+                        market["pending_activation"] = False
+                        market["activation_error"] = error[:180]
+                        market["activation_failed_at"] = time.time()
+                        changed = True
+                if changed:
+                    self._write_config_atomic(config)
         except Exception as exc:
             log(f"[runtime-command] failed-state persist error: {exc}")
 
@@ -7650,6 +7693,7 @@ class PolyLPSMulti:
         risk_override: Optional[str] = None,
         persist: bool,
         notify: bool,
+        require_new_persisted_pair: bool = False,
     ) -> bool:
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
@@ -7678,6 +7722,7 @@ class PolyLPSMulti:
             lifecycle_stage=lifecycle_stage,
             persist=persist,
             notify=notify,
+            require_new_persisted_pair=require_new_persisted_pair,
         )
 
     def _runtime_add_from_command(self, market: Dict[str, Any]) -> str:
@@ -7750,6 +7795,15 @@ class PolyLPSMulti:
     def _stable_rotation_position_is_clear(self, position: float) -> bool:
         """Treat exchange-defined dust as clear while failing closed on unknowns."""
         return 0 <= position <= self._exit_dust_threshold
+
+    @staticmethod
+    def _stable_lifecycle_position_is_flat(position: float) -> bool:
+        """Require an exact zero before lifecycle removal from the config."""
+        try:
+            value = float(position)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(value) and value == 0.0
 
     async def _runtime_replace_from_command(
         self,
@@ -7892,25 +7946,30 @@ class PolyLPSMulti:
             retire_token_id=retire_token_id,
         )
         try:
-            config = json.loads(self._config_path.read_text(encoding="utf-8"))
-            if not isinstance(config, dict):
-                raise ValueError("account config is invalid")
-            drop_ids = set(old_tokens) | {
-                token for token in (new_token_id, new_pair_id) if token
-            }
-            for section in ("markets", "night_markets"):
-                rows = config.get(section) or []
-                if not isinstance(rows, list):
-                    raise ValueError(f"account config {section} is invalid")
-                kept = []
-                for row in rows:
-                    if not isinstance(row, Mapping):
-                        raise ValueError(f"account config {section} contains invalid market")
-                    if str(row.get("token_id") or "") not in drop_ids:
-                        kept.append(row)
-                config[section] = kept
-            config.setdefault(target_section, []).append(new_entry)
-            self._write_config_atomic(config)
+            with self._config_transaction_lock():
+                config = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(config, dict):
+                    raise ValueError("account config is invalid")
+                drop_ids = set(old_tokens) | {
+                    token for token in (new_token_id, new_pair_id) if token
+                }
+                for section in ("markets", "night_markets"):
+                    rows = config.get(section) or []
+                    if not isinstance(rows, list):
+                        raise ValueError(f"account config {section} is invalid")
+                    kept = []
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            raise ValueError(
+                                f"account config {section} contains invalid market"
+                            )
+                        if str(row.get("token_id") or "") not in drop_ids:
+                            kept.append(row)
+                    config[section] = kept
+                config.setdefault(target_section, []).append(new_entry)
+                self._write_config_atomic(config)
         except Exception:
             self._drop_market_runtime_state(new_token_id)
             for token in old_tokens:
@@ -8236,32 +8295,33 @@ class PolyLPSMulti:
             risk = "mid"
         paired_token_id = str(cfg.get("paired_token_id") or "")
         promoted_at = time.time()
-        config = json.loads(self._config_path.read_text(encoding="utf-8"))
-        if not isinstance(config, dict):
-            raise ValueError("account config is invalid")
-        changed = False
-        for section in ("markets", "night_markets"):
-            rows = config.get(section) or []
-            if not isinstance(rows, list):
-                raise ValueError(f"account config {section} is invalid")
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise ValueError(
-                        f"account config {section} contains invalid market"
-                    )
-                if str(row.get("token_id") or "") not in {
-                    token_id,
-                    paired_token_id,
-                }:
-                    continue
-                row["lifecycle_stage"] = "full"
-                row["risk"] = risk
-                row["eligibility_base_risk"] = risk
-                row["lifecycle_promoted_at"] = promoted_at
-                changed = True
-        if not changed:
-            raise ValueError("managed market is missing from account config")
-        self._write_config_atomic(config)
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            changed = False
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in {
+                        token_id,
+                        paired_token_id,
+                    }:
+                        continue
+                    row["lifecycle_stage"] = "full"
+                    row["risk"] = risk
+                    row["eligibility_base_risk"] = risk
+                    row["lifecycle_promoted_at"] = promoted_at
+                    changed = True
+            if not changed:
+                raise ValueError("managed market is missing from account config")
+            self._write_config_atomic(config)
         for tid in (token_id, paired_token_id):
             runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
             if runtime is None:
@@ -8288,67 +8348,81 @@ class PolyLPSMulti:
         token_id: str,
         reason_codes: Iterable[str],
     ) -> None:
-        config = json.loads(self._config_path.read_text(encoding="utf-8"))
-        if not isinstance(config, dict):
-            raise ValueError("account config is invalid")
         cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
             token_id
         )
         paired_token_id = str((cfg or {}).get("paired_token_id") or "")
         reason_list = list(dict.fromkeys(str(reason) for reason in reason_codes))
         requested_at = time.time()
-        changed = False
-        for section in ("markets", "night_markets"):
-            rows = config.get(section) or []
-            if not isinstance(rows, list):
-                raise ValueError(f"account config {section} is invalid")
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise ValueError(
-                        f"account config {section} contains invalid market"
-                    )
-                if str(row.get("token_id") or "") not in {
-                    token_id,
-                    paired_token_id,
-                }:
-                    continue
-                row["lifecycle_retire_pending"] = True
-                row["lifecycle_retire_reason_codes"] = reason_list
-                if not row.get("lifecycle_retire_requested_at"):
-                    row["lifecycle_retire_requested_at"] = requested_at
-                changed = True
-        if changed:
-            self._write_config_atomic(config)
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            changed = False
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in {
+                        token_id,
+                        paired_token_id,
+                    }:
+                        continue
+                    row["lifecycle_retire_pending"] = True
+                    row["lifecycle_retire_reason_codes"] = reason_list
+                    if not row.get("lifecycle_retire_requested_at"):
+                        row["lifecycle_retire_requested_at"] = requested_at
+                    changed = True
+            if changed:
+                self._write_config_atomic(config)
         for tid in (token_id, paired_token_id):
             runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
             if runtime is not None:
                 runtime["lifecycle_retire_pending"] = True
 
-    def _remove_stable_lifecycle_config(self, token_id: str) -> None:
+    def _remove_stable_lifecycle_config(
+        self,
+        token_id: str,
+        *,
+        preserve_startup_market: bool = False,
+    ) -> bool:
         cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
             token_id
         )
         paired_token_id = str((cfg or {}).get("paired_token_id") or "")
         drop_ids = {token_id, paired_token_id} - {""}
-        config = json.loads(self._config_path.read_text(encoding="utf-8"))
-        if not isinstance(config, dict):
-            raise ValueError("account config is invalid")
-        for section in ("markets", "night_markets"):
-            rows = config.get(section) or []
-            if not isinstance(rows, list):
-                raise ValueError(f"account config {section} is invalid")
-            kept = []
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    raise ValueError(
-                        f"account config {section} contains invalid market"
-                    )
-                if str(row.get("token_id") or "") not in drop_ids:
-                    kept.append(row)
-            config[section] = kept
-        self._write_config_atomic(config)
+        with self._config_transaction_lock():
+            config = json.loads(self._config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("account config is invalid")
+            for section in ("markets", "night_markets"):
+                rows = config.get(section) or []
+                if not isinstance(rows, list):
+                    raise ValueError(f"account config {section} is invalid")
+                kept = []
+                for row in rows:
+                    if not isinstance(row, Mapping):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if str(row.get("token_id") or "") not in drop_ids:
+                        kept.append(row)
+                config[section] = kept
+            if preserve_startup_market and not any(
+                str(row.get("token_id") or "").isdigit()
+                and row.get("enabled") is not False
+                for row in config.get("markets") or []
+            ):
+                return False
+            self._write_config_atomic(config)
         self._drop_market_runtime_state(token_id)
         self._request_market_ws_resubscribe()
+        return True
 
     def _rollback_stable_lifecycle_add(
         self,
@@ -8357,11 +8431,57 @@ class PolyLPSMulti:
         config_before: Mapping[str, Any],
         runtime_tokens_before: Iterable[str],
     ) -> None:
-        """Restore the exact pre-add config and remove only newly added runtime state."""
+        """Undo this lifecycle add without erasing concurrent config edits."""
 
         write_error: Optional[Exception] = None
         try:
-            self._write_config_atomic(config_before)
+            with self._config_transaction_lock():
+                current = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(current, dict):
+                    raise ValueError("account config is invalid")
+                for section in ("markets", "night_markets"):
+                    current_rows = current.get(section) or []
+                    original_rows = config_before.get(section) or []
+                    if not isinstance(current_rows, list) or not isinstance(
+                        original_rows,
+                        list,
+                    ):
+                        raise ValueError(
+                            f"account config {section} is invalid"
+                        )
+                    if any(not isinstance(row, Mapping) for row in current_rows):
+                        raise ValueError(
+                            f"account config {section} contains invalid market"
+                        )
+                    if any(not isinstance(row, Mapping) for row in original_rows):
+                        raise ValueError(
+                            f"original config {section} contains invalid market"
+                        )
+                    originals = {
+                        str(row.get("token_id") or ""): row
+                        for row in original_rows
+                        if str(row.get("token_id") or "")
+                    }
+                    kept = [
+                        row
+                        for row in current_rows
+                        if not (
+                            str(row.get("token_id") or "") == token_id
+                            and str(row.get("source") or "")
+                            == "stable_lifecycle_auto"
+                            and token_id not in originals
+                        )
+                    ]
+                    present = {
+                        str(row.get("token_id") or "") for row in kept
+                    }
+                    for original_token, original_row in originals.items():
+                        if original_token not in present:
+                            kept.append(dict(original_row))
+                    current[section] = kept
+                self._write_config_atomic(current)
         except Exception as exc:
             write_error = exc
         finally:
@@ -8428,7 +8548,7 @@ class PolyLPSMulti:
             position = await self._get_token_position(tid)
             if position < 0:
                 return "position_unknown"
-            if not self._stable_rotation_position_is_clear(position):
+            if not self._stable_lifecycle_position_is_flat(position):
                 return "position_not_flat"
 
         try:
@@ -8448,7 +8568,11 @@ class PolyLPSMulti:
                     else "exit_sell_preserved"
                 )
 
-        self._remove_stable_lifecycle_config(token_id)
+        if not self._remove_stable_lifecycle_config(
+            token_id,
+            preserve_startup_market=True,
+        ):
+            return "minimum_market_guard"
         log(
             f"[stable-lifecycle] retired token={token_id[:16]} "
             f"reasons={','.join(reason_list)[:180]}"
@@ -8606,72 +8730,91 @@ class PolyLPSMulti:
             token_id = str(market.get("token_id") or "")
             try:
                 paired_token_id = str(market.get("paired_token_id") or "")
-                runtime_tokens_before = set(self.market_cfg) | set(
-                    self._night_market_cfg
-                )
-                config_before = json.loads(
-                    self._config_path.read_text(encoding="utf-8")
-                )
-                if not isinstance(config_before, dict):
-                    raise ValueError("account config is invalid")
-                persisted_tokens_before = set()
-                for section in ("markets", "night_markets"):
-                    rows = config_before.get(section) or []
-                    if not isinstance(rows, list):
-                        raise ValueError(
-                            f"account config {section} is invalid"
-                        )
-                    for row in rows:
-                        if not isinstance(row, Mapping):
+                with self._config_transaction_lock():
+                    runtime_tokens_before = set(self.market_cfg) | set(
+                        self._night_market_cfg
+                    )
+                    config_before = json.loads(
+                        self._config_path.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(config_before, dict):
+                        raise ValueError("account config is invalid")
+                    persisted_tokens_before = set()
+                    for section in ("markets", "night_markets"):
+                        rows = config_before.get(section) or []
+                        if not isinstance(rows, list):
                             raise ValueError(
-                                f"account config {section} contains invalid market"
+                                f"account config {section} is invalid"
                             )
-                        persisted_token_id = str(row.get("token_id") or "")
-                        if persisted_token_id:
-                            persisted_tokens_before.add(persisted_token_id)
-                if {token_id, paired_token_id} & persisted_tokens_before:
-                    raise ValueError(
-                        "candidate conflicts with existing persisted market"
-                    )
-                candidate = self._validate_stable_replacement_candidate(
-                    market,
-                    policy,
-                    allow_canary=True,
-                    require_account_execution=True,
-                )
-                current_admission = stable_lifecycle_account_admission(
-                    candidate,
-                    int(self._account_idx),
-                )
-                if current_admission is None or current_admission[0] != stage:
-                    raise ValueError("candidate admission changed")
-                try:
-                    added = self._add_runtime_candidate(
-                        market,
-                        candidate,
-                        source="stable_lifecycle_auto",
-                        lifecycle_stage=stage,
-                        risk_override="high" if stage == "canary" else None,
-                        persist=True,
-                        notify=True,
-                    )
-                    if added:
-                        configured_after_add = set(self.market_cfg) | set(
-                            self._night_market_cfg
+                        for row in rows:
+                            if not isinstance(row, Mapping):
+                                raise ValueError(
+                                    f"account config {section} contains invalid market"
+                                )
+                            persisted_token_id = str(row.get("token_id") or "")
+                            if persisted_token_id:
+                                persisted_tokens_before.add(persisted_token_id)
+                    if {token_id, paired_token_id} & persisted_tokens_before:
+                        raise ValueError(
+                            "candidate conflicts with existing persisted market"
                         )
-                        if not {token_id, paired_token_id}.issubset(
-                            configured_after_add
-                        ):
-                            raise RuntimeError(
-                                "paired market injection did not complete"
-                            )
-                except Exception:
-                    self._rollback_stable_lifecycle_add(
-                        token_id,
-                        config_before=config_before,
-                        runtime_tokens_before=runtime_tokens_before,
+                    candidate = self._validate_stable_replacement_candidate(
+                        market,
+                        policy,
+                        allow_canary=True,
+                        require_account_execution=True,
                     )
-                    raise
+                    current_admission = stable_lifecycle_account_admission(
+                        candidate,
+                        int(self._account_idx),
+                    )
+                    if (
+                        current_admission is None
+                        or current_admission[0] != stage
+                    ):
+                        raise ValueError("candidate admission changed")
+                    try:
+                        added = self._add_runtime_candidate(
+                            market,
+                            candidate,
+                            source="stable_lifecycle_auto",
+                            lifecycle_stage=stage,
+                            risk_override=(
+                                "high" if stage == "canary" else None
+                            ),
+                            persist=True,
+                            notify=False,
+                            require_new_persisted_pair=True,
+                        )
+                        if added:
+                            configured_after_add = set(self.market_cfg) | set(
+                                self._night_market_cfg
+                            )
+                            if not {token_id, paired_token_id}.issubset(
+                                configured_after_add
+                            ):
+                                raise RuntimeError(
+                                    "paired market injection did not complete"
+                                )
+                    except Exception:
+                        self._rollback_stable_lifecycle_add(
+                            token_id,
+                            config_before=config_before,
+                            runtime_tokens_before=runtime_tokens_before,
+                        )
+                        raise
+                if added:
+                    try:
+                        self.send_discord(
+                            "市场已自动加入\n"
+                            f"市场：{self._discord_market_name(token_id)}\n"
+                            f"阶段：{stage}"
+                        )
+                    except Exception as notify_exc:
+                        log(
+                            "[stable-lifecycle] add notification failed: "
+                            f"{type(notify_exc).__name__}: {notify_exc}"
+                        )
                 status = "added" if added else "already_configured"
             except Exception as exc:
                 status = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
@@ -9588,12 +9731,15 @@ class PolyLPSMulti:
 
         # persist disabled in config markets
         try:
-            cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
-            for section in ("markets", "night_markets"):
-                for m in cfg.get(section, []):
-                    if str(m.get("token_id", "")) in event_token_ids:
-                        m["enabled"] = False
-            self._config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            with self._config_transaction_lock():
+                cfg = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                for section in ("markets", "night_markets"):
+                    for m in cfg.get(section, []):
+                        if str(m.get("token_id", "")) in event_token_ids:
+                            m["enabled"] = False
+                self._write_config_atomic(cfg)
         except Exception as e:
             log(f"[health] config disable fail token={token_id} err={e}")
 
@@ -12686,22 +12832,30 @@ class PolyLPSMulti:
                         # the dead game. Remove both YES and paired NO entries across
                         # markets / night_markets.
                         try:
-                            cfg_disk = json.loads(self._config_path.read_text(encoding="utf-8"))
-                            drop_ids = {tid}
-                            if paired_for_cfg:
-                                drop_ids.add(paired_for_cfg)
-                            removed = 0
-                            for section in ("markets", "night_markets"):
-                                before = cfg_disk.get(section, []) or []
-                                after = [m for m in before if str(m.get("token_id", "")) not in drop_ids]
-                                removed += len(before) - len(after)
-                                cfg_disk[section] = after
-                            if removed > 0:
-                                self._config_path.write_text(
-                                    json.dumps(cfg_disk, ensure_ascii=False, indent=2),
-                                    encoding="utf-8",
+                            with self._config_transaction_lock():
+                                cfg_disk = json.loads(
+                                    self._config_path.read_text(encoding="utf-8")
                                 )
-                                log(f"[start-guard] config.json pruned {removed} entries for token={tid[:16]}")
+                                drop_ids = {tid}
+                                if paired_for_cfg:
+                                    drop_ids.add(paired_for_cfg)
+                                removed = 0
+                                for section in ("markets", "night_markets"):
+                                    before = cfg_disk.get(section, []) or []
+                                    after = [
+                                        m
+                                        for m in before
+                                        if str(m.get("token_id", ""))
+                                        not in drop_ids
+                                    ]
+                                    removed += len(before) - len(after)
+                                    cfg_disk[section] = after
+                                if removed > 0:
+                                    self._write_config_atomic(cfg_disk)
+                                    log(
+                                        "[start-guard] config.json pruned "
+                                        f"{removed} entries for token={tid[:16]}"
+                                    )
                         except Exception as e:
                             log(f"[start-guard] config.json prune err token={tid[:16]}: {e}")
                     except Exception as e:

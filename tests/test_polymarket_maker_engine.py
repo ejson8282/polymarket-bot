@@ -316,6 +316,30 @@ def test_stable_canary_does_not_exceed_small_account_ten_percent():
     assert warning == ""
 
 
+@pytest.mark.parametrize(
+    ("principal", "per_event_cap"),
+    [
+        (Decimal("50"), Decimal("5")),
+        (Decimal("400"), Decimal("40")),
+        (Decimal("1000"), Decimal("100")),
+        (Decimal("1500"), Decimal("100")),
+    ],
+)
+def test_ten_stable_canaries_never_target_more_than_account_principal(
+    principal,
+    per_event_cap,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    cap = engine._stable_lifecycle_canary_budget_usdc(principal)
+
+    assert cap == per_event_cap
+    assert cap * 10 <= principal
+
+
 def test_stable_lifecycle_safety_limits_cannot_be_relaxed_by_config():
     assert _stable_lifecycle_safety_limits(
         {
@@ -803,6 +827,65 @@ def test_runtime_add_rolls_back_when_config_persistence_fails(tmp_path):
     }
 
 
+def test_lifecycle_runtime_add_rechecks_latest_persisted_pair(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine.default_tick = Decimal("0.01")
+    engine.default_min_distance = Decimal("0.01")
+    engine.default_min_distance_ticks = 1
+    engine._market_condition_ids = {}
+    engine._event_states = {}
+    engine._runtime_added_tokens = set()
+    engine._token_slug_cache = {}
+    engine._curator_events_log = []
+    engine._config_path = tmp_path / "config_1.json"
+    original = {
+        "markets": [
+            {
+                "token_id": "102",
+                "paired_token_id": "101",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path.write_text(json.dumps(original), encoding="utf-8")
+    engine._ensure_runtime_token_state = lambda *_args, **_kwargs: None
+    engine._request_market_ws_resubscribe = lambda: None
+    engine.send_discord = lambda *_args, **_kwargs: None
+
+    def inject_pair():
+        engine.market_cfg["102"] = {
+            "paired_token_id": "101",
+            "_dual_side_auto": True,
+        }
+
+    engine._maybe_inject_dual_side_tokens = inject_pair
+
+    def drop_runtime(token_id, *, preserve_tokens=()):
+        engine.market_cfg.pop(token_id, None)
+        engine.market_cfg.pop("102", None)
+        return True
+
+    engine._drop_market_runtime_state = drop_runtime
+
+    with pytest.raises(RuntimeError, match="runtime market persistence failed"):
+        engine.add_market_runtime(
+            token_id="101",
+            paired_token_id="102",
+            spread="0.05",
+            source="stable_lifecycle_auto",
+            persist=True,
+            notify=False,
+            require_new_persisted_pair=True,
+        )
+
+    assert engine.market_cfg == {}
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == original
+
+
 def test_runtime_add_rejects_preexisting_paired_token_without_mutation():
     engine = object.__new__(PolyLPSMulti)
     existing = {
@@ -908,6 +991,21 @@ def test_stable_lifecycle_retirement_preserves_live_exit_sell(tmp_path):
 
 def test_stable_lifecycle_retirement_removes_only_after_flat(tmp_path):
     engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
 
     status = asyncio.run(
         engine._retire_stable_lifecycle_market(
@@ -919,7 +1017,7 @@ def test_stable_lifecycle_retirement_removes_only_after_flat(tmp_path):
     assert status == "removed"
     assert engine.market_cfg == {}
     config = json.loads(engine._config_path.read_text(encoding="utf-8"))
-    assert config["markets"] == []
+    assert [row["token_id"] for row in config["markets"]] == ["201"]
     assert engine._get_token_position.await_count == 2
 
 
@@ -937,6 +1035,38 @@ def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
     assert status == "position_not_flat"
     assert set(engine.market_cfg) == {"101", "102"}
     config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["lifecycle_retire_pending"] is True
+
+
+def test_stable_lifecycle_retirement_does_not_treat_dust_as_flat(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    engine._get_token_position = AsyncMock(return_value=0.1)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "position_not_flat"
+    assert set(engine.market_cfg) == {"101", "102"}
+
+
+def test_stable_lifecycle_retirement_keeps_last_primary_market(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["101"]
     assert config["markets"][0]["lifecycle_retire_pending"] is True
 
 
@@ -1129,6 +1259,7 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     assert captured["source"] == "stable_lifecycle_auto"
     assert captured["lifecycle_stage"] == "canary"
     assert captured["risk_override"] == "high"
+    assert captured["require_new_persisted_pair"] is True
     assert engine._stable_lifecycle_state["add_results"] == [
         {"token_id": "201", "status": "added"}
     ]
@@ -1448,6 +1579,58 @@ def test_stable_lifecycle_add_rollback_restores_disabled_persisted_pair(
     )
     assert dropped == [("201", {"999"})]
     assert resubscribed == [True]
+
+
+def test_stable_lifecycle_add_rollback_preserves_concurrent_config_row(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    original_config["markets"][0],
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                    {
+                        "token_id": "303",
+                        "paired_token_id": "304",
+                        "enabled": True,
+                        "source": "dashboard_confirmed",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._drop_market_runtime_state = lambda *_args, **_kwargs: True
+    engine._request_market_ws_resubscribe = lambda: None
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before=set(),
+    )
+
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["202", "303"]
 
 
 def test_stable_lifecycle_rejects_disabled_persisted_pair_without_mutation(
