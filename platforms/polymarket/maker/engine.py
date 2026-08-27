@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import math
@@ -13,7 +15,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 import contextvars
@@ -690,6 +692,7 @@ class PolyLPSMulti:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
         self._config_lock = threading.RLock()
+        self._config_lock_state = threading.local()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         _cfg_stem = cfg_path.stem
         self._account_idx = (
@@ -7277,12 +7280,39 @@ class PolyLPSMulti:
 
         return True
 
-    def _config_transaction_lock(self) -> threading.RLock:
+    @contextmanager
+    def _config_transaction_lock(self) -> Iterator[None]:
         lock = getattr(self, "_config_lock", None)
         if lock is None:
             lock = threading.RLock()
             self._config_lock = lock
-        return lock
+        state = getattr(self, "_config_lock_state", None)
+        if state is None:
+            state = threading.local()
+            self._config_lock_state = state
+
+        with lock:
+            depth = int(getattr(state, "depth", 0))
+            if depth:
+                state.depth = depth + 1
+                try:
+                    yield
+                finally:
+                    state.depth = depth
+                return
+
+            lock_path = self._config_path.with_name(
+                f".{self._config_path.name}.lock"
+            )
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                state.depth = 1
+                yield
+            finally:
+                state.depth = 0
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
 
     def _write_config_atomic(self, config: Mapping[str, Any]) -> None:
         with self._config_transaction_lock():
@@ -8413,12 +8443,30 @@ class PolyLPSMulti:
                     if str(row.get("token_id") or "") not in drop_ids:
                         kept.append(row)
                 config[section] = kept
-            if preserve_startup_market and not any(
-                str(row.get("token_id") or "").isdigit()
-                and row.get("enabled") is not False
-                for row in config.get("markets") or []
-            ):
-                return False
+            if preserve_startup_market:
+                loaded_primary_survives = False
+                for row in config.get("markets") or []:
+                    token = str(row.get("token_id") or "")
+                    pair = str(row.get("paired_token_id") or "")
+                    runtime = self.market_cfg.get(token)
+                    paired_runtime = (
+                        self.market_cfg.get(pair)
+                        or self._night_market_cfg.get(pair)
+                    )
+                    if (
+                        token.isdigit()
+                        and pair.isdigit()
+                        and row.get("enabled") is not False
+                        and isinstance(runtime, Mapping)
+                        and not runtime.get("_dual_side_auto")
+                        and isinstance(paired_runtime, Mapping)
+                        and str(paired_runtime.get("paired_token_id") or "")
+                        == token
+                    ):
+                        loaded_primary_survives = True
+                        break
+                if not loaded_primary_survives:
+                    return False
             self._write_config_atomic(config)
         self._drop_market_runtime_state(token_id)
         self._request_market_ws_resubscribe()
@@ -8459,8 +8507,8 @@ class PolyLPSMulti:
                         raise ValueError(
                             f"original config {section} contains invalid market"
                         )
-                    originals = {
-                        str(row.get("token_id") or ""): row
+                    original_tokens = {
+                        str(row.get("token_id") or "")
                         for row in original_rows
                         if str(row.get("token_id") or "")
                     }
@@ -8471,15 +8519,9 @@ class PolyLPSMulti:
                             str(row.get("token_id") or "") == token_id
                             and str(row.get("source") or "")
                             == "stable_lifecycle_auto"
-                            and token_id not in originals
+                            and token_id not in original_tokens
                         )
                     ]
-                    present = {
-                        str(row.get("token_id") or "") for row in kept
-                    }
-                    for original_token, original_row in originals.items():
-                        if original_token not in present:
-                            kept.append(dict(original_row))
                     current[section] = kept
                 self._write_config_atomic(current)
         except Exception as exc:
@@ -8508,11 +8550,18 @@ class PolyLPSMulti:
         if cfg.get("_dual_side_auto"):
             return "paired_side_ignored"
         paired_token_id = str(cfg.get("paired_token_id") or "")
-        event_tokens = tuple(
-            dict.fromkeys(
-                tid for tid in (token_id, paired_token_id) if tid
-            )
-        )
+        paired_cfg = self.market_cfg.get(
+            paired_token_id
+        ) or self._night_market_cfg.get(paired_token_id)
+        if (
+            not token_id.isdigit()
+            or not paired_token_id.isdigit()
+            or paired_token_id == token_id
+            or not isinstance(paired_cfg, Mapping)
+            or str(paired_cfg.get("paired_token_id") or "") != token_id
+        ):
+            return "paired_market_invalid"
+        event_tokens = (token_id, paired_token_id)
         reason_list = tuple(dict.fromkeys(str(reason) for reason in reason_codes))
         for tid in event_tokens:
             if not self._event_has_unresolved_exit(

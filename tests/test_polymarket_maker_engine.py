@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 import types
@@ -989,7 +990,77 @@ def test_stable_lifecycle_retirement_preserves_live_exit_sell(tmp_path):
     assert engine._cancel_risk_buys.await_count == 2
 
 
+@pytest.mark.parametrize("pair_failure", ["missing", "not_reciprocal"])
+def test_stable_lifecycle_retirement_requires_valid_runtime_pair(
+    tmp_path,
+    pair_failure,
+):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    if pair_failure == "missing":
+        engine.market_cfg.pop("102")
+    else:
+        engine.market_cfg["102"]["paired_token_id"] = "999"
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["official_order_scoring_false"],
+        )
+    )
+
+    assert status == "paired_market_invalid"
+    assert engine._cancel_risk_buys.await_count == 0
+    assert engine._get_token_position.await_count == 0
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert "lifecycle_retire_pending" not in config["markets"][0]
+
+
 def test_stable_lifecycle_retirement_removes_only_after_flat(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+    engine.market_cfg.update(
+        {
+            "201": {
+                "paired_token_id": "202",
+                "source": "operator",
+            },
+            "202": {
+                "paired_token_id": "201",
+                "source": "operator",
+                "_dual_side_auto": True,
+            },
+        }
+    )
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "removed"
+    assert set(engine.market_cfg) == {"201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["201"]
+    assert engine._get_token_position.await_count == 2
+
+
+def test_stable_lifecycle_retirement_rejects_disk_only_survivor(tmp_path):
     engine = _stable_lifecycle_retire_engine(tmp_path)
     config_before = json.loads(
         engine._config_path.read_text(encoding="utf-8")
@@ -1014,11 +1085,10 @@ def test_stable_lifecycle_retirement_removes_only_after_flat(tmp_path):
         )
     )
 
-    assert status == "removed"
-    assert engine.market_cfg == {}
+    assert status == "minimum_market_guard"
+    assert set(engine.market_cfg) == {"101", "102"}
     config = json.loads(engine._config_path.read_text(encoding="utf-8"))
-    assert [row["token_id"] for row in config["markets"]] == ["201"]
-    assert engine._get_token_position.await_count == 2
+    assert [row["token_id"] for row in config["markets"]] == ["101", "201"]
 
 
 def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
@@ -1525,7 +1595,7 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     ]
 
 
-def test_stable_lifecycle_add_rollback_restores_disabled_persisted_pair(
+def test_stable_lifecycle_add_rollback_preserves_disabled_persisted_pair(
     tmp_path,
 ):
     engine = object.__new__(PolyLPSMulti)
@@ -1631,6 +1701,86 @@ def test_stable_lifecycle_add_rollback_preserves_concurrent_config_row(
 
     config = json.loads(engine._config_path.read_text(encoding="utf-8"))
     assert [row["token_id"] for row in config["markets"]] == ["202", "303"]
+
+
+def test_stable_lifecycle_add_rollback_does_not_restore_concurrent_delete(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    original_config = {
+        "markets": [
+            {
+                "token_id": "202",
+                "paired_token_id": "201",
+                "enabled": False,
+                "source": "operator_disabled",
+            }
+        ],
+        "night_markets": [],
+    }
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "201",
+                        "paired_token_id": "202",
+                        "enabled": True,
+                        "source": "stable_lifecycle_auto",
+                    },
+                    {
+                        "token_id": "303",
+                        "paired_token_id": "304",
+                        "enabled": True,
+                        "source": "dashboard_confirmed",
+                    },
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._drop_market_runtime_state = lambda *_args, **_kwargs: True
+    engine._request_market_ws_resubscribe = lambda: None
+
+    engine._rollback_stable_lifecycle_add(
+        "201",
+        config_before=original_config,
+        runtime_tokens_before=set(),
+    )
+
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["303"]
+
+
+def test_config_transaction_lock_blocks_a_second_process(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text("{}", encoding="utf-8")
+    lock_path = tmp_path / ".config_1.json.lock"
+    contender = (
+        "import fcntl, os, sys; "
+        "fd=os.open(sys.argv[1], os.O_CREAT|os.O_RDWR, 0o600); "
+        "\ntry:\n fcntl.flock(fd, fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        "\nexcept BlockingIOError:\n sys.exit(23)"
+        "\nelse:\n sys.exit(0)"
+    )
+
+    with engine._config_transaction_lock():
+        with engine._config_transaction_lock():
+            engine._write_config_atomic({"nested": True})
+        result = subprocess.run(
+            [sys.executable, "-c", contender, str(lock_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode == 23
+    assert json.loads(engine._config_path.read_text(encoding="utf-8")) == {
+        "nested": True
+    }
 
 
 def test_stable_lifecycle_rejects_disabled_persisted_pair_without_mutation(

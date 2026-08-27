@@ -50,6 +50,46 @@ def _scoring_evidence(
     }
 
 
+def _canary_scoring_step(
+    previous_state: dict,
+    *,
+    now: float,
+    offset: int,
+    sample_number: int,
+) -> dict:
+    observed_at = now + offset * 300
+    return build_lifecycle_plan(
+        _proposal(
+            generated_at=observed_at,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [
+                    _market(
+                        "101",
+                        "102",
+                        account_execution_evidence=_scoring_evidence(
+                            "101",
+                            "102",
+                            observed_at=observed_at,
+                            sample_id=f"{sample_number:064x}",
+                        ),
+                    )
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state=previous_state,
+        now_ts=observed_at + 1,
+        promotion_scoring_threshold=3,
+    )
+
+
 def test_account_executable_candidate_requires_nonzero_q_and_canary_evidence():
     row = {
         "stable_lp_recommended": False,
@@ -625,37 +665,11 @@ def test_canary_promotion_streak_resets_when_scoring_is_not_true():
 
 def test_canary_promotion_streak_resets_when_market_is_unassessed():
     now = time.time()
-    scoring_row = _market(
-        "101",
-        "102",
-        account_execution_evidence=_scoring_evidence(
-            "101",
-            "102",
-            observed_at=now,
-            sample_id="1" * 64,
-        ),
-    )
+    state = _canary_scoring_step({}, now=now, offset=0, sample_number=1)
+    state = _canary_scoring_step(state, now=now, offset=1, sample_number=2)
     state = build_lifecycle_plan(
         _proposal(
-            generated_at=now,
-            account={
-                "account_index": 1,
-                "add": [],
-                "canary": [],
-                "keep": [scoring_row],
-                "review": [],
-            },
-        ),
-        account_index=1,
-        configured_token_ids={"101", "102"},
-        managed_token_ids={"101"},
-        managed_market_stages={"101": "canary"},
-        previous_state={},
-        now_ts=now + 1,
-    )
-    state = build_lifecycle_plan(
-        _proposal(
-            generated_at=now + 300,
+            generated_at=now + 600,
             account={
                 "account_index": 1,
                 "add": [],
@@ -669,12 +683,73 @@ def test_canary_promotion_streak_resets_when_market_is_unassessed():
         managed_token_ids={"101"},
         managed_market_stages={"101": "canary"},
         previous_state=state,
-        now_ts=now + 301,
+        now_ts=now + 601,
     )
 
     assert state["promote"] == []
     assert state["markets"]["101"]["status"] == "unassessed"
     assert state["markets"]["101"]["consecutive_scoring_samples"] == 0
+    assert state["markets"]["101"]["consecutive_scoring_sample_ids"] == []
+    assert state["markets"]["101"]["last_scoring_sample_id"] == ""
+
+    state = _canary_scoring_step(
+        state,
+        now=now,
+        offset=3,
+        sample_number=3,
+    )
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+    assert state["markets"]["101"]["consecutive_scoring_sample_ids"] == [
+        f"{3:064x}"
+    ]
+
+
+def test_canary_promotion_streak_resets_when_market_enters_review():
+    now = time.time()
+    state = _canary_scoring_step({}, now=now, offset=0, sample_number=1)
+    state = _canary_scoring_step(state, now=now, offset=1, sample_number=2)
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now + 600,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [],
+                "review": [
+                    _market(
+                        "101",
+                        "102",
+                        action="review_rotate",
+                        reason_codes=["front_depth_below_account_min"],
+                    )
+                ],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state=state,
+        now_ts=now + 601,
+    )
+
+    assert state["markets"]["101"]["status"] == "watch"
+    assert state["markets"]["101"]["consecutive_scoring_sample_ids"] == []
+    assert state["markets"]["101"]["last_scoring_sample_id"] == ""
+
+    state = _canary_scoring_step(
+        state,
+        now=now,
+        offset=3,
+        sample_number=3,
+    )
+    assert state["promote"] == []
+    assert state["markets"]["101"]["consecutive_scoring_samples"] == 1
+    assert state["markets"]["101"]["consecutive_scoring_sample_ids"] == [
+        f"{3:064x}"
+    ]
 
 
 def test_soft_review_retires_only_after_three_distinct_samples():

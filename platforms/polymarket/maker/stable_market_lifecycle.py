@@ -449,6 +449,8 @@ def build_lifecycle_plan(
                     "status": "retire_due",
                     "consecutive_failures": 1,
                     "consecutive_scoring_samples": 0,
+                    "consecutive_scoring_sample_ids": [],
+                    "last_scoring_sample_id": "",
                     "failure_threshold": 1,
                     "hard_failure": True,
                     "reason_codes": ["canary_limit_exceeded"],
@@ -556,6 +558,8 @@ def build_lifecycle_plan(
                 {
                     "status": "unassessed",
                     "consecutive_scoring_samples": 0,
+                    "consecutive_scoring_sample_ids": [],
+                    "last_scoring_sample_id": "",
                     "reason_codes": ["configured_market_missing_from_proposal"],
                 }
             )
@@ -583,6 +587,8 @@ def build_lifecycle_plan(
                 "status": "retire_due" if due else "watch",
                 "consecutive_failures": failures,
                 "consecutive_scoring_samples": 0,
+                "consecutive_scoring_sample_ids": [],
+                "last_scoring_sample_id": "",
                 "failure_threshold": threshold,
                 "hard_failure": hard,
                 "reason_codes": list(reasons),
