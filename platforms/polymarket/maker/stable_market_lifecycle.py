@@ -11,7 +11,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 HARD_RETIRE_REASONS = frozenset(
     {
         "market_not_active",
@@ -81,6 +81,35 @@ def account_execution(
         if int(_number(execution.get("account_index"), -1)) == account_index:
             return execution
     return None
+
+
+def account_scoring_evidence(
+    row: Mapping[str, Any],
+    account_index: int,
+) -> Mapping[str, Any] | None:
+    """Return sanitized account-local scoring evidence from a proposal row."""
+
+    evidence = row.get("account_execution_evidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    if int(_number(evidence.get("account_index"), -1)) != account_index:
+        return None
+    return evidence
+
+
+def scoring_sample_is_valid(
+    row: Mapping[str, Any],
+    account_index: int,
+) -> bool:
+    """Require official scoring plus a positive observed or executable Q."""
+
+    evidence = account_scoring_evidence(row, account_index)
+    if evidence is None or evidence.get("official_scoring") is not True:
+        return False
+    observed_q = evidence.get("observed_q_min")
+    if observed_q is not None:
+        return _number(observed_q) > 0
+    return _number(evidence.get("executable_q_min")) > 0
 
 
 def candidate_is_executable_for_account(
@@ -160,14 +189,22 @@ def build_lifecycle_plan(
     managed_token_ids: set[str],
     previous_state: Mapping[str, Any] | None,
     now_ts: float,
+    managed_market_stages: Mapping[str, str] | None = None,
     max_proposal_age_sec: float = 900.0,
     max_add_per_cycle: int = 5,
+    max_active_canaries: int = 10,
+    canary_budget_usdc: float | None = None,
+    promotion_scoring_threshold: int = 3,
     soft_failure_threshold: int = 3,
     hard_failure_threshold: int = 1,
 ) -> dict[str, Any]:
     """Build one idempotent plan from a fresh account-local proposal sample."""
 
     previous = dict(previous_state or {})
+    current_stages = {
+        str(token): str(stage or "full").strip().lower()
+        for token, stage in (managed_market_stages or {}).items()
+    }
     last_sample = _number(previous.get("last_proposal_generated_at"), 0.0)
     markets_state = previous.get("markets")
     if not isinstance(markets_state, Mapping):
@@ -182,7 +219,12 @@ def build_lifecycle_plan(
         "last_proposal_generated_at": last_sample,
         "new_sample": False,
         "add": [],
+        "promote": [],
         "retire": [],
+        "active_canaries": sum(
+            stage == "canary" for stage in current_stages.values()
+        ),
+        "max_active_canaries": max(0, int(max_active_canaries)),
         "markets": {
             str(token): dict(state)
             for token, state in markets_state.items()
@@ -220,6 +262,10 @@ def build_lifecycle_plan(
 
     additions: list[dict[str, Any]] = []
     add_limit = max(0, int(max_add_per_cycle))
+    canary_slots = max(
+        0,
+        int(max_active_canaries) - int(output["active_canaries"]),
+    )
     for stage, key in (("full", "add"), ("canary", "canary")):
         if add_limit == 0:
             break
@@ -238,7 +284,18 @@ def build_lifecycle_plan(
                 or paired in configured_token_ids
             ):
                 continue
+            if stage == "canary":
+                if canary_slots <= 0:
+                    continue
+                rewards_min = _number(row.get("rewards_min_size_shares"), 0.0)
+                if (
+                    canary_budget_usdc is not None
+                    and rewards_min > max(0.0, float(canary_budget_usdc))
+                ):
+                    continue
             additions.append({"stage": stage, "market": dict(row)})
+            if stage == "canary":
+                canary_slots -= 1
             if len(additions) >= add_limit:
                 break
         if len(additions) >= add_limit:
@@ -252,22 +309,60 @@ def build_lifecycle_plan(
         if not isinstance(prior, Mapping):
             prior = {}
         state = dict(prior)
+        stage = current_stages.get(
+            token_id,
+            str(prior.get("lifecycle_stage") or "full").strip().lower(),
+        )
+        if stage not in {"canary", "full"}:
+            stage = "full"
+        state["lifecycle_stage"] = stage
         state["last_proposal_generated_at"] = proposal_generated_at
         if token_id in keep:
+            scoring_valid = scoring_sample_is_valid(
+                keep[token_id],
+                account_index,
+            )
+            scoring_samples = (
+                int(prior.get("consecutive_scoring_samples") or 0) + 1
+                if stage == "canary" and scoring_valid
+                else 0
+            )
+            promotion_threshold = max(1, int(promotion_scoring_threshold))
+            promotion_due = bool(
+                stage == "canary"
+                and scoring_samples >= promotion_threshold
+            )
             state.update(
                 {
-                    "status": "eligible",
+                    "status": "promotion_due" if promotion_due else "eligible",
                     "consecutive_failures": 0,
+                    "consecutive_scoring_samples": scoring_samples,
+                    "promotion_scoring_threshold": promotion_threshold,
+                    "official_scoring_sample_valid": scoring_valid,
                     "reason_codes": [],
                 }
             )
             output["markets"][token_id] = state
+            if promotion_due:
+                output["promote"].append(
+                    {
+                        "token_id": token_id,
+                        "target_risk": (
+                            "low"
+                            if _number(keep[token_id].get("fill_risk"), 100.0)
+                            < 35.0
+                            else "mid"
+                        ),
+                        "consecutive_scoring_samples": scoring_samples,
+                    }
+                )
             continue
         row = review.get(token_id)
         if row is None:
             state.update(
                 {
                     "status": "unassessed",
+                    "consecutive_scoring_samples": 0,
                     "reason_codes": ["configured_market_missing_from_proposal"],
                 }
             )
@@ -294,6 +389,7 @@ def build_lifecycle_plan(
             {
                 "status": "retire_due" if due else "watch",
                 "consecutive_failures": failures,
+                "consecutive_scoring_samples": 0,
                 "failure_threshold": threshold,
                 "hard_failure": hard,
                 "reason_codes": list(reasons),

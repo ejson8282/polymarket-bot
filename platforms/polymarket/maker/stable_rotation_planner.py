@@ -105,8 +105,53 @@ def _candidate_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             _number(row.get("executable_reward_share_pct")), 2
         ),
         "executable_q_min": round(_number(row.get("executable_q_min")), 6),
+        "rewards_min_size_shares": round(
+            _number(row.get("rewards_min_size_shares")),
+            4,
+        ),
         "admission_level": str(row.get("admission_level") or "unknown"),
     }
+
+
+def _account_execution_evidence(
+    row: Mapping[str, Any],
+    account_index: int,
+) -> dict[str, Any] | None:
+    executions = row.get("account_execution")
+    if not isinstance(executions, Sequence) or isinstance(
+        executions,
+        (str, bytes),
+    ):
+        return None
+    for execution in executions:
+        if not isinstance(execution, Mapping):
+            continue
+        if int(_number(execution.get("account_index"), -1)) != account_index:
+            continue
+        return {
+            "account_index": account_index,
+            "configured": execution.get("configured") is True,
+            "official_scoring": (
+                execution.get("official_scoring")
+                if isinstance(execution.get("official_scoring"), bool)
+                else None
+            ),
+            "observed_q_min": (
+                round(_number(execution.get("observed_q_min")), 6)
+                if execution.get("observed_q_min") is not None
+                else None
+            ),
+            "executable_q_min": round(
+                _number(execution.get("executable_q_min")),
+                6,
+            ),
+            "actual_reward_share_pct": (
+                round(_number(execution.get("actual_reward_share_pct")), 6)
+                if execution.get("actual_reward_share_pct") is not None
+                else None
+            ),
+        }
+    return None
 
 
 def _proposal_row(
@@ -115,6 +160,7 @@ def _proposal_row(
     action: str,
     reason_codes: Sequence[str],
     config_section: str = "",
+    account_index: int | None = None,
 ) -> dict[str, Any]:
     proposal = {
         "action": action,
@@ -124,6 +170,10 @@ def _proposal_row(
     }
     if config_section in {"markets", "night_markets"}:
         proposal["config_section"] = config_section
+    if account_index is not None:
+        evidence = _account_execution_evidence(row, account_index)
+        if evidence is not None:
+            proposal["account_execution_evidence"] = evidence
     return proposal
 
 
@@ -151,6 +201,7 @@ def _review_current_row(
     *,
     action: str,
     reason_codes: Sequence[str],
+    account_index: int,
 ) -> dict[str, Any]:
     """Keep the configured token pair while attaching current observer metrics."""
 
@@ -166,6 +217,9 @@ def _review_current_row(
     section = str(current.get("section") or "")
     if section in {"markets", "night_markets"}:
         row["config_section"] = section
+    evidence = _account_execution_evidence(candidate, account_index)
+    if evidence is not None:
+        row["account_execution_evidence"] = evidence
     return row
 
 
@@ -684,6 +738,7 @@ def build_stable_rotation_proposal(
                         candidate,
                         action=action,
                         reason_codes=reasons,
+                        account_index=account_index,
                     )
                 )
             else:
@@ -701,6 +756,7 @@ def build_stable_rotation_proposal(
                             else ("verified_low_risk_efficient",)
                         ),
                         config_section=str(current.get("section") or ""),
+                        account_index=account_index,
                     )
                 )
     unassigned: list[dict[str, Any]] = []
@@ -755,6 +811,7 @@ def build_stable_rotation_proposal(
                             "independent_account_selection",
                         )
                     ),
+                    account_index=account_index,
                 )
             )
             known_aliases_by_account[account_index].update(aliases)

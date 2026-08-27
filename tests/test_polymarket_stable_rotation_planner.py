@@ -58,6 +58,7 @@ def _candidate(
         "estimated_reward_share_pct": reward_share,
         "daily_reward_usd": 40.0,
         "probe_capital_usd": 100.0,
+        "rewards_min_size_shares": 25.0,
         "front_depth_status": depth_status,
         "front_depth_observed_at": depth_observed_at,
         "yes_front_bid_notional_usd": yes_depth,
@@ -264,6 +265,23 @@ def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
             "reason_codes": ["capital_evidence_unavailable"],
         }
     ]
+    candidate["account_execution"] = [
+        {
+            "account_index": 1,
+            "configured": True,
+            "official_scoring": True,
+            "observed_q_min": 12.5,
+            "executable_q_min": 15.0,
+            "actual_reward_share_pct": 1.25,
+        },
+        {
+            "account_index": 2,
+            "configured": True,
+            "official_scoring": False,
+            "observed_q_min": 0,
+            "executable_q_min": 0,
+        },
+    ]
 
     proposal = build_stable_rotation_proposal(
         _observer(candidate),
@@ -275,6 +293,15 @@ def test_configured_canary_is_kept_as_canary_for_manual_review() -> None:
     assert len(keep) == 1
     assert keep[0]["action"] == "keep_canary"
     assert keep[0]["reason_codes"] == ["capital_evidence_unavailable"]
+    assert keep[0]["rewards_min_size_shares"] == 25.0
+    assert keep[0]["account_execution_evidence"] == {
+        "account_index": 1,
+        "configured": True,
+        "official_scoring": True,
+        "observed_q_min": 12.5,
+        "executable_q_min": 15.0,
+        "actual_reward_share_pct": 1.25,
+    }
 
 
 def test_proposal_never_admits_weather_market_to_stable_lp() -> None:

@@ -261,6 +261,58 @@ def test_legacy_lp_account_still_uses_full_live_balance():
     assert warning == ""
 
 
+def test_stable_canary_caps_each_market_at_ten_percent_or_one_hundred():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine.market_cfg = {"101": {"lifecycle_stage": "canary"}}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("1500")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(
+        engine._compute_target_shares("101", budget_pct=Decimal("0.95"))
+    )
+
+    assert (bid, ask) == (Decimal("100"), Decimal("100"))
+    assert warning == ""
+
+
+def test_stable_canary_does_not_exceed_small_account_ten_percent():
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_order_size = Decimal("5")
+    engine.max_quote_shares_per_market = Decimal("0")
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine.market_cfg = {"101": {"lifecycle_stage": "canary"}}
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+
+    async def market_meta(_token_id):
+        return {"rewardsMinSize": "5"}
+
+    async def collateral_available():
+        return Decimal("400")
+
+    engine._get_market_meta = market_meta
+    engine._get_collateral_available = collateral_available
+
+    bid, ask, warning = asyncio.run(engine._compute_target_shares("101"))
+
+    assert (bid, ask) == (Decimal("40"), Decimal("40"))
+    assert warning == ""
+
+
 def test_price_legs_skip_when_reward_zone_has_no_passive_tick():
     engine = object.__new__(PolyLPSMulti)
     engine.market_cfg = {
@@ -737,6 +789,62 @@ def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
     assert config["markets"][0]["lifecycle_retire_pending"] is True
 
 
+def test_stable_lifecycle_promotion_updates_runtime_and_persisted_pair(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "lifecycle_stage": "canary",
+            "risk": "high",
+            "base_risk": "high",
+        },
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "risk": "high",
+            "base_risk": "high",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps(
+            {
+                "markets": [
+                    {
+                        "token_id": "101",
+                        "paired_token_id": "102",
+                        "lifecycle_stage": "canary",
+                        "risk": "high",
+                        "eligibility_base_risk": "high",
+                    }
+                ],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._market_budget_pct = {"101": Decimal("0.6"), "102": Decimal("0.6")}
+    engine._last_budget_rebalance_ts = 100
+    engine.send_discord = lambda *_args, **_kwargs: None
+    engine._discord_market_name = lambda token: token
+
+    status = engine._promote_stable_lifecycle_market("101", "low")
+
+    assert status == "promoted"
+    assert engine.market_cfg["101"]["lifecycle_stage"] == "full"
+    assert engine.market_cfg["102"]["lifecycle_stage"] == "full"
+    assert engine.market_cfg["101"]["risk"] == "low"
+    assert engine.market_cfg["102"]["risk"] == "low"
+    assert engine._market_budget_pct == {}
+    persisted = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert persisted["markets"][0]["lifecycle_stage"] == "full"
+    assert persisted["markets"][0]["risk"] == "low"
+
+
 def test_stable_lifecycle_disabled_is_noop():
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = False
@@ -845,6 +953,82 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     assert captured["risk_override"] == "high"
     assert engine._stable_lifecycle_state["add_results"] == [
         {"token_id": "201", "status": "added"}
+    ]
+
+
+def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
+    tmp_path,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._account_idx = 1
+    engine.market_cfg = {
+        "101": {
+            "paired_token_id": "102",
+            "lifecycle_stage": "canary",
+        },
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_max_active_canaries = 10
+    engine._stable_lifecycle_promotion_scoring_threshold = 3
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    promoted = []
+    engine._promote_stable_lifecycle_market = (
+        lambda token_id, risk: promoted.append((token_id, risk)) or "promoted"
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    for offset in range(3):
+        engine._stable_rotation_proposal_path.write_text(
+            json.dumps(
+                {
+                    "status": "ready",
+                    "generated_at": time.time() + offset,
+                    "accounts": [
+                        {
+                            "account_index": 1,
+                            "add": [],
+                            "canary": [],
+                            "keep": [
+                                {
+                                    "token_id": "101",
+                                    "paired_token_id": "102",
+                                    "fill_risk": 20,
+                                    "account_execution_evidence": {
+                                        "account_index": 1,
+                                        "official_scoring": True,
+                                        "observed_q_min": 12,
+                                    },
+                                }
+                            ],
+                            "review": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        asyncio.run(engine._stable_market_lifecycle_once())
+
+    assert promoted == [("101", "low")]
+    assert engine._stable_lifecycle_state["promote_results"] == [
+        {"token_id": "101", "status": "promoted"}
     ]
 
 

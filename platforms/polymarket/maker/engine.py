@@ -1361,6 +1361,32 @@ class PolyLPSMulti:
             0,
             int(lifecycle_cfg.get("max_add_per_cycle", 5)),
         )
+        self._stable_lifecycle_max_active_canaries = max(
+            0,
+            int(lifecycle_cfg.get("max_active_canaries", 10)),
+        )
+        self._stable_lifecycle_canary_principal_fraction = max(
+            Decimal("0"),
+            min(
+                Decimal("1"),
+                Decimal(
+                    str(
+                        lifecycle_cfg.get(
+                            "canary_principal_fraction",
+                            "0.10",
+                        )
+                    )
+                ),
+            ),
+        )
+        self._stable_lifecycle_canary_max_usdc = max(
+            Decimal("0"),
+            Decimal(str(lifecycle_cfg.get("canary_max_usdc", "100"))),
+        )
+        self._stable_lifecycle_promotion_scoring_threshold = max(
+            1,
+            int(lifecycle_cfg.get("promotion_scoring_threshold", 3)),
+        )
         self._stable_lifecycle_soft_failure_threshold = max(
             1,
             int(lifecycle_cfg.get("soft_failure_threshold", 3)),
@@ -6518,6 +6544,43 @@ class PolyLPSMulti:
             return available
         return profile.effective_available(available)
 
+    def _stable_lifecycle_canary_budget_usdc(
+        self,
+        available: Optional[Decimal],
+    ) -> Optional[Decimal]:
+        """Return the account-local canary cap without expanding capital."""
+
+        profile = getattr(self, "lp_account_profile", None)
+        principal: Optional[Decimal] = None
+        if profile is not None and getattr(profile, "managed", False):
+            principal = Decimal(str(profile.target_principal_usdc))
+        elif available is not None:
+            principal = max(Decimal("0"), Decimal(str(available)))
+        if principal is None:
+            return None
+        fraction = Decimal(
+            str(
+                getattr(
+                    self,
+                    "_stable_lifecycle_canary_principal_fraction",
+                    Decimal("0.10"),
+                )
+            )
+        )
+        absolute_cap = Decimal(
+            str(
+                getattr(
+                    self,
+                    "_stable_lifecycle_canary_max_usdc",
+                    Decimal("100"),
+                )
+            )
+        )
+        return max(
+            Decimal("0"),
+            min(principal * fraction, absolute_cap),
+        )
+
     async def _compute_target_shares(
         self,
         token_id: str,
@@ -6542,6 +6605,18 @@ class PolyLPSMulti:
         )
         if avail is None or avail <= 0:
             return Decimal("0"), Decimal("0"), "no_balance"
+
+        market_cfg = (
+            getattr(self, "market_cfg", {}).get(token_id)
+            or getattr(self, "_night_market_cfg", {}).get(token_id)
+            or {}
+        )
+        if str(market_cfg.get("lifecycle_stage") or "").lower() == "canary":
+            canary_cap = self._stable_lifecycle_canary_budget_usdc(avail)
+            if canary_cap is None or canary_cap <= 0:
+                return Decimal("0"), Decimal("0"), "canary_budget_unavailable"
+            avail = min(avail, canary_cap)
+            budget_pct = Decimal("1")
 
         target, warning = _compute_quote_target_shares(
             available=avail,
@@ -7911,6 +7986,84 @@ class PolyLPSMulti:
             if not config.get("_dual_side_auto")
         }
 
+    def _stable_lifecycle_managed_stages(self) -> dict[str, str]:
+        return {
+            str(token_id): str(
+                config.get("lifecycle_stage") or "full"
+            ).lower()
+            for token_id, config in (
+                list(self.market_cfg.items())
+                + list(self._night_market_cfg.items())
+            )
+            if not config.get("_dual_side_auto")
+        }
+
+    def _promote_stable_lifecycle_market(
+        self,
+        token_id: str,
+        target_risk: str,
+    ) -> str:
+        cfg = self.market_cfg.get(token_id) or self._night_market_cfg.get(
+            token_id
+        )
+        if not cfg:
+            return "market_missing"
+        if cfg.get("_dual_side_auto"):
+            return "paired_side_ignored"
+        if str(cfg.get("lifecycle_stage") or "full").lower() == "full":
+            return "already_full"
+        risk = str(target_risk or "mid").lower()
+        if risk not in {"low", "mid"}:
+            risk = "mid"
+        paired_token_id = str(cfg.get("paired_token_id") or "")
+        promoted_at = time.time()
+        config = json.loads(self._config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError("account config is invalid")
+        changed = False
+        for section in ("markets", "night_markets"):
+            rows = config.get(section) or []
+            if not isinstance(rows, list):
+                raise ValueError(f"account config {section} is invalid")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"account config {section} contains invalid market"
+                    )
+                if str(row.get("token_id") or "") not in {
+                    token_id,
+                    paired_token_id,
+                }:
+                    continue
+                row["lifecycle_stage"] = "full"
+                row["risk"] = risk
+                row["eligibility_base_risk"] = risk
+                row["lifecycle_promoted_at"] = promoted_at
+                changed = True
+        if not changed:
+            raise ValueError("managed market is missing from account config")
+        self._write_config_atomic(config)
+        for tid in (token_id, paired_token_id):
+            runtime = self.market_cfg.get(tid) or self._night_market_cfg.get(tid)
+            if runtime is None:
+                continue
+            runtime["lifecycle_stage"] = "full"
+            runtime["risk"] = risk
+            runtime["base_risk"] = risk
+            runtime["lifecycle_promoted_at"] = promoted_at
+            self._market_budget_pct.pop(tid, None)
+        self._last_budget_rebalance_ts = 0.0
+        log(
+            f"[stable-lifecycle] promoted token={token_id[:16]} "
+            f"risk={risk}"
+        )
+        self.send_discord(
+            "市场已升级为完整挂单\n"
+            f"市场：{self._discord_market_name(token_id)}\n"
+            f"风险档位：{risk}"
+        )
+        return "promoted"
+
     def _mark_stable_lifecycle_retire_pending(
         self,
         token_id: str,
@@ -8078,15 +8231,32 @@ class PolyLPSMulti:
             return
 
         configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+        canary_budget = self._stable_lifecycle_canary_budget_usdc(
+            getattr(self, "_last_balance", None)
+        )
         plan = build_lifecycle_plan(
             proposal,
             account_index=int(self._account_idx),
             configured_token_ids=configured_tokens,
             managed_token_ids=self._stable_lifecycle_managed_tokens(),
+            managed_market_stages=self._stable_lifecycle_managed_stages(),
             previous_state=self._stable_lifecycle_state,
             now_ts=time.time(),
             max_proposal_age_sec=self._stable_lifecycle_max_proposal_age_sec,
             max_add_per_cycle=self._stable_lifecycle_max_add_per_cycle,
+            max_active_canaries=getattr(
+                self,
+                "_stable_lifecycle_max_active_canaries",
+                10,
+            ),
+            canary_budget_usdc=(
+                float(canary_budget) if canary_budget is not None else None
+            ),
+            promotion_scoring_threshold=getattr(
+                self,
+                "_stable_lifecycle_promotion_scoring_threshold",
+                3,
+            ),
             soft_failure_threshold=(
                 self._stable_lifecycle_soft_failure_threshold
             ),
@@ -8130,6 +8300,22 @@ class PolyLPSMulti:
             except Exception as exc:
                 result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
             retire_results.append({"token_id": token_id, "status": result})
+
+        promote_results = []
+        for row in plan.get("promote") or []:
+            if not isinstance(row, Mapping):
+                continue
+            token_id = str(row.get("token_id") or "")
+            if not token_id:
+                continue
+            try:
+                result = self._promote_stable_lifecycle_market(
+                    token_id,
+                    str(row.get("target_risk") or "mid"),
+                )
+            except Exception as exc:
+                result = f"rejected:{type(exc).__name__}:{str(exc)[:120]}"
+            promote_results.append({"token_id": token_id, "status": result})
 
         add_results = []
         policy = proposal.get("policy") or {}
@@ -8183,12 +8369,21 @@ class PolyLPSMulti:
             add_results.append({"token_id": token_id, "status": status})
 
         plan["retire_results"] = retire_results
+        plan["promote_results"] = promote_results
         plan["add_results"] = add_results
+        plan["active_canaries"] = sum(
+            stage == "canary"
+            for stage in self._stable_lifecycle_managed_stages().values()
+        )
+        plan["canary_budget_usdc"] = (
+            float(canary_budget) if canary_budget is not None else None
+        )
         self._write_stable_lifecycle_state(plan)
-        if retire_results or add_results:
+        if retire_results or promote_results or add_results:
             log(
                 f"[stable-lifecycle] account={self._account_idx} "
-                f"add={add_results} retire={retire_results}"
+                f"add={add_results} promote={promote_results} "
+                f"retire={retire_results}"
             )
 
     async def eligibility_guard_loop(self) -> None:
@@ -12639,8 +12834,22 @@ class PolyLPSMulti:
                         "last_add_results": self._stable_lifecycle_state.get(
                             "add_results", []
                         ),
+                        "last_promote_results": self._stable_lifecycle_state.get(
+                            "promote_results", []
+                        ),
                         "last_retire_results": self._stable_lifecycle_state.get(
                             "retire_results", []
+                        ),
+                        "active_canaries": self._stable_lifecycle_state.get(
+                            "active_canaries", 0
+                        ),
+                        "max_active_canaries": getattr(
+                            self,
+                            "_stable_lifecycle_max_active_canaries",
+                            10,
+                        ),
+                        "canary_budget_usdc": self._stable_lifecycle_state.get(
+                            "canary_budget_usdc"
                         ),
                     },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
