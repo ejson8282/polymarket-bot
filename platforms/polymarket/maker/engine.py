@@ -87,6 +87,16 @@ except ImportError:
         find_confirmed_replacement,
     )
 try:
+    from .stable_lifecycle_commands import (
+        normalized_lifecycle_config,
+        validate_stable_lifecycle_command,
+    )
+except ImportError:
+    from stable_lifecycle_commands import (
+        normalized_lifecycle_config,
+        validate_stable_lifecycle_command,
+    )
+try:
     from .stable_market_lifecycle import (
         MAX_ACTIVE_CANARIES_LIMIT,
         MAX_CANARY_PRINCIPAL_FRACTION,
@@ -1449,10 +1459,14 @@ class PolyLPSMulti:
         lifecycle_cfg = self.cfg.get("stable_market_lifecycle", {}) or {}
         if not isinstance(lifecycle_cfg, dict):
             lifecycle_cfg = {}
-        self._stable_market_lifecycle_enabled = bool(
+        self._stable_market_lifecycle_desired_enabled = bool(
             lifecycle_cfg.get("enabled", False)
             and self.lp_account_profile.profile_type != "aggressive"
         )
+        self._stable_market_lifecycle_enabled = (
+            self._stable_market_lifecycle_desired_enabled
+        )
+        self._stable_lifecycle_action_lock = asyncio.Lock()
         self._stable_lifecycle_max_proposal_age_sec = max(
             60.0,
             float(lifecycle_cfg.get("max_proposal_age_sec", 900.0)),
@@ -8028,6 +8042,123 @@ class PolyLPSMulti:
         )
         return "replaced"
 
+    async def _runtime_set_stable_lifecycle(
+        self,
+        command: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Persist the operator gate and apply it when this process is ready."""
+
+        if self.lp_account_profile.profile_type == "aggressive":
+            raise ValueError("stable lifecycle cannot target an aggressive account")
+        if getattr(self, "_runtime_mode", "single") != "multi_roster":
+            raise ValueError("stable lifecycle requires the reviewed multi-roster runtime")
+        if not getattr(
+            self,
+            "_stable_lifecycle_runtime_updates_enabled",
+            False,
+        ):
+            raise ValueError("stable lifecycle runtime updates are disabled")
+
+        requested_enabled = command.get("enabled") is True
+        proposal: Optional[Dict[str, Any]] = None
+        if requested_enabled:
+            try:
+                raw_proposal = json.loads(
+                    self._stable_rotation_proposal_path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                raise ValueError("stable lifecycle proposal is unavailable") from exc
+            if not isinstance(raw_proposal, dict):
+                raise ValueError("stable lifecycle proposal is invalid")
+            proposal = raw_proposal
+        validate_stable_lifecycle_command(
+            command,
+            proposal=proposal,
+            expected_account_index=int(self._account_idx),
+            expected_account_uid_key=str(
+                self._stable_lifecycle_account_uid_key or ""
+            ),
+            expected_host_id=str(self._runtime_host_id or ""),
+        )
+
+        lock = getattr(self, "_stable_lifecycle_action_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._stable_lifecycle_action_lock = lock
+        async with lock:
+            with self._config_transaction_lock():
+                config = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(config, dict):
+                    raise ValueError("account config is invalid")
+                lifecycle_config = normalized_lifecycle_config(
+                    config.get("stable_market_lifecycle"),
+                    enabled=requested_enabled,
+                )
+                config["stable_market_lifecycle"] = lifecycle_config
+                self._write_config_atomic(config)
+
+            self.cfg["stable_market_lifecycle"] = lifecycle_config
+            self._stable_market_lifecycle_desired_enabled = requested_enabled
+            restart_required = bool(
+                requested_enabled
+                and not getattr(self, "_order_scoring_observer_enabled", False)
+            )
+            applied_enabled = bool(requested_enabled and not restart_required)
+            self._stable_market_lifecycle_enabled = applied_enabled
+            state = dict(getattr(self, "_stable_lifecycle_state", {}) or {})
+            state.update(
+                {
+                    "version": STABLE_LIFECYCLE_STATE_VERSION,
+                    "account_index": int(self._account_idx),
+                    "account_uid_key": str(
+                        self._stable_lifecycle_account_uid_key or ""
+                    ),
+                    "host_id": str(self._runtime_host_id or ""),
+                    "status": (
+                        "enabled"
+                        if applied_enabled
+                        else (
+                            "restart_required"
+                            if restart_required
+                            else "disabled_by_operator"
+                        )
+                    ),
+                    "reason": (
+                        "order_scoring_observer_requires_restart"
+                        if restart_required
+                        else "operator_runtime_command"
+                    ),
+                    "desired_enabled": requested_enabled,
+                    "applied_enabled": applied_enabled,
+                    "restart_required": restart_required,
+                    "updated_at": time.time(),
+                }
+            )
+            self._stable_lifecycle_state = state
+            state_persisted = True
+            try:
+                self._write_stable_lifecycle_state(state)
+            except Exception as exc:
+                state_persisted = False
+                log(
+                    "[stable-lifecycle] control state persist failed: "
+                    f"{type(exc).__name__}: {str(exc)[:120]}"
+                )
+
+        return {
+            "status": (
+                "restart_required"
+                if restart_required
+                else ("enabled" if applied_enabled else "disabled")
+            ),
+            "desired_enabled": requested_enabled,
+            "applied_enabled": applied_enabled,
+            "restart_required": restart_required,
+            "state_persisted": state_persisted,
+        }
+
     async def runtime_command_loop(self) -> None:
         """Apply dashboard commands without restarting the engine."""
         while self._running:
@@ -8050,21 +8181,32 @@ class PolyLPSMulti:
                         )
                         command_id = str(command.get("command_id") or command_id)
                         action = str(command.get("action") or "")
-                        if action not in {"add_market", "replace_market"}:
+                        if action not in {
+                            "add_market",
+                            "replace_market",
+                            "set_stable_market_lifecycle",
+                        }:
                             raise ValueError(f"unsupported action: {action}")
-                        raw_market = command.get("market")
-                        if not isinstance(raw_market, dict):
-                            raise ValueError("missing market payload")
-                        market = raw_market
-                        if action == "replace_market":
-                            status = await self._runtime_replace_from_command(command)
+                        if action == "set_stable_market_lifecycle":
+                            result_payload = {
+                                "ok": True,
+                                "action": action,
+                                **await self._runtime_set_stable_lifecycle(command),
+                            }
                         else:
-                            status = self._runtime_add_from_command(market)
-                        result_payload = {
-                            "ok": True,
-                            "status": status,
-                            "token_id": str(market.get("token_id") or ""),
-                        }
+                            raw_market = command.get("market")
+                            if not isinstance(raw_market, dict):
+                                raise ValueError("missing market payload")
+                            market = raw_market
+                            if action == "replace_market":
+                                status = await self._runtime_replace_from_command(command)
+                            else:
+                                status = self._runtime_add_from_command(market)
+                            result_payload = {
+                                "ok": True,
+                                "status": status,
+                                "token_id": str(market.get("token_id") or ""),
+                            }
                         if action == "replace_market":
                             result_payload["retired_token_id"] = str(
                                 command.get("retire_token_id") or ""
@@ -8078,7 +8220,7 @@ class PolyLPSMulti:
                         )
                         log(
                             f"[runtime-command] id={command_id[:12]} "
-                            f"action={action} status={status}"
+                            f"action={action} status={result_payload.get('status')}"
                         )
                     except Exception as exc:
                         if self._defer_runtime_command_parse_error(
@@ -8645,6 +8787,16 @@ class PolyLPSMulti:
             False,
         ):
             return
+        lock = getattr(self, "_stable_lifecycle_action_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._stable_lifecycle_action_lock = lock
+        async with lock:
+            if not self._stable_market_lifecycle_enabled:
+                return
+            await self._stable_market_lifecycle_apply_once()
+
+    async def _stable_market_lifecycle_apply_once(self) -> None:
         try:
             proposal = json.loads(
                 self._stable_rotation_proposal_path.read_text(encoding="utf-8")
@@ -13346,6 +13498,19 @@ class PolyLPSMulti:
                     "market_data": market_data_state,
                     "stable_market_lifecycle": {
                         "enabled": self._stable_market_lifecycle_enabled,
+                        "desired_enabled": getattr(
+                            self,
+                            "_stable_market_lifecycle_desired_enabled",
+                            self._stable_market_lifecycle_enabled,
+                        ),
+                        "restart_required": bool(
+                            getattr(
+                                self,
+                                "_stable_market_lifecycle_desired_enabled",
+                                self._stable_market_lifecycle_enabled,
+                            )
+                            != self._stable_market_lifecycle_enabled
+                        ),
                         "status": self._stable_lifecycle_state.get("status"),
                         "reason": self._stable_lifecycle_state.get("reason"),
                         "proposal_generated_at": self._stable_lifecycle_state.get(

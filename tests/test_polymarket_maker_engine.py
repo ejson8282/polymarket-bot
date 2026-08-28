@@ -16,6 +16,7 @@ sys.path.insert(0, str(MAKER_DIR))
 
 import engine as engine_module  # noqa: E402
 from account_profiles import parse_lp_account_profile  # noqa: E402
+from stable_lifecycle_commands import build_stable_lifecycle_command  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
     EVENT_CANCELING,
@@ -2652,6 +2653,222 @@ def test_runtime_command_loop_dispatches_confirmed_replacement(tmp_path, monkeyp
             },
         )
     ]
+
+
+def _stable_lifecycle_control_engine(tmp_path, *, scoring_enabled: bool):
+    engine = object.__new__(PolyLPSMulti)
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine._runtime_mode = "multi_roster"
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._account_idx = 1
+    engine._stable_lifecycle_account_uid_key = "a1b2c3d4e5f60718"
+    engine._runtime_host_id = "vm-0-11-ubuntu"
+    engine._order_scoring_observer_enabled = scoring_enabled
+    engine._stable_market_lifecycle_enabled = False
+    engine._stable_market_lifecycle_desired_enabled = False
+    engine._stable_lifecycle_state = {}
+    engine._stable_lifecycle_action_lock = asyncio.Lock()
+    engine._config_path = tmp_path / "config_1.json"
+    engine._config_path.write_text(
+        json.dumps({"markets": [], "night_markets": []}),
+        encoding="utf-8",
+    )
+    engine.cfg = {"markets": [], "night_markets": []}
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "mode": "proposal_only",
+                "status": "ready",
+                "generated_at": time.time(),
+                "safety": {
+                    "proposal_only": True,
+                    "requires_manual_review": True,
+                    "trading_actions": False,
+                    "runtime_commands": False,
+                    "runtime_config_writes": False,
+                },
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": engine._stable_lifecycle_account_uid_key,
+                        "host_id": engine._runtime_host_id,
+                        "add": [],
+                        "canary": [],
+                        "keep": [],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._write_stable_lifecycle_state = lambda state: None
+    return engine
+
+
+def test_runtime_command_loop_dispatches_lifecycle_without_market_payload(
+    tmp_path,
+    monkeypatch,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._runtime_command_dir = tmp_path / "runtime_commands_1"
+    engine._runtime_command_dir.mkdir()
+    engine._runtime_command_parse_failures = {}
+    engine._runtime_command_parse_retry_limit = 5
+    engine._running = True
+    command = {
+        "version": 1,
+        "command_id": "dashboard-lifecycle-1-disable",
+        "action": "set_stable_market_lifecycle",
+        "created_at": time.time(),
+        "account_index": 1,
+        "enabled": False,
+        "confirm": "CONFIRM-STABLE-LIFECYCLE:1:OFF",
+    }
+    (engine._runtime_command_dir / f"{command['command_id']}.json").write_text(
+        json.dumps(command),
+        encoding="utf-8",
+    )
+    engine._runtime_set_stable_lifecycle = AsyncMock(
+        return_value={
+            "status": "disabled",
+            "desired_enabled": False,
+            "applied_enabled": False,
+            "restart_required": False,
+            "state_persisted": True,
+        }
+    )
+    results = []
+    engine._write_runtime_result = lambda command_id, payload: results.append(
+        (command_id, dict(payload))
+    )
+    engine._mark_runtime_pending_failed = lambda *_args: pytest.fail(
+        "a valid lifecycle command must not be rejected"
+    )
+
+    async def stop_after_dispatch(_delay):
+        engine._running = False
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_dispatch)
+
+    asyncio.run(engine.runtime_command_loop())
+
+    engine._runtime_set_stable_lifecycle.assert_awaited_once_with(command)
+    assert results == [
+        (
+            command["command_id"],
+            {
+                "ok": True,
+                "action": "set_stable_market_lifecycle",
+                "status": "disabled",
+                "desired_enabled": False,
+                "applied_enabled": False,
+                "restart_required": False,
+                "state_persisted": True,
+            },
+        )
+    ]
+
+
+def test_runtime_lifecycle_enable_persists_but_requires_scoring_restart(tmp_path):
+    engine = _stable_lifecycle_control_engine(tmp_path, scoring_enabled=False)
+    proposal = json.loads(
+        engine._stable_rotation_proposal_path.read_text(encoding="utf-8")
+    )
+    command = build_stable_lifecycle_command(
+        proposal,
+        account_index=1,
+        enabled=True,
+        command_id="dashboard-lifecycle-1-enable",
+    )
+
+    result = asyncio.run(engine._runtime_set_stable_lifecycle(command))
+
+    assert result == {
+        "status": "restart_required",
+        "desired_enabled": True,
+        "applied_enabled": False,
+        "restart_required": True,
+        "state_persisted": True,
+    }
+    assert engine._stable_market_lifecycle_enabled is False
+    assert engine._stable_market_lifecycle_desired_enabled is True
+    persisted = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert persisted["stable_market_lifecycle"] == {
+        "enabled": True,
+        "max_proposal_age_sec": 900.0,
+        "max_add_per_cycle": 5,
+        "max_active_canaries": 10,
+        "canary_principal_fraction": "0.1",
+        "canary_max_usdc": "100.0",
+        "promotion_scoring_threshold": 3,
+        "soft_failure_threshold": 3,
+        "hard_failure_threshold": 1,
+    }
+
+
+def test_runtime_lifecycle_toggle_applies_when_scoring_task_is_running(tmp_path):
+    engine = _stable_lifecycle_control_engine(tmp_path, scoring_enabled=True)
+    proposal = json.loads(
+        engine._stable_rotation_proposal_path.read_text(encoding="utf-8")
+    )
+    enable = build_stable_lifecycle_command(
+        proposal,
+        account_index=1,
+        enabled=True,
+        command_id="dashboard-lifecycle-1-enable",
+    )
+
+    enabled = asyncio.run(engine._runtime_set_stable_lifecycle(enable))
+    assert enabled["status"] == "enabled"
+    assert engine._stable_market_lifecycle_enabled is True
+
+    disable = build_stable_lifecycle_command(
+        None,
+        account_index=1,
+        enabled=False,
+        command_id="dashboard-lifecycle-1-disable",
+    )
+    disabled = asyncio.run(engine._runtime_set_stable_lifecycle(disable))
+
+    assert disabled == {
+        "status": "disabled",
+        "desired_enabled": False,
+        "applied_enabled": False,
+        "restart_required": False,
+        "state_persisted": True,
+    }
+    assert engine._stable_market_lifecycle_enabled is False
+    persisted = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert persisted["stable_market_lifecycle"]["enabled"] is False
+
+
+def test_runtime_lifecycle_config_result_survives_observability_write_failure(
+    tmp_path,
+):
+    engine = _stable_lifecycle_control_engine(tmp_path, scoring_enabled=True)
+    engine._write_stable_lifecycle_state = lambda _state: (_ for _ in ()).throw(
+        OSError("state disk unavailable")
+    )
+    proposal = json.loads(
+        engine._stable_rotation_proposal_path.read_text(encoding="utf-8")
+    )
+    command = build_stable_lifecycle_command(
+        proposal,
+        account_index=1,
+        enabled=True,
+        command_id="dashboard-lifecycle-1-enable",
+    )
+
+    result = asyncio.run(engine._runtime_set_stable_lifecycle(command))
+
+    assert result["status"] == "enabled"
+    assert result["state_persisted"] is False
+    assert json.loads(engine._config_path.read_text(encoding="utf-8"))[
+        "stable_market_lifecycle"
+    ]["enabled"] is True
 
 
 @pytest.mark.parametrize(

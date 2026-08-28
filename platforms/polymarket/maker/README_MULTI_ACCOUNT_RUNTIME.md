@@ -19,9 +19,17 @@ see `README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
 - Splitting one event across accounts is not enabled by this runtime. Quote
   sizing and reward-efficiency research belongs to the aggressive LP policy,
   not the host-routing layer.
-- Automatic and dashboard-triggered market additions stay disabled in roster
-  mode until one reviewed coordinator can apply the same market universe to
-  both hosts. Static day/night session switching and safety removals remain.
+- Automatic lifecycle changes are disabled by default. A reviewed
+  `set_stable_market_lifecycle` runtime command may enable them independently
+  for each host-local account only when its fresh schema-3 proposal matches
+  the engine account UID and host identity. The command changes only the
+  lifecycle gate; it cannot relax the canary, scoring, depth, weather, expiry,
+  or capital limits.
+- A first enable after a process started with the gate off persists the config
+  but reports `restart_required`, because the read-only scoring observer was
+  not started. Once an engine has started with the gate on, later off/on
+  commands apply without a restart. Static day/night switching and dedicated
+  safety removals remain independent.
 
 ## Generate host-local configs
 
