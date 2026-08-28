@@ -548,6 +548,12 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
     if not stable_rotation_commands.is_file():
         raise DeploymentError("release is missing stable rotation commands")
     artifacts.append(stable_rotation_commands)
+    stable_lifecycle_commands = (
+        release_dir / "platforms/polymarket/maker/stable_lifecycle_commands.py"
+    )
+    if not stable_lifecycle_commands.is_file():
+        raise DeploymentError("release is missing stable lifecycle commands")
+    artifacts.append(stable_lifecycle_commands)
     order_scoring_observer = (
         release_dir / "platforms/polymarket/maker/order_scoring_observer.py"
     )

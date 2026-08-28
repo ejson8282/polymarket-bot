@@ -63,6 +63,10 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         maker / "stable_rotation_commands.py",
     )
     shutil.copy2(
+        MAKER_DIR / "stable_lifecycle_commands.py",
+        maker / "stable_lifecycle_commands.py",
+    )
+    shutil.copy2(
         MAKER_DIR / "reward_observer.py",
         maker / "reward_observer.py",
     )
@@ -743,6 +747,11 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     stable_rotation_planner.write_text("print('rotation')\n", encoding="utf-8")
     stable_rotation_commands = maker / "stable_rotation_commands.py"
     stable_rotation_commands.write_text("print('commands')\n", encoding="utf-8")
+    stable_lifecycle_commands = maker / "stable_lifecycle_commands.py"
+    stable_lifecycle_commands.write_text(
+        "print('lifecycle commands')\n",
+        encoding="utf-8",
+    )
     scoring_observer = maker / "order_scoring_observer.py"
     scoring_observer.write_text("print('scoring')\n", encoding="utf-8")
     aggressive_recovery = maker / "aggressive_recovery.py"
@@ -763,6 +772,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     )
     stable_rotation_commands_path = (
         "platforms/polymarket/maker/stable_rotation_commands.py"
+    )
+    stable_lifecycle_commands_path = (
+        "platforms/polymarket/maker/stable_lifecycle_commands.py"
     )
     scoring_observer_path = "platforms/polymarket/maker/order_scoring_observer.py"
     aggressive_recovery_path = "platforms/polymarket/maker/aggressive_recovery.py"
@@ -795,6 +807,9 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
     assert manifest["artifacts_sha256"][
         stable_rotation_commands_path
     ] == hashlib.sha256(stable_rotation_commands.read_bytes()).hexdigest()
+    assert manifest["artifacts_sha256"][
+        stable_lifecycle_commands_path
+    ] == hashlib.sha256(stable_lifecycle_commands.read_bytes()).hexdigest()
     assert manifest["artifacts_sha256"][scoring_observer_path] == hashlib.sha256(
         scoring_observer.read_bytes()
     ).hexdigest()
@@ -853,6 +868,14 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
         _verify_release_manifest(release, target_sha)
 
     stable_rotation_commands.write_text("print('commands')\n", encoding="utf-8")
+    stable_lifecycle_commands.write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(DeploymentError, match="artifact hash mismatch"):
+        _verify_release_manifest(release, target_sha)
+
+    stable_lifecycle_commands.write_text(
+        "print('lifecycle commands')\n",
+        encoding="utf-8",
+    )
     scoring_observer.write_text("print('modified')\n", encoding="utf-8")
     with pytest.raises(DeploymentError, match="artifact hash mismatch"):
         _verify_release_manifest(release, target_sha)
@@ -913,6 +936,7 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
     (
         ("reward_observer.py", "reward observer"),
         ("stable_rotation_planner.py", "stable rotation planner"),
+        ("stable_lifecycle_commands.py", "stable lifecycle commands"),
         ("order_scoring_observer.py", "order scoring observer"),
         ("multi_runner.py", "multi runner"),
         ("account_roster.py", "account roster"),
@@ -937,6 +961,7 @@ def test_release_manifest_requires_lifecycle_inputs(
         "release_guard.py",
         "stable_market_lifecycle.py",
         "stable_rotation_commands.py",
+        "stable_lifecycle_commands.py",
         "reward_observer.py",
         "stable_rotation_planner.py",
         "order_scoring_observer.py",
