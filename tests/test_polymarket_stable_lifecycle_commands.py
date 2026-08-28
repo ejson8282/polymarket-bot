@@ -5,6 +5,10 @@ import copy
 import pytest
 
 from platforms.polymarket.maker.stable_lifecycle_commands import (
+    MAX_ACTIVE_CANARIES_LIMIT as COMMAND_MAX_ACTIVE_CANARIES,
+    MAX_CANARY_PRINCIPAL_FRACTION as COMMAND_MAX_CANARY_FRACTION,
+    MAX_CANARY_USDC as COMMAND_MAX_CANARY_USDC,
+    MIN_PROMOTION_SCORING_SAMPLES as COMMAND_MIN_SCORING_SAMPLES,
     StableLifecycleCommandError,
     build_stable_lifecycle_command,
     confirmation_for_change,
@@ -12,11 +16,24 @@ from platforms.polymarket.maker.stable_lifecycle_commands import (
     validate_enablement_proposal,
     validate_stable_lifecycle_command,
 )
+from platforms.polymarket.maker.stable_market_lifecycle import (
+    MAX_ACTIVE_CANARIES_LIMIT,
+    MAX_CANARY_PRINCIPAL_FRACTION,
+    MAX_CANARY_USDC,
+    MIN_PROMOTION_SCORING_SAMPLES,
+)
 
 
 NOW = 1_800_000_000.0
 ACCOUNT_UID_KEY = "a1b2c3d4e5f60718"
 HOST_ID = "vm-0-11-ubuntu"
+
+
+def test_command_safety_caps_match_engine_lifecycle_caps() -> None:
+    assert COMMAND_MAX_ACTIVE_CANARIES == MAX_ACTIVE_CANARIES_LIMIT
+    assert COMMAND_MAX_CANARY_FRACTION == MAX_CANARY_PRINCIPAL_FRACTION
+    assert COMMAND_MAX_CANARY_USDC == MAX_CANARY_USDC
+    assert COMMAND_MIN_SCORING_SAMPLES == MIN_PROMOTION_SCORING_SAMPLES
 
 
 def _proposal() -> dict:
