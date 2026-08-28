@@ -1720,7 +1720,12 @@ class PolyLPSMulti:
         self._routing_account_count = 1
         self._local_account_count = 1
         self._runtime_market_updates_enabled = True
-        self._stable_lifecycle_runtime_updates_enabled = False
+        self._stable_lifecycle_runtime_updates_enabled = bool(
+            self.lp_account_profile.profile_type == "standard"
+            and self._account_idx > 0
+            and self._stable_lifecycle_account_uid_key
+            and self._runtime_host_id
+        )
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -8042,6 +8047,58 @@ class PolyLPSMulti:
         )
         return "replaced"
 
+    def _stable_lifecycle_runtime_can_update(self) -> bool:
+        """Allow only unambiguous reviewed stable-account runtimes."""
+
+        if not getattr(
+            self,
+            "_stable_lifecycle_runtime_updates_enabled",
+            False,
+        ):
+            return False
+        mode = str(getattr(self, "_runtime_mode", "single") or "single")
+        if mode == "multi_roster":
+            return True
+        if mode != "single":
+            return False
+        try:
+            account_index = int(getattr(self, "_account_idx", 0) or 0)
+            routing_count = int(
+                getattr(self, "_routing_account_count", 0) or 0
+            )
+            local_count = int(getattr(self, "_local_account_count", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        profile_type = str(
+            getattr(
+                getattr(self, "lp_account_profile", None),
+                "profile_type",
+                "",
+            )
+            or ""
+        ).strip().lower()
+        return bool(
+            profile_type == "standard"
+            and 1 <= account_index <= 30
+            and routing_count == 1
+            and local_count == 1
+            and getattr(self, "_runtime_market_updates_enabled", False)
+            and str(getattr(self, "_runtime_scope", "") or "") in {"", "stable"}
+            and re.fullmatch(
+                r"[0-9a-f]{16}",
+                str(
+                    getattr(self, "_stable_lifecycle_account_uid_key", "")
+                    or ""
+                ).strip().lower(),
+            )
+            and re.fullmatch(
+                r"[a-z0-9][a-z0-9._-]{0,127}",
+                str(getattr(self, "_runtime_host_id", "") or "")
+                .strip()
+                .lower(),
+            )
+        )
+
     async def _runtime_set_stable_lifecycle(
         self,
         command: Mapping[str, Any],
@@ -8050,14 +8107,10 @@ class PolyLPSMulti:
 
         if self.lp_account_profile.profile_type == "aggressive":
             raise ValueError("stable lifecycle cannot target an aggressive account")
-        if getattr(self, "_runtime_mode", "single") != "multi_roster":
-            raise ValueError("stable lifecycle requires the reviewed multi-roster runtime")
-        if not getattr(
-            self,
-            "_stable_lifecycle_runtime_updates_enabled",
-            False,
-        ):
-            raise ValueError("stable lifecycle runtime updates are disabled")
+        if not self._stable_lifecycle_runtime_can_update():
+            raise ValueError(
+                "stable lifecycle requires an unambiguous reviewed stable runtime"
+            )
 
         requested_enabled = command.get("enabled") is True
         proposal: Optional[Dict[str, Any]] = None
@@ -8779,13 +8832,7 @@ class PolyLPSMulti:
     async def _stable_market_lifecycle_once(self) -> None:
         if not self._stable_market_lifecycle_enabled:
             return
-        if getattr(self, "_runtime_mode", "single") != "multi_roster":
-            return
-        if not getattr(
-            self,
-            "_stable_lifecycle_runtime_updates_enabled",
-            False,
-        ):
+        if not self._stable_lifecycle_runtime_can_update():
             return
         lock = getattr(self, "_stable_lifecycle_action_lock", None)
         if lock is None:
