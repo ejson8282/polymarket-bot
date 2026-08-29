@@ -1251,7 +1251,7 @@ def test_stable_lifecycle_disabled_is_noop():
 
 
 @pytest.mark.parametrize("runtime_mode", ["single", "multi_legacy"])
-def test_stable_lifecycle_requires_multi_roster(runtime_mode):
+def test_stable_lifecycle_rejects_unsupported_runtime(runtime_mode):
     engine = object.__new__(PolyLPSMulti)
     engine._stable_market_lifecycle_enabled = True
     engine._stable_lifecycle_runtime_updates_enabled = True
@@ -1264,6 +1264,27 @@ def test_stable_lifecycle_requires_multi_roster(runtime_mode):
     engine._stable_rotation_proposal_path = ProposalReadTrap()
 
     asyncio.run(engine._stable_market_lifecycle_once())
+
+
+def test_stable_lifecycle_runs_for_bound_single_account():
+    engine = object.__new__(PolyLPSMulti)
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine._stable_market_lifecycle_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "single"
+    engine._runtime_scope = ""
+    engine._runtime_market_updates_enabled = True
+    engine._account_idx = 1
+    engine._routing_account_count = 1
+    engine._local_account_count = 1
+    engine._stable_lifecycle_account_uid_key = "a1b2c3d4e5f60718"
+    engine._runtime_host_id = "vm-0-11-ubuntu"
+    engine._stable_lifecycle_action_lock = asyncio.Lock()
+    engine._stable_market_lifecycle_apply_once = AsyncMock()
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    engine._stable_market_lifecycle_apply_once.assert_awaited_once_with()
 
 
 def test_stable_lifecycle_manages_existing_active_manual_market():
@@ -2659,6 +2680,10 @@ def _stable_lifecycle_control_engine(tmp_path, *, scoring_enabled: bool):
     engine = object.__new__(PolyLPSMulti)
     engine.lp_account_profile = parse_lp_account_profile({}, 1)
     engine._runtime_mode = "multi_roster"
+    engine._runtime_scope = ""
+    engine._routing_account_count = 1
+    engine._local_account_count = 1
+    engine._runtime_market_updates_enabled = True
     engine._stable_lifecycle_runtime_updates_enabled = True
     engine._account_idx = 1
     engine._stable_lifecycle_account_uid_key = "a1b2c3d4e5f60718"
@@ -2807,6 +2832,67 @@ def test_runtime_lifecycle_enable_persists_but_requires_scoring_restart(tmp_path
         "soft_failure_threshold": 3,
         "hard_failure_threshold": 1,
     }
+
+
+def test_runtime_lifecycle_single_account_accepts_bound_command(tmp_path):
+    engine = _stable_lifecycle_control_engine(tmp_path, scoring_enabled=False)
+    engine._runtime_mode = "single"
+    proposal = json.loads(
+        engine._stable_rotation_proposal_path.read_text(encoding="utf-8")
+    )
+    command = build_stable_lifecycle_command(
+        proposal,
+        account_index=1,
+        enabled=True,
+        command_id="dashboard-lifecycle-single-1-enable",
+    )
+
+    result = asyncio.run(engine._runtime_set_stable_lifecycle(command))
+
+    assert result["status"] == "restart_required"
+    assert result["desired_enabled"] is True
+    assert result["applied_enabled"] is False
+    assert json.loads(engine._config_path.read_text(encoding="utf-8"))[
+        "stable_market_lifecycle"
+    ]["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("_account_idx", 0),
+        ("_routing_account_count", 2),
+        ("_local_account_count", 2),
+        ("_runtime_market_updates_enabled", False),
+        ("_runtime_scope", "aggressive"),
+        ("_stable_lifecycle_account_uid_key", ""),
+        ("_runtime_host_id", ""),
+        ("_stable_lifecycle_runtime_updates_enabled", False),
+    ],
+)
+def test_runtime_lifecycle_single_account_rejects_ambiguous_runtime(
+    tmp_path,
+    attribute,
+    value,
+):
+    engine = _stable_lifecycle_control_engine(tmp_path, scoring_enabled=True)
+    engine._runtime_mode = "single"
+    setattr(engine, attribute, value)
+    command = build_stable_lifecycle_command(
+        None,
+        account_index=1,
+        enabled=False,
+        command_id=f"dashboard-lifecycle-single-reject-{attribute[1:]}",
+    )
+    original_config = engine._config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="unambiguous reviewed stable runtime",
+    ):
+        asyncio.run(engine._runtime_set_stable_lifecycle(command))
+
+    assert engine._config_path.read_text(encoding="utf-8") == original_config
 
 
 def test_runtime_lifecycle_toggle_applies_when_scoring_task_is_running(tmp_path):

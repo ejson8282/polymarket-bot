@@ -22,9 +22,12 @@ see `README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
 - Automatic lifecycle changes are disabled by default. A reviewed
   `set_stable_market_lifecycle` runtime command may enable them independently
   for each host-local account only when its fresh schema-3 proposal matches
-  the engine account UID and host identity. The command changes only the
-  lifecycle gate; it cannot relax the canary, scoring, depth, weather, expiry,
-  or capital limits.
+  the engine account UID and host identity. The same command is supported by
+  the direct single-account runtime only when exactly one stable account is
+  present, runtime market updates are enabled, and its account UID and host
+  identity are complete. Ambiguous multi-account legacy runtimes remain
+  rejected. The command changes only the lifecycle gate; it cannot relax the
+  canary, scoring, depth, weather, expiry, or capital limits.
 - A first enable after a process started with the gate off persists the config
   but reports `restart_required`, because the read-only scoring observer was
   not started. Once an engine has started with the gate on, later off/on
