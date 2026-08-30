@@ -698,12 +698,18 @@ class PolyLPSMulti:
     - Optional Discord webhook alerts
     """
 
-    def __init__(self, config_path: str = "config.json") -> None:
+    def __init__(
+        self,
+        config_path: str = "config.json",
+        *,
+        allow_paused_zero_markets: bool = False,
+    ) -> None:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
         self._config_lock = threading.RLock()
         self._config_lock_state = threading.local()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self._allow_paused_zero_markets = bool(allow_paused_zero_markets)
         _cfg_stem = cfg_path.stem
         self._account_idx = (
             int(_cfg_stem[7:])
@@ -938,7 +944,7 @@ class PolyLPSMulti:
                 ),
             }
 
-        if not self.market_cfg:
+        if not self.market_cfg and not self._allow_paused_zero_markets:
             raise ValueError("No valid enabled markets in config.markets")
 
         self.market_states: Dict[str, TopOfBook] = {}
@@ -1726,6 +1732,25 @@ class PolyLPSMulti:
             and self._stable_lifecycle_account_uid_key
             and self._runtime_host_id
         )
+        self._paused_zero_market_startup_hold = False
+        if not self.market_cfg:
+            # Keep the legacy night-only boundary unchanged. This exception is
+            # only for a genuinely empty direct stable runtime that must stay
+            # paused while a reviewed lifecycle command provisions canaries.
+            if self._night_market_cfg:
+                raise ValueError("No valid enabled markets in config.markets")
+            rejection = self._paused_zero_market_startup_rejection()
+            if rejection:
+                raise ValueError(
+                    "No valid enabled markets in config.markets; "
+                    f"paused zero-market startup rejected: {rejection}"
+                )
+            self._paused_zero_market_startup_hold = True
+            log(
+                "[init] paused zero-market stable runtime accepted; "
+                "BUY creation remains blocked until a market is provisioned "
+                "while the account pause flag is present"
+            )
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -8099,6 +8124,23 @@ class PolyLPSMulti:
             )
         )
 
+    def _paused_zero_market_startup_rejection(self) -> str:
+        """Return why the narrow direct-runtime empty start is not allowed."""
+
+        if not getattr(self, "_allow_paused_zero_markets", False):
+            return "direct_runtime_gate_disabled"
+        if str(getattr(self, "_runtime_mode", "") or "") != "single":
+            return "runtime_mode_not_single"
+        try:
+            pause_present = self._pause_flag_path.is_file()
+        except Exception:
+            pause_present = False
+        if not pause_present:
+            return "account_pause_flag_missing"
+        if not self._stable_lifecycle_runtime_can_update():
+            return "stable_runtime_identity_or_update_gate_invalid"
+        return ""
+
     async def _runtime_set_stable_lifecycle(
         self,
         command: Mapping[str, Any],
@@ -10482,6 +10524,8 @@ class PolyLPSMulti:
             account_uid_key=self._stable_lifecycle_account_uid_key,
             host_id=self._runtime_host_id,
         )
+        await self._enforce_paused_zero_market_startup()
+
         n_markets = len(self._active_market_cfg())
         log(f"[engine] starting with {n_markets} active markets")
         self.notify_discord("做市引擎已启动", f"运行市场：{n_markets} 个", "info")
@@ -10949,6 +10993,42 @@ class PolyLPSMulti:
             await self._maybe_failover_proxy(reason)
             await self.trigger_global_kill_switch(reason)
 
+    def _zero_market_startup_state(self) -> Dict[str, Any]:
+        hold = bool(
+            getattr(self, "_paused_zero_market_startup_hold", False)
+        )
+        return {
+            "allowed": bool(
+                getattr(self, "_allow_paused_zero_markets", False)
+            ),
+            "hold": hold,
+            "reason": "paused_zero_market_startup" if hold else None,
+        }
+
+    async def _enforce_paused_zero_market_startup(self) -> None:
+        """Verify zero BUY liquidity before the empty runtime starts loops."""
+
+        if not getattr(self, "_paused_zero_market_startup_hold", False):
+            return
+        try:
+            canceled = await asyncio.wait_for(
+                self._cancel_all_except_exit(),
+                timeout=20.0,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "paused zero-market startup could not verify BUY cancellation"
+            ) from exc
+        if not canceled:
+            raise RuntimeError(
+                "paused zero-market startup could not verify BUY cancellation"
+            )
+        self._was_paused = True
+        log(
+            "[init] paused zero-market hold verified: maker BUYs absent, "
+            "SELL exits preserved"
+        )
+
     def _is_account_paused(self) -> bool:
         """Return True when the dashboard has pause-flagged this account.
 
@@ -10956,9 +11036,23 @@ class PolyLPSMulti:
         flag file is touched by the dashboard and cleared by removing it.
         """
         try:
-            return self._pause_flag_path.exists()
+            pause_present = self._pause_flag_path.exists()
         except Exception:
-            return False
+            pause_present = False
+        if getattr(self, "_paused_zero_market_startup_hold", False):
+            has_market = bool(
+                getattr(self, "market_cfg", {})
+                or getattr(self, "_night_market_cfg", {})
+            )
+            if has_market and pause_present:
+                self._paused_zero_market_startup_hold = False
+                log(
+                    "[init] zero-market hold released while account remains "
+                    "pause-flagged"
+                )
+            else:
+                return True
+        return pause_present
 
     def _prime_cycle_snapshots(self, cycle_books: Optional[Mapping[str, Any]]) -> int:
         """Publish one coherent shared-book generation before paired planning."""
@@ -11146,6 +11240,13 @@ class PolyLPSMulti:
         while self._running:
             # Rebuild subscription payload each connect so runtime-added tokens are included
             all_token_ids = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+            if not all_token_ids:
+                # A narrowly admitted paused zero-market runtime has nothing
+                # valid to subscribe to yet. Poll locally until lifecycle
+                # provisioning adds its first market instead of sending an
+                # empty WS subscription and generating reconnect noise.
+                await asyncio.sleep(1.0)
+                continue
             payload = {
                 "assets_ids": all_token_ids,
                 "type": "market",
@@ -13541,6 +13642,7 @@ class PolyLPSMulti:
                         "routing_account_count": self._routing_account_count,
                         "local_account_count": self._local_account_count,
                         "dynamic_market_updates": self._runtime_market_updates_enabled,
+                        "zero_market_startup": self._zero_market_startup_state(),
                     },
                     "market_data": market_data_state,
                     "stable_market_lifecycle": {
@@ -13812,7 +13914,10 @@ async def _cancel_maker_orders_for_shutdown(engine) -> None:
 
 async def _main_with_shutdown(_cfg):
     import signal
-    engine = PolyLPSMulti(config_path=_cfg)
+    engine = PolyLPSMulti(
+        config_path=_cfg,
+        allow_paused_zero_markets=True,
+    )
     loop = asyncio.get_running_loop()
     shutdown_evt = asyncio.Event()
 

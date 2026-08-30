@@ -2733,6 +2733,240 @@ def _stable_lifecycle_control_engine(tmp_path, *, scoring_enabled: bool):
     return engine
 
 
+def _paused_zero_market_engine(tmp_path):
+    engine = object.__new__(PolyLPSMulti)
+    engine.lp_account_profile = parse_lp_account_profile({}, 1)
+    engine._allow_paused_zero_markets = True
+    engine._runtime_mode = "single"
+    engine._runtime_scope = ""
+    engine._routing_account_count = 1
+    engine._local_account_count = 1
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._account_idx = 1
+    engine._stable_lifecycle_account_uid_key = "a1b2c3d4e5f60718"
+    engine._runtime_host_id = "vps1"
+    engine._pause_flag_path = tmp_path / ".account_1.paused"
+    engine._pause_flag_path.touch()
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._paused_zero_market_startup_hold = True
+    engine._was_paused = False
+    return engine
+
+
+def test_paused_zero_market_startup_accepts_only_bound_paused_stable_runtime(
+    tmp_path,
+):
+    engine = _paused_zero_market_engine(tmp_path)
+
+    assert engine._paused_zero_market_startup_rejection() == ""
+    assert engine._zero_market_startup_state() == {
+        "allowed": True,
+        "hold": True,
+        "reason": "paused_zero_market_startup",
+    }
+
+    engine._allow_paused_zero_markets = False
+    assert (
+        engine._paused_zero_market_startup_rejection()
+        == "direct_runtime_gate_disabled"
+    )
+    engine._allow_paused_zero_markets = True
+    engine._runtime_mode = "multi_roster"
+    assert (
+        engine._paused_zero_market_startup_rejection()
+        == "runtime_mode_not_single"
+    )
+    engine._runtime_mode = "single"
+    engine._pause_flag_path.unlink()
+    assert (
+        engine._paused_zero_market_startup_rejection()
+        == "account_pause_flag_missing"
+    )
+    engine._pause_flag_path.touch()
+    engine._runtime_market_updates_enabled = False
+    assert (
+        engine._paused_zero_market_startup_rejection()
+        == "stable_runtime_identity_or_update_gate_invalid"
+    )
+
+
+def test_zero_market_startup_hold_cannot_be_cleared_before_provisioning(
+    tmp_path,
+):
+    engine = _paused_zero_market_engine(tmp_path)
+    engine._pause_flag_path.unlink()
+
+    assert engine._is_account_paused() is True
+    assert engine._paused_zero_market_startup_hold is True
+
+    engine.market_cfg["101"] = {"paired_token_id": "102"}
+    assert engine._is_account_paused() is True
+    assert engine._paused_zero_market_startup_hold is True
+
+    engine._pause_flag_path.touch()
+    assert engine._is_account_paused() is True
+    assert engine._paused_zero_market_startup_hold is False
+
+    engine._pause_flag_path.unlink()
+    assert engine._is_account_paused() is False
+
+
+def test_zero_market_startup_verifies_buy_cancellation_before_running(tmp_path):
+    engine = _paused_zero_market_engine(tmp_path)
+    engine._cancel_all_except_exit = AsyncMock(return_value=True)
+
+    asyncio.run(engine._enforce_paused_zero_market_startup())
+
+    engine._cancel_all_except_exit.assert_awaited_once_with()
+    assert engine._was_paused is True
+
+
+@pytest.mark.parametrize("cancel_result", [False, RuntimeError("clob unavailable")])
+def test_zero_market_startup_fails_closed_when_buy_cancellation_is_unverified(
+    tmp_path,
+    cancel_result,
+):
+    engine = _paused_zero_market_engine(tmp_path)
+    if isinstance(cancel_result, Exception):
+        engine._cancel_all_except_exit = AsyncMock(side_effect=cancel_result)
+    else:
+        engine._cancel_all_except_exit = AsyncMock(return_value=cancel_result)
+
+    with pytest.raises(
+        RuntimeError,
+        match="could not verify BUY cancellation",
+    ):
+        asyncio.run(engine._enforce_paused_zero_market_startup())
+
+    assert engine._was_paused is False
+
+
+def _write_zero_market_constructor_config(tmp_path):
+    maker_dir = tmp_path / "repo" / "platforms" / "polymarket" / "maker"
+    maker_dir.mkdir(parents=True)
+    config_path = maker_dir / "config_1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "account": {
+                    "funder": "0x" + ("1" * 40),
+                    "chain_id": 137,
+                    "signature_type": 1,
+                    "signer_server_url": "http://signer.test",
+                    "signer_token": "test-token",
+                },
+                "markets": [{"token_id": "101", "enabled": False}],
+                "night_markets": [],
+                "stable_market_lifecycle": {"enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path, tmp_path / "repo" / "data" / ".account_1.paused"
+
+
+def test_constructor_allows_paused_zero_market_only_with_explicit_gate(
+    tmp_path,
+    monkeypatch,
+):
+    config_path, pause_flag = _write_zero_market_constructor_config(tmp_path)
+    pause_flag.parent.mkdir(parents=True)
+    pause_flag.touch()
+
+    class FakeRemoteSigner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def derive_creds(self):
+            return {
+                "address": "0x" + ("2" * 40),
+                "api_key": "api-key",
+                "api_secret": "api-secret",
+                "api_passphrase": "api-passphrase",
+            }
+
+    class FakeClobClient:
+        def __init__(self, **_kwargs):
+            self.signer = None
+            self.builder = None
+            self.api_creds = None
+
+        def set_api_creds(self, creds):
+            self.api_creds = creds
+
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "vps1")
+    monkeypatch.setattr(engine_module, "RemoteSignerClient", FakeRemoteSigner)
+    monkeypatch.setattr(engine_module, "ClobClient", FakeClobClient)
+
+    engine = PolyLPSMulti(
+        str(config_path),
+        allow_paused_zero_markets=True,
+    )
+    try:
+        assert engine.market_cfg == {}
+        assert engine._paused_zero_market_startup_hold is True
+        assert engine._paused_zero_market_startup_rejection() == ""
+    finally:
+        engine._httpx_client.close()
+
+    with pytest.raises(ValueError, match="No valid enabled markets"):
+        PolyLPSMulti(str(config_path))
+
+    pause_flag.unlink()
+    with pytest.raises(ValueError, match="account_pause_flag_missing"):
+        PolyLPSMulti(
+            str(config_path),
+            allow_paused_zero_markets=True,
+        )
+
+
+def test_direct_entrypoint_explicitly_enables_paused_zero_market_gate(monkeypatch):
+    captured = {}
+
+    class StopAfterConstruction(Exception):
+        pass
+
+    def fake_engine(*, config_path, allow_paused_zero_markets):
+        captured.update(
+            config_path=config_path,
+            allow_paused_zero_markets=allow_paused_zero_markets,
+        )
+        raise StopAfterConstruction
+
+    monkeypatch.setattr(engine_module, "PolyLPSMulti", fake_engine)
+
+    with pytest.raises(StopAfterConstruction):
+        asyncio.run(engine_module._main_with_shutdown("config_1.json"))
+
+    assert captured == {
+        "config_path": "config_1.json",
+        "allow_paused_zero_markets": True,
+    }
+
+
+def test_market_ws_waits_locally_while_zero_market_hold_is_empty(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._market_ws_resubscribe_evt = None
+
+    async def stop_after_empty_wait(_delay):
+        engine._running = False
+
+    def unexpected_connect(*_args, **_kwargs):
+        raise AssertionError("zero-market runtime must not open market WS")
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_empty_wait)
+    monkeypatch.setattr(engine_module.websockets, "connect", unexpected_connect)
+
+    asyncio.run(engine._ws_market_watch())
+
+    assert engine._market_ws_resubscribe_evt is not None
+
+
 def test_runtime_command_loop_dispatches_lifecycle_without_market_payload(
     tmp_path,
     monkeypatch,
