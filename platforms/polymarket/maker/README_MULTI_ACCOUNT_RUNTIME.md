@@ -33,6 +33,17 @@ see `README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
   not started. Once an engine has started with the gate on, later off/on
   commands apply without a restart. Static day/night switching and dedicated
   safety removals remain independent.
+- The direct single-account stable entrypoint may start with zero enabled
+  markets only when the account pause flag already exists, the account/host
+  identity is complete, and runtime market updates are allowed. Before any
+  worker starts it verifies that maker BUYs are absent while preserving every
+  live SELL exit. Its internal hold remains active if the pause flag is removed
+  early and is released only after a market is provisioned while the account
+  is still pause-flagged. `multi_runner`, aggressive profiles, ambiguous
+  runtimes, and unpaused empty starts continue to fail closed. This narrow path
+  supports lifecycle enable -> restart -> canary provisioning; it never quotes
+  an empty market set. Public-book and authenticated fill streams both wait for
+  that first market and resubscribe whenever the runtime market set changes.
 
 ## Generate host-local configs
 

@@ -698,12 +698,18 @@ class PolyLPSMulti:
     - Optional Discord webhook alerts
     """
 
-    def __init__(self, config_path: str = "config.json") -> None:
+    def __init__(
+        self,
+        config_path: str = "config.json",
+        *,
+        allow_paused_zero_markets: bool = False,
+    ) -> None:
         cfg_path = Path(config_path)
         self._config_path = cfg_path.resolve()
         self._config_lock = threading.RLock()
         self._config_lock_state = threading.local()
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self._allow_paused_zero_markets = bool(allow_paused_zero_markets)
         _cfg_stem = cfg_path.stem
         self._account_idx = (
             int(_cfg_stem[7:])
@@ -938,7 +944,7 @@ class PolyLPSMulti:
                 ),
             }
 
-        if not self.market_cfg:
+        if not self.market_cfg and not self._allow_paused_zero_markets:
             raise ValueError("No valid enabled markets in config.markets")
 
         self.market_states: Dict[str, TopOfBook] = {}
@@ -1015,6 +1021,7 @@ class PolyLPSMulti:
         # set() by add_market_runtime / remove_market_runtime to force market WS to re-send
         # subscribe payload with the latest token list (lazily created on first set()).
         self._market_ws_resubscribe_evt: Optional[asyncio.Event] = None
+        self._user_ws_resubscribe_evt: Optional[asyncio.Event] = None
         self._runtime_added_tokens: set[str] = set()  # tokens added via add_market_runtime
 
         # execution pacing: risk actions immediate, normal posting lightly paced
@@ -1726,6 +1733,25 @@ class PolyLPSMulti:
             and self._stable_lifecycle_account_uid_key
             and self._runtime_host_id
         )
+        self._paused_zero_market_startup_hold = False
+        if not self.market_cfg:
+            # Keep the legacy night-only boundary unchanged. This exception is
+            # only for a genuinely empty direct stable runtime that must stay
+            # paused while a reviewed lifecycle command provisions canaries.
+            if self._night_market_cfg:
+                raise ValueError("No valid enabled markets in config.markets")
+            rejection = self._paused_zero_market_startup_rejection()
+            if rejection:
+                raise ValueError(
+                    "No valid enabled markets in config.markets; "
+                    f"paused zero-market startup rejected: {rejection}"
+                )
+            self._paused_zero_market_startup_hold = True
+            log(
+                "[init] paused zero-market stable runtime accepted; "
+                "BUY creation remains blocked until a market is provisioned "
+                "while the account pause flag is present"
+            )
         if self._event_bus.is_enabled:
             log("[init] Redis event bus enabled")
 
@@ -8099,6 +8125,23 @@ class PolyLPSMulti:
             )
         )
 
+    def _paused_zero_market_startup_rejection(self) -> str:
+        """Return why the narrow direct-runtime empty start is not allowed."""
+
+        if not getattr(self, "_allow_paused_zero_markets", False):
+            return "direct_runtime_gate_disabled"
+        if str(getattr(self, "_runtime_mode", "") or "") != "single":
+            return "runtime_mode_not_single"
+        try:
+            pause_present = self._pause_flag_path.is_file()
+        except Exception:
+            pause_present = False
+        if not pause_present:
+            return "account_pause_flag_missing"
+        if not self._stable_lifecycle_runtime_can_update():
+            return "stable_runtime_identity_or_update_gate_invalid"
+        return ""
+
     async def _runtime_set_stable_lifecycle(
         self,
         command: Mapping[str, Any],
@@ -9210,9 +9253,16 @@ class PolyLPSMulti:
             await asyncio.sleep(self._eligibility_check_interval_sec)
 
     def _request_market_ws_resubscribe(self) -> None:
-        evt = self._market_ws_resubscribe_evt
-        if evt is not None:
-            evt.set()
+        # Runtime market changes affect both public books and the authenticated
+        # fill stream. Keep separate events because either watcher may clear
+        # its own event while the other is still reconnecting.
+        for attr in (
+            "_market_ws_resubscribe_evt",
+            "_user_ws_resubscribe_evt",
+        ):
+            evt = getattr(self, attr, None)
+            if evt is not None:
+                evt.set()
 
     def _front_bid_notional(self, book_obj: Any, my_price: Decimal) -> Decimal:
         total = Decimal("0")
@@ -10482,6 +10532,8 @@ class PolyLPSMulti:
             account_uid_key=self._stable_lifecycle_account_uid_key,
             host_id=self._runtime_host_id,
         )
+        await self._enforce_paused_zero_market_startup()
+
         n_markets = len(self._active_market_cfg())
         log(f"[engine] starting with {n_markets} active markets")
         self.notify_discord("做市引擎已启动", f"运行市场：{n_markets} 个", "info")
@@ -10949,6 +11001,42 @@ class PolyLPSMulti:
             await self._maybe_failover_proxy(reason)
             await self.trigger_global_kill_switch(reason)
 
+    def _zero_market_startup_state(self) -> Dict[str, Any]:
+        hold = bool(
+            getattr(self, "_paused_zero_market_startup_hold", False)
+        )
+        return {
+            "allowed": bool(
+                getattr(self, "_allow_paused_zero_markets", False)
+            ),
+            "hold": hold,
+            "reason": "paused_zero_market_startup" if hold else None,
+        }
+
+    async def _enforce_paused_zero_market_startup(self) -> None:
+        """Verify zero BUY liquidity before the empty runtime starts loops."""
+
+        if not getattr(self, "_paused_zero_market_startup_hold", False):
+            return
+        try:
+            canceled = await asyncio.wait_for(
+                self._cancel_all_except_exit(),
+                timeout=20.0,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "paused zero-market startup could not verify BUY cancellation"
+            ) from exc
+        if not canceled:
+            raise RuntimeError(
+                "paused zero-market startup could not verify BUY cancellation"
+            )
+        self._was_paused = True
+        log(
+            "[init] paused zero-market hold verified: maker BUYs absent, "
+            "SELL exits preserved"
+        )
+
     def _is_account_paused(self) -> bool:
         """Return True when the dashboard has pause-flagged this account.
 
@@ -10956,9 +11044,23 @@ class PolyLPSMulti:
         flag file is touched by the dashboard and cleared by removing it.
         """
         try:
-            return self._pause_flag_path.exists()
+            pause_present = self._pause_flag_path.exists()
         except Exception:
-            return False
+            pause_present = False
+        if getattr(self, "_paused_zero_market_startup_hold", False):
+            has_market = bool(
+                getattr(self, "market_cfg", {})
+                or getattr(self, "_night_market_cfg", {})
+            )
+            if has_market and pause_present:
+                self._paused_zero_market_startup_hold = False
+                log(
+                    "[init] zero-market hold released while account remains "
+                    "pause-flagged"
+                )
+            else:
+                return True
+        return pause_present
 
     def _prime_cycle_snapshots(self, cycle_books: Optional[Mapping[str, Any]]) -> int:
         """Publish one coherent shared-book generation before paired planning."""
@@ -11146,6 +11248,13 @@ class PolyLPSMulti:
         while self._running:
             # Rebuild subscription payload each connect so runtime-added tokens are included
             all_token_ids = list(set(list(self.market_cfg.keys()) + list(self._night_market_cfg.keys())))
+            if not all_token_ids:
+                # A narrowly admitted paused zero-market runtime has nothing
+                # valid to subscribe to yet. Poll locally until lifecycle
+                # provisioning adds its first market instead of sending an
+                # empty WS subscription and generating reconnect noise.
+                await asyncio.sleep(1.0)
+                continue
             payload = {
                 "assets_ids": all_token_ids,
                 "type": "market",
@@ -12338,6 +12447,9 @@ class PolyLPSMulti:
                 await asyncio.sleep(5)
             return
 
+        if self._user_ws_resubscribe_evt is None:
+            self._user_ws_resubscribe_evt = asyncio.Event()
+
         urls = ["wss://ws-subscriptions-clob.polymarket.com/ws/user"]
         # Subscribe BOTH day (market_cfg) and night (_night_market_cfg) pools so
         # fills on night-added markets also reach the WS kill-switch.
@@ -12370,7 +12482,17 @@ class PolyLPSMulti:
         consecutive_failures = 0
         ws_down_since = 0.0
         while self._running:
+            if not (self.market_cfg or self._night_market_cfg):
+                # No maker BUY can exist after the zero-market startup
+                # verification. Wait locally until lifecycle provisioning adds
+                # the first market, then subscribe with the current token set.
+                consecutive_failures = 0
+                ws_down_since = 0.0
+                await asyncio.sleep(1.0)
+                continue
             url = urls[0]
+            resub_task: Optional[asyncio.Task] = None
+            resubscribe_requested = False
             try:
                 # Full restart: if too many consecutive failures, log and reset
                 if consecutive_failures >= self._ws_full_restart_after_n:
@@ -12416,6 +12538,26 @@ class PolyLPSMulti:
                     self._proxy_failover_record_success("fill-ws")
                     ws_down_since = 0.0
                     consecutive_failures = 0
+
+                    self._user_ws_resubscribe_evt.clear()
+
+                    async def _resubscribe_watchdog() -> None:
+                        nonlocal resubscribe_requested
+                        try:
+                            await self._user_ws_resubscribe_evt.wait()
+                            resubscribe_requested = True
+                            log(
+                                "[fill-ws] resubscribe requested — closing WS "
+                                "to reconnect"
+                            )
+                            await ws.close()
+                        except Exception:
+                            pass
+
+                    resub_task = asyncio.create_task(
+                        _resubscribe_watchdog(),
+                        name="fill_ws_resubscribe_watch",
+                    )
 
                     while self._running:
                         raw = await self._recv_ws_message(ws, "fill-ws")
@@ -12508,6 +12650,10 @@ class PolyLPSMulti:
                                             m_price = Decimal("0")
                                     await self._trigger_event_offline(token, reason, size_matched, m_price)
             except Exception as e:
+                if resubscribe_requested:
+                    consecutive_failures = 0
+                    ws_down_since = 0.0
+                    continue
                 consecutive_failures += 1
                 now = time.time()
                 if ws_down_since <= 0:
@@ -12526,6 +12672,9 @@ class PolyLPSMulti:
                     await self.trigger_global_kill_switch("ws_down_and_poll_degraded")
 
                 await asyncio.sleep(backoff)
+            finally:
+                if resub_task is not None and not resub_task.done():
+                    resub_task.cancel()
 
     async def _poll_fill_watch(self) -> None:
         while self._running:
@@ -13541,6 +13690,7 @@ class PolyLPSMulti:
                         "routing_account_count": self._routing_account_count,
                         "local_account_count": self._local_account_count,
                         "dynamic_market_updates": self._runtime_market_updates_enabled,
+                        "zero_market_startup": self._zero_market_startup_state(),
                     },
                     "market_data": market_data_state,
                     "stable_market_lifecycle": {
@@ -13812,7 +13962,10 @@ async def _cancel_maker_orders_for_shutdown(engine) -> None:
 
 async def _main_with_shutdown(_cfg):
     import signal
-    engine = PolyLPSMulti(config_path=_cfg)
+    engine = PolyLPSMulti(
+        config_path=_cfg,
+        allow_paused_zero_markets=True,
+    )
     loop = asyncio.get_running_loop()
     shutdown_evt = asyncio.Event()
 
