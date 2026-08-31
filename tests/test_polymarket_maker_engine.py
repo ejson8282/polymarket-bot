@@ -2967,6 +2967,109 @@ def test_market_ws_waits_locally_while_zero_market_hold_is_empty(monkeypatch):
     assert engine._market_ws_resubscribe_evt is not None
 
 
+def test_user_ws_waits_locally_while_zero_market_hold_is_empty(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine.kill_switch_on_fill = True
+    engine._running = True
+    engine.market_cfg = {}
+    engine._night_market_cfg = {}
+    engine._market_condition_ids = {}
+    engine._user_ws_resubscribe_evt = None
+    engine.api_creds = types.SimpleNamespace(
+        api_key="key",
+        api_secret="secret",
+        api_passphrase="passphrase",
+    )
+
+    async def stop_after_empty_wait(_delay):
+        engine._running = False
+
+    def unexpected_connect(*_args, **_kwargs):
+        raise AssertionError("zero-market runtime must not open user WS")
+
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_empty_wait)
+    monkeypatch.setattr(engine_module.websockets, "connect", unexpected_connect)
+
+    asyncio.run(engine._ws_user_watch())
+
+    assert engine._user_ws_resubscribe_evt is not None
+
+
+def test_runtime_market_change_requests_book_and_fill_ws_resubscribe():
+    engine = object.__new__(PolyLPSMulti)
+    engine._market_ws_resubscribe_evt = asyncio.Event()
+    engine._user_ws_resubscribe_evt = asyncio.Event()
+
+    engine._request_market_ws_resubscribe()
+
+    assert engine._market_ws_resubscribe_evt.is_set() is True
+    assert engine._user_ws_resubscribe_evt.is_set() is True
+
+
+def test_user_ws_runtime_market_change_reconnects_without_failure_backoff(
+    monkeypatch,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.kill_switch_on_fill = True
+    engine._running = True
+    engine.market_cfg = {"101": {}}
+    engine._night_market_cfg = {}
+    engine._market_condition_ids = {"101": "condition-1"}
+    engine._market_ws_resubscribe_evt = asyncio.Event()
+    engine._user_ws_resubscribe_evt = None
+    engine.api_creds = types.SimpleNamespace(
+        api_key="key",
+        api_secret="secret",
+        api_passphrase="passphrase",
+    )
+    engine._ws_full_restart_after_n = 5
+    engine._fill_ws_reconnect_count = 0
+    engine._ws_proxy = None
+    engine._last_ws_ok_ts = 0.0
+    engine._proxy_failover_record_success = lambda _source: None
+    engine._ws_backoff_with_jitter = lambda _attempt: pytest.fail(
+        "intentional resubscribe must not enter failure backoff"
+    )
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.closed = asyncio.Event()
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+        async def close(self):
+            engine._running = False
+            self.closed.set()
+
+    ws = FakeWebSocket()
+
+    class FakeConnection:
+        async def __aenter__(self):
+            return ws
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def receive_until_resubscribe(_ws, _source):
+        engine._request_market_ws_resubscribe()
+        await ws.closed.wait()
+        raise RuntimeError("closed for runtime market resubscribe")
+
+    engine._recv_ws_message = receive_until_resubscribe
+    monkeypatch.setattr(
+        engine_module.websockets,
+        "connect",
+        lambda *_args, **_kwargs: FakeConnection(),
+    )
+
+    asyncio.run(engine._ws_user_watch())
+
+    assert ws.closed.is_set() is True
+    assert any(payload.get("assets_ids") == ["101"] for payload in ws.sent)
+
+
 def test_runtime_command_loop_dispatches_lifecycle_without_market_payload(
     tmp_path,
     monkeypatch,

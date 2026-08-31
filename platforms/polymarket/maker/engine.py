@@ -1021,6 +1021,7 @@ class PolyLPSMulti:
         # set() by add_market_runtime / remove_market_runtime to force market WS to re-send
         # subscribe payload with the latest token list (lazily created on first set()).
         self._market_ws_resubscribe_evt: Optional[asyncio.Event] = None
+        self._user_ws_resubscribe_evt: Optional[asyncio.Event] = None
         self._runtime_added_tokens: set[str] = set()  # tokens added via add_market_runtime
 
         # execution pacing: risk actions immediate, normal posting lightly paced
@@ -9252,9 +9253,16 @@ class PolyLPSMulti:
             await asyncio.sleep(self._eligibility_check_interval_sec)
 
     def _request_market_ws_resubscribe(self) -> None:
-        evt = self._market_ws_resubscribe_evt
-        if evt is not None:
-            evt.set()
+        # Runtime market changes affect both public books and the authenticated
+        # fill stream. Keep separate events because either watcher may clear
+        # its own event while the other is still reconnecting.
+        for attr in (
+            "_market_ws_resubscribe_evt",
+            "_user_ws_resubscribe_evt",
+        ):
+            evt = getattr(self, attr, None)
+            if evt is not None:
+                evt.set()
 
     def _front_bid_notional(self, book_obj: Any, my_price: Decimal) -> Decimal:
         total = Decimal("0")
@@ -12439,6 +12447,9 @@ class PolyLPSMulti:
                 await asyncio.sleep(5)
             return
 
+        if self._user_ws_resubscribe_evt is None:
+            self._user_ws_resubscribe_evt = asyncio.Event()
+
         urls = ["wss://ws-subscriptions-clob.polymarket.com/ws/user"]
         # Subscribe BOTH day (market_cfg) and night (_night_market_cfg) pools so
         # fills on night-added markets also reach the WS kill-switch.
@@ -12471,7 +12482,17 @@ class PolyLPSMulti:
         consecutive_failures = 0
         ws_down_since = 0.0
         while self._running:
+            if not (self.market_cfg or self._night_market_cfg):
+                # No maker BUY can exist after the zero-market startup
+                # verification. Wait locally until lifecycle provisioning adds
+                # the first market, then subscribe with the current token set.
+                consecutive_failures = 0
+                ws_down_since = 0.0
+                await asyncio.sleep(1.0)
+                continue
             url = urls[0]
+            resub_task: Optional[asyncio.Task] = None
+            resubscribe_requested = False
             try:
                 # Full restart: if too many consecutive failures, log and reset
                 if consecutive_failures >= self._ws_full_restart_after_n:
@@ -12517,6 +12538,26 @@ class PolyLPSMulti:
                     self._proxy_failover_record_success("fill-ws")
                     ws_down_since = 0.0
                     consecutive_failures = 0
+
+                    self._user_ws_resubscribe_evt.clear()
+
+                    async def _resubscribe_watchdog() -> None:
+                        nonlocal resubscribe_requested
+                        try:
+                            await self._user_ws_resubscribe_evt.wait()
+                            resubscribe_requested = True
+                            log(
+                                "[fill-ws] resubscribe requested — closing WS "
+                                "to reconnect"
+                            )
+                            await ws.close()
+                        except Exception:
+                            pass
+
+                    resub_task = asyncio.create_task(
+                        _resubscribe_watchdog(),
+                        name="fill_ws_resubscribe_watch",
+                    )
 
                     while self._running:
                         raw = await self._recv_ws_message(ws, "fill-ws")
@@ -12609,6 +12650,10 @@ class PolyLPSMulti:
                                             m_price = Decimal("0")
                                     await self._trigger_event_offline(token, reason, size_matched, m_price)
             except Exception as e:
+                if resubscribe_requested:
+                    consecutive_failures = 0
+                    ws_down_since = 0.0
+                    continue
                 consecutive_failures += 1
                 now = time.time()
                 if ws_down_since <= 0:
@@ -12627,6 +12672,9 @@ class PolyLPSMulti:
                     await self.trigger_global_kill_switch("ws_down_and_poll_degraded")
 
                 await asyncio.sleep(backoff)
+            finally:
+                if resub_task is not None and not resub_task.done():
+                    resub_task.cancel()
 
     async def _poll_fill_watch(self) -> None:
         while self._running:

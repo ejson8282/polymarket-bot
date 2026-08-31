@@ -42,7 +42,8 @@ see `README_AGGRESSIVE_ISOLATED_RUNTIME.md`.
   is still pause-flagged. `multi_runner`, aggressive profiles, ambiguous
   runtimes, and unpaused empty starts continue to fail closed. This narrow path
   supports lifecycle enable -> restart -> canary provisioning; it never quotes
-  an empty market set.
+  an empty market set. Public-book and authenticated fill streams both wait for
+  that first market and resubscribe whenever the runtime market set changes.
 
 ## Generate host-local configs
 
