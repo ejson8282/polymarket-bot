@@ -2321,7 +2321,7 @@ def refresh_observer_state(
                 data_dir,
                 config_dir,
                 state,
-                now_ts=generated_at,
+                now_ts=time.time(),
             )
         except Exception as exc:
             try:
