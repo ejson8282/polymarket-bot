@@ -2970,15 +2970,73 @@ class PolyLPSMulti:
             decision["size_cap"] = min(float(decision["size_cap"]), 0.5)
             decision["risk_grade"] = "B"
             reasons.append("latency_degraded")
-        # Single hard gate: front_notional must meet the full min threshold to quote.
-        # Kevin 2026-04-24: sports books are usually thick; anything below $10k
-        # front depth is a sign we're in a thin corner — don't quote, period.
-        # Dropped the old `thin` middle band (which allowed quoting with size cap)
-        # and the `× 0.5` critical multiplier.
-        if _depth_trustworthy and front_notional < self.min_front_bid_notional_usdc:
-            decision.update({"can_quote": False, "size_cap": 0.0, "top_leg_action": "cancel", "risk_grade": "BLOCK"})
-            reasons.append("front_depth_critical")
+        # Full markets keep the hard trusted-depth floor. Lifecycle canaries
+        # may probe positive shallow depth because their capital is bounded
+        # separately and promotion still requires three scoring samples.
+        market_cfg = self._get_mcfg(token_id)
+        lifecycle_stage = str(
+            market_cfg.get("lifecycle_stage") or "full"
+        ).strip().lower()
+        decision["lifecycle_stage"] = lifecycle_stage
+        front_depth_floor = self.min_front_bid_notional_usdc
+        if lifecycle_stage == "canary":
+            canary_budget = self._stable_lifecycle_canary_budget_usdc(
+                self._last_balance
+            )
+            if canary_budget is None or canary_budget <= 0:
+                decision.update(
+                    {
+                        "can_quote": False,
+                        "size_cap": 0.0,
+                        "top_leg_action": "cancel",
+                        "risk_grade": "BLOCK",
+                    }
+                )
+                reasons.append("canary_budget_unavailable")
+                return decision
+            front_depth_floor = min(front_depth_floor, canary_budget)
+        decision["front_depth_floor_usdc"] = float(front_depth_floor)
+        if lifecycle_stage == "canary" and not _depth_trustworthy:
+            decision.update(
+                {
+                    "can_quote": False,
+                    "size_cap": 0.0,
+                    "top_leg_action": "cancel",
+                    "risk_grade": "BLOCK",
+                }
+            )
+            reasons.append("front_depth_canary_untrusted")
             return decision
+        if _depth_trustworthy and front_notional < front_depth_floor:
+            decision.update(
+                {
+                    "can_quote": False,
+                    "size_cap": 0.0,
+                    "top_leg_action": "cancel",
+                    "risk_grade": "BLOCK",
+                }
+            )
+            reasons.append(
+                "front_depth_empty"
+                if lifecycle_stage == "canary" and front_notional <= 0
+                else (
+                    "front_depth_canary_insufficient"
+                    if lifecycle_stage == "canary"
+                    else "front_depth_critical"
+                )
+            )
+            return decision
+        if (
+            _depth_trustworthy
+            and lifecycle_stage == "canary"
+            and front_notional < self.min_front_bid_notional_usdc
+        ):
+            if front_notional > 0:
+                # Canary admission intentionally tests shallow but executable
+                # reward pools with a separately bounded account-level budget.
+                # Full markets continue to require the normal depth floor.
+                decision["risk_grade"] = "C"
+                reasons.append("front_depth_canary_probe")
         elif not _depth_trustworthy and depth_snapshot is not None:
             reasons.append("depth_data_untrusted")
         if fill_risk >= 75:
@@ -6979,6 +7037,21 @@ class PolyLPSMulti:
         own_reward_min = Decimal(str(own_meta.get("rewardsMinSize") or 0))
         own_min_size = max(self.min_order_size, own_reward_min, Decimal("0.001"))
 
+        own_stage = str(
+            self._get_mcfg(token_id).get("lifecycle_stage") or "full"
+        ).strip().lower()
+        pair_stage = str(
+            self._get_mcfg(paired_token).get("lifecycle_stage") or "full"
+        ).strip().lower()
+        if "canary" in {own_stage, pair_stage}:
+            canary_budget = self._stable_lifecycle_canary_budget_usdc(
+                self._last_balance
+            )
+            if canary_budget is None or canary_budget <= 0:
+                return False, "canary_budget_unavailable"
+            if max(own_min_size, pair_min_size) > canary_budget:
+                return False, "canary_reward_min_above_budget"
+
         avail = self._last_balance
         if avail is not None and avail > 0:
             # Each resting BUY reserves its actual price * size. Requiring one
@@ -8916,8 +8989,18 @@ class PolyLPSMulti:
             return
 
         configured_tokens = set(self.market_cfg) | set(self._night_market_cfg)
+        lifecycle_available = getattr(self, "_last_balance", None)
+        if lifecycle_available is None:
+            try:
+                lifecycle_available = self._lp_effective_available(
+                    await self._get_collateral_available(force_refresh=True)
+                )
+            except Exception:
+                lifecycle_available = None
+            if lifecycle_available is not None:
+                self._last_balance = lifecycle_available
         canary_budget = self._stable_lifecycle_canary_budget_usdc(
-            getattr(self, "_last_balance", None)
+            lifecycle_available
         )
         plan = build_lifecycle_plan(
             proposal,
@@ -9358,9 +9441,16 @@ class PolyLPSMulti:
         token_id: str,
         prices: list[Decimal],
         depth_snapshot: Optional[MarketSnapshot],
+        *,
+        front_depth_floor_usdc: Optional[Decimal] = None,
     ) -> list[tuple[Decimal, Decimal]]:
         if not prices:
             return []
+        depth_floor = (
+            self.min_front_bid_notional_usdc
+            if front_depth_floor_usdc is None
+            else max(Decimal("0"), Decimal(str(front_depth_floor_usdc)))
+        )
         adapted: list[tuple[Decimal, Decimal]] = []
         for p in prices:
             front_notional = self._front_notional_from_snapshot(depth_snapshot, p) if depth_snapshot is not None else Decimal("0")
@@ -9368,7 +9458,7 @@ class PolyLPSMulti:
         if depth_snapshot is None:
             return adapted
         for idx, (p, front_notional) in enumerate(adapted):
-            if front_notional >= self.min_front_bid_notional_usdc:
+            if front_notional >= depth_floor:
                 return adapted[idx:]
         return []
 
@@ -9580,10 +9670,23 @@ class PolyLPSMulti:
                 live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
                 legal_prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
                 depth_snapshot = self._trusted_depth_for_snapshot(token_id, snap)
-                adapted_legal_prices = self._adapt_prices_for_front_depth(token_id, legal_prices, depth_snapshot)
-                legal_top = adapted_legal_prices[0][0] if adapted_legal_prices else (legal_prices[0] if legal_prices else None)
                 top_price = self._order_price(top_order)
                 gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
+                front_depth_floor = Decimal(
+                    str(
+                        gate.get(
+                            "front_depth_floor_usdc",
+                            self.min_front_bid_notional_usdc,
+                        )
+                    )
+                )
+                adapted_legal_prices = self._adapt_prices_for_front_depth(
+                    token_id,
+                    legal_prices,
+                    depth_snapshot,
+                    front_depth_floor_usdc=front_depth_floor,
+                )
+                legal_top = adapted_legal_prices[0][0] if adapted_legal_prices else (legal_prices[0] if legal_prices else None)
                 if gate.get("top_leg_action") in {"cancel", "move_back", "halt"} or legal_top is None or (legal_top is not None and top_price > legal_top):
                     if self._coordinated_pair_token(token_id):
                         await self._cancel_coordinated_pair_quotes(
@@ -9624,14 +9727,27 @@ class PolyLPSMulti:
                 live_spread = Decimal(str(live_spread_raw)) if live_spread_raw is not None else None
                 legal_prices = self._build_price_legs(token_id, TopOfBook(best_bid=best_bid, best_ask=best_ask), live_spread=live_spread)
                 depth_snapshot = self._trusted_depth_for_snapshot(token_id, snap)
-                adapted_legal_prices = self._adapt_prices_for_front_depth(token_id, legal_prices, depth_snapshot)
+                gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
+                front_depth_floor = Decimal(
+                    str(
+                        gate.get(
+                            "front_depth_floor_usdc",
+                            self.min_front_bid_notional_usdc,
+                        )
+                    )
+                )
+                adapted_legal_prices = self._adapt_prices_for_front_depth(
+                    token_id,
+                    legal_prices,
+                    depth_snapshot,
+                    front_depth_floor_usdc=front_depth_floor,
+                )
                 legal_top = adapted_legal_prices[0][0] if adapted_legal_prices else (legal_prices[0] if legal_prices else None)
                 front_notional = self._front_notional_from_snapshot(depth_snapshot or snap, top_price)
 
                 # --- P0: record front notional for rolling window ---
                 self._vol_record_front_notional(token_id, front_notional)
 
-                gate = self._feasibility_gate(token_id, meta, snap, top_price=top_price)
                 self._gate_decisions[token_id] = gate
                 action = "KEEP"
                 if gate.get("top_leg_action") == "halt":
@@ -11802,17 +11918,40 @@ class PolyLPSMulti:
             pct = self._market_quote_budget_pct(token_id, market_risk)
             reward_lower = max(self._get_mcfg(token_id)["tick"], tob.mid - (live_spread if live_spread is not None else self._get_mcfg(token_id)["spread"]))
             legal_top = tob.best_bid - self._get_mcfg(token_id)["tick"]
-            adapted_prices = self._adapt_prices_for_front_depth(token_id, prices, depth_snapshot)
+            front_depth_floor = Decimal(
+                str(
+                    gate.get(
+                        "front_depth_floor_usdc",
+                        self.min_front_bid_notional_usdc,
+                    )
+                )
+            )
+            adapted_prices = self._adapt_prices_for_front_depth(
+                token_id,
+                prices,
+                depth_snapshot,
+                front_depth_floor_usdc=front_depth_floor,
+            )
             requested_legs_raw = len(prices)
-            scored_levels = self._score_price_levels(token_id, [p for p, _ in adapted_prices], depth_snapshot, reward_lower, legal_top)
-            filtered_levels = [(p, front_notional, score) for p, front_notional, score in scored_levels if score > Decimal("0")]
+            scored_levels = self._score_price_levels(
+                token_id,
+                [p for p, _ in adapted_prices],
+                depth_snapshot,
+                reward_lower,
+                legal_top,
+            )
+            filtered_levels = [
+                (p, front_notional, score)
+                for p, front_notional, score in scored_levels
+                if score > Decimal("0")
+            ]
             if not filtered_levels:
                 filtered_levels = scored_levels
             raw_weights = self._alloc_weights(len(filtered_levels))
             viable_legs = []
             total_weight = Decimal("0")
             for (p, front_notional, score), w in zip(filtered_levels, raw_weights):
-                if front_notional < self.min_front_bid_notional_usdc:
+                if front_notional < front_depth_floor:
                     continue
                 score_boost = max(Decimal("0.15"), min(Decimal("1.5"), score + Decimal("0.25")))
                 adj_w = w * score_boost

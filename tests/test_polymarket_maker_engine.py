@@ -1324,6 +1324,9 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     engine._stable_lifecycle_max_add_per_cycle = 5
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._last_balance = None
+    engine._get_collateral_available = AsyncMock(return_value=Decimal("800"))
+    engine._lp_effective_available = lambda value: value
     engine._config_path = tmp_path / "config_1.json"
     engine._config_path.write_text(
         json.dumps({"markets": [], "night_markets": []}),
@@ -1346,6 +1349,7 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
                             {
                                 "token_id": "201",
                                 "paired_token_id": "202",
+                                "rewards_min_size_shares": 50,
                             }
                         ],
                         "keep": [],
@@ -1398,6 +1402,10 @@ def test_stable_lifecycle_applies_account_local_canary_as_reduced_risk(
     assert captured["lifecycle_stage"] == "canary"
     assert captured["risk_override"] == "high"
     assert captured["require_new_persisted_pair"] is True
+    engine._get_collateral_available.assert_awaited_once_with(
+        force_refresh=True
+    )
+    assert engine._stable_lifecycle_state["canary_budget_usdc"] == 80.0
     assert engine._stable_lifecycle_state["add_results"] == [
         {"token_id": "201", "status": "added"}
     ]
@@ -1582,6 +1590,7 @@ def test_stable_lifecycle_rolls_back_incomplete_paired_runtime_add(tmp_path):
     engine._stable_lifecycle_max_add_per_cycle = 5
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._last_balance = Decimal("1000")
     engine._config_path = tmp_path / "config_1.json"
     engine._config_path.write_text(
         json.dumps({"markets": [], "night_markets": []}),
@@ -1869,6 +1878,7 @@ def test_stable_lifecycle_rejects_disabled_persisted_pair_without_mutation(
     engine._stable_lifecycle_max_add_per_cycle = 5
     engine._stable_lifecycle_soft_failure_threshold = 3
     engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._last_balance = Decimal("1000")
     original_config = {
         "markets": [
             {
@@ -5333,6 +5343,289 @@ def test_stable_pair_coordination_covers_night_market_pool():
     assert engine._coordinated_pair_token("102") == "101"
 
 
+def _front_depth_gate_engine(*, lifecycle_stage: str) -> PolyLPSMulti:
+    engine = object.__new__(PolyLPSMulti)
+    engine.market_cfg = {
+        "101": {"lifecycle_stage": lifecycle_stage},
+    }
+    engine._night_market_cfg = {}
+    engine._last_balance = Decimal("800")
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+    engine.min_front_bid_notional_usdc = Decimal("5000")
+    engine._sponsored_guard_by_token = {}
+    engine._latency_capability = lambda _token_id: {
+        "send_accept_ms": None,
+        "halt_clear_ms": None,
+        "level": "healthy",
+    }
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._snapshot_is_stale = lambda *_args, **_kwargs: False
+    engine._snapshot_is_placeholder = lambda *_args, **_kwargs: False
+    engine._trusted_depth_for_snapshot = lambda _token_id, snapshot: snapshot
+    engine._front_notional_from_snapshot = lambda *_args, **_kwargs: Decimal(
+        "100"
+    )
+    return engine
+
+
+def test_stable_canary_uses_bounded_probe_instead_of_full_depth_gate():
+    snapshot = types.SimpleNamespace(
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.42"),
+        bids=[(Decimal("0.40"), Decimal("100"))] * 2,
+    )
+    meta = {"reward": 50, "fill_risk": 20}
+
+    full = _front_depth_gate_engine(lifecycle_stage="full")
+    full_gate = full._feasibility_gate("101", meta, snapshot)
+    assert full_gate["can_quote"] is False
+    assert full_gate["reason"] == ["front_depth_critical"]
+
+    canary = _front_depth_gate_engine(lifecycle_stage="canary")
+    canary_gate = canary._feasibility_gate("101", meta, snapshot)
+    assert canary_gate["can_quote"] is True
+    assert canary_gate["risk_grade"] == "C"
+    assert canary_gate["front_depth_floor_usdc"] == 80.0
+    assert canary_gate["reason"] == ["front_depth_canary_probe"]
+
+
+def test_stable_canary_requires_depth_to_cover_its_bounded_probe():
+    engine = _front_depth_gate_engine(lifecycle_stage="canary")
+    engine._front_notional_from_snapshot = lambda *_args, **_kwargs: Decimal(
+        "79"
+    )
+    snapshot = types.SimpleNamespace(
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.42"),
+        bids=[(Decimal("0.40"), Decimal("100"))] * 2,
+    )
+
+    gate = engine._feasibility_gate(
+        "101",
+        {"reward": 50, "fill_risk": 20},
+        snapshot,
+    )
+
+    assert gate["can_quote"] is False
+    assert gate["front_depth_floor_usdc"] == 80.0
+    assert gate["reason"] == ["front_depth_canary_insufficient"]
+
+
+def test_stable_canary_rejects_untrusted_runtime_depth():
+    engine = _front_depth_gate_engine(lifecycle_stage="canary")
+    engine._trusted_depth_for_snapshot = lambda *_args, **_kwargs: None
+    snapshot = types.SimpleNamespace(
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.42"),
+        bids=[(Decimal("0.40"), Decimal("100"))] * 2,
+    )
+
+    gate = engine._feasibility_gate(
+        "101",
+        {"reward": 50, "fill_risk": 20},
+        snapshot,
+    )
+
+    assert gate["can_quote"] is False
+    assert gate["reason"] == ["front_depth_canary_untrusted"]
+
+
+def test_stable_canary_still_rejects_empty_trusted_front_depth():
+    engine = _front_depth_gate_engine(lifecycle_stage="canary")
+    engine._front_notional_from_snapshot = lambda *_args, **_kwargs: Decimal(
+        "0"
+    )
+    snapshot = types.SimpleNamespace(
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.42"),
+        bids=[(Decimal("0.40"), Decimal("0"))] * 2,
+    )
+
+    gate = engine._feasibility_gate(
+        "101",
+        {"reward": 50, "fill_risk": 20},
+        snapshot,
+    )
+
+    assert gate["can_quote"] is False
+    assert gate["reason"] == ["front_depth_empty"]
+
+
+def _runtime_front_depth_engine(
+    tmp_path,
+    monkeypatch,
+    *,
+    lifecycle_stage: str,
+    front_notional: Decimal,
+    trusted_depth: bool = True,
+):
+    maker_dir = tmp_path / "repo" / "platforms" / "polymarket" / "maker"
+    maker_dir.mkdir(parents=True)
+    config_path = maker_dir / "config_1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "account": {
+                    "funder": "0x" + ("1" * 40),
+                    "chain_id": 137,
+                    "signature_type": 1,
+                    "signer_server_url": "http://signer.test",
+                    "signer_token": "test-token",
+                },
+                "strategy": {
+                    "requote_interval_ms": 0,
+                    "default_price_tick": 0.01,
+                    "default_min_distance_from_best_bid": 0.01,
+                    "min_order_size": 5,
+                },
+                "execution": {"min_front_bid_notional_usdc": 5000},
+                "markets": [
+                    {
+                        "token_id": "101",
+                        "enabled": True,
+                        "price_tick": 0.01,
+                        "max_incentive_spread": 0.05,
+                        "min_distance_from_best_bid": 0.01,
+                        "risk": "high",
+                        "lifecycle_stage": lifecycle_stage,
+                    }
+                ],
+                "night_markets": [],
+                "stable_market_lifecycle": {
+                    "enabled": True,
+                    "canary_principal_fraction": 0.10,
+                    "canary_max_usdc": 100,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeRemoteSigner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def derive_creds(self):
+            return {
+                "address": "0x" + ("2" * 40),
+                "api_key": "api-key",
+                "api_secret": "api-secret",
+                "api_passphrase": "api-passphrase",
+            }
+
+    class FakeClobClient:
+        def __init__(self, **_kwargs):
+            self.signer = None
+            self.builder = None
+
+        def set_api_creds(self, _creds):
+            pass
+
+    monkeypatch.setenv("POLYMARKET_HOST_ID", "vps1")
+    monkeypatch.setattr(engine_module, "RemoteSignerClient", FakeRemoteSigner)
+    monkeypatch.setattr(engine_module, "ClobClient", FakeClobClient)
+
+    engine = PolyLPSMulti(str(config_path))
+    engine._last_balance = Decimal("800")
+    engine._is_blocked_market = AsyncMock(return_value=(False, ""))
+    engine._get_market_meta = AsyncMock(
+        return_value={
+            "reward": 50,
+            "rewardsMinSize": 5,
+            "maxIncentiveSpread": 0.05,
+            "fill_risk": 20,
+        }
+    )
+    engine._enforce_start_guard = AsyncMock(return_value=False)
+    engine._manual_exit_blocks_quote = AsyncMock(return_value=False)
+    engine._resolve_market_tick = AsyncMock()
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._trusted_depth_for_snapshot = (
+        (lambda _token_id, snapshot: snapshot)
+        if trusted_depth
+        else (lambda _token_id, _snapshot: None)
+    )
+    engine._quote_gate = lambda *_args, **_kwargs: (True, "")
+    engine._is_low_price_paired_mode = lambda _token_id: (False, "")
+    engine._coordinated_pair_token = lambda _token_id: ""
+    engine._latency_capability = lambda _token_id: {
+        "send_accept_ms": None,
+        "halt_clear_ms": None,
+        "level": "healthy",
+    }
+    engine._snapshot_is_stale = lambda *_args, **_kwargs: False
+    engine._snapshot_is_placeholder = lambda *_args, **_kwargs: False
+    engine._front_notional_from_snapshot = (
+        lambda *_args, **_kwargs: front_notional
+    )
+    engine._build_price_legs = lambda *_args, **_kwargs: [Decimal("0.40")]
+    engine._score_price_levels = lambda _token, prices, *_args: [
+        (price, front_notional, Decimal("1")) for price in prices
+    ]
+    engine._market_quote_budget_pct = lambda *_args: Decimal("1")
+    engine._compute_target_shares = AsyncMock(
+        return_value=(Decimal("80"), Decimal("80"), "")
+    )
+    engine._get_collateral_available = AsyncMock(return_value=Decimal("800"))
+    engine._get_live_orders_fast = AsyncMock(return_value=[])
+    engine._sync_top_leg = AsyncMock(return_value=[{"id": "new-buy"}])
+    engine._sync_back_legs = AsyncMock(return_value=[{"id": "new-buy"}])
+    return engine
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_stage", "front_notional", "trusted_depth", "quotes"),
+    [
+        ("canary", Decimal("100"), True, True),
+        ("canary", Decimal("79"), True, False),
+        ("canary", Decimal("100"), False, False),
+        ("full", Decimal("100"), True, False),
+    ],
+)
+def test_runtime_quote_pipeline_uses_stage_specific_front_depth_floor(
+    tmp_path,
+    monkeypatch,
+    lifecycle_stage,
+    front_notional,
+    trusted_depth,
+    quotes,
+):
+    engine = _runtime_front_depth_engine(
+        tmp_path,
+        monkeypatch,
+        lifecycle_stage=lifecycle_stage,
+        front_notional=front_notional,
+        trusted_depth=trusted_depth,
+    )
+    book = types.SimpleNamespace(
+        bids=[
+            types.SimpleNamespace(price="0.41", size="125"),
+            types.SimpleNamespace(price="0.40", size="125"),
+        ],
+        asks=[
+            types.SimpleNamespace(price="0.43", size="125"),
+            types.SimpleNamespace(price="0.44", size="125"),
+        ],
+    )
+    try:
+        asyncio.run(
+            engine.update_and_quote_market(
+                "101",
+                cycle_books={"101": book},
+            )
+        )
+        assert engine._sync_top_leg.await_count == int(quotes)
+        if quotes:
+            desired_top = engine._sync_top_leg.await_args.args[1]
+            assert desired_top[:2] == (Decimal("0.40"), Decimal("80"))
+            assert engine._gate_decisions["101"][
+                "front_depth_floor_usdc"
+            ] == 80.0
+    finally:
+        engine._httpx_client.close()
+
+
 def test_aggressive_pair_preflight_checks_mid_price_sibling_gate():
     engine = _paired_state_engine()
     engine._dual_side_max_mid = Decimal("0.10")
@@ -5420,6 +5713,50 @@ def test_aggressive_pair_budget_uses_actual_two_leg_notional():
         Decimal("0.41"),
         enforce_all_pairs=True,
     ) == (False, "paired_side_budget_insufficient")
+
+
+def test_stable_canary_pair_preflight_enforces_reward_minimum_budget():
+    engine = _paired_state_engine()
+    engine.market_cfg["101"]["lifecycle_stage"] = "canary"
+    engine.market_cfg["102"]["lifecycle_stage"] = "canary"
+    engine._dual_side_max_mid = Decimal("0.10")
+    engine.min_order_size = Decimal("5")
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+    engine._market_snapshots = {
+        "102": types.SimpleNamespace(
+            best_bid=Decimal("0.55"),
+            best_ask=Decimal("0.56"),
+        ),
+    }
+    engine._market_meta_cache = {
+        "101": ({"rewardsMinSize": 100}, time.time()),
+        "102": ({"rewardsMinSize": 100}, time.time()),
+    }
+    engine._build_price_legs = lambda *_args, **_kwargs: [Decimal("0.54")]
+    engine._effective_snapshot_for_gate = lambda _token_id, snapshot: snapshot
+    engine._quote_gate = lambda *_args, **_kwargs: (True, "")
+    engine._feasibility_gate = lambda *_args, **_kwargs: {"can_quote": True}
+    engine._last_balance = Decimal("800")
+    engine._token_slug_cache = {}
+
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.40"),
+        enforce_all_pairs=True,
+    ) == (False, "canary_reward_min_above_budget")
+
+    engine._market_meta_cache = {
+        "101": ({"rewardsMinSize": 50}, time.time()),
+        "102": ({"rewardsMinSize": 50}, time.time()),
+    }
+    assert engine._paired_side_ready(
+        "101",
+        "102",
+        Decimal("0.40"),
+        enforce_all_pairs=True,
+    ) == (True, "")
 
 
 def test_aggressive_pair_cancel_preempts_and_clears_both_quote_legs():

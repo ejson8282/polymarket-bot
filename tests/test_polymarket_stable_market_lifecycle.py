@@ -229,6 +229,67 @@ def test_lifecycle_limits_canaries_per_account_and_respects_budget():
     assert capped["add"] == []
 
 
+def test_lifecycle_does_not_add_canary_without_known_account_budget():
+    now = time.time()
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [
+                    _market("301", "302", rewards_min_size_shares=1)
+                ],
+                "keep": [],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids=set(),
+        managed_token_ids=set(),
+        previous_state={},
+        now_ts=now + 1,
+        canary_budget_usdc=None,
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["add"] == []
+
+
+def test_lifecycle_retires_canary_above_current_account_budget():
+    now = time.time()
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [
+                    _market("101", "102", rewards_min_size_shares=101)
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state={},
+        now_ts=now + 1,
+        canary_budget_usdc=100,
+    )
+
+    assert plan["markets"]["101"]["status"] == "retire_due"
+    assert plan["retire"] == [
+        {
+            "token_id": "101",
+            "hard_failure": True,
+            "reason_codes": ["canary_reward_min_above_budget"],
+        }
+    ]
+
+
 def test_canary_promotes_only_after_three_consecutive_scoring_samples():
     now = time.time()
     state = {}
