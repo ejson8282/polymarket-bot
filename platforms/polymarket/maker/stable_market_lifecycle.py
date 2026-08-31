@@ -413,10 +413,11 @@ def build_lifecycle_plan(
             if stage == "canary":
                 if canary_slots <= 0:
                     continue
+                if canary_budget_usdc is None:
+                    continue
                 rewards_min = _number(row.get("rewards_min_size_shares"), 0.0)
                 if (
-                    canary_budget_usdc is not None
-                    and rewards_min > max(0.0, float(canary_budget_usdc))
+                    rewards_min > max(0.0, float(canary_budget_usdc))
                 ):
                     continue
             additions.append({"stage": stage, "market": dict(row)})
@@ -457,6 +458,36 @@ def build_lifecycle_plan(
                 }
             )
             output["markets"][token_id] = state
+            continue
+        current_row = keep.get(token_id) or review.get(token_id)
+        if (
+            stage == "canary"
+            and canary_budget_usdc is not None
+            and isinstance(current_row, Mapping)
+            and _number(current_row.get("rewards_min_size_shares"), 0.0)
+            > max(0.0, float(canary_budget_usdc))
+        ):
+            reason_codes = ["canary_reward_min_above_budget"]
+            state.update(
+                {
+                    "status": "retire_due",
+                    "consecutive_failures": 1,
+                    "consecutive_scoring_samples": 0,
+                    "consecutive_scoring_sample_ids": [],
+                    "last_scoring_sample_id": "",
+                    "failure_threshold": 1,
+                    "hard_failure": True,
+                    "reason_codes": reason_codes,
+                }
+            )
+            output["markets"][token_id] = state
+            output["retire"].append(
+                {
+                    "token_id": token_id,
+                    "hard_failure": True,
+                    "reason_codes": reason_codes,
+                }
+            )
             continue
         if token_id in keep:
             scoring_valid = scoring_sample_is_valid(
