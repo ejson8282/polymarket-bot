@@ -5,7 +5,8 @@
 [`AI_COLLABORATION.md`](https://github.com/ejson8282/latitude-alpha/blob/main/docs/AI_COLLABORATION.md)。
 Claude、Codex 和人工协作者遵守同一套边界。
 
-- 使用独立 worktree、`claude/<issue>-<scope>` 分支和 Draft PR；不与 Codex 共用 checkout 或分支；
+- 使用独立 worktree、`claude/<issue>-<scope>` 分支和 PR；条件完整时直接 Ready，只有未完成、待裁决、
+  依赖未落地或高风险动作待授权时才使用 Draft；不与 Codex 共用 checkout 或分支；
 - 写入前核对 GitHub 默认分支、开放 PR、有效租约、两台生产机精确 SHA、服务/订单状态和未验收旧版本；
 - 同一文件集只能有一个写入 owner。需要接管时，先取得符合中央
   [`AI_HANDOFF_TEMPLATE.md`](https://github.com/ejson8282/latitude-alpha/blob/main/docs/AI_HANDOFF_TEMPLATE.md)
