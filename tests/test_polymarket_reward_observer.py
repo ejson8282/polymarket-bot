@@ -987,6 +987,79 @@ def test_refresh_writes_review_only_stable_rotation_proposal(
     assert config_path.read_bytes() == config_before
 
 
+def test_refresh_uses_current_clock_for_runtime_identity_after_slow_postprocessing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_dir = tmp_path / "maker"
+    data_dir = tmp_path / "data"
+    config_dir.mkdir()
+    data_dir.mkdir()
+    funder = "0x" + "1" * 40
+    account_uid_key = reward_observer._account_uid_key(f"137:0:{funder}")
+    (config_dir / "config_1.json").write_text(
+        json.dumps(
+            {
+                "account": {
+                    "funder": funder,
+                    "chain_id": 137,
+                    "signature_type": 0,
+                },
+                "execution": {"min_front_bid_notional_usdc": 1},
+                "markets": [],
+                "night_markets": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine_state_path = data_dir / "engine_state_1.json"
+    engine_state_path.write_text(
+        json.dumps(
+            {
+                "generated_at": 1_000.0,
+                "account_uid_key": account_uid_key,
+                "balance": 100,
+                "runtime": {"host_id": "vps1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(reward_observer.time, "time", lambda: clock["now"])
+    original_write_shadow_budget = reward_observer.write_shadow_budget
+
+    def advance_clock_and_write_shadow_budget(data_path, observer_state):
+        clock["now"] = 1_300.0
+        engine_state = json.loads(engine_state_path.read_text(encoding="utf-8"))
+        engine_state["generated_at"] = clock["now"]
+        engine_state_path.write_text(json.dumps(engine_state), encoding="utf-8")
+        return original_write_shadow_budget(data_path, observer_state)
+
+    monkeypatch.setattr(
+        reward_observer,
+        "write_shadow_budget",
+        advance_clock_and_write_shadow_budget,
+    )
+
+    state = refresh_observer_state(
+        data_dir,
+        config_dir=config_dir,
+        fetch_markets=lambda: [_market(reward="25")],
+        fetch_book=lambda _token: _book(),
+    )
+
+    proposal = json.loads(
+        (data_dir / "stable_rotation_proposal.json").read_text(encoding="utf-8")
+    )
+    assert state["generated_at"] == 1_000.0
+    assert state["elapsed_sec"] == 300.0
+    assert state["stable_rotation_proposal"]["status"] == "ready"
+    assert proposal["status"] == "ready"
+    assert proposal["generated_at"] == 1_300.0
+    assert [row["account_index"] for row in proposal["accounts"]] == [1]
+
+
 def test_rotation_planner_failure_does_not_break_reward_observer(
     tmp_path: Path,
 ) -> None:
