@@ -36,6 +36,7 @@ DEPLOYMENT_PROFILES = {"vps1": 1, "vps2": 2}
 RELEASE_TESTS = (
     "tests/test_polymarket_release_guard.py",
     "tests/test_polymarket_maker_engine.py",
+    "tests/test_polymarket_exchange_maintenance.py",
     "tests/test_polymarket_account_profiles.py",
     "tests/test_polymarket_account_roster.py",
     "tests/test_polymarket_multi_runner.py",
@@ -529,6 +530,7 @@ def _manifest_for(release_dir: Path, target_sha: str) -> Dict[str, Any]:
         ("reward_shadow_allocator.py", "reward shadow allocator"),
         ("quote_feasibility.py", "quote feasibility"),
         ("sibling_registry.py", "sibling registry"),
+        ("exchange_maintenance.py", "exchange maintenance guard"),
     ):
         dependency = (
             release_dir / "platforms/polymarket/maker" / dependency_name

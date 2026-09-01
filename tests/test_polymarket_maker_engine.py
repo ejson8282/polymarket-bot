@@ -16,6 +16,12 @@ sys.path.insert(0, str(MAKER_DIR))
 
 import engine as engine_module  # noqa: E402
 from account_profiles import parse_lp_account_profile  # noqa: E402
+from exchange_maintenance import (  # noqa: E402
+    ExchangeMaintenanceGuard,
+    PHASE_MAINTENANCE,
+    PHASE_NORMAL,
+    PHASE_RECOVERING,
+)
 from stable_lifecycle_commands import build_stable_lifecycle_command  # noqa: E402
 from engine import (  # noqa: E402
     EVENT_ACTIVE,
@@ -3450,6 +3456,54 @@ def test_order_path_fails_closed_while_account_is_paused():
         raise AssertionError("paused account must reject every BUY submission path")
 
 
+def test_order_path_fails_closed_during_exchange_maintenance():
+    engine = object.__new__(PolyLPSMulti)
+    engine._is_account_paused = lambda: False
+    engine._halt_preemption_reason = lambda _token_id: None
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._exchange_maintenance.observe_error(
+        RuntimeError("Trading is currently disabled"),
+        "post_only_buy",
+    )
+
+    with pytest.raises(EventHaltPreempted, match="exchange_maintenance"):
+        engine._ensure_order_path_open("101", "submit_pre_post:test")
+
+
+def test_exit_sell_remains_available_during_exchange_maintenance():
+    engine = object.__new__(PolyLPSMulti)
+    posted = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            return object()
+
+    class Client:
+        def post_order(self, signed, order_type):
+            posted.append((signed, order_type))
+            return {"orderID": "exit-sell"}
+
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._exchange_maintenance.observe_error(
+        RuntimeError("Trading is currently disabled"),
+        "read",
+    )
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._mark_signer_recovered = lambda: None
+    engine._invalidate_all_orders_cache = lambda: None
+    engine._sibling_register_resp = lambda *_args: None
+
+    response = asyncio.run(
+        engine._place_sell_order("101", Decimal("0.50"), Decimal("10"))
+    )
+
+    assert response == {"orderID": "exit-sell"}
+    assert len(posted) == 1
+    assert engine._exchange_maintenance.phase == PHASE_MAINTENANCE
+
+
 def test_proxied_client_converts_batch_order_book_dicts():
     class Client:
         def get_order_books(self, _params):
@@ -6507,6 +6561,128 @@ def test_submit_uses_exchange_post_only_after_final_quote_validation():
     assert calls[-1] == "released"
 
 
+def test_submit_enters_exchange_maintenance_on_official_disabled_error():
+    engine = object.__new__(PolyLPSMulti)
+    spawned = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            return object()
+
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            raise RuntimeError(
+                '503 {"error":"Trading is currently disabled. '
+                'Check polymarket.com for updates"}'
+            )
+
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    async def validate(*_args):
+        return None
+
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._exchange_maintenance_cancel_task = None
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = validate
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda *_args: None
+    engine._event_bus = _RecordingEventBus()
+
+    with pytest.raises(RuntimeError, match="Trading is currently disabled"):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "maintenance-test",
+            )
+        )
+
+    assert engine._exchange_maintenance.phase == PHASE_MAINTENANCE
+    assert spawned == ["exchange_maintenance_cancel"]
+    assert engine._event_bus.events[-1][0] == "exchange_maintenance"
+
+
+def test_successful_recovery_post_only_probe_releases_maintenance_latch():
+    engine = object.__new__(PolyLPSMulti)
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            return object()
+
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            return {"orderID": "recovery-maker-order"}
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    async def validate(*_args):
+        return None
+
+    async def refresh(*_args):
+        return []
+
+    guard = ExchangeMaintenanceGuard()
+    guard.phase = PHASE_RECOVERING
+    guard.reason = "trading_disabled"
+    engine._exchange_maintenance = guard
+    engine.remote_signer = RemoteSigner()
+    engine.client = Client()
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = validate
+    engine._invalidate_all_orders_cache = lambda: None
+    engine._sibling_register_resp = lambda *_args: None
+    engine._refresh_live_orders = refresh
+    engine.notify_discord = lambda *_args: None
+    engine._event_bus = _RecordingEventBus()
+
+    response = asyncio.run(
+        engine._submit_post_order(
+            "101",
+            Decimal("0.40"),
+            Decimal("10"),
+            "recovery-test",
+        )
+    )
+
+    assert response == {"orderID": "recovery-maker-order"}
+    assert guard.phase == PHASE_NORMAL
+    assert engine._event_bus.events[-1] == (
+        "exchange_maintenance",
+        {"phase": "normal", "reason": "post_only_probe_succeeded"},
+    )
+
+
 def test_submit_does_not_post_when_final_quote_validation_fails():
     engine = object.__new__(PolyLPSMulti)
     posted = []
@@ -6734,6 +6910,44 @@ def test_signer_outage_triggers_fail_safe_after_threshold_and_throttles(monkeypa
     assert triggered == ["remote_signer_unreachable", "remote_signer_unreachable"]
     assert engine._signer_failure_since == 100.0
     assert engine._signer_fail_safe_fired_at == 252.0
+
+
+def test_kill_switch_uses_exchange_maintenance_cancel_backoff(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    guard = ExchangeMaintenanceGuard(
+        cancel_backoff_initial_sec=30,
+        cancel_backoff_max_sec=300,
+    )
+    guard.observe_error(
+        RuntimeError("cancels are disabled"),
+        "cancel_all_except_exit",
+    )
+    engine._exchange_maintenance = guard
+    engine._running = True
+    engine._kill_switch_lock = asyncio.Lock()
+    engine._cooldown_until = 0.0
+    engine._require_recovery_gate = False
+    engine._active_exit_orders = {}
+    engine.cancel_retry_step_sec = 5
+    engine.cooldown_seconds = 60
+    engine._event_bus = _RecordingEventBus()
+    engine.notify_discord = lambda *_args: None
+    sleeps = []
+
+    async def cancel_all_except_exit():
+        return False
+
+    async def stop_after_first_sleep(seconds):
+        sleeps.append(seconds)
+        engine._running = False
+
+    engine._cancel_all_except_exit = cancel_all_except_exit
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_first_sleep)
+
+    asyncio.run(engine.trigger_global_kill_switch("maintenance-test"))
+
+    assert len(sleeps) == 1
+    assert sleeps[0] >= 29.0
 
 
 def test_market_ws_outage_cancels_quotes_and_preserves_exit_path(monkeypatch):

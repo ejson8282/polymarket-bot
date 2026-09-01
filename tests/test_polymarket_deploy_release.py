@@ -86,6 +86,7 @@ def _write_source_tree(source: Path) -> tuple[str, str]:
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
         "sibling_registry.py",
+        "exchange_maintenance.py",
     ):
         shutil.copy2(MAKER_DIR / dependency_name, maker / dependency_name)
     tests = source / "tests"
@@ -732,6 +733,7 @@ def test_release_manifest_authorizes_runtime_entrypoints(tmp_path):
         "reward_fast_lane.py",
         "reward_shadow_allocator.py",
         "sibling_registry.py",
+        "exchange_maintenance.py",
     ):
         dependency = maker / dependency_name
         dependency.write_text(
@@ -921,6 +923,7 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         "reward_shadow_allocator.py",
         "quote_feasibility.py",
         "sibling_registry.py",
+        "exchange_maintenance.py",
     ):
         (maker / dependency_name).write_text(
             f"print({dependency_name!r})\n",
@@ -945,6 +948,7 @@ def test_release_manifest_requires_stable_rotation_commands(tmp_path):
         ("reward_shadow_allocator.py", "reward shadow allocator"),
         ("quote_feasibility.py", "quote feasibility"),
         ("sibling_registry.py", "sibling registry"),
+        ("exchange_maintenance.py", "exchange maintenance guard"),
     ),
 )
 def test_release_manifest_requires_lifecycle_inputs(
@@ -972,6 +976,7 @@ def test_release_manifest_requires_lifecycle_inputs(
         "reward_shadow_allocator.py",
         "quote_feasibility.py",
         "sibling_registry.py",
+        "exchange_maintenance.py",
     ):
         if name != missing_name:
             (maker / name).write_text(f"print({name!r})\n", encoding="utf-8")
