@@ -101,38 +101,32 @@ class ExchangeMaintenanceGuard:
             return None
         current = self.clock() if now is None else float(now)
         with self._lock:
-            entered = self.phase == PHASE_NORMAL
-            reason_changed = self.reason != reason
-            if entered:
-                self.entered_at = current
-            self.phase = PHASE_MAINTENANCE
-            self.reason = reason
-            self.last_error_at = current
-            self.last_action = str(action)
-            self.read_success_streak = 0
-            self.last_read_success_at = 0.0
-            self.next_read_success_at = current + self.recovery_read_spacing_sec
-            self.buy_probe_inflight = False
-            self.next_buy_probe_at = 0.0
-            self.cancel_probe_inflight = False
-
-            if "cancel" in str(action).lower():
-                self.cancel_failure_count += 1
-                exponent = max(0, self.cancel_failure_count - 1)
-                delay = min(
-                    self.cancel_backoff_max_sec,
-                    self.cancel_backoff_initial_sec * (2**exponent),
-                )
-            else:
-                delay = self.cancel_backoff_initial_sec
-            self.next_cancel_retry_at = max(
-                self.next_cancel_retry_at,
-                current + delay,
+            return self._enter_maintenance(
+                reason,
+                action,
+                current=current,
+                cancel_failure="cancel" in str(action).lower(),
+                immediate_cancel=False,
             )
-            return MaintenanceUpdate(
-                reason=reason,
-                entered=entered,
-                reason_changed=reason_changed,
+
+    def force_maintenance(
+        self,
+        reason: str,
+        action: str,
+        *,
+        cancel_failure: bool = False,
+        immediate_cancel: bool = False,
+        now: Optional[float] = None,
+    ) -> MaintenanceUpdate:
+        """Return to maintenance after an internally failed recovery proof."""
+        current = self.clock() if now is None else float(now)
+        with self._lock:
+            return self._enter_maintenance(
+                str(reason),
+                action,
+                current=current,
+                cancel_failure=cancel_failure,
+                immediate_cancel=immediate_cancel,
             )
 
     def note_authenticated_read_success(
@@ -166,9 +160,18 @@ class ExchangeMaintenanceGuard:
                 return "normal"
             if self.phase != PHASE_RECOVERING:
                 return None
-            if self.buy_probe_inflight or current < self.next_buy_probe_at:
+            if (
+                self.buy_probe_inflight
+                or self.cancel_probe_inflight
+                or current < self.next_buy_probe_at
+                or current < self.next_cancel_retry_at
+            ):
                 return None
             self.buy_probe_inflight = True
+            # The recovery BUY owns the cancellation lane until its exact
+            # order has been canceled and verified absent. This prevents the
+            # global kill switch from racing the proof sequence.
+            self.cancel_probe_inflight = True
             self.recovery_probe_count += 1
             return f"recovery_probe:{self.recovery_probe_count}"
 
@@ -185,6 +188,7 @@ class ExchangeMaintenanceGuard:
         current = self.clock() if now is None else float(now)
         with self._lock:
             self.buy_probe_inflight = False
+            self.cancel_probe_inflight = False
             if success and self.phase == PHASE_RECOVERING:
                 self._reset_to_normal()
                 return True
@@ -256,6 +260,56 @@ class ExchangeMaintenanceGuard:
                 "buy_probe_in_sec": max(0.0, self.next_buy_probe_at - current),
                 "recovery_probe_count": self.recovery_probe_count,
             }
+
+    def _enter_maintenance(
+        self,
+        reason: str,
+        action: str,
+        *,
+        current: float,
+        cancel_failure: bool,
+        immediate_cancel: bool,
+    ) -> MaintenanceUpdate:
+        previous_phase = self.phase
+        entered = previous_phase != PHASE_MAINTENANCE
+        reason_changed = self.reason != reason
+        if previous_phase == PHASE_NORMAL:
+            self.entered_at = current
+        self.phase = PHASE_MAINTENANCE
+        self.reason = reason
+        self.last_error_at = current
+        self.last_action = str(action)
+        self.read_success_streak = 0
+        self.last_read_success_at = 0.0
+        self.next_read_success_at = current + self.recovery_read_spacing_sec
+        self.buy_probe_inflight = False
+        self.next_buy_probe_at = 0.0
+        self.cancel_probe_inflight = False
+
+        if immediate_cancel:
+            self.next_cancel_retry_at = current
+        elif cancel_failure:
+            self.cancel_failure_count += 1
+            exponent = max(0, self.cancel_failure_count - 1)
+            delay = min(
+                self.cancel_backoff_max_sec,
+                self.cancel_backoff_initial_sec * (2**exponent),
+            )
+            self.next_cancel_retry_at = max(
+                self.next_cancel_retry_at,
+                current + delay,
+            )
+        else:
+            delay = self.cancel_backoff_initial_sec
+            self.next_cancel_retry_at = max(
+                self.next_cancel_retry_at,
+                current + delay,
+            )
+        return MaintenanceUpdate(
+            reason=reason,
+            entered=entered,
+            reason_changed=reason_changed,
+        )
 
     def _reset_to_normal(self) -> None:
         self.phase = PHASE_NORMAL

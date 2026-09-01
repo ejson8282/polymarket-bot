@@ -6624,8 +6624,282 @@ def test_submit_enters_exchange_maintenance_on_official_disabled_error():
     assert engine._event_bus.events[-1][0] == "exchange_maintenance"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"id": "order-1"},
+        [{"id": "order-1", "status": "ORDER_STATUS_LIVE"}],
+        [{"id": "order-1", "side": "BUY"}],
+        [None],
+    ],
+)
+def test_malformed_open_orders_do_not_advance_maintenance_recovery(payload):
+    engine = object.__new__(PolyLPSMulti)
+
+    class Client:
+        def get_open_orders(self):
+            return payload
+
+    guard = ExchangeMaintenanceGuard(
+        min_hold_sec=0,
+        recovery_read_successes=1,
+        recovery_read_spacing_sec=0,
+    )
+    guard.observe_error(RuntimeError("Trading is currently disabled"), "read")
+    engine.client = Client()
+    engine._exchange_maintenance = guard
+
+    assert asyncio.run(engine._read_open_orders("test_read")) == payload
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.read_success_streak == 0
+
+
+def test_valid_empty_open_orders_advance_maintenance_recovery():
+    engine = object.__new__(PolyLPSMulti)
+
+    class Client:
+        def get_open_orders(self):
+            return []
+
+    guard = ExchangeMaintenanceGuard(
+        min_hold_sec=0,
+        recovery_read_successes=1,
+        recovery_read_spacing_sec=0,
+    )
+    guard.observe_error(RuntimeError("Trading is currently disabled"), "read")
+    engine.client = Client()
+    engine._exchange_maintenance = guard
+
+    assert asyncio.run(engine._read_open_orders("test_read")) == []
+    assert guard.phase == PHASE_RECOVERING
+
+
+def _recovery_submit_test_engine(client):
+    engine = object.__new__(PolyLPSMulti)
+    spawned = []
+    tracked = []
+
+    class RemoteSigner:
+        def sign_order(self, *_args):
+            return object()
+
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
+
+    async def acquire(*_args):
+        return "reserve"
+
+    async def release(*_args):
+        return None
+
+    async def validate(*_args):
+        return None
+
+    async def refresh(*_args):
+        return []
+
+    guard = ExchangeMaintenanceGuard()
+    guard.phase = PHASE_RECOVERING
+    guard.reason = "trading_disabled"
+    engine._exchange_maintenance = guard
+    engine._exchange_maintenance_cancel_task = None
+    engine.remote_signer = RemoteSigner()
+    engine.client = client
+    engine._ensure_order_path_open = lambda *_args: None
+    engine._sibling_gate = lambda _token, _side, price, _label: price
+    engine._acquire_budget_reserve = acquire
+    engine._release_budget_reserve = release
+    engine._mark_latency = lambda *_args: None
+    engine._mark_signer_recovered = lambda: None
+    engine._validate_passive_buy_quote = validate
+    engine._invalidate_all_orders_cache = lambda: None
+    engine._sibling_register_resp = lambda *_args: None
+    engine._refresh_live_orders = refresh
+    engine._track_managed_buy_order = tracked.append
+    engine._market_live_orders = {"101": []}
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda *_args: None
+    engine._event_bus = _RecordingEventBus()
+    return engine, guard, spawned, tracked
+
+
+@pytest.mark.parametrize(
+    "post_response",
+    [
+        None,
+        {},
+        {"success": False, "orderID": "", "status": "delayed"},
+        {
+            "success": True,
+            "orderID": "matched-order",
+            "status": "matched",
+            "errorMsg": "",
+        },
+    ],
+)
+def test_recovery_probe_rejects_empty_or_non_live_post_receipts(post_response):
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            return post_response
+
+    engine, guard, spawned, tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(
+        engine_module.SoftQuoteSkip,
+        match="exchange_recovery_probe_receipt_invalid",
+    ):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.cancel_retry_delay() == 0
+    assert spawned == ["exchange_maintenance_cancel"]
+    expected_tracked = (
+        ["matched-order"]
+        if isinstance(post_response, dict) and post_response.get("orderID")
+        else []
+    )
+    assert tracked == expected_tracked
+
+
+def test_recovery_probe_requires_exact_cancel_acknowledgement():
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            return {
+                "success": True,
+                "orderID": "probe-order",
+                "status": "live",
+                "errorMsg": "",
+            }
+
+        def cancel_orders(self, _order_ids):
+            return {
+                "canceled": [],
+                "not_canceled": {"probe-order": "cancels disabled"},
+            }
+
+    engine, guard, spawned, _tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(
+        engine_module.SoftQuoteSkip,
+        match="exchange_recovery_probe_cancel_unverified",
+    ):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "recovery_probe_cancel_unconfirmed"
+    assert spawned == ["exchange_maintenance_cancel"]
+
+
+def test_recovery_probe_rejects_any_matched_size_after_cancel():
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            return {
+                "success": True,
+                "orderID": "probe-order",
+                "status": "live",
+                "errorMsg": "",
+            }
+
+        def cancel_orders(self, order_ids):
+            return {"canceled": list(order_ids), "not_canceled": {}}
+
+        def get_order(self, order_id):
+            return {
+                "id": order_id,
+                "status": "ORDER_STATUS_CANCELED",
+                "size_matched": "0.01",
+                "associate_trades": ["trade-1"],
+            }
+
+    engine, guard, spawned, _tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(engine_module.SoftQuoteSkip):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "recovery_probe_order_unverified"
+    assert spawned == ["exchange_maintenance_cancel"]
+
+
+def test_recovery_probe_must_disappear_from_official_open_orders():
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            return {
+                "success": True,
+                "orderID": "probe-order",
+                "status": "live",
+                "errorMsg": "",
+            }
+
+        def cancel_orders(self, order_ids):
+            return {"canceled": list(order_ids), "not_canceled": {}}
+
+        def get_order(self, order_id):
+            return {
+                "id": order_id,
+                "status": "ORDER_STATUS_CANCELED",
+                "size_matched": "0",
+                "associate_trades": [],
+            }
+
+        def get_open_orders(self):
+            return [
+                {
+                    "id": "probe-order",
+                    "status": "ORDER_STATUS_LIVE",
+                    "side": "BUY",
+                }
+            ]
+
+    engine, guard, spawned, _tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(engine_module.SoftQuoteSkip):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "recovery_probe_still_open"
+    assert spawned == ["exchange_maintenance_cancel"]
+
+
 def test_successful_recovery_post_only_probe_releases_maintenance_latch():
     engine = object.__new__(PolyLPSMulti)
+    calls = []
 
     class RemoteSigner:
         def sign_order(self, *_args):
@@ -6633,7 +6907,33 @@ def test_successful_recovery_post_only_probe_releases_maintenance_latch():
 
     class Client:
         def post_order(self, *_args, **_kwargs):
-            return {"orderID": "recovery-maker-order"}
+            calls.append("post")
+            return {
+                "success": True,
+                "orderID": "recovery-maker-order",
+                "status": "live",
+                "errorMsg": "",
+            }
+
+        def cancel_orders(self, order_ids):
+            calls.append(("cancel", list(order_ids)))
+            return {
+                "canceled": list(order_ids),
+                "not_canceled": {},
+            }
+
+        def get_order(self, order_id):
+            calls.append(("get_order", order_id))
+            return {
+                "id": order_id,
+                "status": "ORDER_STATUS_CANCELED",
+                "size_matched": "0",
+                "associate_trades": [],
+            }
+
+        def get_open_orders(self):
+            calls.append("get_open_orders")
+            return []
 
     async def acquire(*_args):
         return "reserve"
@@ -6663,6 +6963,8 @@ def test_successful_recovery_post_only_probe_releases_maintenance_latch():
     engine._invalidate_all_orders_cache = lambda: None
     engine._sibling_register_resp = lambda *_args: None
     engine._refresh_live_orders = refresh
+    engine._track_managed_buy_order = lambda *_args: None
+    engine._market_live_orders = {"101": []}
     engine.notify_discord = lambda *_args: None
     engine._event_bus = _RecordingEventBus()
 
@@ -6675,11 +6977,17 @@ def test_successful_recovery_post_only_probe_releases_maintenance_latch():
         )
     )
 
-    assert response == {"orderID": "recovery-maker-order"}
+    assert response["orderID"] == "recovery-maker-order"
+    assert calls == [
+        "post",
+        ("cancel", ["recovery-maker-order"]),
+        ("get_order", "recovery-maker-order"),
+        "get_open_orders",
+    ]
     assert guard.phase == PHASE_NORMAL
     assert engine._event_bus.events[-1] == (
         "exchange_maintenance",
-        {"phase": "normal", "reason": "post_only_probe_succeeded"},
+        {"phase": "normal", "reason": "probe_canceled_and_verified"},
     )
 
 

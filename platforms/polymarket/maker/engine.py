@@ -2097,6 +2097,31 @@ class PolyLPSMulti:
         if update is None:
             return False
 
+        self._apply_exchange_maintenance_update(update, action)
+        return True
+
+    def _force_exchange_maintenance(
+        self,
+        reason: str,
+        action: str,
+        *,
+        cancel_failure: bool = False,
+        immediate_cancel: bool = False,
+    ) -> None:
+        update = self._exchange_maintenance_guard().force_maintenance(
+            reason,
+            action,
+            cancel_failure=cancel_failure,
+            immediate_cancel=immediate_cancel,
+        )
+        self._apply_exchange_maintenance_update(update, action)
+
+    def _apply_exchange_maintenance_update(
+        self,
+        update: Any,
+        action: str,
+    ) -> None:
+
         if update.entered or update.reason_changed:
             log(
                 f"[exchange-maintenance] phase={PHASE_MAINTENANCE} "
@@ -2139,7 +2164,6 @@ class PolyLPSMulti:
                     ),
                     name="exchange_maintenance_cancel",
                 )
-        return True
 
     def _note_exchange_authenticated_read_success(self, action: str) -> None:
         guard = self._exchange_maintenance_guard()
@@ -2181,13 +2205,19 @@ class PolyLPSMulti:
         recovered = guard.finish_buy_attempt(claim, success=success)
         if not recovered:
             return
-        log("[exchange-maintenance] phase=normal recovery_post_only=success")
+        log(
+            "[exchange-maintenance] phase=normal "
+            "recovery_post_cancel_verify=success"
+        )
         event_bus = getattr(self, "_event_bus", None)
         if event_bus is not None:
             try:
                 event_bus.publish(
                     "exchange_maintenance",
-                    {"phase": "normal", "reason": "post_only_probe_succeeded"},
+                    {
+                        "phase": "normal",
+                        "reason": "probe_canceled_and_verified",
+                    },
                 )
             except Exception:
                 pass
@@ -2196,7 +2226,7 @@ class PolyLPSMulti:
             try:
                 notify(
                     "交易所维护模式已解除",
-                    "认证读取与 post-only 报价均已恢复，允许继续正常做市",
+                    "认证读取、测试挂单、精确撤单与未成交核验均已恢复，允许继续正常做市",
                     "success",
                 )
             except Exception:
@@ -6217,14 +6247,161 @@ class PolyLPSMulti:
             return cached
         return await self._refresh_live_orders(token_id)
 
+    @classmethod
+    def _valid_open_orders_response(cls, orders: Any) -> bool:
+        if not isinstance(orders, list):
+            return False
+        for order in orders:
+            if not isinstance(order, dict):
+                return False
+            if not cls._order_id(order):
+                return False
+            if not str(order.get("status") or "").strip():
+                return False
+            if str(order.get("side") or "").strip().upper() not in {"BUY", "SELL"}:
+                return False
+        return True
+
     async def _read_open_orders(self, action: str) -> Any:
         try:
             orders = await asyncio.to_thread(self.client.get_open_orders)
         except Exception as exc:
             self._record_exchange_maintenance_error(exc, action)
             raise
-        self._note_exchange_authenticated_read_success(action)
+        if self._valid_open_orders_response(orders):
+            self._note_exchange_authenticated_read_success(action)
         return orders
+
+    @classmethod
+    def _recovery_post_order_id(cls, response: Any) -> str:
+        if not isinstance(response, dict):
+            return ""
+        if response.get("success") is not True:
+            return ""
+        if str(response.get("errorMsg") or "").strip():
+            return ""
+        if str(response.get("status") or "").strip().lower() != "live":
+            return ""
+        if response.get("tradeIDs") or response.get("transactionsHashes"):
+            return ""
+        return cls._order_id(response)
+
+    @staticmethod
+    def _recovery_cancel_confirmed(response: Any, order_id: str) -> bool:
+        if not isinstance(response, dict):
+            return False
+        canceled = response.get("canceled")
+        not_canceled = response.get("not_canceled")
+        if not isinstance(canceled, list) or not isinstance(not_canceled, dict):
+            return False
+        canceled_ids = {str(value) for value in canceled}
+        failed_ids = {str(value) for value in not_canceled}
+        return order_id in canceled_ids and order_id not in failed_ids
+
+    @classmethod
+    def _recovery_order_canceled_unmatched(
+        cls,
+        response: Any,
+        order_id: str,
+    ) -> bool:
+        if not isinstance(response, dict):
+            return False
+        if cls._order_id(response) != order_id:
+            return False
+        status = str(response.get("status") or "").strip().upper()
+        if status != "ORDER_STATUS_CANCELED":
+            return False
+        if "size_matched" not in response:
+            return False
+        try:
+            matched = Decimal(str(response.get("size_matched")))
+        except Exception:
+            return False
+        if not matched.is_finite() or matched != 0:
+            return False
+        trades = response.get("associate_trades")
+        return isinstance(trades, list) and not trades
+
+    async def _verify_exchange_recovery_probe(
+        self,
+        token_id: str,
+        order_id: str,
+    ) -> bool:
+        try:
+            cancel_response = await asyncio.to_thread(
+                self.client.cancel_orders,
+                [order_id],
+            )
+        except Exception as exc:
+            handled = self._record_exchange_maintenance_error(
+                exc,
+                "recovery_probe_cancel",
+            )
+            if not handled:
+                self._force_exchange_maintenance(
+                    "recovery_probe_cancel_failed",
+                    "recovery_probe_cancel",
+                    cancel_failure=True,
+                )
+            return False
+        if not self._recovery_cancel_confirmed(cancel_response, order_id):
+            self._force_exchange_maintenance(
+                "recovery_probe_cancel_unconfirmed",
+                "recovery_probe_cancel",
+                cancel_failure=True,
+            )
+            return False
+        self._invalidate_all_orders_cache()
+
+        try:
+            order_state = await asyncio.to_thread(self.client.get_order, order_id)
+        except Exception as exc:
+            handled = self._record_exchange_maintenance_error(
+                exc,
+                "recovery_probe_order_verify",
+            )
+            if not handled:
+                self._force_exchange_maintenance(
+                    "recovery_probe_order_unverified",
+                    "recovery_probe_order_verify",
+                )
+            return False
+        if not self._recovery_order_canceled_unmatched(order_state, order_id):
+            self._force_exchange_maintenance(
+                "recovery_probe_order_unverified",
+                "recovery_probe_order_verify",
+            )
+            return False
+
+        try:
+            open_orders = await self._read_open_orders(
+                "recovery_probe_open_orders_verify"
+            )
+        except Exception as exc:
+            if self._exchange_maintenance_guard().phase != PHASE_MAINTENANCE:
+                self._force_exchange_maintenance(
+                    "recovery_probe_open_orders_unverified",
+                    "recovery_probe_open_orders_verify",
+                )
+            return False
+        if not self._valid_open_orders_response(open_orders):
+            self._force_exchange_maintenance(
+                "recovery_probe_open_orders_unverified",
+                "recovery_probe_open_orders_verify",
+            )
+            return False
+        if any(self._order_id(order) == order_id for order in open_orders):
+            self._force_exchange_maintenance(
+                "recovery_probe_still_open",
+                "recovery_probe_open_orders_verify",
+            )
+            return False
+
+        cached = self._market_live_orders.get(token_id, [])
+        self._market_live_orders[token_id] = [
+            order for order in cached if self._order_id(order) != order_id
+        ]
+        return True
 
     async def _execute_exchange_cancel(
         self,
@@ -12569,6 +12746,37 @@ class PolyLPSMulti:
                 post_only=True,
             )
             self._invalidate_all_orders_cache()
+            if maintenance_claim.startswith("recovery_probe:"):
+                candidate_order_id = (
+                    self._order_id(resp) if isinstance(resp, dict) else ""
+                )
+                if candidate_order_id:
+                    # If the venue matched before the cancel proof completes,
+                    # the normal fill/exit paths must still recognize it as an
+                    # engine-managed BUY.
+                    self._track_managed_buy_order(candidate_order_id)
+                recovery_order_id = self._recovery_post_order_id(resp)
+                if not recovery_order_id:
+                    self._force_exchange_maintenance(
+                        "recovery_probe_receipt_invalid",
+                        "recovery_probe_post_verify",
+                        immediate_cancel=True,
+                    )
+                    raise SoftQuoteSkip(
+                        "exchange_recovery_probe_receipt_invalid"
+                    )
+                if not await self._verify_exchange_recovery_probe(
+                    token_id,
+                    recovery_order_id,
+                ):
+                    raise SoftQuoteSkip(
+                        "exchange_recovery_probe_cancel_unverified"
+                    )
+                self._finish_exchange_buy_attempt(
+                    maintenance_claim,
+                    success=True,
+                )
+                return resp
             self._sibling_register_resp(token_id, "BUY", price, size, resp)
             try:
                 await self._refresh_live_orders(token_id)

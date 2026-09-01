@@ -131,6 +131,59 @@ def test_recovery_requires_spaced_reads_then_exactly_one_post_only_probe():
     assert guard.blocks_new_buys is False
 
 
+def test_recovery_buy_waits_until_cancel_retry_is_eligible():
+    clock = _Clock()
+    guard = ExchangeMaintenanceGuard(
+        clock=clock,
+        min_hold_sec=0,
+        recovery_read_successes=3,
+        recovery_read_spacing_sec=10,
+        cancel_backoff_initial_sec=30,
+        cancel_backoff_max_sec=300,
+    )
+    guard.observe_error(
+        RuntimeError("cancels are disabled"),
+        "cancel_all_except_exit",
+    )
+
+    clock.advance(30)
+    first_cancel = guard.claim_cancel_attempt()
+    assert first_cancel == "maintenance_cancel_probe"
+    guard.observe_error(
+        RuntimeError("cancels are disabled"),
+        "cancel_all_except_exit",
+    )
+    guard.finish_cancel_attempt(first_cancel, success=False)
+    assert guard.cancel_retry_delay() == 60
+
+    clock.advance(60)
+    second_cancel = guard.claim_cancel_attempt()
+    assert second_cancel == "maintenance_cancel_probe"
+    guard.observe_error(
+        RuntimeError("cancels are disabled"),
+        "cancel_all_except_exit",
+    )
+    guard.finish_cancel_attempt(second_cancel, success=False)
+    assert guard.cancel_retry_delay() == 120
+
+    clock.advance(60)
+    assert guard.note_authenticated_read_success() is False
+    clock.advance(10)
+    assert guard.note_authenticated_read_success() is False
+    clock.advance(10)
+    assert guard.note_authenticated_read_success() is True
+    assert guard.phase == PHASE_RECOVERING
+    assert guard.cancel_retry_delay() == 40
+    assert guard.claim_buy_attempt() is None
+
+    clock.advance(40)
+    claim = guard.claim_buy_attempt()
+    assert claim == "recovery_probe:1"
+    assert guard.claim_cancel_attempt() is None
+    guard.finish_buy_attempt(claim, success=False)
+    assert guard.cancel_probe_inflight is False
+
+
 def test_new_maintenance_error_resets_recovery_evidence():
     clock = _Clock()
     guard = ExchangeMaintenanceGuard(
