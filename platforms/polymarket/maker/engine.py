@@ -12714,6 +12714,7 @@ class PolyLPSMulti:
         price = self._sibling_gate(token_id, "BUY", price, label)
         maintenance_claim = self._begin_exchange_buy_attempt(token_id, label)
         reserve_id: Optional[str] = None
+        post_attempted = False
         try:
             reserve_id = await self._acquire_budget_reserve(token_id, price, size, label)
             self._mark_latency(token_id, "t_send")
@@ -12739,6 +12740,7 @@ class PolyLPSMulti:
                 price,
                 f"submit_final:{label}",
             )
+            post_attempted = True
             resp = await asyncio.to_thread(
                 self.client.post_order,
                 signed,
@@ -12784,8 +12786,33 @@ class PolyLPSMulti:
                 log(f"[budget-reserve] token={token_id[:16]} live refresh err: {refresh_exc}")
             self._finish_exchange_buy_attempt(maintenance_claim, success=True)
             return resp
+        except asyncio.CancelledError:
+            if (
+                maintenance_claim.startswith("recovery_probe:")
+                and post_attempted
+                and self._exchange_maintenance_guard().phase
+                != PHASE_MAINTENANCE
+            ):
+                self._force_exchange_maintenance(
+                    "recovery_probe_post_ambiguous",
+                    "recovery_probe_post_interrupted",
+                    immediate_cancel=True,
+                )
+            self._finish_exchange_buy_attempt(maintenance_claim, success=False)
+            raise
         except Exception as exc:
             self._record_exchange_maintenance_error(exc, "post_only_buy")
+            if (
+                maintenance_claim.startswith("recovery_probe:")
+                and post_attempted
+                and self._exchange_maintenance_guard().phase
+                != PHASE_MAINTENANCE
+            ):
+                self._force_exchange_maintenance(
+                    "recovery_probe_post_ambiguous",
+                    "recovery_probe_post_no_receipt",
+                    immediate_cancel=True,
+                )
             self._finish_exchange_buy_attempt(maintenance_claim, success=False)
             raise
         finally:

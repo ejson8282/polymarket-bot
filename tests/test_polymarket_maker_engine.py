@@ -6776,6 +6776,57 @@ def test_recovery_probe_rejects_empty_or_non_live_post_receipts(post_response):
     assert tracked == expected_tracked
 
 
+def test_recovery_probe_post_timeout_forces_immediate_global_cancel():
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            raise TimeoutError("post response timed out")
+
+    engine, guard, spawned, tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(TimeoutError, match="post response timed out"):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert tracked == []
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "recovery_probe_post_ambiguous"
+    assert guard.cancel_retry_delay() == 0
+    assert guard.buy_probe_inflight is False
+    assert guard.cancel_probe_inflight is False
+    assert spawned == ["exchange_maintenance_cancel"]
+
+
+def test_interrupted_recovery_probe_post_forces_immediate_global_cancel():
+    class Client:
+        def post_order(self, *_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+    engine, guard, spawned, _tracked = _recovery_submit_test_engine(Client())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            engine._submit_post_order(
+                "101",
+                Decimal("0.40"),
+                Decimal("10"),
+                "recovery-test",
+            )
+        )
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "recovery_probe_post_ambiguous"
+    assert guard.cancel_retry_delay() == 0
+    assert guard.buy_probe_inflight is False
+    assert guard.cancel_probe_inflight is False
+    assert spawned == ["exchange_maintenance_cancel"]
+
+
 def test_recovery_probe_requires_exact_cancel_acknowledgement():
     class Client:
         def post_order(self, *_args, **_kwargs):
