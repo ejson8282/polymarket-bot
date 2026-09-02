@@ -2154,7 +2154,7 @@ class PolyLPSMulti:
                         self._is_account_paused()
                         and getattr(self, "_was_paused", False)
                     )
-                    market_data_outage = update.reason == "market_data_unavailable"
+                    market_data_outage = action == "market_data_guard"
                     if market_data_outage and paused_verified:
                         title = "行情暂时不可用（账户已暂停）"
                         message = (
@@ -6976,27 +6976,30 @@ class PolyLPSMulti:
                             maintenance_guard = self._exchange_maintenance_guard()
                             same_market_data_incident = bool(
                                 maintenance_guard.phase == PHASE_MAINTENANCE
+                                and maintenance_guard.last_action
+                                == "market_data_guard"
+                            )
+                            maintenance_reason = (
+                                maintenance_guard.reason
+                                if maintenance_guard.active
                                 and maintenance_guard.reason
-                                == "market_data_unavailable"
+                                and maintenance_guard.reason
+                                != "market_data_unavailable"
+                                else "market_data_unavailable"
                             )
                             paused_verified = bool(
                                 self._is_account_paused()
                                 and getattr(self, "_was_paused", False)
                             )
-                            if (
-                                not maintenance_guard.active
-                                or maintenance_guard.reason
-                                == "market_data_unavailable"
-                            ):
-                                self._force_exchange_maintenance(
-                                    "market_data_unavailable",
-                                    "market_data_guard",
-                                    immediate_cancel=(
-                                        not paused_verified
-                                        and not same_market_data_incident
-                                    ),
-                                    cancel_already_verified=paused_verified,
-                                )
+                            self._force_exchange_maintenance(
+                                maintenance_reason,
+                                "market_data_guard",
+                                immediate_cancel=(
+                                    not paused_verified
+                                    and not same_market_data_incident
+                                ),
+                                cancel_already_verified=paused_verified,
+                            )
                             action_text = (
                                 "account already paused; BUYs previously verified absent"
                                 if paused_verified

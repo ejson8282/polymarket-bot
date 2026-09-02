@@ -7489,6 +7489,64 @@ def test_repeated_market_ws_outage_keeps_one_kill_switch_lane(monkeypatch):
     assert engine._exchange_maintenance.cancel_retry_delay(now=140.0) == 0.0
 
 
+def test_market_ws_outage_relocks_recovering_official_maintenance(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_market_ws_ok_ts = 100.0
+    engine._market_ws_down_cancel_sec = 30.0
+    engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine._shared_book_cache = None
+    guard = ExchangeMaintenanceGuard(clock=lambda: 140.0)
+    guard.phase = PHASE_RECOVERING
+    guard.reason = "trading_disabled"
+    guard.last_action = "authenticated_read"
+    engine._exchange_maintenance = guard
+    engine._exchange_maintenance_cancel_task = None
+    engine._was_paused = False
+    engine._is_account_paused = lambda: False
+    engine.market_cfg = {"101": {}}
+    engine._last_plan_sig = {"101": "quoted"}
+    engine.last_quote_ts = {"101": 123.0}
+    spawned = []
+    notices = []
+
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, *, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
+
+    async def stop_after_guard_tick(_seconds):
+        engine._running = False
+
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda title, message, level: notices.append(
+        (title, message, level)
+    )
+    engine._event_bus = _RecordingEventBus()
+    monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_guard_tick)
+
+    assert guard.blocks_new_buys is False
+    asyncio.run(engine.best_bid_guard_loop())
+
+    assert guard.phase == PHASE_MAINTENANCE
+    assert guard.reason == "trading_disabled"
+    assert guard.last_action == "market_data_guard"
+    assert guard.blocks_new_buys is True
+    assert guard.claim_buy_attempt(now=140.0) is None
+    assert spawned == ["exchange_maintenance_cancel"]
+    assert notices == [(
+        "行情不可用，已进入安全模式",
+        "行情源：WebSocket 与 REST 同时陈旧\n"
+        "系统处理：停止新增买单，保留退出卖单；等待连续健康确认",
+        "warning",
+    )]
+
+
 def test_market_data_recovery_notice_waits_for_required_authenticated_reads():
     engine = object.__new__(PolyLPSMulti)
     guard = ExchangeMaintenanceGuard(
