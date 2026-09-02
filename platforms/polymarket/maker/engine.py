@@ -120,6 +120,16 @@ except ImportError:
         build_lifecycle_plan,
         candidate_is_executable_for_account,
     )
+try:
+    from .exchange_maintenance import (
+        ExchangeMaintenanceGuard,
+        PHASE_MAINTENANCE,
+    )
+except ImportError:
+    from exchange_maintenance import (
+        ExchangeMaintenanceGuard,
+        PHASE_MAINTENANCE,
+    )
 
 
 # Per-engine httpx routing. py_clob_client uses a single module-global
@@ -1030,6 +1040,53 @@ class PolyLPSMulti:
         self._cooldown_until = 0.0
         self._running = True
         self._kill_switch_lock = asyncio.Lock()
+        self._exchange_maintenance = ExchangeMaintenanceGuard(
+            min_hold_sec=max(
+                0.0,
+                float(execution.get("exchange_maintenance_min_hold_sec", 60.0)),
+            ),
+            recovery_read_successes=max(
+                1,
+                int(execution.get("exchange_maintenance_recovery_reads", 3)),
+            ),
+            recovery_read_spacing_sec=max(
+                1.0,
+                float(
+                    execution.get(
+                        "exchange_maintenance_recovery_read_spacing_sec",
+                        10.0,
+                    )
+                ),
+            ),
+            cancel_backoff_initial_sec=max(
+                5.0,
+                float(
+                    execution.get(
+                        "exchange_maintenance_cancel_backoff_initial_sec",
+                        30.0,
+                    )
+                ),
+            ),
+            cancel_backoff_max_sec=max(
+                30.0,
+                float(
+                    execution.get(
+                        "exchange_maintenance_cancel_backoff_max_sec",
+                        300.0,
+                    )
+                ),
+            ),
+            buy_probe_retry_sec=max(
+                5.0,
+                float(
+                    execution.get(
+                        "exchange_maintenance_buy_probe_retry_sec",
+                        30.0,
+                    )
+                ),
+            ),
+        )
+        self._exchange_maintenance_cancel_task: Optional[asyncio.Task] = None
         self._fills_seen = 0
         self._quotes_sent = 0
         self._balance_fail_streak = 0
@@ -2023,9 +2080,214 @@ class PolyLPSMulti:
             return reason
         return self._event_quote_block_reason(token_id)
 
+    def _exchange_maintenance_guard(self) -> ExchangeMaintenanceGuard:
+        guard = getattr(self, "_exchange_maintenance", None)
+        if guard is None:
+            guard = ExchangeMaintenanceGuard()
+            self._exchange_maintenance = guard
+        return guard
+
+    def _record_exchange_maintenance_error(
+        self,
+        error: BaseException,
+        action: str,
+    ) -> bool:
+        guard = self._exchange_maintenance_guard()
+        update = guard.observe_error(error, action)
+        if update is None:
+            return False
+
+        self._apply_exchange_maintenance_update(update, action)
+        return True
+
+    def _force_exchange_maintenance(
+        self,
+        reason: str,
+        action: str,
+        *,
+        cancel_failure: bool = False,
+        immediate_cancel: bool = False,
+        cancel_already_verified: bool = False,
+    ) -> None:
+        update = self._exchange_maintenance_guard().force_maintenance(
+            reason,
+            action,
+            cancel_failure=cancel_failure,
+            immediate_cancel=immediate_cancel,
+        )
+        self._apply_exchange_maintenance_update(
+            update,
+            action,
+            cancel_already_verified=cancel_already_verified,
+        )
+
+    def _apply_exchange_maintenance_update(
+        self,
+        update: Any,
+        action: str,
+        *,
+        cancel_already_verified: bool = False,
+    ) -> None:
+
+        if update.entered or update.reason_changed:
+            log(
+                f"[exchange-maintenance] phase={PHASE_MAINTENANCE} "
+                f"reason={update.reason} action={action}"
+            )
+            event_bus = getattr(self, "_event_bus", None)
+            if event_bus is not None:
+                try:
+                    event_bus.publish(
+                        "exchange_maintenance",
+                        {
+                            "phase": PHASE_MAINTENANCE,
+                            "reason": update.reason,
+                            "action": action,
+                        },
+                    )
+                except Exception:
+                    pass
+            notify = getattr(self, "notify_discord", None)
+            if callable(notify):
+                try:
+                    paused_verified = bool(
+                        self._is_account_paused()
+                        and getattr(self, "_was_paused", False)
+                    )
+                    market_data_outage = action == "market_data_guard"
+                    if market_data_outage and paused_verified:
+                        title = "行情暂时不可用（账户已暂停）"
+                        message = (
+                            "行情源：WebSocket 与 REST 同时陈旧\n"
+                            "系统处理：维持零买单，保留退出卖单；等待连续健康确认"
+                        )
+                        level = "info"
+                    elif market_data_outage:
+                        title = "行情不可用，已进入安全模式"
+                        message = (
+                            "行情源：WebSocket 与 REST 同时陈旧\n"
+                            "系统处理：停止新增买单，保留退出卖单；等待连续健康确认"
+                        )
+                        level = "warning"
+                    else:
+                        title = "交易所维护模式已启用"
+                        message = (
+                            f"原因：{update.reason}\n"
+                            "系统处理：停止新增买单，保留退出卖单，降低撤单重试频率"
+                        )
+                        level = "info" if paused_verified else "warning"
+                    notify(
+                        title,
+                        message,
+                        level,
+                    )
+                except Exception:
+                    pass
+
+        if update.entered:
+            if cancel_already_verified:
+                self._exchange_maintenance_guard().note_cancel_success()
+                return
+            spawn = getattr(self, "_spawn_bg", None)
+            current = getattr(self, "_exchange_maintenance_cancel_task", None)
+            if callable(spawn) and (current is None or current.done()):
+                self._exchange_maintenance_cancel_task = spawn(
+                    self.trigger_global_kill_switch(
+                        f"exchange_maintenance:{update.reason}"
+                    ),
+                    name="exchange_maintenance_cancel",
+                )
+
+    def _note_exchange_authenticated_read_success(self, action: str) -> None:
+        guard = self._exchange_maintenance_guard()
+        if not guard.note_authenticated_read_success():
+            return
+        log(
+            "[exchange-maintenance] phase=recovering "
+            f"action={action} reads={guard.read_success_streak}"
+        )
+        event_bus = getattr(self, "_event_bus", None)
+        if event_bus is not None:
+            try:
+                event_bus.publish(
+                    "exchange_maintenance",
+                    {
+                        "phase": "recovering",
+                        "reason": guard.reason,
+                        "action": action,
+                    },
+                )
+            except Exception:
+                pass
+        if guard.reason == "market_data_unavailable":
+            notify = getattr(self, "notify_discord", None)
+            if callable(notify):
+                try:
+                    notify(
+                        "行情读取已恢复",
+                        (
+                            f"连续认证读取：{guard.read_success_streak}/"
+                            f"{guard.recovery_read_successes}\n"
+                            "系统处理：继续保持安全锁，等待测试挂单与精确撤单核验"
+                        ),
+                        "info",
+                    )
+                except Exception:
+                    pass
+
+    def _begin_exchange_buy_attempt(self, token_id: str, label: str) -> str:
+        claim = self._exchange_maintenance_guard().claim_buy_attempt()
+        if claim is None:
+            raise SoftQuoteSkip(
+                f"exchange_maintenance_block token={token_id[:16]} label={label}"
+            )
+        return claim
+
+    def _finish_exchange_buy_attempt(
+        self,
+        claim: Optional[str],
+        *,
+        success: bool,
+    ) -> None:
+        guard = self._exchange_maintenance_guard()
+        recovered = guard.finish_buy_attempt(claim, success=success)
+        if not recovered:
+            return
+        log(
+            "[exchange-maintenance] phase=normal "
+            "recovery_post_cancel_verify=success"
+        )
+        event_bus = getattr(self, "_event_bus", None)
+        if event_bus is not None:
+            try:
+                event_bus.publish(
+                    "exchange_maintenance",
+                    {
+                        "phase": "normal",
+                        "reason": "probe_canceled_and_verified",
+                    },
+                )
+            except Exception:
+                pass
+        notify = getattr(self, "notify_discord", None)
+        if callable(notify):
+            try:
+                notify(
+                    "交易所维护模式已解除",
+                    "认证读取、测试挂单、精确撤单与未成交核验均已恢复，允许继续正常做市",
+                    "success",
+                )
+            except Exception:
+                pass
+
     def _ensure_order_path_open(self, token_id: str, label: str) -> None:
         if self._is_account_paused():
             raise EventHaltPreempted(f"{label}:account_paused")
+        guard = self._exchange_maintenance_guard()
+        if guard.blocks_new_buys:
+            raise EventHaltPreempted(
+                f"{label}:exchange_maintenance={guard.reason or 'unknown'}"
+            )
         reason = self._halt_preemption_reason(token_id)
         if reason:
             raise EventHaltPreempted(f"{label}:{reason}")
@@ -3712,7 +3974,7 @@ class PolyLPSMulti:
             else positions
         )
         if open_orders is None:
-            raw_orders = await asyncio.to_thread(self.client.get_open_orders)
+            raw_orders = await self._read_open_orders("position_reconcile")
             if not isinstance(raw_orders, list):
                 raise RuntimeError("invalid open orders response")
             open_orders = raw_orders
@@ -4312,7 +4574,7 @@ class PolyLPSMulti:
         attempts = max(1, int(max_attempts))
         for attempt in range(1, attempts + 1):
             try:
-                orders = await asyncio.to_thread(self.client.get_open_orders)
+                orders = await self._read_open_orders("cancel_token_read")
             except Exception as exc:
                 log(
                     f"[cancel-token] token={token_id} reason={reason} "
@@ -4358,7 +4620,7 @@ class PolyLPSMulti:
             await asyncio.sleep(min(0.25, 0.05 * attempt))
 
         try:
-            remaining = await asyncio.to_thread(self.client.get_open_orders)
+            remaining = await self._read_open_orders("cancel_token_verify")
         except Exception as exc:
             log(
                 f"[cancel-token] token={token_id} reason={reason} "
@@ -4974,7 +5236,11 @@ class PolyLPSMulti:
                 signed = SignedOrderV2(**signed)
         else:
             signed = await asyncio.to_thread(self.client.create_order, OrderArgs(token_id=token_id, price=float(price), size=float(size), side=SELL))
-        resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+        try:
+            resp = await asyncio.to_thread(self.client.post_order, signed, OrderType.GTC)
+        except Exception as exc:
+            self._record_exchange_maintenance_error(exc, "post_exit_sell")
+            raise
         self._invalidate_all_orders_cache()
         self._sibling_register_resp(token_id, "SELL", price, size, resp)
         return resp
@@ -5137,7 +5403,7 @@ class PolyLPSMulti:
                     return
 
                 # Check if our order is still live
-                orders = await asyncio.to_thread(self.client.get_open_orders)
+                orders = await self._read_open_orders("exit_monitor")
                 live_ids = {
                     str(o.get("id") or o.get("orderID") or "")
                     for o in orders
@@ -5224,9 +5490,13 @@ class PolyLPSMulti:
                         if not order_gone and order_id:
                             cancel_ok = False
                             try:
-                                await asyncio.to_thread(self.client.cancel, order_id)
-                                log(f"[exit] {token_id[:16]} canceled old SELL for reprice {sell_price}->{new_price}")
-                                cancel_ok = True
+                                cancel_ok = await self._execute_exchange_cancel(
+                                    "cancel_exit_reprice",
+                                    self.client.cancel,
+                                    order_id,
+                                )
+                                if cancel_ok:
+                                    log(f"[exit] {token_id[:16]} canceled old SELL for reprice {sell_price}->{new_price}")
                             except Exception as ce:
                                 log(f"[exit] {token_id[:16]} cancel-before-reprice err: {ce} — skipping reprice this cycle")
                                 if self._is_req_exc(ce):
@@ -5407,9 +5677,15 @@ class PolyLPSMulti:
             "warning",
         )
         try:
-            await asyncio.to_thread(self.client.cancel_all)
-            self._sibling_registry.clear_funder(self._funder_lc)
-            log("[session] cancel_all done (switch blocked, no confirmation)")
+            canceled = await self._execute_exchange_cancel(
+                "cancel_all_session_switch",
+                self.client.cancel_all,
+            )
+            if canceled:
+                self._sibling_registry.clear_funder(self._funder_lc)
+                log("[session] cancel_all done (switch blocked, no confirmation)")
+            else:
+                log("[session] cancel_all deferred by exchange maintenance")
         except Exception as e:
             log(f"[session] cancel_all error during switch halt: {e}")
         self._session_halted_no_confirm = True
@@ -5971,7 +6247,7 @@ class PolyLPSMulti:
     async def _adopt_legacy_live_buy_orders(self) -> None:
         """Reconcile live BUYs created before the current process started."""
         try:
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("managed_order_adoption")
         except Exception as exc:
             log(f"[managed-orders] legacy adoption skipped: {exc}")
             return
@@ -6019,6 +6295,181 @@ class PolyLPSMulti:
             return cached
         return await self._refresh_live_orders(token_id)
 
+    @classmethod
+    def _valid_open_orders_response(cls, orders: Any) -> bool:
+        if not isinstance(orders, list):
+            return False
+        for order in orders:
+            if not isinstance(order, dict):
+                return False
+            if not cls._order_id(order):
+                return False
+            if not str(order.get("status") or "").strip():
+                return False
+            if str(order.get("side") or "").strip().upper() not in {"BUY", "SELL"}:
+                return False
+        return True
+
+    async def _read_open_orders(self, action: str) -> Any:
+        try:
+            orders = await asyncio.to_thread(self.client.get_open_orders)
+        except Exception as exc:
+            self._record_exchange_maintenance_error(exc, action)
+            raise
+        if self._valid_open_orders_response(orders):
+            self._note_exchange_authenticated_read_success(action)
+        return orders
+
+    @classmethod
+    def _recovery_post_order_id(cls, response: Any) -> str:
+        if not isinstance(response, dict):
+            return ""
+        if response.get("success") is not True:
+            return ""
+        if str(response.get("errorMsg") or "").strip():
+            return ""
+        if str(response.get("status") or "").strip().lower() != "live":
+            return ""
+        if response.get("tradeIDs") or response.get("transactionsHashes"):
+            return ""
+        return cls._order_id(response)
+
+    @staticmethod
+    def _recovery_cancel_confirmed(response: Any, order_id: str) -> bool:
+        if not isinstance(response, dict):
+            return False
+        canceled = response.get("canceled")
+        not_canceled = response.get("not_canceled")
+        if not isinstance(canceled, list) or not isinstance(not_canceled, dict):
+            return False
+        canceled_ids = {str(value) for value in canceled}
+        failed_ids = {str(value) for value in not_canceled}
+        return order_id in canceled_ids and order_id not in failed_ids
+
+    @classmethod
+    def _recovery_order_canceled_unmatched(
+        cls,
+        response: Any,
+        order_id: str,
+    ) -> bool:
+        if not isinstance(response, dict):
+            return False
+        if cls._order_id(response) != order_id:
+            return False
+        status = str(response.get("status") or "").strip().upper()
+        if status != "ORDER_STATUS_CANCELED":
+            return False
+        if "size_matched" not in response:
+            return False
+        try:
+            matched = Decimal(str(response.get("size_matched")))
+        except Exception:
+            return False
+        if not matched.is_finite() or matched != 0:
+            return False
+        trades = response.get("associate_trades")
+        return isinstance(trades, list) and not trades
+
+    async def _verify_exchange_recovery_probe(
+        self,
+        token_id: str,
+        order_id: str,
+    ) -> bool:
+        try:
+            cancel_response = await asyncio.to_thread(
+                self.client.cancel_orders,
+                [order_id],
+            )
+        except Exception as exc:
+            handled = self._record_exchange_maintenance_error(
+                exc,
+                "recovery_probe_cancel",
+            )
+            if not handled:
+                self._force_exchange_maintenance(
+                    "recovery_probe_cancel_failed",
+                    "recovery_probe_cancel",
+                    cancel_failure=True,
+                )
+            return False
+        if not self._recovery_cancel_confirmed(cancel_response, order_id):
+            self._force_exchange_maintenance(
+                "recovery_probe_cancel_unconfirmed",
+                "recovery_probe_cancel",
+                cancel_failure=True,
+            )
+            return False
+        self._invalidate_all_orders_cache()
+
+        try:
+            order_state = await asyncio.to_thread(self.client.get_order, order_id)
+        except Exception as exc:
+            handled = self._record_exchange_maintenance_error(
+                exc,
+                "recovery_probe_order_verify",
+            )
+            if not handled:
+                self._force_exchange_maintenance(
+                    "recovery_probe_order_unverified",
+                    "recovery_probe_order_verify",
+                )
+            return False
+        if not self._recovery_order_canceled_unmatched(order_state, order_id):
+            self._force_exchange_maintenance(
+                "recovery_probe_order_unverified",
+                "recovery_probe_order_verify",
+            )
+            return False
+
+        try:
+            open_orders = await self._read_open_orders(
+                "recovery_probe_open_orders_verify"
+            )
+        except Exception as exc:
+            if self._exchange_maintenance_guard().phase != PHASE_MAINTENANCE:
+                self._force_exchange_maintenance(
+                    "recovery_probe_open_orders_unverified",
+                    "recovery_probe_open_orders_verify",
+                )
+            return False
+        if not self._valid_open_orders_response(open_orders):
+            self._force_exchange_maintenance(
+                "recovery_probe_open_orders_unverified",
+                "recovery_probe_open_orders_verify",
+            )
+            return False
+        if any(self._order_id(order) == order_id for order in open_orders):
+            self._force_exchange_maintenance(
+                "recovery_probe_still_open",
+                "recovery_probe_open_orders_verify",
+            )
+            return False
+
+        cached = self._market_live_orders.get(token_id, [])
+        self._market_live_orders[token_id] = [
+            order for order in cached if self._order_id(order) != order_id
+        ]
+        return True
+
+    async def _execute_exchange_cancel(
+        self,
+        action: str,
+        method: Any,
+        *args: Any,
+    ) -> bool:
+        guard = self._exchange_maintenance_guard()
+        claim = guard.claim_cancel_attempt()
+        if claim is None:
+            return False
+        try:
+            await asyncio.to_thread(method, *args)
+        except Exception as exc:
+            self._record_exchange_maintenance_error(exc, action)
+            guard.finish_cancel_attempt(claim, success=False)
+            raise
+        guard.finish_cancel_attempt(claim, success=True)
+        return True
+
     async def _get_all_orders_cached(self) -> list[dict]:
         """Return all open orders, coalescing concurrent refreshes via a short TTL cache.
 
@@ -6036,7 +6487,7 @@ class PolyLPSMulti:
             cached = self._all_orders_cache
             if cached and (time.time() - cached[1]) < self._all_orders_cache_ttl_sec:
                 return cached[0]
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("orders_cache_refresh")
             self._all_orders_cache = (list(orders) if orders else [], time.time())
             return self._all_orders_cache[0]
 
@@ -6112,7 +6563,13 @@ class PolyLPSMulti:
         self._mark_latency(token_id, "t_send")
         try:
             await self._action_delay(f"cancel token={token_id} reason={reason}")
-            await asyncio.to_thread(self.client.cancel_orders, ids)
+            canceled = await self._execute_exchange_cancel(
+                f"cancel_orders:{cancel_kind}",
+                self.client.cancel_orders,
+                ids,
+            )
+            if not canceled:
+                return False
             self._mark_latency(token_id, "t_cancel_ack")
             self._invalidate_all_orders_cache()
         except Exception as e:
@@ -6453,7 +6910,7 @@ class PolyLPSMulti:
             legal_top = await self._legal_top_price_from_book(token_id, book_now)
             risk_limit = legal_top if legal_top is not None else current_best_bid
 
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("best_bid_guard_token")
             protected_exit_ids = set(self._active_exit_orders.values())
             at_risk = [
                 o for o in orders
@@ -6467,7 +6924,13 @@ class PolyLPSMulti:
                 return
             ids = [o.get("id") or o.get("orderID") for o in at_risk if (o.get("id") or o.get("orderID"))]
             if ids:
-                await asyncio.to_thread(self.client.cancel_orders, ids)
+                canceled = await self._execute_exchange_cancel(
+                    "cancel_best_bid_guard",
+                    self.client.cancel_orders,
+                    ids,
+                )
+                if not canceled:
+                    return
                 self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
                 log(f"[safety] legal_top_guard cancelled {len(ids)} orders above legal_top={risk_limit} token={token_id}")
                 self._last_plan_sig[token_id] = ""
@@ -6510,28 +6973,50 @@ class PolyLPSMulti:
                         else:
                             if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
                                 asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
-                            try:
-                                await self._cancel_all_except_exit()
-                                log(
-                                    f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
-                                    f"{self._market_ws_down_cancel_sec:.0f}s and REST books stale "
-                                    "— cancelled quotes, preserved SELL exits"
-                                )
-                                self._notify_attention(
-                                    "Market data unavailable",
-                                    ws_age_sec=f"{market_ws_age:.0f}",
-                                    rest_books="stale",
-                                    action="cancelled quotes; preserved SELL exits",
-                                )
-                                for tid in self.market_cfg:
-                                    self._last_plan_sig[tid] = ""
-                                    self.last_quote_ts[tid] = 0.0
-                            except Exception as e:
-                                log(f"[guard-loop] market-data-down cancel_all failed: {e}")
+                            maintenance_guard = self._exchange_maintenance_guard()
+                            same_market_data_incident = bool(
+                                maintenance_guard.phase == PHASE_MAINTENANCE
+                                and maintenance_guard.last_action
+                                == "market_data_guard"
+                            )
+                            maintenance_reason = (
+                                maintenance_guard.reason
+                                if maintenance_guard.active
+                                and maintenance_guard.reason
+                                and maintenance_guard.reason
+                                != "market_data_unavailable"
+                                else "market_data_unavailable"
+                            )
+                            paused_verified = bool(
+                                self._is_account_paused()
+                                and getattr(self, "_was_paused", False)
+                            )
+                            self._force_exchange_maintenance(
+                                maintenance_reason,
+                                "market_data_guard",
+                                immediate_cancel=(
+                                    not paused_verified
+                                    and not same_market_data_incident
+                                ),
+                                cancel_already_verified=paused_verified,
+                            )
+                            action_text = (
+                                "account already paused; BUYs previously verified absent"
+                                if paused_verified
+                                else "BUY cancellation owned by safety lane; SELL exits preserved"
+                            )
+                            log(
+                                f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
+                                f"{self._market_ws_down_cancel_sec:.0f}s and REST books stale "
+                                f"— {action_text}"
+                            )
+                            for tid in self.market_cfg:
+                                self._last_plan_sig[tid] = ""
+                                self.last_quote_ts[tid] = 0.0
                             await asyncio.sleep(guard_interval)
                             continue
 
-                orders = await asyncio.to_thread(self.client.get_open_orders)
+                orders = await self._read_open_orders("best_bid_guard_loop")
                 live = [
                     o for o in orders
                     if _order_is_live(o)
@@ -6591,7 +7076,14 @@ class PolyLPSMulti:
 
                 if cancel_ids:
                     ids = [oid for _, _, oid in cancel_ids]
-                    await asyncio.to_thread(self.client.cancel_orders, ids)
+                    canceled = await self._execute_exchange_cancel(
+                        "cancel_best_bid_guard_batch",
+                        self.client.cancel_orders,
+                        ids,
+                    )
+                    if not canceled:
+                        await asyncio.sleep(guard_interval)
+                        continue
                     self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
 
                     touched_tokens: set[str] = set()
@@ -7817,7 +8309,7 @@ class PolyLPSMulti:
         token_ids: tuple[str, ...],
     ) -> None:
         try:
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("runtime_no_live_order_check")
         except Exception as exc:
             raise ValueError("cannot confirm retirement market cancellation") from exc
         if not isinstance(orders, list):
@@ -8004,7 +8496,7 @@ class PolyLPSMulti:
             raise ValueError("retirement market has a pending unwind")
 
         try:
-            open_orders = await asyncio.to_thread(self.client.get_open_orders)
+            open_orders = await self._read_open_orders("runtime_replace_precheck")
         except Exception as exc:
             raise ValueError("cannot verify retirement market orders") from exc
         if not isinstance(open_orders, list):
@@ -8535,7 +9027,7 @@ class PolyLPSMulti:
             return False, "promotion_live_order_set_invalid"
 
         try:
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("lifecycle_promotion_check")
         except Exception:
             return False, "promotion_live_orders_unavailable"
         if not isinstance(orders, list):
@@ -8913,7 +9405,7 @@ class PolyLPSMulti:
                 return "position_not_flat"
 
         try:
-            open_orders = await asyncio.to_thread(self.client.get_open_orders)
+            open_orders = await self._read_open_orders("lifecycle_retirement_check")
         except Exception:
             return "open_orders_unknown"
         if not isinstance(open_orders, list):
@@ -10129,7 +10621,7 @@ class PolyLPSMulti:
             self._market_skip_until[tid] = time.time() + self.event_ban_ttl_sec
 
         try:
-            orders = await asyncio.to_thread(self.client.get_open_orders)
+            orders = await self._read_open_orders("market_deactivation_check")
             live = [
                 o for o in orders
                 if _order_is_live(o)
@@ -10139,8 +10631,13 @@ class PolyLPSMulti:
             ids = [o.get("id") or o.get("orderID") for o in live if (o.get("id") or o.get("orderID"))]
             if ids:
                 await self._action_delay(f"health-cancel token={token_id}")
-                await asyncio.to_thread(self.client.cancel_orders, ids)
-                self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
+                canceled = await self._execute_exchange_cancel(
+                    "cancel_market_deactivation",
+                    self.client.cancel_orders,
+                    ids,
+                )
+                if canceled:
+                    self._sibling_registry.unregister_many(self._funder_lc, [str(x) for x in ids])
         except Exception as e:
             log(f"[health] cancel fail token={token_id} err={e}")
 
@@ -12285,8 +12782,11 @@ class PolyLPSMulti:
     async def _submit_post_order(self, token_id: str, price: Decimal, size: Decimal, label: str) -> Any:
         self._ensure_order_path_open(token_id, f"submit_pre_sign:{label}")
         price = self._sibling_gate(token_id, "BUY", price, label)
-        reserve_id = await self._acquire_budget_reserve(token_id, price, size, label)
+        maintenance_claim = self._begin_exchange_buy_attempt(token_id, label)
+        reserve_id: Optional[str] = None
+        post_attempted = False
         try:
+            reserve_id = await self._acquire_budget_reserve(token_id, price, size, label)
             self._mark_latency(token_id, "t_send")
             args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=BUY)
             if self.remote_signer:
@@ -12310,6 +12810,7 @@ class PolyLPSMulti:
                 price,
                 f"submit_final:{label}",
             )
+            post_attempted = True
             resp = await asyncio.to_thread(
                 self.client.post_order,
                 signed,
@@ -12317,14 +12818,76 @@ class PolyLPSMulti:
                 post_only=True,
             )
             self._invalidate_all_orders_cache()
+            if maintenance_claim.startswith("recovery_probe:"):
+                candidate_order_id = (
+                    self._order_id(resp) if isinstance(resp, dict) else ""
+                )
+                if candidate_order_id:
+                    # If the venue matched before the cancel proof completes,
+                    # the normal fill/exit paths must still recognize it as an
+                    # engine-managed BUY.
+                    self._track_managed_buy_order(candidate_order_id)
+                recovery_order_id = self._recovery_post_order_id(resp)
+                if not recovery_order_id:
+                    self._force_exchange_maintenance(
+                        "recovery_probe_receipt_invalid",
+                        "recovery_probe_post_verify",
+                        immediate_cancel=True,
+                    )
+                    raise SoftQuoteSkip(
+                        "exchange_recovery_probe_receipt_invalid"
+                    )
+                if not await self._verify_exchange_recovery_probe(
+                    token_id,
+                    recovery_order_id,
+                ):
+                    raise SoftQuoteSkip(
+                        "exchange_recovery_probe_cancel_unverified"
+                    )
+                self._finish_exchange_buy_attempt(
+                    maintenance_claim,
+                    success=True,
+                )
+                return resp
             self._sibling_register_resp(token_id, "BUY", price, size, resp)
             try:
                 await self._refresh_live_orders(token_id)
             except Exception as refresh_exc:
                 log(f"[budget-reserve] token={token_id[:16]} live refresh err: {refresh_exc}")
+            self._finish_exchange_buy_attempt(maintenance_claim, success=True)
             return resp
+        except asyncio.CancelledError:
+            if (
+                maintenance_claim.startswith("recovery_probe:")
+                and post_attempted
+                and self._exchange_maintenance_guard().phase
+                != PHASE_MAINTENANCE
+            ):
+                self._force_exchange_maintenance(
+                    "recovery_probe_post_ambiguous",
+                    "recovery_probe_post_interrupted",
+                    immediate_cancel=True,
+                )
+            self._finish_exchange_buy_attempt(maintenance_claim, success=False)
+            raise
+        except Exception as exc:
+            self._record_exchange_maintenance_error(exc, "post_only_buy")
+            if (
+                maintenance_claim.startswith("recovery_probe:")
+                and post_attempted
+                and self._exchange_maintenance_guard().phase
+                != PHASE_MAINTENANCE
+            ):
+                self._force_exchange_maintenance(
+                    "recovery_probe_post_ambiguous",
+                    "recovery_probe_post_no_receipt",
+                    immediate_cancel=True,
+                )
+            self._finish_exchange_buy_attempt(maintenance_claim, success=False)
+            raise
         finally:
-            await self._release_budget_reserve(reserve_id)
+            if reserve_id is not None:
+                await self._release_budget_reserve(reserve_id)
 
     async def _validate_passive_buy_quote(
         self,
@@ -12491,7 +13054,10 @@ class PolyLPSMulti:
         in-memory exit registry was lost after restart or manual recovery.
         Returns True if all non-exit orders were successfully canceled.
         """
-        orders = await asyncio.to_thread(self.client.get_open_orders)
+        guard = self._exchange_maintenance_guard()
+        if guard.cancel_retry_delay() > 0:
+            return False
+        orders = await self._read_open_orders("cancel_all_read")
         if not isinstance(orders, list):
             return False
         protected_ids = {
@@ -12511,7 +13077,13 @@ class PolyLPSMulti:
                 cancel_ids.append(oid)
         if cancel_ids:
             try:
-                await asyncio.to_thread(self.client.cancel_orders, cancel_ids)
+                canceled = await self._execute_exchange_cancel(
+                    "cancel_all_except_exit",
+                    self.client.cancel_orders,
+                    cancel_ids,
+                )
+                if not canceled:
+                    return False
                 self._invalidate_all_orders_cache()
             except Exception as exc:
                 log(
@@ -12524,7 +13096,7 @@ class PolyLPSMulti:
         self._sibling_registry.clear_funder(self._funder_lc,
                                             keep_order_ids=protected_ids)  # 施工包04
         # Verify: only protected orders remain
-        remaining = await asyncio.to_thread(self.client.get_open_orders)
+        remaining = await self._read_open_orders("cancel_all_verify")
         if not isinstance(remaining, list):
             log(
                 "[cancel_all_except_exit] invalid verification response; "
@@ -12536,7 +13108,10 @@ class PolyLPSMulti:
             if _order_is_live(o)
             and str(o.get("id") or o.get("orderID") or "") not in protected_ids
         ]
-        return len(live_non_exit) == 0
+        verified = len(live_non_exit) == 0
+        if verified:
+            guard.note_cancel_success()
+        return verified
 
     async def trigger_global_kill_switch(self, reason: str) -> None:
         async with self._kill_switch_lock:
@@ -12563,21 +13138,30 @@ class PolyLPSMulti:
                         break
                 except Exception as e:
                     log(f"[kill-switch] cancel failed: {e}")
-                await asyncio.sleep(max(1, self.cancel_retry_step_sec))
+                retry_delay = max(1.0, float(self.cancel_retry_step_sec))
+                maintenance_delay = self._exchange_maintenance_guard().cancel_retry_delay()
+                if maintenance_delay > retry_delay:
+                    retry_delay = maintenance_delay
+                    log(
+                        "[kill-switch] exchange maintenance; "
+                        f"next cancel retry in {retry_delay:.1f}s"
+                    )
+                await asyncio.sleep(retry_delay)
 
             self._cooldown_until = time.time() + self.cooldown_seconds
             self._require_recovery_gate = True
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
-            self.notify_discord(
-                "安全暂停已触发",
-                (
-                    f"原因：{self._discord_reason(reason)}\n"
-                    f"冷静期：{self.cooldown_seconds:.0f} 秒\n"
-                    "系统处理：持续撤单，确认安全后自动恢复"
-                ),
-                "danger",
-            )
+            if not str(reason).startswith("exchange_maintenance:"):
+                self.notify_discord(
+                    "安全暂停已触发",
+                    (
+                        f"原因：{self._discord_reason(reason)}\n"
+                        f"冷静期：{self.cooldown_seconds:.0f} 秒\n"
+                        "系统处理：持续撤单，确认安全后自动恢复"
+                    ),
+                    "danger",
+                )
             self._event_bus.publish("kill_switch", {"reason": reason, "cooldown_seconds": self.cooldown_seconds})
 
     async def _ws_user_watch(self) -> None:
@@ -12819,7 +13403,7 @@ class PolyLPSMulti:
         while self._running:
             try:
                 # open orders delta/matched fallback
-                orders = await asyncio.to_thread(self.client.get_open_orders)
+                orders = await self._read_open_orders("fill_poll")
                 for o in orders:
                     st = str(o.get("status", "")).lower()
                     token = str(o.get("asset_id") or o.get("token_id") or "")
@@ -13450,7 +14034,7 @@ class PolyLPSMulti:
             if not self._pending_unwinds:
                 continue
             try:
-                orders = await asyncio.to_thread(self.client.get_open_orders)
+                orders = await self._read_open_orders("unwind_tracking")
                 live_ids = {
                     str(o.get("id") or o.get("orderID") or "")
                     for o in orders
@@ -13480,7 +14064,14 @@ class PolyLPSMulti:
                         # residual SELL before releasing unrelated markets.
                         if oid and oid in live_ids:
                             try:
-                                await asyncio.to_thread(self.client.cancel_orders, [oid])
+                                canceled = await self._execute_exchange_cancel(
+                                    "cancel_unwind_residual",
+                                    self.client.cancel_orders,
+                                    [oid],
+                                )
+                                if not canceled:
+                                    still_pending.append(uw)
+                                    continue
                                 self._invalidate_all_orders_cache()
                                 log(
                                     f"[unwind] position={position}, "
@@ -13877,6 +14468,9 @@ class PolyLPSMulti:
                     "quotes_sent": self._quotes_sent,
                     "fills_seen": self._fills_seen,
                     "cooldown_active": now < self._cooldown_until,
+                    "exchange_maintenance": self._exchange_maintenance_guard().snapshot(
+                        now=now
+                    ),
                     "paused": self._is_account_paused(),
                     "current_session": current_session,
                     "session_enabled": self._session_enabled,

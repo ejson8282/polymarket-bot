@@ -7,6 +7,7 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/exchange_maintenance.py"
       - "platforms/polymarket/maker/account_roster.py"
       - "platforms/polymarket/maker/account_profiles.py"
       - "platforms/polymarket/maker/multi_runner.py"
@@ -28,6 +29,7 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_exchange_maintenance.py"
       - "tests/test_polymarket_account_roster.py"
       - "tests/test_polymarket_account_profiles.py"
       - "tests/test_polymarket_multi_runner.py"
@@ -48,6 +50,7 @@ on:
       - "platforms/polymarket/maker/deploy_aggressive_runtime.py"
       - "platforms/polymarket/maker/release_guard.py"
       - "platforms/polymarket/maker/engine.py"
+      - "platforms/polymarket/maker/exchange_maintenance.py"
       - "platforms/polymarket/maker/account_roster.py"
       - "platforms/polymarket/maker/account_profiles.py"
       - "platforms/polymarket/maker/multi_runner.py"
@@ -69,6 +72,7 @@ on:
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
+      - "tests/test_polymarket_exchange_maintenance.py"
       - "tests/test_polymarket_account_roster.py"
       - "tests/test_polymarket_account_profiles.py"
       - "tests/test_polymarket_multi_runner.py"
@@ -116,6 +120,7 @@ jobs:
           tests/test_polymarket_order_scoring_observer.py
           tests/test_polymarket_release_guard.py
           tests/test_polymarket_maker_engine.py
+          tests/test_polymarket_exchange_maintenance.py
           tests/test_polymarket_account_roster.py
           tests/test_polymarket_account_profiles.py
           tests/test_polymarket_multi_runner.py
