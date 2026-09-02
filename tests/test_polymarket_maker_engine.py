@@ -7309,45 +7309,217 @@ def test_kill_switch_uses_exchange_maintenance_cancel_backoff(monkeypatch):
     assert sleeps[0] >= 29.0
 
 
-def test_market_ws_outage_cancels_quotes_and_preserves_exit_path(monkeypatch):
+def test_exchange_maintenance_kill_switch_does_not_duplicate_notice():
+    engine = object.__new__(PolyLPSMulti)
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._running = True
+    engine._kill_switch_lock = asyncio.Lock()
+    engine._cooldown_until = 0.0
+    engine._require_recovery_gate = False
+    engine._active_exit_orders = {}
+    engine.cancel_retry_step_sec = 5
+    engine.cooldown_seconds = 60
+    engine._event_bus = _RecordingEventBus()
+    notices = []
+
+    async def cancel_all_except_exit():
+        return True
+
+    engine._cancel_all_except_exit = cancel_all_except_exit
+    engine.notify_discord = lambda *args: notices.append(args)
+
+    asyncio.run(
+        engine.trigger_global_kill_switch(
+            "exchange_maintenance:market_data_unavailable"
+        )
+    )
+
+    assert notices == []
+    assert engine._require_recovery_gate is True
+    assert engine._event_bus.events[-1][0] == "kill_switch"
+
+
+def test_market_ws_outage_enters_fail_closed_cancel_lane(monkeypatch):
     engine = object.__new__(PolyLPSMulti)
     engine._running = True
     engine._last_market_ws_ok_ts = 100.0
     engine._market_ws_down_cancel_sec = 30.0
     engine._proxy_failover_ws_down_trigger_sec = 300.0
     engine._shared_book_cache = None
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._exchange_maintenance_cancel_task = None
+    engine._was_paused = False
+    engine._is_account_paused = lambda: False
     engine.market_cfg = {"101": {}}
     engine._last_plan_sig = {"101": "quoted"}
     engine.last_quote_ts = {"101": 123.0}
-    cancelled = []
+    spawned = []
     notices = []
 
-    async def cancel_all_except_exit():
-        cancelled.append(True)
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, *, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
 
     async def stop_after_guard_tick(_seconds):
         engine._running = False
 
-    engine._cancel_all_except_exit = cancel_all_except_exit
-    engine._notify_attention = lambda title, **fields: notices.append((title, fields))
+    engine._spawn_bg = spawn
+    engine._event_bus = _RecordingEventBus()
+    engine.notify_discord = lambda title, message, level: notices.append(
+        (title, message, level)
+    )
     monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
     monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_guard_tick)
 
     asyncio.run(engine.best_bid_guard_loop())
 
-    assert cancelled == [True]
-    assert notices == [
-        (
-            "Market data unavailable",
-            {
-                "ws_age_sec": "40",
-                "rest_books": "stale",
-                "action": "cancelled quotes; preserved SELL exits",
-            },
-        )
-    ]
+    assert spawned == ["exchange_maintenance_cancel"]
+    assert notices == [(
+        "行情不可用，已进入安全模式",
+        "行情源：WebSocket 与 REST 同时陈旧\n"
+        "系统处理：停止新增买单，保留退出卖单；等待连续健康确认",
+        "warning",
+    )]
+    assert engine._exchange_maintenance.phase == PHASE_MAINTENANCE
+    assert engine._exchange_maintenance.reason == "market_data_unavailable"
+    assert engine._exchange_maintenance.blocks_new_buys is True
     assert engine._last_plan_sig["101"] == ""
     assert engine.last_quote_ts["101"] == 0.0
+
+
+def test_paused_market_ws_outage_is_normal_notice_without_repeat_cancel(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_market_ws_ok_ts = 100.0
+    engine._market_ws_down_cancel_sec = 30.0
+    engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine._shared_book_cache = None
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+    engine._exchange_maintenance_cancel_task = None
+    engine._was_paused = True
+    engine._is_account_paused = lambda: True
+    engine.market_cfg = {"101": {}}
+    engine._last_plan_sig = {"101": "quoted"}
+    engine.last_quote_ts = {"101": 123.0}
+    spawned = []
+    notices = []
+
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, *, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
+
+    async def stop_after_guard_tick(_seconds):
+        engine._running = False
+
+    engine._spawn_bg = spawn
+    engine._event_bus = _RecordingEventBus()
+    engine.notify_discord = lambda title, message, level: notices.append(
+        (title, message, level)
+    )
+    monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_guard_tick)
+
+    asyncio.run(engine.best_bid_guard_loop())
+
+    assert spawned == []
+    assert notices == [(
+        "行情暂时不可用（账户已暂停）",
+        "行情源：WebSocket 与 REST 同时陈旧\n"
+        "系统处理：维持零买单，保留退出卖单；等待连续健康确认",
+        "info",
+    )]
+    assert engine._exchange_maintenance.phase == PHASE_MAINTENANCE
+    assert engine._exchange_maintenance.cancel_retry_delay(now=140.0) == 0.0
+
+
+def test_repeated_market_ws_outage_keeps_one_kill_switch_lane(monkeypatch):
+    engine = object.__new__(PolyLPSMulti)
+    engine._running = True
+    engine._last_market_ws_ok_ts = 100.0
+    engine._market_ws_down_cancel_sec = 30.0
+    engine._proxy_failover_ws_down_trigger_sec = 300.0
+    engine._shared_book_cache = None
+    engine._exchange_maintenance = ExchangeMaintenanceGuard(clock=lambda: 140.0)
+    engine._exchange_maintenance_cancel_task = None
+    engine._was_paused = False
+    engine._is_account_paused = lambda: False
+    engine.market_cfg = {"101": {}}
+    engine._last_plan_sig = {"101": "quoted"}
+    engine.last_quote_ts = {"101": 123.0}
+    spawned = []
+
+    class Task:
+        def done(self):
+            return False
+
+    def spawn(coro, *, name):
+        coro.close()
+        spawned.append(name)
+        return Task()
+
+    guard_ticks = 0
+
+    async def stop_after_two_guard_ticks(_seconds):
+        nonlocal guard_ticks
+        guard_ticks += 1
+        if guard_ticks >= 2:
+            engine._running = False
+
+    engine._spawn_bg = spawn
+    engine.notify_discord = lambda *_args: None
+    engine._event_bus = _RecordingEventBus()
+    monkeypatch.setattr(engine_module.time, "time", lambda: 140.0)
+    monkeypatch.setattr(engine_module.asyncio, "sleep", stop_after_two_guard_ticks)
+
+    asyncio.run(engine.best_bid_guard_loop())
+
+    assert spawned == ["exchange_maintenance_cancel"]
+    assert engine._exchange_maintenance.phase == PHASE_MAINTENANCE
+    assert engine._exchange_maintenance.reason == "market_data_unavailable"
+    assert engine._exchange_maintenance.cancel_retry_delay(now=140.0) == 0.0
+
+
+def test_market_data_recovery_notice_waits_for_required_authenticated_reads():
+    engine = object.__new__(PolyLPSMulti)
+    guard = ExchangeMaintenanceGuard(
+        min_hold_sec=0,
+        recovery_read_successes=2,
+        recovery_read_spacing_sec=0,
+        clock=lambda: 1000.0,
+    )
+    guard.force_maintenance(
+        "market_data_unavailable",
+        "market_data_guard",
+        immediate_cancel=True,
+    )
+    notices = []
+    engine._exchange_maintenance = guard
+    engine._event_bus = _RecordingEventBus()
+    engine.notify_discord = lambda title, message, level: notices.append(
+        (title, message, level)
+    )
+
+    engine._note_exchange_authenticated_read_success("recovery-read-1")
+    assert notices == []
+    engine._note_exchange_authenticated_read_success("recovery-read-2")
+
+    assert guard.phase == PHASE_RECOVERING
+    assert notices == [(
+        "行情读取已恢复",
+        "连续认证读取：2/2\n"
+        "系统处理：继续保持安全锁，等待测试挂单与精确撤单核验",
+        "info",
+    )]
 
 
 def test_market_ws_outage_uses_fresh_shared_books(monkeypatch):

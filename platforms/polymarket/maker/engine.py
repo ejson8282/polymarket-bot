@@ -2107,6 +2107,7 @@ class PolyLPSMulti:
         *,
         cancel_failure: bool = False,
         immediate_cancel: bool = False,
+        cancel_already_verified: bool = False,
     ) -> None:
         update = self._exchange_maintenance_guard().force_maintenance(
             reason,
@@ -2114,12 +2115,18 @@ class PolyLPSMulti:
             cancel_failure=cancel_failure,
             immediate_cancel=immediate_cancel,
         )
-        self._apply_exchange_maintenance_update(update, action)
+        self._apply_exchange_maintenance_update(
+            update,
+            action,
+            cancel_already_verified=cancel_already_verified,
+        )
 
     def _apply_exchange_maintenance_update(
         self,
         update: Any,
         action: str,
+        *,
+        cancel_already_verified: bool = False,
     ) -> None:
 
         if update.entered or update.reason_changed:
@@ -2143,18 +2150,44 @@ class PolyLPSMulti:
             notify = getattr(self, "notify_discord", None)
             if callable(notify):
                 try:
-                    notify(
-                        "交易所维护模式已启用",
-                        (
+                    paused_verified = bool(
+                        self._is_account_paused()
+                        and getattr(self, "_was_paused", False)
+                    )
+                    market_data_outage = update.reason == "market_data_unavailable"
+                    if market_data_outage and paused_verified:
+                        title = "行情暂时不可用（账户已暂停）"
+                        message = (
+                            "行情源：WebSocket 与 REST 同时陈旧\n"
+                            "系统处理：维持零买单，保留退出卖单；等待连续健康确认"
+                        )
+                        level = "info"
+                    elif market_data_outage:
+                        title = "行情不可用，已进入安全模式"
+                        message = (
+                            "行情源：WebSocket 与 REST 同时陈旧\n"
+                            "系统处理：停止新增买单，保留退出卖单；等待连续健康确认"
+                        )
+                        level = "warning"
+                    else:
+                        title = "交易所维护模式已启用"
+                        message = (
                             f"原因：{update.reason}\n"
                             "系统处理：停止新增买单，保留退出卖单，降低撤单重试频率"
-                        ),
-                        "warning",
+                        )
+                        level = "info" if paused_verified else "warning"
+                    notify(
+                        title,
+                        message,
+                        level,
                     )
                 except Exception:
                     pass
 
         if update.entered:
+            if cancel_already_verified:
+                self._exchange_maintenance_guard().note_cancel_success()
+                return
             spawn = getattr(self, "_spawn_bg", None)
             current = getattr(self, "_exchange_maintenance_cancel_task", None)
             if callable(spawn) and (current is None or current.done()):
@@ -2186,6 +2219,21 @@ class PolyLPSMulti:
                 )
             except Exception:
                 pass
+        if guard.reason == "market_data_unavailable":
+            notify = getattr(self, "notify_discord", None)
+            if callable(notify):
+                try:
+                    notify(
+                        "行情读取已恢复",
+                        (
+                            f"连续认证读取：{guard.read_success_streak}/"
+                            f"{guard.recovery_read_successes}\n"
+                            "系统处理：继续保持安全锁，等待测试挂单与精确撤单核验"
+                        ),
+                        "info",
+                    )
+                except Exception:
+                    pass
 
     def _begin_exchange_buy_attempt(self, token_id: str, label: str) -> str:
         claim = self._exchange_maintenance_guard().claim_buy_attempt()
@@ -6925,24 +6973,43 @@ class PolyLPSMulti:
                         else:
                             if market_ws_age >= self._proxy_failover_ws_down_trigger_sec:
                                 asyncio.create_task(self._maybe_failover_proxy("market_ws_down"))
-                            try:
-                                await self._cancel_all_except_exit()
-                                log(
-                                    f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
-                                    f"{self._market_ws_down_cancel_sec:.0f}s and REST books stale "
-                                    "— cancelled quotes, preserved SELL exits"
+                            maintenance_guard = self._exchange_maintenance_guard()
+                            same_market_data_incident = bool(
+                                maintenance_guard.phase == PHASE_MAINTENANCE
+                                and maintenance_guard.reason
+                                == "market_data_unavailable"
+                            )
+                            paused_verified = bool(
+                                self._is_account_paused()
+                                and getattr(self, "_was_paused", False)
+                            )
+                            if (
+                                not maintenance_guard.active
+                                or maintenance_guard.reason
+                                == "market_data_unavailable"
+                            ):
+                                self._force_exchange_maintenance(
+                                    "market_data_unavailable",
+                                    "market_data_guard",
+                                    immediate_cancel=(
+                                        not paused_verified
+                                        and not same_market_data_incident
+                                    ),
+                                    cancel_already_verified=paused_verified,
                                 )
-                                self._notify_attention(
-                                    "Market data unavailable",
-                                    ws_age_sec=f"{market_ws_age:.0f}",
-                                    rest_books="stale",
-                                    action="cancelled quotes; preserved SELL exits",
-                                )
-                                for tid in self.market_cfg:
-                                    self._last_plan_sig[tid] = ""
-                                    self.last_quote_ts[tid] = 0.0
-                            except Exception as e:
-                                log(f"[guard-loop] market-data-down cancel_all failed: {e}")
+                            action_text = (
+                                "account already paused; BUYs previously verified absent"
+                                if paused_verified
+                                else "BUY cancellation owned by safety lane; SELL exits preserved"
+                            )
+                            log(
+                                f"[guard-loop] market-ws down {market_ws_age:.0f}s > "
+                                f"{self._market_ws_down_cancel_sec:.0f}s and REST books stale "
+                                f"— {action_text}"
+                            )
+                            for tid in self.market_cfg:
+                                self._last_plan_sig[tid] = ""
+                                self.last_quote_ts[tid] = 0.0
                             await asyncio.sleep(guard_interval)
                             continue
 
@@ -13082,15 +13149,16 @@ class PolyLPSMulti:
             self._require_recovery_gate = True
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
-            self.notify_discord(
-                "安全暂停已触发",
-                (
-                    f"原因：{self._discord_reason(reason)}\n"
-                    f"冷静期：{self.cooldown_seconds:.0f} 秒\n"
-                    "系统处理：持续撤单，确认安全后自动恢复"
-                ),
-                "danger",
-            )
+            if not str(reason).startswith("exchange_maintenance:"):
+                self.notify_discord(
+                    "安全暂停已触发",
+                    (
+                        f"原因：{self._discord_reason(reason)}\n"
+                        f"冷静期：{self.cooldown_seconds:.0f} 秒\n"
+                        "系统处理：持续撤单，确认安全后自动恢复"
+                    ),
+                    "danger",
+                )
             self._event_bus.publish("kill_switch", {"reason": reason, "cooldown_seconds": self.cooldown_seconds})
 
     async def _ws_user_watch(self) -> None:

@@ -206,6 +206,51 @@ def test_new_maintenance_error_resets_recovery_evidence():
     assert guard.phase == PHASE_MAINTENANCE
 
 
+def test_repeated_identical_signal_does_not_push_cancel_window_forever():
+    clock = _Clock()
+    guard = ExchangeMaintenanceGuard(
+        clock=clock,
+        cancel_backoff_initial_sec=30,
+    )
+    guard.force_maintenance("market_data_unavailable", "market_data_guard")
+    assert guard.cancel_retry_delay() == 30
+
+    clock.advance(20)
+    update = guard.force_maintenance(
+        "market_data_unavailable",
+        "market_data_guard",
+    )
+
+    assert update.entered is False
+    assert update.reason_changed is False
+    assert guard.cancel_retry_delay() == 10
+
+
+def test_repeated_identical_signal_preserves_inflight_cancel_claim():
+    clock = _Clock()
+    guard = ExchangeMaintenanceGuard(clock=clock)
+    guard.force_maintenance(
+        "market_data_unavailable",
+        "market_data_guard",
+        immediate_cancel=True,
+    )
+    claim = guard.claim_cancel_attempt()
+    assert claim == "maintenance_cancel_probe"
+
+    clock.advance(1)
+    guard.force_maintenance(
+        "market_data_unavailable",
+        "market_data_guard",
+        immediate_cancel=True,
+    )
+
+    assert guard.cancel_probe_inflight is True
+    assert guard.claim_cancel_attempt() is None
+    guard.finish_cancel_attempt(claim, success=True)
+    assert guard.cancel_probe_inflight is False
+    assert guard.cancel_retry_delay() == 0
+
+
 def test_snapshot_contains_state_without_raw_exchange_error_text():
     clock = _Clock()
     guard = ExchangeMaintenanceGuard(clock=clock)

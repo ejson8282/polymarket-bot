@@ -273,6 +273,10 @@ class ExchangeMaintenanceGuard:
         previous_phase = self.phase
         entered = previous_phase != PHASE_MAINTENANCE
         reason_changed = self.reason != reason
+        new_incident = previous_phase == PHASE_NORMAL or reason_changed
+        continuing_same_incident = (
+            previous_phase == PHASE_MAINTENANCE and not reason_changed
+        )
         if previous_phase == PHASE_NORMAL:
             self.entered_at = current
         self.phase = PHASE_MAINTENANCE
@@ -282,11 +286,12 @@ class ExchangeMaintenanceGuard:
         self.read_success_streak = 0
         self.last_read_success_at = 0.0
         self.next_read_success_at = current + self.recovery_read_spacing_sec
-        self.buy_probe_inflight = False
-        self.next_buy_probe_at = 0.0
-        self.cancel_probe_inflight = False
+        if not continuing_same_incident:
+            self.buy_probe_inflight = False
+            self.next_buy_probe_at = 0.0
+            self.cancel_probe_inflight = False
 
-        if immediate_cancel:
+        if immediate_cancel and not self.cancel_probe_inflight:
             self.next_cancel_retry_at = current
         elif cancel_failure:
             self.cancel_failure_count += 1
@@ -299,7 +304,7 @@ class ExchangeMaintenanceGuard:
                 self.next_cancel_retry_at,
                 current + delay,
             )
-        else:
+        elif new_incident:
             delay = self.cancel_backoff_initial_sec
             self.next_cancel_retry_at = max(
                 self.next_cancel_retry_at,
