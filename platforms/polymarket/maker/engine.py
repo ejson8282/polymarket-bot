@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 import contextvars
@@ -184,38 +184,225 @@ _hh._http_client = _DispatchingHttpxClient(httpx.Client(http2=False))
 class _ProxiedClobClient:
     """Wraps a ClobClient so every method call binds a per-engine httpx.Client
     into py_clob_client's module-global via contextvars for the duration of
-    the call. Attribute reads/writes pass through to the inner client."""
+    the call. Attribute reads/writes pass through to the inner client.
 
-    def __init__(self, inner: ClobClient, httpx_client: httpx.Client):
+    A transport-only failure retires the affected connection pool. Read-only
+    calls may be replayed once on the replacement pool; writes are never
+    replayed because their exchange-side result may be ambiguous.
+    """
+
+    def __init__(
+        self,
+        inner: ClobClient,
+        httpx_client: httpx.Client,
+        httpx_client_factory: Optional[Callable[[], httpx.Client]] = None,
+    ):
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_httpx", httpx_client)
+        object.__setattr__(self, "_httpx_factory", httpx_client_factory)
+        object.__setattr__(self, "_httpx_lock", threading.Lock())
+        object.__setattr__(self, "_httpx_generation", 0)
+        object.__setattr__(self, "_httpx_rotations", 0)
+        object.__setattr__(self, "_httpx_active", {})
+        object.__setattr__(self, "_retired_httpx", {})
+        object.__setattr__(self, "_httpx_closed", False)
+
+    @staticmethod
+    def _is_read_only_method(name: str) -> bool:
+        return name.startswith(("get_", "is_", "are_"))
+
+    @staticmethod
+    def _is_transport_failure(exc: Exception) -> bool:
+        if isinstance(exc, httpx.RequestError):
+            return True
+        return (
+            getattr(exc, "status_code", None) is None
+            and "request exception" in str(exc).lower()
+        )
+
+    @staticmethod
+    def _close_quietly(client: Any) -> None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    def _acquire_httpx(self) -> tuple[Any, int]:
+        lock = object.__getattribute__(self, "_httpx_lock")
+        with lock:
+            if object.__getattribute__(self, "_httpx_closed"):
+                raise RuntimeError("CLOB HTTP transport is closed")
+            generation = object.__getattribute__(self, "_httpx_generation")
+            active = object.__getattribute__(self, "_httpx_active")
+            active[generation] = int(active.get(generation, 0)) + 1
+            return object.__getattribute__(self, "_httpx"), generation
+
+    def _release_httpx(self, generation: int) -> None:
+        close_client = None
+        lock = object.__getattribute__(self, "_httpx_lock")
+        with lock:
+            active = object.__getattribute__(self, "_httpx_active")
+            remaining = max(0, int(active.get(generation, 0)) - 1)
+            if remaining:
+                active[generation] = remaining
+            else:
+                active.pop(generation, None)
+                close_client = object.__getattribute__(self, "_retired_httpx").pop(
+                    generation,
+                    None,
+                )
+        if close_client is not None:
+            self._close_quietly(close_client)
+
+    def _rotate_httpx_if_current(
+        self,
+        failed_client: Any,
+        failed_generation: int,
+    ) -> tuple[int, bool]:
+        close_client = None
+        lock = object.__getattribute__(self, "_httpx_lock")
+        with lock:
+            generation = object.__getattribute__(self, "_httpx_generation")
+            current = object.__getattribute__(self, "_httpx")
+            if generation != failed_generation or current is not failed_client:
+                return generation, False
+            if object.__getattribute__(self, "_httpx_closed"):
+                raise RuntimeError("CLOB HTTP transport is closed")
+
+            factory = object.__getattribute__(self, "_httpx_factory")
+            if factory is None:
+                raise RuntimeError("CLOB HTTP transport factory is unavailable")
+            replacement = factory()
+            next_generation = generation + 1
+            object.__setattr__(self, "_httpx", replacement)
+            object.__setattr__(self, "_httpx_generation", next_generation)
+            object.__setattr__(
+                self,
+                "_httpx_rotations",
+                object.__getattribute__(self, "_httpx_rotations") + 1,
+            )
+
+            active = object.__getattribute__(self, "_httpx_active")
+            if int(active.get(generation, 0)) > 0:
+                object.__getattribute__(self, "_retired_httpx")[generation] = current
+            else:
+                close_client = current
+
+        if close_client is not None:
+            self._close_quietly(close_client)
+        return next_generation, True
+
+    @staticmethod
+    def _normalize_result(name: str, result: Any) -> Any:
+        # V2 SDK returns dicts for both book endpoints; engine code consumes
+        # OrderBookSummary attributes.
+        if name == "get_order_book" and isinstance(result, dict):
+            from py_clob_client_v2.clob_types import OrderBookSummary
+            return OrderBookSummary(**result)
+        if name == "get_order_books" and isinstance(result, list):
+            from py_clob_client_v2.clob_types import OrderBookSummary
+            return [
+                OrderBookSummary(**book) if isinstance(book, dict) else book
+                for book in result
+            ]
+        return result
+
+    def _invoke_with_httpx(
+        self,
+        attr: Callable[..., Any],
+        name: str,
+        httpx_client: Any,
+        *args,
+        **kwargs,
+    ) -> Any:
+        token = _current_httpx_client.set(httpx_client)
+        try:
+            return self._normalize_result(name, attr(*args, **kwargs))
+        finally:
+            _current_httpx_client.reset(token)
 
     def __getattr__(self, name: str):
         attr = getattr(object.__getattribute__(self, "_inner"), name)
         if not callable(attr) or name.startswith("_"):
             return attr
-        httpx_client = object.__getattribute__(self, "_httpx")
 
         def wrapped(*args, **kwargs):
-            token = _current_httpx_client.set(httpx_client)
+            httpx_client, generation = self._acquire_httpx()
             try:
-                result = attr(*args, **kwargs)
-                # V2 SDK returns dicts for both book endpoints; engine code
-                # consumes OrderBookSummary attributes.
-                if name == "get_order_book" and isinstance(result, dict):
-                    from py_clob_client_v2.clob_types import OrderBookSummary
-                    return OrderBookSummary(**result)
-                if name == "get_order_books" and isinstance(result, list):
-                    from py_clob_client_v2.clob_types import OrderBookSummary
-                    return [
-                        OrderBookSummary(**book) if isinstance(book, dict) else book
-                        for book in result
-                    ]
-                return result
+                try:
+                    return self._invoke_with_httpx(
+                        attr,
+                        name,
+                        httpx_client,
+                        *args,
+                        **kwargs,
+                    )
+                except Exception as exc:
+                    if not self._is_transport_failure(exc):
+                        raise
+                    try:
+                        next_generation, rotated = self._rotate_httpx_if_current(
+                            httpx_client,
+                            generation,
+                        )
+                    except Exception as reset_exc:
+                        raise exc from reset_exc
+                    if rotated:
+                        try:
+                            log(
+                                "[http-transport] rotated "
+                                f"method={name} generation={next_generation} "
+                                f"replay={'read_once' if self._is_read_only_method(name) else 'disabled'}"
+                            )
+                        except Exception:
+                            pass
+                    if not self._is_read_only_method(name):
+                        raise
             finally:
-                _current_httpx_client.reset(token)
+                self._release_httpx(generation)
+
+            retry_client, retry_generation = self._acquire_httpx()
+            try:
+                return self._invoke_with_httpx(
+                    attr,
+                    name,
+                    retry_client,
+                    *args,
+                    **kwargs,
+                )
+            finally:
+                self._release_httpx(retry_generation)
 
         return wrapped
+
+    @property
+    def transport_generation(self) -> int:
+        return int(object.__getattribute__(self, "_httpx_generation"))
+
+    @property
+    def transport_rotation_count(self) -> int:
+        return int(object.__getattribute__(self, "_httpx_rotations"))
+
+    def close_transport(self) -> None:
+        close_clients = []
+        lock = object.__getattribute__(self, "_httpx_lock")
+        with lock:
+            if object.__getattribute__(self, "_httpx_closed"):
+                return
+            object.__setattr__(self, "_httpx_closed", True)
+            generation = object.__getattribute__(self, "_httpx_generation")
+            current = object.__getattribute__(self, "_httpx")
+            active = object.__getattribute__(self, "_httpx_active")
+            retired = object.__getattribute__(self, "_retired_httpx")
+            if int(active.get(generation, 0)) > 0:
+                retired[generation] = current
+            else:
+                close_clients.append(current)
+            for retired_generation, retired_client in list(retired.items()):
+                if int(active.get(retired_generation, 0)) == 0:
+                    close_clients.append(retired.pop(retired_generation))
+        for client in close_clients:
+            self._close_quietly(client)
 
     def __setattr__(self, name: str, value) -> None:
         setattr(object.__getattribute__(self, "_inner"), name, value)
@@ -841,8 +1028,13 @@ class PolyLPSMulti:
         _httpx_kwargs: dict = {"http2": False}
         if _read_proxy_url:
             _httpx_kwargs["proxy"] = _read_proxy_url
-        self._httpx_client = httpx.Client(**_httpx_kwargs)
-        self.client = _ProxiedClobClient(self.client, self._httpx_client)
+        _httpx_client_factory = lambda: httpx.Client(**_httpx_kwargs)
+        self._httpx_client = _httpx_client_factory()
+        self.client = _ProxiedClobClient(
+            self.client,
+            self._httpx_client,
+            _httpx_client_factory,
+        )
         log(
             f"[proxy] engine bound read_proxy={_read_proxy_url or 'direct'} "
             f"ws_proxy={self._ws_proxy or 'direct'} funder={str(funder or '-')[:10]}"
@@ -14835,6 +15027,9 @@ async def _main_with_shutdown(_cfg):
                     log(f"[shutdown] maker-order cancellation failed: {exc}")
                 except Exception:
                     pass
+            close_transport = getattr(client, "close_transport", None)
+            if callable(close_transport):
+                close_transport()
 
     if client is not None and not shutdown_verified:
         raise RuntimeError("shutdown could not verify maker-order cancellation")

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import types
 from unittest.mock import AsyncMock
@@ -3676,6 +3677,229 @@ def test_proxied_client_converts_batch_order_book_dicts():
     assert books[0].asset_id == "101"
     assert books[0].bids
     assert books[0].asks
+
+
+class _FakeHttpxClient:
+    def __init__(self, label):
+        self.label = label
+        self.close_count = 0
+
+    def close(self):
+        self.close_count += 1
+
+
+class _ClobTransportFailure(Exception):
+    status_code = None
+
+    def __str__(self):
+        return "PolyApiException[status_code=None, error_message=Request exception!]"
+
+
+class _ClobApiFailure(Exception):
+    status_code = 503
+
+    def __str__(self):
+        return "PolyApiException[status_code=503, error_message=maintenance]"
+
+
+def test_proxied_client_rotates_and_retries_read_once():
+    first = _FakeHttpxClient("first")
+    replacement = _FakeHttpxClient("replacement")
+    seen = []
+
+    class Client:
+        def get_server_time(self):
+            bound = engine_module._current_httpx_client.get()
+            seen.append(bound.label)
+            if bound is first:
+                raise _ClobTransportFailure()
+            return 123
+
+    wrapper = _ProxiedClobClient(Client(), first, lambda: replacement)
+
+    assert wrapper.get_server_time() == 123
+    assert seen == ["first", "replacement"]
+    assert wrapper.transport_generation == 1
+    assert wrapper.transport_rotation_count == 1
+    assert first.close_count == 1
+    assert replacement.close_count == 0
+    wrapper.close_transport()
+    assert replacement.close_count == 1
+
+
+def test_proxied_client_does_not_rotate_for_http_response_error():
+    first = _FakeHttpxClient("first")
+    created = []
+    attempts = 0
+
+    class Client:
+        def get_server_time(self):
+            nonlocal attempts
+            attempts += 1
+            raise _ClobApiFailure()
+
+    wrapper = _ProxiedClobClient(
+        Client(),
+        first,
+        lambda: created.append(_FakeHttpxClient("unexpected")),
+    )
+
+    with pytest.raises(_ClobApiFailure):
+        wrapper.get_server_time()
+
+    assert attempts == 1
+    assert created == []
+    assert wrapper.transport_generation == 0
+    assert first.close_count == 0
+
+
+def test_proxied_client_rotates_but_never_replays_write():
+    first = _FakeHttpxClient("first")
+    replacement = _FakeHttpxClient("replacement")
+    attempts = 0
+
+    class Client:
+        def post_order(self, *_args):
+            nonlocal attempts
+            attempts += 1
+            raise _ClobTransportFailure()
+
+    wrapper = _ProxiedClobClient(Client(), first, lambda: replacement)
+
+    with pytest.raises(_ClobTransportFailure):
+        wrapper.post_order("signed", "GTC")
+
+    assert attempts == 1
+    assert wrapper.transport_generation == 1
+    assert wrapper.transport_rotation_count == 1
+    assert first.close_count == 1
+    assert replacement.close_count == 0
+
+
+def test_proxied_client_read_retry_failure_is_not_replayed_again():
+    first = _FakeHttpxClient("first")
+    replacement = _FakeHttpxClient("replacement")
+    attempts = 0
+
+    class Client:
+        def get_server_time(self):
+            nonlocal attempts
+            attempts += 1
+            raise _ClobTransportFailure()
+
+    wrapper = _ProxiedClobClient(Client(), first, lambda: replacement)
+
+    with pytest.raises(_ClobTransportFailure):
+        wrapper.get_server_time()
+
+    assert attempts == 2
+    assert wrapper.transport_rotation_count == 1
+
+
+def test_proxied_client_concurrent_failures_rotate_one_generation():
+    worker_count = 12
+    first = _FakeHttpxClient("first")
+    replacement = _FakeHttpxClient("replacement")
+    first_attempts = threading.Barrier(worker_count)
+    factory_calls = []
+    results = []
+    errors = []
+
+    class Client:
+        def get_server_time(self):
+            bound = engine_module._current_httpx_client.get()
+            if bound is first:
+                first_attempts.wait(timeout=5)
+                raise _ClobTransportFailure()
+            return bound.label
+
+    def factory():
+        factory_calls.append(True)
+        return replacement
+
+    wrapper = _ProxiedClobClient(Client(), first, factory)
+
+    def worker():
+        try:
+            results.append(wrapper.get_server_time())
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(worker_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=8)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert results == ["replacement"] * worker_count
+    assert factory_calls == [True]
+    assert wrapper.transport_generation == 1
+    assert wrapper.transport_rotation_count == 1
+    assert first.close_count == 1
+
+
+def test_proxied_client_factory_failure_preserves_original_error():
+    first = _FakeHttpxClient("first")
+
+    class Client:
+        def get_server_time(self):
+            raise _ClobTransportFailure()
+
+    def broken_factory():
+        raise RuntimeError("factory failed")
+
+    wrapper = _ProxiedClobClient(Client(), first, broken_factory)
+
+    with pytest.raises(_ClobTransportFailure) as exc_info:
+        wrapper.get_server_time()
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert wrapper.transport_generation == 0
+    assert wrapper.transport_rotation_count == 0
+    assert first.close_count == 0
+
+
+def test_proxied_client_does_not_reopen_after_shutdown_starts():
+    first = _FakeHttpxClient("first")
+    request_started = threading.Event()
+    release_request = threading.Event()
+    factory_calls = []
+    errors = []
+
+    class Client:
+        def get_server_time(self):
+            request_started.set()
+            assert release_request.wait(timeout=5)
+            raise _ClobTransportFailure()
+
+    wrapper = _ProxiedClobClient(
+        Client(),
+        first,
+        lambda: factory_calls.append(_FakeHttpxClient("unexpected")),
+    )
+
+    def worker():
+        try:
+            wrapper.get_server_time()
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert request_started.wait(timeout=5)
+    wrapper.close_transport()
+    release_request.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], _ClobTransportFailure)
+    assert isinstance(errors[0].__cause__, RuntimeError)
+    assert factory_calls == []
+    assert wrapper.transport_generation == 0
+    assert first.close_count == 1
 
 
 def test_token_cleanup_uses_batch_cancel_and_confirms_remote_orders():
