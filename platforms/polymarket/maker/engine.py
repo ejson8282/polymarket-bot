@@ -2077,6 +2077,17 @@ class PolyLPSMulti:
         return paired
 
     def _event_quote_block_reason(self, token_id: str) -> Optional[str]:
+        for event_token_id in self._event_token_ids(token_id):
+            if bool(
+                self._get_mcfg(event_token_id).get(
+                    "lifecycle_retire_pending", False
+                )
+            ):
+                return (
+                    "stable_lifecycle_retire_pending="
+                    f"{event_token_id}"
+                )
+
         state = self._event_state_name(token_id)
         if state in {
             EVENT_CANCELING,
@@ -8710,14 +8721,9 @@ class PolyLPSMulti:
         """Treat exchange-defined dust as clear while failing closed on unknowns."""
         return 0 <= position <= self._exit_dust_threshold
 
-    @staticmethod
-    def _stable_lifecycle_position_is_flat(position: float) -> bool:
-        """Require an exact zero before lifecycle removal from the config."""
-        try:
-            value = float(position)
-        except (TypeError, ValueError):
-            return False
-        return math.isfinite(value) and value == 0.0
+    def _stable_lifecycle_position_is_flat(self, position: float) -> bool:
+        """Treat exchange dust as clear while failing closed on unknowns."""
+        return self._stable_rotation_position_is_clear(position)
 
     async def _runtime_replace_from_command(
         self,

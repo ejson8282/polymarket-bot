@@ -1308,8 +1308,36 @@ def test_stable_lifecycle_retirement_waits_for_position_to_be_flat(tmp_path):
     assert config["markets"][0]["lifecycle_retire_pending"] is True
 
 
-def test_stable_lifecycle_retirement_does_not_treat_dust_as_flat(tmp_path):
+def test_stable_lifecycle_retirement_treats_exchange_dust_as_flat(tmp_path):
     engine = _stable_lifecycle_retire_engine(tmp_path)
+    config_before = json.loads(
+        engine._config_path.read_text(encoding="utf-8")
+    )
+    config_before["markets"].append(
+        {
+            "token_id": "201",
+            "paired_token_id": "202",
+            "enabled": True,
+            "source": "operator",
+        }
+    )
+    engine._config_path.write_text(
+        json.dumps(config_before),
+        encoding="utf-8",
+    )
+    engine.market_cfg.update(
+        {
+            "201": {
+                "paired_token_id": "202",
+                "source": "operator",
+            },
+            "202": {
+                "paired_token_id": "201",
+                "source": "operator",
+                "_dual_side_auto": True,
+            },
+        }
+    )
     engine._get_token_position = AsyncMock(return_value=0.1)
 
     status = asyncio.run(
@@ -1319,8 +1347,27 @@ def test_stable_lifecycle_retirement_does_not_treat_dust_as_flat(tmp_path):
         )
     )
 
-    assert status == "position_not_flat"
+    assert status == "removed"
+    assert set(engine.market_cfg) == {"201", "202"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert [row["token_id"] for row in config["markets"]] == ["201"]
+
+
+def test_stable_lifecycle_retirement_fails_closed_on_unknown_position(tmp_path):
+    engine = _stable_lifecycle_retire_engine(tmp_path)
+    engine._get_token_position = AsyncMock(return_value=-1.0)
+
+    status = asyncio.run(
+        engine._retire_stable_lifecycle_market(
+            "101",
+            ["front_depth_below_account_min"],
+        )
+    )
+
+    assert status == "position_unknown"
     assert set(engine.market_cfg) == {"101", "102"}
+    config = json.loads(engine._config_path.read_text(encoding="utf-8"))
+    assert config["markets"][0]["lifecycle_retire_pending"] is True
 
 
 def test_stable_lifecycle_retirement_keeps_last_primary_market(tmp_path):
@@ -3476,6 +3523,7 @@ def test_stable_rotation_position_clear_uses_exit_dust_threshold(
     engine._exit_dust_threshold = 0.5
 
     assert engine._stable_rotation_position_is_clear(position) is expected
+    assert engine._stable_lifecycle_position_is_flat(position) is expected
 
 
 def test_cancel_quotes_preserves_unregistered_sell_exit():
@@ -5726,6 +5774,27 @@ def test_exit_pending_blocks_both_sides_of_the_same_event():
     assert engine._halt_preemption_reason("101").startswith(
         "paired_event_state=EXIT_PENDING"
     )
+
+
+@pytest.mark.parametrize("pending_token", ["101", "102"])
+def test_stable_lifecycle_retire_pending_blocks_both_event_legs(
+    pending_token,
+):
+    engine = _paired_state_engine()
+    engine.market_cfg[pending_token]["lifecycle_retire_pending"] = True
+    engine._is_account_paused = lambda: False
+    engine._exchange_maintenance = ExchangeMaintenanceGuard()
+
+    for token_id in ("101", "102"):
+        reason = engine._event_quote_block_reason(token_id)
+        assert reason == (
+            f"stable_lifecycle_retire_pending={pending_token}"
+        )
+        with pytest.raises(
+            EventHaltPreempted,
+            match="stable_lifecycle_retire_pending",
+        ):
+            engine._ensure_order_path_open(token_id, "test_buy")
 
 
 def test_aggressive_pair_token_is_scoped_to_isolated_runtime():
