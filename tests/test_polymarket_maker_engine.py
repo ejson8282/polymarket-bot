@@ -615,7 +615,7 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("candidate_updates", "message"),
+    ("candidate_updates", "policy_updates", "message"),
     [
         (
             {
@@ -623,17 +623,48 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
                 "slug": "btc-updown-15m-1800000000",
                 "directional_up_down_market": False,
             },
+            {},
             "directional up/down",
         ),
         (
             {"daily_reward_usd": 49},
+            {},
             "daily reward is below stable minimum",
+        ),
+        (
+            {
+                "daily_reward_usd": 20,
+                "stable_lp_min_daily_reward_usdc": 10,
+            },
+            {},
+            "daily reward is below stable minimum",
+        ),
+        (
+            {"fill_risk": 50, "stable_lp_max_fill_risk": 99},
+            {"max_fill_risk": 99},
+            "fill risk is above stable limit",
+        ),
+        (
+            {"stable_lp_min_daily_reward_usdc": "nan"},
+            {},
+            "daily reward threshold is invalid",
+        ),
+        (
+            {"fill_risk": "infinity"},
+            {},
+            "fill risk is invalid",
+        ),
+        (
+            {},
+            {"max_fill_risk": "infinity"},
+            "fill risk threshold is invalid",
         ),
     ],
 )
 def test_runtime_add_defensively_rejects_stable_policy_exclusions(
     tmp_path,
     candidate_updates,
+    policy_updates,
     message,
 ):
     engine = object.__new__(PolyLPSMulti)
@@ -671,6 +702,8 @@ def test_runtime_add_defensively_rejects_stable_policy_exclusions(
         encoding="utf-8",
     )
 
+    policy = {"max_observer_age_sec": 900, "max_depth_age_sec": 600}
+    policy.update(policy_updates)
     with pytest.raises(ValueError, match=message):
         engine._validate_stable_replacement_candidate(
             {
@@ -678,7 +711,7 @@ def test_runtime_add_defensively_rejects_stable_policy_exclusions(
                 "paired_token_id": "102",
                 "condition_id": "condition",
             },
-            {"max_observer_age_sec": 900, "max_depth_age_sec": 600},
+            policy,
         )
 
 

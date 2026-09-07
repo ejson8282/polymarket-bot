@@ -205,6 +205,49 @@ def test_proposal_defensively_rejects_directional_and_low_reward_candidates() ->
     assert "daily_reward_below_stable_minimum" in rejected["2"]
 
 
+def test_proposal_hard_caps_stable_thresholds_despite_claimed_full_admission() -> None:
+    low_reward = _candidate(1)
+    low_reward.update(
+        {
+            "daily_reward_usd": 20.0,
+            "stable_lp_min_daily_reward_usdc": 10.0,
+            "account_admission": [{"account_index": 1, "level": "full"}],
+        }
+    )
+    risky = _candidate(2, fill_risk=50.0)
+    risky.update(
+        {
+            "stable_lp_max_fill_risk": 99.0,
+            "account_admission": [{"account_index": 1, "level": "full"}],
+        }
+    )
+    invalid = _candidate(3)
+    invalid.update(
+        {
+            "stable_lp_min_daily_reward_usdc": "nan",
+            "stable_lp_max_fill_risk": "infinity",
+            "account_admission": [{"account_index": 1, "level": "full"}],
+        }
+    )
+
+    proposal = build_stable_rotation_proposal(
+        _observer(low_reward, risky, invalid, _candidate(4)),
+        [_account(1)],
+        now_ts=NOW,
+        max_fill_risk=99.0,
+    )
+
+    assert [row["token_id"] for row in proposal["accounts"][0]["add"]] == ["4"]
+    rejected = {
+        row["token_id"]: set(row["reason_codes"])
+        for row in proposal["rejected_candidates"]
+    }
+    assert "daily_reward_below_stable_minimum" in rejected["1"]
+    assert "fill_risk_above_stable_limit" in rejected["2"]
+    assert "stable_daily_reward_threshold_invalid" in rejected["3"]
+    assert "stable_fill_risk_threshold_invalid" in rejected["3"]
+
+
 def test_account_canary_is_separate_from_full_additions() -> None:
     candidate = _candidate(1, yes_depth=500.0, no_depth=500.0)
     candidate["account_admission"] = [
@@ -388,8 +431,9 @@ def test_proposal_never_admits_weather_market_to_stable_lp() -> None:
         {
             "market_type": "weather",
             "weather_market": True,
-            "stable_lp_recommended": False,
-            "stable_lp_rejection_reasons": ["weather_observe_only"],
+            "stable_lp_recommended": True,
+            "stable_lp_rejection_reasons": [],
+            "account_admission": [{"account_index": 1, "level": "full"}],
         }
     )
 

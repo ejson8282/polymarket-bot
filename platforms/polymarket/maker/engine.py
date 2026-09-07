@@ -98,6 +98,7 @@ except ImportError:
     )
 try:
     from .stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
         DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
         MAX_ACTIVE_CANARIES_LIMIT,
         MAX_CANARY_PRINCIPAL_FRACTION,
@@ -113,6 +114,7 @@ try:
     )
 except ImportError:
     from stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
         DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
         MAX_ACTIVE_CANARIES_LIMIT,
         MAX_CANARY_PRINCIPAL_FRACTION,
@@ -8187,11 +8189,31 @@ class PolyLPSMulti:
             raise ValueError(
                 "directional up/down market is observe-only for stable LP"
             )
-        min_daily_reward = float(
-            candidate.get("stable_lp_min_daily_reward_usdc")
-            or DEFAULT_STABLE_MIN_DAILY_REWARD_USDC
+        raw_min_daily_reward = candidate.get(
+            "stable_lp_min_daily_reward_usdc",
+            DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
         )
-        if float(candidate.get("daily_reward_usd") or 0.0) < min_daily_reward:
+        try:
+            supplied_min_daily_reward = float(raw_min_daily_reward)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "replacement stable daily reward threshold is invalid"
+            ) from exc
+        if not math.isfinite(supplied_min_daily_reward):
+            raise ValueError(
+                "replacement stable daily reward threshold is invalid"
+            )
+        min_daily_reward = max(
+            DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+            supplied_min_daily_reward,
+        )
+        try:
+            daily_reward = float(candidate.get("daily_reward_usd"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("replacement daily reward is invalid") from exc
+        if not math.isfinite(daily_reward):
+            raise ValueError("replacement daily reward is invalid")
+        if daily_reward < min_daily_reward:
             raise ValueError("replacement daily reward is below stable minimum")
         if candidate.get("weather_market") is True or str(
             candidate.get("market_type") or ""
@@ -8264,9 +8286,34 @@ class PolyLPSMulti:
                 raise ValueError("replacement depth is below canary minimum")
 
         stability = float(candidate.get("stability_score") or 0.0)
-        fill_risk = float(candidate.get("fill_risk") or 100.0)
+        try:
+            fill_risk = float(candidate.get("fill_risk"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("replacement fill risk is invalid") from exc
+        if not math.isfinite(fill_risk):
+            raise ValueError("replacement fill risk is invalid")
         roi = float(candidate.get("risk_adjusted_daily_roi_pct") or 0.0)
-        if fill_risk >= float(policy.get("max_fill_risk") or 35.0):
+        max_fill_risk_values = [DEFAULT_STABLE_MAX_FILL_RISK]
+        for raw_max_fill_risk in (
+            policy.get("max_fill_risk", DEFAULT_STABLE_MAX_FILL_RISK),
+            candidate.get(
+                "stable_lp_max_fill_risk",
+                DEFAULT_STABLE_MAX_FILL_RISK,
+            ),
+        ):
+            try:
+                supplied_max_fill_risk = float(raw_max_fill_risk)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "replacement stable fill risk threshold is invalid"
+                ) from exc
+            if not math.isfinite(supplied_max_fill_risk):
+                raise ValueError(
+                    "replacement stable fill risk threshold is invalid"
+                )
+            max_fill_risk_values.append(supplied_max_fill_risk)
+        effective_max_fill_risk = min(max_fill_risk_values)
+        if fill_risk >= effective_max_fill_risk:
             raise ValueError("replacement fill risk is above stable limit")
         if admission_level != "canary":
             if stability < float(policy.get("min_stability_score") or 70.0):
