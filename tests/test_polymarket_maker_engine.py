@@ -3509,6 +3509,7 @@ def test_runtime_lifecycle_config_result_survives_observability_write_failure(
     [
         (-1.0, False),
         (0.0, True),
+        (0.004826, True),
         (0.013336, True),
         (0.5, True),
         (0.500001, False),
