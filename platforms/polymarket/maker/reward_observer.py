@@ -35,6 +35,13 @@ try:
         update_fast_lane,
     )
     from .reward_shadow_allocator import write_shadow_budget
+    from .stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        is_directional_up_down_market,
+    )
     from .quote_feasibility import (
         PairExecution,
         aggregate_bid_q,
@@ -53,6 +60,13 @@ except ImportError:  # pragma: no cover - direct script execution
         update_fast_lane,
     )
     from reward_shadow_allocator import write_shadow_budget
+    from stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        MAX_CANARY_PRINCIPAL_FRACTION,
+        MAX_CANARY_USDC,
+        is_directional_up_down_market,
+    )
     from quote_feasibility import (
         PairExecution,
         aggregate_bid_q,
@@ -62,7 +76,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-MODEL_VERSION = 7
+MODEL_VERSION = 8
 DEFAULT_PROBE_BUDGET_USDC = Decimal("100")
 DEFAULT_CANDIDATE_LIMIT = 100
 DEFAULT_LOWER_REWARD_RESERVE_RATIO = Decimal("0.25")
@@ -101,6 +115,9 @@ class ObserverAccountPolicy:
     max_quote_shares: Decimal
     max_notional_per_order: Decimal
     min_front_bid_notional_usdc: Decimal
+    canary_principal_usdc: Optional[Decimal]
+    canary_principal_fraction: Decimal
+    canary_max_usdc: Decimal
     configured_tokens: frozenset[str]
     market_runtime: Mapping[str, Mapping[str, Any]]
     scoring_by_token: Mapping[str, Optional[bool]]
@@ -125,6 +142,9 @@ def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
         max_quote_shares=Decimal("0"),
         max_notional_per_order=Decimal("0"),
         min_front_bid_notional_usdc=DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC,
+        canary_principal_usdc=max(Decimal("0"), probe_budget),
+        canary_principal_fraction=Decimal(str(MAX_CANARY_PRINCIPAL_FRACTION)),
+        canary_max_usdc=Decimal(str(MAX_CANARY_USDC)),
         configured_tokens=frozenset(),
         market_runtime={},
         scoring_by_token={},
@@ -132,6 +152,19 @@ def _default_probe_policy(probe_budget: Decimal) -> ObserverAccountPolicy:
         scoring_sample_at_by_token={},
         scoring_live_order_hash_by_token={},
         reward_percentages={},
+    )
+
+
+def _canary_budget_usdc(policy: ObserverAccountPolicy) -> Optional[Decimal]:
+    principal = policy.canary_principal_usdc
+    if principal is None:
+        return None
+    return max(
+        Decimal("0"),
+        min(
+            max(Decimal("0"), principal) * policy.canary_principal_fraction,
+            policy.canary_max_usdc,
+        ),
     )
 
 
@@ -384,6 +417,9 @@ def _load_account_policies(
         execution = config.get("execution")
         if not isinstance(execution, Mapping):
             execution = {}
+        lifecycle = config.get("stable_market_lifecycle")
+        if not isinstance(lifecycle, Mapping):
+            lifecycle = {}
 
         configured_tokens: set[str] = set()
         configured_market_refs: List[Dict[str, Any]] = []
@@ -461,6 +497,26 @@ def _load_account_policies(
             strategy.get("quote_balance_pct_min_mid"),
             _decimal(strategy.get("quote_balance_pct_min"), Decimal("0.80")),
         )
+        canary_fraction = max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_PRINCIPAL_FRACTION)),
+                _decimal(
+                    lifecycle.get("canary_principal_fraction"),
+                    Decimal(str(MAX_CANARY_PRINCIPAL_FRACTION)),
+                ),
+            ),
+        )
+        canary_max = max(
+            Decimal("0"),
+            min(
+                Decimal(str(MAX_CANARY_USDC)),
+                _decimal(
+                    lifecycle.get("canary_max_usdc"),
+                    Decimal(str(MAX_CANARY_USDC)),
+                ),
+            ),
+        )
         policies.append(
             ObserverAccountPolicy(
                 account_index=account_index,
@@ -495,6 +551,13 @@ def _load_account_policies(
                         DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC,
                     ),
                 ),
+                canary_principal_usdc=(
+                    profile.target_principal_usdc
+                    if profile.managed
+                    else available
+                ),
+                canary_principal_fraction=canary_fraction,
+                canary_max_usdc=canary_max,
                 configured_tokens=frozenset(configured_tokens),
                 market_runtime={
                     str(token_id): dict(row)
@@ -989,6 +1052,12 @@ def _observe_candidate(
                 sample_material.encode("utf-8")
             ).hexdigest()
         actual_percentage = policy.reward_percentages.get(condition_id)
+        canary_budget = _canary_budget_usdc(policy)
+        canary_depth_floor = (
+            min(policy.min_front_bid_notional_usdc, canary_budget)
+            if canary_budget is not None and canary_budget > 0
+            else None
+        )
         blocked = list(execution.blocked_reasons)
         if configured and observed_q_min is not None and observed_q_min <= 0:
             blocked.append("observed_q_min_zero")
@@ -1012,6 +1081,21 @@ def _observe_candidate(
                 "min_distance_ticks": policy.min_distance_ticks,
                 "min_front_bid_notional_usdc": round(
                     float(policy.min_front_bid_notional_usdc), 2
+                ),
+                "canary_principal_usdc": (
+                    round(float(policy.canary_principal_usdc), 2)
+                    if policy.canary_principal_usdc is not None
+                    else None
+                ),
+                "canary_budget_usdc": (
+                    round(float(canary_budget), 2)
+                    if canary_budget is not None
+                    else None
+                ),
+                "canary_front_depth_floor_usdc": (
+                    round(float(canary_depth_floor), 2)
+                    if canary_depth_floor is not None
+                    else None
                 ),
                 "target_shares": round(float(execution.target_shares), 4),
                 "collateral_required_usdc": round(
@@ -1136,6 +1220,16 @@ def _observe_candidate(
         market_competitiveness = market.get("market_competitiveness")
 
     is_weather = _is_weather_market(market)
+    is_directional_up_down = is_directional_up_down_market(market)
+    if is_weather:
+        market_type = "weather"
+        stable_market_family = "weather"
+    elif is_directional_up_down:
+        market_type = "directional_up_down"
+        stable_market_family = "directional_up_down"
+    else:
+        market_type = "sports" if _is_sports_market(market) else "always_on"
+        stable_market_family = "standard"
     return {
         "condition_id": condition_id,
         "question": str(market.get("question") or market.get("title") or ""),
@@ -1144,12 +1238,15 @@ def _observe_candidate(
         "market_url": _market_url(market),
         "token_id": rough["token_ids"][0],
         "paired_token_id": rough["token_ids"][1],
-        "market_type": (
-            "weather"
-            if is_weather
-            else "sports" if _is_sports_market(market) else "always_on"
-        ),
+        "market_type": market_type,
         "weather_market": is_weather,
+        "directional_up_down_market": is_directional_up_down,
+        "stable_market_family": stable_market_family,
+        "aggressive_lp_review_status": (
+            "separate_pipeline_required"
+            if is_directional_up_down
+            else "not_evaluated"
+        ),
         "market_phase": market_phase,
         "game_start_ts": game_start_ts,
         "market_active": rough.get("market_active"),
@@ -1368,6 +1465,7 @@ def _select_rough_candidates(
 def _rough_public_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     market = row["market"]
     token_ids = [str(token_id) for token_id in row.get("token_ids") or []]
+    is_directional_up_down = is_directional_up_down_market(market)
     return {
         "condition_id": str(
             market.get("conditionId") or market.get("condition_id") or ""
@@ -1378,6 +1476,15 @@ def _rough_public_row(row: Mapping[str, Any]) -> Dict[str, Any]:
         "slug": str(market.get("slug") or ""),
         "event_slug": _event_slug(market),
         "market_url": _market_url(market),
+        "directional_up_down_market": is_directional_up_down,
+        "stable_market_family": (
+            "directional_up_down" if is_directional_up_down else "unassessed"
+        ),
+        "aggressive_lp_review_status": (
+            "separate_pipeline_required"
+            if is_directional_up_down
+            else "not_evaluated"
+        ),
         "daily_reward_usd": round(float(row["reward"]), 2),
         "reward_terms": list(row.get("reward_terms") or []),
         "rewards_min_size_shares": round(float(row["min_size"]), 4),
@@ -1637,6 +1744,23 @@ def _observer_settings(config_dir: Optional[Path]) -> Dict[str, Any]:
             _decimal(
                 settings.get("min_estimated_daily_payout_usdc"),
                 DEFAULT_MIN_ESTIMATED_DAILY_PAYOUT_USDC,
+            ),
+        ),
+        "stable_min_daily_reward_usdc": max(
+            Decimal(str(DEFAULT_STABLE_MIN_DAILY_REWARD_USDC)),
+            _decimal(
+                settings.get("stable_min_daily_reward_usdc"),
+                Decimal(str(DEFAULT_STABLE_MIN_DAILY_REWARD_USDC)),
+            ),
+        ),
+        "stable_max_fill_risk": max(
+            Decimal("0"),
+            min(
+                Decimal(str(DEFAULT_STABLE_MAX_FILL_RISK)),
+                _decimal(
+                    settings.get("stable_max_fill_risk"),
+                    Decimal(str(DEFAULT_STABLE_MAX_FILL_RISK)),
+                ),
             ),
         ),
         "stable_min_front_bid_notional_usdc": max(
@@ -2045,6 +2169,18 @@ def _apply_observation_history(
             candidate.get("estimated_gross_daily_roi_pct") or 0
         )
         fill_risk = float(candidate.get("fill_risk") or 100)
+        stable_min_daily_reward = float(
+            settings.get(
+                "stable_min_daily_reward_usdc",
+                DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+            )
+        )
+        stable_max_fill_risk = float(
+            settings.get(
+                "stable_max_fill_risk",
+                DEFAULT_STABLE_MAX_FILL_RISK,
+            )
+        )
         stability_ratio = float(stability["stability_score"]) / 100.0
         risk_ratio = max(0.0, 1.0 - fill_risk / 100.0)
         candidate["risk_adjusted_daily_roi_pct"] = round(
@@ -2053,7 +2189,7 @@ def _apply_observation_history(
         )
         candidate["verification_recommended"] = bool(
             stability["verification_status"] in {"stable", "confirmed"}
-            and fill_risk < 65
+            and fill_risk < stable_max_fill_risk
             and stability["stability_score"] >= 70
             and gross_roi > 0
             and float(candidate.get("estimated_daily_gross_usd") or 0)
@@ -2062,6 +2198,13 @@ def _apply_observation_history(
         stable_rejections: List[str] = []
         if candidate.get("weather_market") is True:
             stable_rejections.append("weather_observe_only")
+        if candidate.get("directional_up_down_market") is True:
+            stable_rejections.append("directional_up_down_observe_only")
+        if (
+            float(candidate.get("daily_reward_usd") or 0)
+            < stable_min_daily_reward
+        ):
+            stable_rejections.append("daily_reward_below_stable_minimum")
         if str(candidate.get("front_depth_status") or "") != "verified":
             stable_rejections.append("front_depth_unavailable")
         min_depth = float(
@@ -2087,6 +2230,14 @@ def _apply_observation_history(
             stable_rejections.append("market_ends_too_soon")
         candidate["stable_lp_min_front_bid_notional_usdc"] = round(min_depth, 2)
         candidate["stable_lp_min_time_to_end_sec"] = round(min_time_to_end, 1)
+        candidate["stable_lp_min_daily_reward_usdc"] = round(
+            stable_min_daily_reward,
+            2,
+        )
+        candidate["stable_lp_max_fill_risk"] = round(
+            stable_max_fill_risk,
+            1,
+        )
         candidate["stable_lp_rejection_reasons"] = stable_rejections
         candidate["stable_lp_recommended"] = bool(
             candidate["verification_recommended"] and not stable_rejections
@@ -2106,10 +2257,17 @@ def _apply_observation_history(
                 rejection_reasons.extend(blocked)
             if candidate.get("weather_market") is True:
                 rejection_reasons.append("weather_observe_only")
+            if candidate.get("directional_up_down_market") is True:
+                rejection_reasons.append("directional_up_down_observe_only")
+            if (
+                float(candidate.get("daily_reward_usd") or 0)
+                < stable_min_daily_reward
+            ):
+                rejection_reasons.append("daily_reward_below_stable_minimum")
             if seconds_to_end < min_time_to_end:
                 rejection_reasons.append("market_ends_too_soon")
-            if fill_risk >= 65:
-                rejection_reasons.append("fill_risk_high")
+            if fill_risk >= stable_max_fill_risk:
+                rejection_reasons.append("fill_risk_above_stable_limit")
             if float(execution.get("executable_q_min") or 0) <= 0:
                 rejection_reasons.append("executable_q_min_zero")
             if execution.get("configured") and execution.get("official_scoring") is False:
@@ -2141,16 +2299,26 @@ def _apply_observation_history(
                 required_depth = float(
                     DEFAULT_STABLE_MIN_FRONT_BID_NOTIONAL_USDC
                 )
+            try:
+                canary_budget = float(execution.get("canary_budget_usdc"))
+                canary_depth_floor = float(
+                    execution.get("canary_front_depth_floor_usdc")
+                )
+            except (TypeError, ValueError):
+                canary_budget = -1.0
+                canary_depth_floor = -1.0
+            if canary_budget <= 0 or canary_depth_floor <= 0:
+                rejection_reasons.append("canary_budget_unavailable")
+            elif execution_depth < canary_depth_floor:
+                rejection_reasons.append("front_depth_below_canary_minimum")
             if execution_depth < required_depth:
                 canary_reasons.append("front_depth_below_full_minimum")
             if not execution.get("capital_evidence_fresh"):
-                canary_reasons.append("capital_evidence_unavailable")
+                rejection_reasons.append("capital_evidence_unavailable")
             if stability["verification_status"] not in {"stable", "confirmed"}:
                 canary_reasons.append("stability_warming")
             if stability["stability_score"] < 70:
                 canary_reasons.append("stability_below_full_minimum")
-            if fill_risk >= 35:
-                canary_reasons.append("fill_risk_above_full_limit")
             estimated_daily_gross = float(
                 execution.get("estimated_daily_gross_usd") or 0
             )
@@ -2179,6 +2347,14 @@ def _apply_observation_history(
                     "level": level,
                     "reason_codes": reason_codes,
                     "canary_requires_scoring_validation": level == "canary",
+                    "canary_budget_usdc": (
+                        round(canary_budget, 2) if canary_budget >= 0 else None
+                    ),
+                    "canary_front_depth_floor_usdc": (
+                        round(canary_depth_floor, 2)
+                        if canary_depth_floor >= 0
+                        else None
+                    ),
                 }
             )
         rank = {"reject": 0, "canary": 1, "full": 2}
@@ -2192,6 +2368,14 @@ def _apply_observation_history(
         )
         candidate["account_admission"] = account_admission
         candidate["admission_level"] = best_admission
+        candidate["stable_admission_level"] = best_admission
+        candidate["stable_strategy_lane"] = (
+            "full"
+            if best_admission == "full"
+            else "canary_validation"
+            if best_admission == "canary"
+            else "reject"
+        )
         candidate["stable_lp_recommended"] = best_admission == "full"
         candidate["canary_proposal_eligible"] = False
 

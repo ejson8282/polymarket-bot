@@ -68,7 +68,8 @@ def _candidate(
         "risk_adjusted_daily_roi_pct": roi,
         "estimated_daily_gross_usd": roi if gross is None else gross,
         "estimated_reward_share_pct": reward_share,
-        "daily_reward_usd": 40.0,
+        "daily_reward_usd": 80.0,
+        "stable_lp_min_daily_reward_usdc": 50.0,
         "probe_capital_usd": 100.0,
         "rewards_min_size_shares": 25.0,
         "front_depth_status": depth_status,
@@ -179,6 +180,29 @@ def test_proposal_rejects_unverified_risky_live_and_stale_candidates() -> None:
     assert proposal["unassigned_candidates"][0]["reason_codes_by_account"] == {
         "1": "front_depth_below_account_min"
     }
+
+
+def test_proposal_defensively_rejects_directional_and_low_reward_candidates() -> None:
+    directional = _candidate(1)
+    directional["question"] = "BTC Up or Down - September 7, 3PM ET"
+    directional["slug"] = "btc-updown-15m-1800000000"
+    directional["directional_up_down_market"] = False
+    low_reward = _candidate(2)
+    low_reward["daily_reward_usd"] = 49.0
+
+    proposal = build_stable_rotation_proposal(
+        _observer(directional, low_reward, _candidate(3)),
+        [_account(1)],
+        now_ts=NOW,
+    )
+
+    assert [row["token_id"] for row in proposal["accounts"][0]["add"]] == ["3"]
+    rejected = {
+        row["token_id"]: set(row["reason_codes"])
+        for row in proposal["rejected_candidates"]
+    }
+    assert "directional_up_down_observe_only" in rejected["1"]
+    assert "daily_reward_below_stable_minimum" in rejected["2"]
 
 
 def test_account_canary_is_separate_from_full_additions() -> None:

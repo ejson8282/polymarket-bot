@@ -879,6 +879,37 @@ def test_hard_review_retires_on_first_fresh_sample():
     assert state["markets"]["101"]["hard_failure"] is True
 
 
+def test_directional_up_down_review_is_a_hard_retirement_reason():
+    now = time.time()
+    state = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [],
+                "keep": [],
+                "review": [
+                    _market(
+                        "101",
+                        "102",
+                        action="review_rotate",
+                        reason_codes=["directional_up_down_observe_only"],
+                    )
+                ],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        previous_state={},
+        now_ts=now + 1,
+    )
+
+    assert state["retire"][0]["token_id"] == "101"
+    assert state["markets"]["101"]["hard_failure"] is True
+
+
 def test_stale_or_missing_proposal_never_adds_or_retires():
     now = time.time()
     previous_sample = now - 600

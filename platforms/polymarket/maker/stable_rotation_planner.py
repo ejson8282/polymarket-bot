@@ -16,6 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+try:
+    from .stable_market_lifecycle import (
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        is_directional_up_down_market,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from stable_market_lifecycle import (
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        is_directional_up_down_market,
+    )
+
 
 SCHEMA_VERSION = 3
 OUTPUT_NAME = "stable_rotation_proposal.json"
@@ -91,7 +102,18 @@ def _public_market_fields(row: Mapping[str, Any]) -> dict[str, Any]:
         "paired_token_id": paired_token_id,
         "question": str(row.get("question") or "").strip(),
         "slug": str(row.get("slug") or "").strip(),
+        "event_slug": str(row.get("event_slug") or "").strip(),
         "market_url": str(row.get("market_url") or "").strip(),
+        "market_type": str(row.get("market_type") or "").strip(),
+        "directional_up_down_market": bool(
+            row.get("directional_up_down_market") is True
+        ),
+        "stable_market_family": str(
+            row.get("stable_market_family") or "standard"
+        ).strip(),
+        "aggressive_lp_review_status": str(
+            row.get("aggressive_lp_review_status") or "not_evaluated"
+        ).strip(),
     }
 
 
@@ -126,6 +148,21 @@ def _candidate_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             4,
         ),
         "admission_level": str(row.get("admission_level") or "unknown"),
+        "stable_admission_level": str(
+            row.get("stable_admission_level")
+            or row.get("admission_level")
+            or "unknown"
+        ),
+        "stable_strategy_lane": str(
+            row.get("stable_strategy_lane") or "unknown"
+        ),
+        "stable_lp_min_daily_reward_usdc": round(
+            _number(
+                row.get("stable_lp_min_daily_reward_usdc"),
+                DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+            ),
+            2,
+        ),
     }
 
 
@@ -153,7 +190,7 @@ def _account_execution_evidence(
             continue
         if host_id and evidence_host != host_id:
             continue
-        return {
+        result = {
             "account_index": account_index,
             "account_uid_key": evidence_uid,
             "host_id": evidence_host,
@@ -197,6 +234,17 @@ def _account_execution_evidence(
                 and re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower())
             },
         }
+        if execution.get("canary_budget_usdc") is not None:
+            result["canary_budget_usdc"] = round(
+                _number(execution.get("canary_budget_usdc")),
+                2,
+            )
+        if execution.get("canary_front_depth_floor_usdc") is not None:
+            result["canary_front_depth_floor_usdc"] = round(
+                _number(execution.get("canary_front_depth_floor_usdc")),
+                2,
+            )
+        return result
     return None
 
 
@@ -434,6 +482,17 @@ def _global_rejections(
         reasons.append("market_archived_or_unknown")
     if row.get("accepting_orders") is not True:
         reasons.append("market_not_accepting_orders")
+    if (
+        row.get("directional_up_down_market") is True
+        or is_directional_up_down_market(row)
+    ):
+        reasons.append("directional_up_down_observe_only")
+    stable_min_daily_reward = _number(
+        row.get("stable_lp_min_daily_reward_usdc"),
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+    )
+    if _number(row.get("daily_reward_usd"), -1.0) < stable_min_daily_reward:
+        reasons.append("daily_reward_below_stable_minimum")
     market_end_ts = _number(row.get("market_end_ts"), -1.0)
     if market_end_ts <= now_ts:
         reasons.append("market_expired_or_end_unknown")

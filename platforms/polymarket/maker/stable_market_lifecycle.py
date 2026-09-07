@@ -7,6 +7,7 @@ gate.  This module performs no network or filesystem writes.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any, Mapping, Sequence
@@ -16,8 +17,18 @@ STATE_VERSION = 4
 MAX_ACTIVE_CANARIES_LIMIT = 10
 MAX_CANARY_PRINCIPAL_FRACTION = 0.10
 MAX_CANARY_USDC = 100.0
+DEFAULT_STABLE_MIN_DAILY_REWARD_USDC = 50.0
+DEFAULT_STABLE_MAX_FILL_RISK = 35.0
 MIN_PROMOTION_SCORING_SAMPLES = 3
 MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC = 360.0
+_DIRECTIONAL_UP_DOWN_TEXT_RE = re.compile(
+    r"\bup\s*(?:or|/)\s*down\b",
+    re.IGNORECASE,
+)
+_DIRECTIONAL_UP_DOWN_SLUG_RE = re.compile(
+    r"(?:^|[-_])up(?:[-_]?or[-_]?|[-_])?down(?:[-_]|$)",
+    re.IGNORECASE,
+)
 HARD_RETIRE_REASONS = frozenset(
     {
         "market_not_active",
@@ -28,8 +39,34 @@ HARD_RETIRE_REASONS = frozenset(
         "market_ends_too_soon",
         "live_market_observe_only",
         "weather_observe_only",
+        "directional_up_down_observe_only",
     }
 )
+
+
+def is_directional_up_down_market(row: Mapping[str, Any]) -> bool:
+    """Identify binary direction markets for stable-LP exclusion."""
+
+    parts = [row.get("question"), row.get("title")]
+    slugs = [row.get("slug"), row.get("event_slug"), row.get("eventSlug")]
+    events = row.get("events")
+    if isinstance(events, str):
+        try:
+            events = json.loads(events)
+        except (TypeError, ValueError):
+            events = []
+    if isinstance(events, Sequence) and not isinstance(events, (str, bytes)):
+        for event in events:
+            if isinstance(event, Mapping):
+                parts.extend((event.get("question"), event.get("title")))
+                slugs.append(event.get("slug"))
+    text = " ".join(str(value or "") for value in parts)
+    if _DIRECTIONAL_UP_DOWN_TEXT_RE.search(text):
+        return True
+    return any(
+        _DIRECTIONAL_UP_DOWN_SLUG_RE.search(str(value or ""))
+        for value in slugs
+    )
 
 
 def _number(value: Any, default: float = 0.0) -> float:
