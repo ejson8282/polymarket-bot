@@ -655,6 +655,11 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
             "fill risk is invalid",
         ),
         (
+            {"fill_risk": -1},
+            {},
+            "fill risk is invalid",
+        ),
+        (
             {},
             {"max_fill_risk": "infinity"},
             "fill risk threshold is invalid",

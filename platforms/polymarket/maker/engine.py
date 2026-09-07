@@ -8290,7 +8290,7 @@ class PolyLPSMulti:
             fill_risk = float(candidate.get("fill_risk"))
         except (TypeError, ValueError) as exc:
             raise ValueError("replacement fill risk is invalid") from exc
-        if not math.isfinite(fill_risk):
+        if not math.isfinite(fill_risk) or fill_risk < 0 or fill_risk > 100:
             raise ValueError("replacement fill risk is invalid")
         roi = float(candidate.get("risk_adjusted_daily_roi_pct") or 0.0)
         max_fill_risk_values = [DEFAULT_STABLE_MAX_FILL_RISK]

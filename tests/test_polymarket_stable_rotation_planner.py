@@ -229,15 +229,19 @@ def test_proposal_hard_caps_stable_thresholds_despite_claimed_full_admission() -
             "account_admission": [{"account_index": 1, "level": "full"}],
         }
     )
+    negative_fill_risk = _candidate(4, fill_risk=-1.0)
+    negative_fill_risk["account_admission"] = [
+        {"account_index": 1, "level": "full"}
+    ]
 
     proposal = build_stable_rotation_proposal(
-        _observer(low_reward, risky, invalid, _candidate(4)),
+        _observer(low_reward, risky, invalid, negative_fill_risk, _candidate(5)),
         [_account(1)],
         now_ts=NOW,
         max_fill_risk=99.0,
     )
 
-    assert [row["token_id"] for row in proposal["accounts"][0]["add"]] == ["4"]
+    assert [row["token_id"] for row in proposal["accounts"][0]["add"]] == ["5"]
     rejected = {
         row["token_id"]: set(row["reason_codes"])
         for row in proposal["rejected_candidates"]
@@ -246,6 +250,7 @@ def test_proposal_hard_caps_stable_thresholds_despite_claimed_full_admission() -
     assert "fill_risk_above_stable_limit" in rejected["2"]
     assert "stable_daily_reward_threshold_invalid" in rejected["3"]
     assert "stable_fill_risk_threshold_invalid" in rejected["3"]
+    assert "fill_risk_invalid" in rejected["4"]
 
 
 def test_account_canary_is_separate_from_full_additions() -> None:

@@ -537,7 +537,7 @@ def _global_rejections(
             row_max_fill_risk,
         )
     fill_risk = _finite_number_or_none(row.get("fill_risk"))
-    if fill_risk is None:
+    if fill_risk is None or fill_risk < 0 or fill_risk > 100:
         reasons.append("fill_risk_invalid")
     elif fill_risk >= effective_max_fill_risk:
         reasons.append("fill_risk_above_stable_limit")
