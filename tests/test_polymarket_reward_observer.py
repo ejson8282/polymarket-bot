@@ -131,6 +131,9 @@ def _account_policy(
         max_quote_shares=Decimal("0"),
         max_notional_per_order=Decimal("0"),
         min_front_bid_notional_usdc=min_depth,
+        canary_principal_usdc=available,
+        canary_principal_fraction=Decimal("0.10"),
+        canary_max_usdc=Decimal("100"),
         configured_tokens=tokens,
         market_runtime=(
             {
@@ -160,13 +163,14 @@ def _observe_with_history(
     *,
     policy: ObserverAccountPolicy,
     book: dict,
+    market: dict | None = None,
 ) -> dict:
     now = [1_800_000_000.0]
     monkeypatch.setattr(reward_observer.time, "time", lambda: now[0])
     state = {}
     for _ in range(12):
         state = observe_reward_markets(
-            [_market()],
+            [market or _market()],
             lambda _token: book,
             account_policies=[policy],
         )
@@ -202,6 +206,29 @@ def test_observer_includes_rewards_below_old_hundred_dollar_gate() -> None:
     assert candidate["market_end_ts"] == reward_observer._timestamp(
         "2099-12-31T23:59:00Z"
     )
+
+
+def test_stable_observer_policy_cannot_relax_below_safety_defaults(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "config_1.json").write_text(
+        json.dumps(
+            {
+                "auto_curator": {
+                    "reward_observer": {
+                        "stable_min_daily_reward_usdc": 10,
+                        "stable_max_fill_risk": 99,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = reward_observer._observer_settings(tmp_path)
+
+    assert settings["stable_min_daily_reward_usdc"] == Decimal("50.0")
+    assert settings["stable_max_fill_risk"] == Decimal("35.0")
 
 
 def test_observer_reserves_book_analysis_for_efficient_smaller_reward_pools() -> None:
@@ -485,6 +512,8 @@ def test_account_with_fresh_capital_and_deep_book_gets_full_admission(
             "level": "full",
             "reason_codes": ["account_executable_and_verified"],
             "canary_requires_scoring_validation": False,
+            "canary_budget_usdc": 20.0,
+            "canary_front_depth_floor_usdc": 20.0,
         }
     ]
 
@@ -506,6 +535,118 @@ def test_shallow_but_executable_book_gets_canary_not_full(
     assert "front_depth_below_full_minimum" in candidate["account_admission"][0][
         "reason_codes"
     ]
+    assert candidate["account_admission"][0]["canary_budget_usdc"] == 10.0
+    assert candidate["account_admission"][0][
+        "canary_front_depth_floor_usdc"
+    ] == 10.0
+
+
+def test_book_below_account_canary_depth_floor_is_rejected(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(),
+        book=_deep_book("5"),
+    )
+
+    assert candidate["admission_level"] == "reject"
+    assert "front_depth_below_canary_minimum" in candidate[
+        "account_admission"
+    ][0]["reason_codes"]
+
+
+def test_medium_fill_risk_is_rejected_instead_of_routed_to_canary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    market = _market()
+    market["oneDayPriceChange"] = "0.02"
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(),
+        book=_deep_book("100"),
+        market=market,
+    )
+
+    assert 35 <= candidate["fill_risk"] < 65
+    assert candidate["admission_level"] == "reject"
+    assert "fill_risk_above_stable_limit" in candidate[
+        "account_admission"
+    ][0]["reason_codes"]
+
+
+def test_low_reward_market_remains_visible_but_is_rejected_for_stable_lp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(),
+        book=_deep_book("100"),
+        market=_market(reward="49"),
+    )
+
+    assert candidate["daily_reward_usd"] == 49.0
+    assert candidate["stable_lp_min_daily_reward_usdc"] == 50.0
+    assert candidate["admission_level"] == "reject"
+    assert "daily_reward_below_stable_minimum" in candidate[
+        "account_admission"
+    ][0]["reason_codes"]
+
+
+@pytest.mark.parametrize(
+    ("question", "slug"),
+    [
+        ("BTC Up or Down - September 7, 3PM ET", "btc-market"),
+        ("Bitcoin direction over the next 15 minutes?", "btc-updown-15m-1"),
+        ("Bitcoin direction over the next hour?", "btc-up-down-1h-1"),
+        ("ETH up/down in the next hour?", "eth-market"),
+    ],
+)
+def test_directional_up_down_classifier_covers_market_formats(
+    question: str,
+    slug: str,
+) -> None:
+    market = _market(slug=slug)
+    market["question"] = question
+
+    assert reward_observer.is_directional_up_down_market(market) is True
+
+
+def test_directional_classifier_reads_nested_event_slug() -> None:
+    market = _market(slug="yes")
+    market["question"] = "Will BTC finish higher?"
+    market["events"] = [{"slug": "btc-updown-4h-1800000000"}]
+
+    assert reward_observer.is_directional_up_down_market(market) is True
+
+
+def test_directional_up_down_market_never_enters_stable_canary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    market = _market(slug="btc-updown-15m-1800000000")
+    market["question"] = "BTC Up or Down - September 7, 3PM ET"
+    candidate = _observe_with_history(
+        tmp_path,
+        monkeypatch,
+        policy=_account_policy(),
+        book=_deep_book("100"),
+        market=market,
+    )
+
+    assert candidate["directional_up_down_market"] is True
+    assert candidate["market_type"] == "directional_up_down"
+    assert candidate["aggressive_lp_review_status"] == "separate_pipeline_required"
+    assert candidate["admission_level"] == "reject"
+    assert "directional_up_down_observe_only" in candidate[
+        "account_admission"
+    ][0]["reason_codes"]
 
 
 def test_configured_market_with_failed_official_scoring_is_rejected(

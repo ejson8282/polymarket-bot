@@ -16,6 +16,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+try:
+    from .stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        is_directional_up_down_market,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from stable_market_lifecycle import (
+        DEFAULT_STABLE_MAX_FILL_RISK,
+        DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        is_directional_up_down_market,
+    )
+
 
 SCHEMA_VERSION = 3
 OUTPUT_NAME = "stable_rotation_proposal.json"
@@ -23,7 +36,7 @@ DEFAULT_MAX_OBSERVER_AGE_SEC = 900.0
 DEFAULT_MAX_DEPTH_AGE_SEC = 600.0
 DEFAULT_MAX_ADD_PER_ACCOUNT = 5
 DEFAULT_MIN_STABILITY_SCORE = 70.0
-DEFAULT_MAX_FILL_RISK = 35.0
+DEFAULT_MAX_FILL_RISK = DEFAULT_STABLE_MAX_FILL_RISK
 DEFAULT_MIN_RISK_ADJUSTED_DAILY_ROI_PCT = 0.1
 DEFAULT_MIN_SPORTS_LEAD_SEC = 3 * 60 * 60
 DEFAULT_MIN_MARKET_TIME_TO_END_SEC = 12 * 60 * 60
@@ -42,6 +55,14 @@ def _number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return number if math.isfinite(number) else default
+
+
+def _finite_number_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _timestamp(value: Any) -> float | None:
@@ -91,7 +112,18 @@ def _public_market_fields(row: Mapping[str, Any]) -> dict[str, Any]:
         "paired_token_id": paired_token_id,
         "question": str(row.get("question") or "").strip(),
         "slug": str(row.get("slug") or "").strip(),
+        "event_slug": str(row.get("event_slug") or "").strip(),
         "market_url": str(row.get("market_url") or "").strip(),
+        "market_type": str(row.get("market_type") or "").strip(),
+        "directional_up_down_market": bool(
+            row.get("directional_up_down_market") is True
+        ),
+        "stable_market_family": str(
+            row.get("stable_market_family") or "standard"
+        ).strip(),
+        "aggressive_lp_review_status": str(
+            row.get("aggressive_lp_review_status") or "not_evaluated"
+        ).strip(),
     }
 
 
@@ -126,6 +158,21 @@ def _candidate_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             4,
         ),
         "admission_level": str(row.get("admission_level") or "unknown"),
+        "stable_admission_level": str(
+            row.get("stable_admission_level")
+            or row.get("admission_level")
+            or "unknown"
+        ),
+        "stable_strategy_lane": str(
+            row.get("stable_strategy_lane") or "unknown"
+        ),
+        "stable_lp_min_daily_reward_usdc": round(
+            _number(
+                row.get("stable_lp_min_daily_reward_usdc"),
+                DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+            ),
+            2,
+        ),
     }
 
 
@@ -153,7 +200,7 @@ def _account_execution_evidence(
             continue
         if host_id and evidence_host != host_id:
             continue
-        return {
+        result = {
             "account_index": account_index,
             "account_uid_key": evidence_uid,
             "host_id": evidence_host,
@@ -197,6 +244,17 @@ def _account_execution_evidence(
                 and re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower())
             },
         }
+        if execution.get("canary_budget_usdc") is not None:
+            result["canary_budget_usdc"] = round(
+                _number(execution.get("canary_budget_usdc")),
+                2,
+            )
+        if execution.get("canary_front_depth_floor_usdc") is not None:
+            result["canary_front_depth_floor_usdc"] = round(
+                _number(execution.get("canary_front_depth_floor_usdc")),
+                2,
+            )
+        return result
     return None
 
 
@@ -434,6 +492,55 @@ def _global_rejections(
         reasons.append("market_archived_or_unknown")
     if row.get("accepting_orders") is not True:
         reasons.append("market_not_accepting_orders")
+    if (
+        row.get("directional_up_down_market") is True
+        or is_directional_up_down_market(row)
+    ):
+        reasons.append("directional_up_down_observe_only")
+    if (
+        row.get("weather_market") is True
+        or str(row.get("market_type") or "").strip().lower() == "weather"
+        or str(row.get("stable_market_family") or "").strip().lower()
+        == "weather"
+    ):
+        reasons.append("weather_observe_only")
+    supplied_min_daily_reward = _finite_number_or_none(
+        row.get(
+            "stable_lp_min_daily_reward_usdc",
+            DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+        )
+    )
+    if supplied_min_daily_reward is None:
+        reasons.append("stable_daily_reward_threshold_invalid")
+        stable_min_daily_reward = DEFAULT_STABLE_MIN_DAILY_REWARD_USDC
+    else:
+        stable_min_daily_reward = max(
+            DEFAULT_STABLE_MIN_DAILY_REWARD_USDC,
+            supplied_min_daily_reward,
+        )
+    daily_reward = _finite_number_or_none(row.get("daily_reward_usd"))
+    if daily_reward is None:
+        reasons.append("daily_reward_invalid")
+    elif daily_reward < stable_min_daily_reward:
+        reasons.append("daily_reward_below_stable_minimum")
+    supplied_max_fill_risk = _finite_number_or_none(max_fill_risk)
+    row_max_fill_risk = _finite_number_or_none(
+        row.get("stable_lp_max_fill_risk", DEFAULT_MAX_FILL_RISK)
+    )
+    if supplied_max_fill_risk is None or row_max_fill_risk is None:
+        reasons.append("stable_fill_risk_threshold_invalid")
+        effective_max_fill_risk = DEFAULT_MAX_FILL_RISK
+    else:
+        effective_max_fill_risk = min(
+            DEFAULT_MAX_FILL_RISK,
+            supplied_max_fill_risk,
+            row_max_fill_risk,
+        )
+    fill_risk = _finite_number_or_none(row.get("fill_risk"))
+    if fill_risk is None or fill_risk < 0 or fill_risk > 100:
+        reasons.append("fill_risk_invalid")
+    elif fill_risk >= effective_max_fill_risk:
+        reasons.append("fill_risk_above_stable_limit")
     market_end_ts = _number(row.get("market_end_ts"), -1.0)
     if market_end_ts <= now_ts:
         reasons.append("market_expired_or_end_unknown")
@@ -466,8 +573,6 @@ def _global_rejections(
                 reasons.append("stable_lp_not_recommended")
         if _number(row.get("stability_score")) < min_stability_score:
             reasons.append("stability_below_min")
-        if _number(row.get("fill_risk"), 100.0) >= max_fill_risk:
-            reasons.append("fill_risk_above_stable_limit")
         if (
             _number(row.get("risk_adjusted_daily_roi_pct"))
             < min_risk_adjusted_daily_roi_pct
@@ -688,6 +793,8 @@ def _hard_retire_reasons(reasons: Sequence[str]) -> bool:
             "market_not_accepting_orders",
             "market_expired_or_end_unknown",
             "live_market_observe_only",
+            "weather_observe_only",
+            "directional_up_down_observe_only",
         }.intersection(reasons)
     )
 

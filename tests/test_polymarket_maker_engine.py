@@ -530,6 +530,8 @@ def test_runtime_dashboard_add_revalidates_fresh_observer(tmp_path):
                         "verification_recommended": True,
                         "stable_lp_recommended": True,
                         "stable_lp_rejection_reasons": [],
+                        "daily_reward_usd": 80,
+                        "stable_lp_min_daily_reward_usdc": 50,
                         "weather_market": False,
                         "market_type": "always_on",
                         "market_phase": "normal",
@@ -612,6 +614,112 @@ def test_runtime_dashboard_add_rejects_no_longer_eligible_market(tmp_path):
         raise AssertionError("ineligible market must not be hot-added")
 
 
+@pytest.mark.parametrize(
+    ("candidate_updates", "policy_updates", "message"),
+    [
+        (
+            {
+                "question": "BTC Up or Down - September 7, 3PM ET",
+                "slug": "btc-updown-15m-1800000000",
+                "directional_up_down_market": False,
+            },
+            {},
+            "directional up/down",
+        ),
+        (
+            {"daily_reward_usd": 49},
+            {},
+            "daily reward is below stable minimum",
+        ),
+        (
+            {
+                "daily_reward_usd": 20,
+                "stable_lp_min_daily_reward_usdc": 10,
+            },
+            {},
+            "daily reward is below stable minimum",
+        ),
+        (
+            {"fill_risk": 50, "stable_lp_max_fill_risk": 99},
+            {"max_fill_risk": 99},
+            "fill risk is above stable limit",
+        ),
+        (
+            {"stable_lp_min_daily_reward_usdc": "nan"},
+            {},
+            "daily reward threshold is invalid",
+        ),
+        (
+            {"fill_risk": "infinity"},
+            {},
+            "fill risk is invalid",
+        ),
+        (
+            {"fill_risk": -1},
+            {},
+            "fill risk is invalid",
+        ),
+        (
+            {},
+            {"max_fill_risk": "infinity"},
+            "fill risk threshold is invalid",
+        ),
+    ],
+)
+def test_runtime_add_defensively_rejects_stable_policy_exclusions(
+    tmp_path,
+    candidate_updates,
+    policy_updates,
+    message,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine.min_front_bid_notional_usdc = Decimal("2000")
+    engine._eligibility_observer_path = tmp_path / "reward_observer_state.json"
+    candidate = {
+        "token_id": "101",
+        "paired_token_id": "102",
+        "condition_id": "condition",
+        "question": "A normal market?",
+        "slug": "normal-market",
+        "verification_recommended": True,
+        "stable_lp_recommended": True,
+        "daily_reward_usd": 80,
+        "stable_lp_min_daily_reward_usdc": 50,
+        "weather_market": False,
+        "market_type": "always_on",
+        "market_phase": "normal",
+        "market_active": True,
+        "market_closed": False,
+        "market_archived": False,
+        "accepting_orders": True,
+        "market_end_ts": time.time() + 86400,
+        "front_depth_status": "verified",
+        "front_depth_observed_at": time.time(),
+        "yes_front_bid_notional_usd": 6000,
+        "no_front_bid_notional_usd": 6000,
+        "stability_score": 90,
+        "fill_risk": 20,
+        "risk_adjusted_daily_roi_pct": 2,
+    }
+    candidate.update(candidate_updates)
+    engine._eligibility_observer_path.write_text(
+        json.dumps({"generated_at": time.time(), "candidates": [candidate]}),
+        encoding="utf-8",
+    )
+
+    policy = {"max_observer_age_sec": 900, "max_depth_age_sec": 600}
+    policy.update(policy_updates)
+    with pytest.raises(ValueError, match=message):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "101",
+                "paired_token_id": "102",
+                "condition_id": "condition",
+            },
+            policy,
+        )
+
+
 def test_runtime_dashboard_add_is_blocked_in_multi_account_roster_mode():
     engine = object.__new__(PolyLPSMulti)
     engine._runtime_market_updates_enabled = False
@@ -638,6 +746,8 @@ def test_stable_replacement_revalidates_account_depth(tmp_path):
                         "verification_recommended": True,
                         "stable_lp_recommended": True,
                         "stable_lp_rejection_reasons": [],
+                        "daily_reward_usd": 80,
+                        "stable_lp_min_daily_reward_usdc": 50,
                         "weather_market": False,
                         "market_type": "always_on",
                         "market_phase": "normal",
@@ -696,6 +806,8 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
                         "paired_token_id": "202",
                         "condition_id": "0xabc",
                         "stable_lp_recommended": False,
+                        "daily_reward_usd": 80,
+                        "stable_lp_min_daily_reward_usdc": 50,
                         "weather_market": False,
                         "market_type": "always_on",
                         "market_phase": "normal",
@@ -709,7 +821,7 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
                         "yes_front_bid_notional_usd": 100,
                         "no_front_bid_notional_usd": 100,
                         "stability_score": 60,
-                        "fill_risk": 50,
+                        "fill_risk": 20,
                         "risk_adjusted_daily_roi_pct": 0.2,
                         "account_admission": [
                             {
@@ -727,6 +839,7 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
                                 "host_id": "vps1",
                                 "executable": True,
                                 "executable_q_min": 15,
+                                "canary_front_depth_floor_usdc": 10,
                             }
                         ],
                         "canary_proposal_eligible_account_indexes": [1],
@@ -752,6 +865,39 @@ def test_stable_lifecycle_canary_revalidates_account_q_without_full_depth(
     )
 
     assert candidate["account_admission_level"] == "canary"
+
+    payload = json.loads(engine._eligibility_observer_path.read_text())
+    payload["candidates"][0]["yes_front_bid_notional_usd"] = 9
+    engine._eligibility_observer_path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="below canary minimum"):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "201",
+                "paired_token_id": "202",
+                "condition_id": "0xabc",
+            },
+            {"max_observer_age_sec": 900, "max_depth_age_sec": 600},
+            allow_canary=True,
+            require_account_execution=True,
+        )
+
+    payload["candidates"][0]["yes_front_bid_notional_usd"] = 100
+    payload["candidates"][0]["fill_risk"] = 35
+    engine._eligibility_observer_path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="fill risk is above stable limit"):
+        engine._validate_stable_replacement_candidate(
+            {
+                "token_id": "201",
+                "paired_token_id": "202",
+                "condition_id": "0xabc",
+            },
+            {"max_observer_age_sec": 900, "max_depth_age_sec": 600},
+            allow_canary=True,
+            require_account_execution=True,
+        )
+
+    payload["candidates"][0]["fill_risk"] = 20
+    engine._eligibility_observer_path.write_text(json.dumps(payload))
 
     engine._stable_lifecycle_account_uid_key = "b" * 16
     with pytest.raises(ValueError, match="account_execution_identity_mismatch"):
