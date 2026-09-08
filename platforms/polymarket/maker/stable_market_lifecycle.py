@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 
@@ -78,6 +79,14 @@ def _number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return number if math.isfinite(number) else default
+
+
+def _decimal_number(value: Any) -> Decimal | None:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
 
 
 def account_admission(
@@ -314,33 +323,35 @@ def competitive_rotation_is_better(
 ) -> bool:
     """Require finite ROI evidence and both competitive improvement gates."""
 
-    candidate_roi = _number(
-        candidate.get("risk_adjusted_daily_roi_pct"),
-        math.nan,
-    )
-    incumbent_roi = _number(
-        incumbent.get("risk_adjusted_daily_roi_pct"),
-        math.nan,
-    )
-    if not math.isfinite(candidate_roi) or not math.isfinite(incumbent_roi):
+    candidate_roi = _decimal_number(candidate.get("risk_adjusted_daily_roi_pct"))
+    incumbent_roi = _decimal_number(incumbent.get("risk_adjusted_daily_roi_pct"))
+    if candidate_roi is None or incumbent_roi is None:
         return False
-    relative_improvement = max(
-        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
-        _number(
-            min_improvement_fraction,
-            MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
-        ),
+    relative_improvement = Decimal(
+        str(
+            max(
+                MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+                _number(
+                    min_improvement_fraction,
+                    MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+                ),
+            )
+        )
     )
-    absolute_improvement = max(
-        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
-        _number(
-            min_absolute_roi_pct,
-            MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
-        ),
+    absolute_improvement = Decimal(
+        str(
+            max(
+                MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+                _number(
+                    min_absolute_roi_pct,
+                    MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+                ),
+            )
+        )
     )
     improvement = candidate_roi - incumbent_roi
     relative_threshold = (
-        incumbent_roi * (1.0 + relative_improvement)
+        incumbent_roi * (Decimal("1") + relative_improvement)
         if incumbent_roi > 0
         else incumbent_roi + absolute_improvement
     )

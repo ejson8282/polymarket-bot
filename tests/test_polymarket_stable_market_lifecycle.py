@@ -5,6 +5,7 @@ import time
 from platforms.polymarket.maker.stable_market_lifecycle import (
     build_lifecycle_plan,
     candidate_is_executable_for_account,
+    competitive_rotation_is_better,
 )
 
 
@@ -76,6 +77,17 @@ def _scoring_evidence(
             paired_token_id: "b" * 64,
         },
     }
+
+
+def test_competitive_rotation_exact_absolute_boundary_is_eligible():
+    assert competitive_rotation_is_better(
+        {"risk_adjusted_daily_roi_pct": 0.30},
+        {"risk_adjusted_daily_roi_pct": 0.20},
+    )
+    assert not competitive_rotation_is_better(
+        {"risk_adjusted_daily_roi_pct": 0.2999},
+        {"risk_adjusted_daily_roi_pct": 0.20},
+    )
 
 
 def _canary_scoring_step(
