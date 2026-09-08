@@ -24,6 +24,34 @@ def _proposal(*, generated_at: float, account: dict) -> dict:
     }
 
 
+def _rotation_candidate(
+    token_id: str,
+    paired_token_id: str,
+    *,
+    roi: float,
+    account_uid_key: str = "account-a",
+    host_id: str = "vps1",
+) -> dict:
+    return _market(
+        token_id,
+        paired_token_id,
+        stable_admission_level="canary",
+        risk_adjusted_daily_roi_pct=roi,
+        estimated_daily_gross_usd=roi * 10,
+        executable_reward_share_pct=2.5,
+        executable_q_min=12.5,
+        rewards_min_size_shares=10,
+        stability_score=50,
+        fill_risk=20,
+        account_execution_evidence={
+            "account_index": 1,
+            "account_uid_key": account_uid_key,
+            "host_id": host_id,
+            "executable_q_min": 12.5,
+        },
+    )
+
+
 def _scoring_evidence(
     token_id: str,
     paired_token_id: str,
@@ -288,6 +316,384 @@ def test_lifecycle_retires_canary_above_current_account_budget():
             "reason_codes": ["canary_reward_min_above_budget"],
         }
     ]
+
+
+def test_competitive_rotation_retires_worst_canary_after_three_samples():
+    now = time.time()
+    previous = {}
+    for offset in range(3):
+        generated_at = now + offset * 300
+        previous = build_lifecycle_plan(
+            _proposal(
+                generated_at=generated_at,
+                account={
+                    "account_index": 1,
+                    "account_uid_key": "account-a",
+                    "host_id": "vps1",
+                    "add": [],
+                    "canary": [
+                        _rotation_candidate("301", "302", roi=0.65)
+                    ],
+                    "keep": [
+                        _market(
+                            "101",
+                            "102",
+                            risk_adjusted_daily_roi_pct=0.40,
+                            estimated_daily_gross_usd=4,
+                        ),
+                        _market(
+                            "201",
+                            "202",
+                            risk_adjusted_daily_roi_pct=0.60,
+                            estimated_daily_gross_usd=6,
+                        ),
+                    ],
+                    "review": [],
+                },
+            ),
+            account_index=1,
+            configured_token_ids={"101", "102", "201", "202"},
+            managed_token_ids={"101", "201"},
+            managed_market_stages={"101": "canary", "201": "canary"},
+            previous_state=previous,
+            now_ts=generated_at + 1,
+            max_active_canaries=2,
+            canary_budget_usdc=100,
+            expected_account_uid_key="account-a",
+            expected_host_id="vps1",
+            competitive_rotation_enabled=True,
+        )
+        assert bool(previous["retire"]) is (offset == 2)
+
+    assert previous["retire"] == [
+        {
+            "token_id": "101",
+            "hard_failure": False,
+            "reason_codes": ["competitive_rotation_better_candidate"],
+            "replacement_token_id": "301",
+            "incumbent_risk_adjusted_daily_roi_pct": 0.4,
+            "candidate_risk_adjusted_daily_roi_pct": 0.65,
+        }
+    ]
+    assert previous["markets"]["101"]["status"] == "rotation_due"
+    selected = previous["competitive_rotation"]["selected"][0]
+    assert {
+        key: selected[key]
+        for key in (
+            "retire_token_id",
+            "replacement_token_id",
+            "incumbent_risk_adjusted_daily_roi_pct",
+            "candidate_risk_adjusted_daily_roi_pct",
+            "improvement_fraction",
+            "consecutive_executable_samples",
+        )
+    } == {
+        "retire_token_id": "101",
+        "replacement_token_id": "301",
+        "incumbent_risk_adjusted_daily_roi_pct": 0.4,
+        "candidate_risk_adjusted_daily_roi_pct": 0.65,
+        "improvement_fraction": 0.625,
+        "consecutive_executable_samples": 3,
+    }
+    assert selected["replacement_market"]["token_id"] == "301"
+    assert previous["competitive_rotation"]["status"] == "rotation_due"
+
+
+def test_competitive_rotation_is_disabled_by_default():
+    now = time.time()
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [
+                    _market("101", "102", risk_adjusted_daily_roi_pct=0.1)
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state={},
+        now_ts=now + 1,
+        max_active_canaries=1,
+        canary_budget_usdc=100,
+        competitive_rotation_samples=3,
+    )
+
+    assert plan["retire"] == []
+    assert plan["rotation_candidates"] == {}
+    assert plan["competitive_rotation"]["enabled"] is False
+    assert plan["competitive_rotation"]["status"] == "disabled"
+
+
+def test_competitive_rotation_requires_material_improvement():
+    now = time.time()
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+    }
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=0.51)],
+                "keep": [
+                    _market("101", "102", risk_adjusted_daily_roi_pct=0.40)
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=1,
+        canary_budget_usdc=100,
+        competitive_rotation_enabled=True,
+    )
+
+    assert plan["rotation_candidates"]["301"][
+        "consecutive_executable_samples"
+    ] == 3
+    assert plan["retire"] == []
+    assert plan["competitive_rotation"]["selected"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "improvement_below_threshold"
+    )
+
+
+def test_competitive_rotation_streak_resets_after_missing_sample():
+    now = time.time()
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 600,
+            }
+        },
+    }
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [
+                    _market("101", "102", risk_adjusted_daily_roi_pct=0.4)
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=1,
+        canary_budget_usdc=100,
+        competitive_rotation_enabled=True,
+    )
+
+    assert plan["rotation_candidates"]["301"][
+        "consecutive_executable_samples"
+    ] == 1
+    assert plan["retire"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "waiting_for_candidate_samples"
+    )
+
+
+def test_competitive_rotation_defers_to_existing_retirement():
+    now = time.time()
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+    }
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [
+                    _market("201", "202", risk_adjusted_daily_roi_pct=0.5)
+                ],
+                "review": [
+                    _market(
+                        "101",
+                        "102",
+                        action="review_retire",
+                        reason_codes=["market_not_accepting_orders"],
+                    )
+                ],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102", "201", "202"},
+        managed_token_ids={"101", "201"},
+        managed_market_stages={"101": "canary", "201": "canary"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=2,
+        canary_budget_usdc=100,
+        competitive_rotation_enabled=True,
+    )
+
+    assert [row["token_id"] for row in plan["retire"]] == ["101"]
+    assert plan["competitive_rotation"]["selected"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "existing_retirement_takes_priority"
+    )
+
+
+def test_competitive_rotation_defers_when_promotion_frees_slot():
+    now = time.time()
+    prior_scoring_ids = [f"{index:064x}" for index in (1, 2)]
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "account_uid_key": "account-a",
+        "host_id": "vps1",
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+        "markets": {
+            "101": {
+                "last_scoring_sample_id": prior_scoring_ids[-1],
+                "consecutive_scoring_sample_ids": prior_scoring_ids,
+            }
+        },
+    }
+    promoted = _market(
+        "101",
+        "102",
+        risk_adjusted_daily_roi_pct=0.40,
+        account_execution_evidence=_scoring_evidence(
+            "101",
+            "102",
+            sample_id=f"{3:064x}",
+            observed_at=now,
+            account_uid_key="account-a",
+            host_id="vps1",
+        ),
+    )
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "account_uid_key": "account-a",
+                "host_id": "vps1",
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [promoted],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102"},
+        managed_token_ids={"101"},
+        managed_market_stages={"101": "canary"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=1,
+        canary_budget_usdc=100,
+        expected_account_uid_key="account-a",
+        expected_host_id="vps1",
+        competitive_rotation_enabled=True,
+    )
+
+    assert [row["token_id"] for row in plan["promote"]] == ["101"]
+    assert plan["retire"] == []
+    assert plan["competitive_rotation"]["selected"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "promotion_frees_canary_slot"
+    )
+
+
+def test_competitive_rotation_waits_for_incumbent_review_streak():
+    now = time.time()
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+    }
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [
+                    _market("201", "202", risk_adjusted_daily_roi_pct=0.4)
+                ],
+                "review": [
+                    _market(
+                        "101",
+                        "102",
+                        risk_adjusted_daily_roi_pct=0.1,
+                        reason_codes=["stable_score_temporarily_low"],
+                    )
+                ],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102", "201", "202"},
+        managed_token_ids={"101", "201"},
+        managed_market_stages={"101": "canary", "201": "canary"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=2,
+        canary_budget_usdc=100,
+        competitive_rotation_enabled=True,
+    )
+
+    assert plan["markets"]["101"]["status"] == "watch"
+    assert plan["retire"] == []
+    assert plan["competitive_rotation"]["selected"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "incumbent_review_pending"
+    )
 
 
 def test_canary_promotes_only_after_three_consecutive_scoring_samples():

@@ -8,6 +8,9 @@ from platforms.polymarket.maker.stable_lifecycle_commands import (
     MAX_ACTIVE_CANARIES_LIMIT as COMMAND_MAX_ACTIVE_CANARIES,
     MAX_CANARY_PRINCIPAL_FRACTION as COMMAND_MAX_CANARY_FRACTION,
     MAX_CANARY_USDC as COMMAND_MAX_CANARY_USDC,
+    MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT as COMMAND_MIN_ROTATION_ABSOLUTE_ROI,
+    MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION as COMMAND_MIN_ROTATION_IMPROVEMENT,
+    MIN_COMPETITIVE_ROTATION_SAMPLES as COMMAND_MIN_ROTATION_SAMPLES,
     MIN_PROMOTION_SCORING_SAMPLES as COMMAND_MIN_SCORING_SAMPLES,
     StableLifecycleCommandError,
     build_stable_lifecycle_command,
@@ -20,6 +23,9 @@ from platforms.polymarket.maker.stable_market_lifecycle import (
     MAX_ACTIVE_CANARIES_LIMIT,
     MAX_CANARY_PRINCIPAL_FRACTION,
     MAX_CANARY_USDC,
+    MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+    MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+    MIN_COMPETITIVE_ROTATION_SAMPLES,
     MIN_PROMOTION_SCORING_SAMPLES,
 )
 
@@ -34,6 +40,13 @@ def test_command_safety_caps_match_engine_lifecycle_caps() -> None:
     assert COMMAND_MAX_CANARY_FRACTION == MAX_CANARY_PRINCIPAL_FRACTION
     assert COMMAND_MAX_CANARY_USDC == MAX_CANARY_USDC
     assert COMMAND_MIN_SCORING_SAMPLES == MIN_PROMOTION_SCORING_SAMPLES
+    assert COMMAND_MIN_ROTATION_SAMPLES == MIN_COMPETITIVE_ROTATION_SAMPLES
+    assert float(COMMAND_MIN_ROTATION_IMPROVEMENT) == (
+        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION
+    )
+    assert float(COMMAND_MIN_ROTATION_ABSOLUTE_ROI) == (
+        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT
+    )
 
 
 def _proposal() -> dict:
@@ -196,6 +209,10 @@ def test_toggle_normalization_cannot_loosen_canary_or_failure_limits() -> None:
             "promotion_scoring_threshold": 1,
             "soft_failure_threshold": 99,
             "hard_failure_threshold": 99,
+            "competitive_rotation_enabled": True,
+            "competitive_rotation_samples": 1,
+            "competitive_rotation_min_improvement_fraction": "0.05",
+            "competitive_rotation_min_absolute_roi_pct": "0.01",
             "future_safe_field": "preserved",
         },
         enabled=True,
@@ -211,5 +228,9 @@ def test_toggle_normalization_cannot_loosen_canary_or_failure_limits() -> None:
         "promotion_scoring_threshold": 3,
         "soft_failure_threshold": 3,
         "hard_failure_threshold": 1,
+        "competitive_rotation_enabled": True,
+        "competitive_rotation_samples": 3,
+        "competitive_rotation_min_improvement_fraction": "0.30",
+        "competitive_rotation_min_absolute_roi_pct": "0.10",
         "future_safe_field": "preserved",
     }

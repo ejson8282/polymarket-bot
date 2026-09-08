@@ -104,6 +104,9 @@ try:
         MAX_CANARY_PRINCIPAL_FRACTION,
         MAX_CANARY_USDC,
         MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
+        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+        MIN_COMPETITIVE_ROTATION_SAMPLES,
         MIN_PROMOTION_SCORING_SAMPLES,
         STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
@@ -120,6 +123,9 @@ except ImportError:
         MAX_CANARY_PRINCIPAL_FRACTION,
         MAX_CANARY_USDC,
         MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
+        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+        MIN_COMPETITIVE_ROTATION_SAMPLES,
         MIN_PROMOTION_SCORING_SAMPLES,
         STATE_VERSION as STABLE_LIFECYCLE_STATE_VERSION,
         account_admission as stable_lifecycle_account_admission,
@@ -1754,6 +1760,36 @@ class PolyLPSMulti:
         self._stable_lifecycle_hard_failure_threshold = max(
             1,
             int(lifecycle_cfg.get("hard_failure_threshold", 1)),
+        )
+        self._stable_lifecycle_competitive_rotation_enabled = (
+            lifecycle_cfg.get("competitive_rotation_enabled") is True
+        )
+        self._stable_lifecycle_competitive_rotation_samples = max(
+            MIN_COMPETITIVE_ROTATION_SAMPLES,
+            int(
+                lifecycle_cfg.get(
+                    "competitive_rotation_samples",
+                    MIN_COMPETITIVE_ROTATION_SAMPLES,
+                )
+            ),
+        )
+        self._stable_lifecycle_competitive_rotation_min_improvement_fraction = max(
+            MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+            float(
+                lifecycle_cfg.get(
+                    "competitive_rotation_min_improvement_fraction",
+                    MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+                )
+            ),
+        )
+        self._stable_lifecycle_competitive_rotation_min_absolute_roi_pct = max(
+            MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+            float(
+                lifecycle_cfg.get(
+                    "competitive_rotation_min_absolute_roi_pct",
+                    MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+                )
+            ),
         )
         self._stable_lifecycle_state_path = (
             self._state_path.parent
@@ -9805,6 +9841,26 @@ class PolyLPSMulti:
             ),
             expected_account_uid_key=account_uid_key,
             expected_host_id=runtime_host_id,
+            competitive_rotation_enabled=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_enabled",
+                False,
+            ),
+            competitive_rotation_samples=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_samples",
+                MIN_COMPETITIVE_ROTATION_SAMPLES,
+            ),
+            competitive_rotation_min_improvement_fraction=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_min_improvement_fraction",
+                MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+            ),
+            competitive_rotation_min_absolute_roi_pct=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_min_absolute_roi_pct",
+                MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+            ),
         )
         retire_results = []
         pending_tokens = [
@@ -9831,9 +9887,67 @@ class PolyLPSMulti:
                     "reason_codes": ["retirement_already_pending"],
                 },
             )
+        policy = proposal.get("policy") or {}
+        competitive_rotation = plan.get("competitive_rotation")
+        if not isinstance(competitive_rotation, Mapping):
+            competitive_rotation = {}
+        rotation_selected = competitive_rotation.get("selected")
+        if not isinstance(rotation_selected, list):
+            rotation_selected = []
+        rotation_selections = {
+            str(row.get("retire_token_id") or ""): row
+            for row in rotation_selected
+            if isinstance(row, Mapping)
+        }
         for token_id, row in retire_rows.items():
             if not token_id:
                 continue
+            if "competitive_rotation_better_candidate" in {
+                str(reason) for reason in row.get("reason_codes") or []
+            }:
+                selection = rotation_selections.get(token_id)
+                replacement_market = (
+                    selection.get("replacement_market")
+                    if isinstance(selection, Mapping)
+                    else None
+                )
+                if not isinstance(replacement_market, Mapping):
+                    retire_results.append(
+                        {
+                            "token_id": token_id,
+                            "status": "rejected:competitive_candidate_missing",
+                        }
+                    )
+                    continue
+                try:
+                    replacement_candidate = (
+                        self._validate_stable_replacement_candidate(
+                            replacement_market,
+                            policy,
+                            allow_canary=True,
+                            require_account_execution=True,
+                        )
+                    )
+                    replacement_admission = stable_lifecycle_account_admission(
+                        replacement_candidate,
+                        int(self._account_idx),
+                    )
+                    if (
+                        replacement_admission is None
+                        or replacement_admission[0] != "canary"
+                    ):
+                        raise ValueError("competitive candidate admission changed")
+                except Exception as exc:
+                    retire_results.append(
+                        {
+                            "token_id": token_id,
+                            "status": (
+                                "rejected:competitive_candidate:"
+                                f"{type(exc).__name__}:{str(exc)[:120]}"
+                            ),
+                        }
+                    )
+                    continue
             try:
                 result = await self._retire_stable_lifecycle_market(
                     token_id,
@@ -9866,7 +9980,6 @@ class PolyLPSMulti:
             promote_results.append({"token_id": token_id, "status": result})
 
         add_results = []
-        policy = proposal.get("policy") or {}
         for action in plan.get("add") or []:
             if not isinstance(action, Mapping):
                 continue
@@ -14742,6 +14855,56 @@ class PolyLPSMulti:
                         ),
                         "canary_budget_usdc": self._stable_lifecycle_state.get(
                             "canary_budget_usdc"
+                        ),
+                        "competitive_rotation_enabled": getattr(
+                            self,
+                            "_stable_lifecycle_competitive_rotation_enabled",
+                            False,
+                        ),
+                        "competitive_rotation_status": (
+                            (
+                                self._stable_lifecycle_state.get(
+                                    "competitive_rotation"
+                                )
+                                or {}
+                            ).get("status")
+                            if isinstance(
+                                self._stable_lifecycle_state.get(
+                                    "competitive_rotation"
+                                ),
+                                Mapping,
+                            )
+                            else None
+                        ),
+                        "competitive_rotation_candidate_count": (
+                            len(
+                                self._stable_lifecycle_state.get(
+                                    "rotation_candidates"
+                                )
+                                or {}
+                            )
+                            if isinstance(
+                                self._stable_lifecycle_state.get(
+                                    "rotation_candidates"
+                                ),
+                                Mapping,
+                            )
+                            else 0
+                        ),
+                        "last_competitive_rotation": (
+                            (
+                                self._stable_lifecycle_state.get(
+                                    "competitive_rotation"
+                                )
+                                or {}
+                            ).get("selected", [])
+                            if isinstance(
+                                self._stable_lifecycle_state.get(
+                                    "competitive_rotation"
+                                ),
+                                Mapping,
+                            )
+                            else []
                         ),
                     },
                     "balance": float(self._last_balance) if self._last_balance is not None else None,
