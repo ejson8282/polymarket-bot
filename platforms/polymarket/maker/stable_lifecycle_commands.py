@@ -17,6 +17,9 @@ MAX_ACTIVE_CANARIES_LIMIT = 10
 MAX_CANARY_PRINCIPAL_FRACTION = 0.10
 MAX_CANARY_USDC = 100.0
 MIN_PROMOTION_SCORING_SAMPLES = 3
+MIN_COMPETITIVE_ROTATION_SAMPLES = 3
+MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION = Decimal("0.30")
+MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT = Decimal("0.10")
 CONFIRMATION_PREFIX = "CONFIRM-STABLE-LIFECYCLE"
 
 
@@ -125,6 +128,37 @@ def normalized_lifecycle_config(
                 default=DEFAULT_HARD_FAILURE_THRESHOLD,
                 low=1,
                 high=DEFAULT_HARD_FAILURE_THRESHOLD,
+            ),
+            "competitive_rotation_enabled": (
+                config.get("competitive_rotation_enabled") is True
+            ),
+            "competitive_rotation_samples": _bounded_int(
+                config.get("competitive_rotation_samples"),
+                default=MIN_COMPETITIVE_ROTATION_SAMPLES,
+                low=MIN_COMPETITIVE_ROTATION_SAMPLES,
+                high=1000,
+            ),
+            "competitive_rotation_min_improvement_fraction": str(
+                _bounded_decimal(
+                    config.get(
+                        "competitive_rotation_min_improvement_fraction"
+                    ),
+                    default=str(
+                        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION
+                    ),
+                    low=MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+                    high=Decimal("10"),
+                )
+            ),
+            "competitive_rotation_min_absolute_roi_pct": str(
+                _bounded_decimal(
+                    config.get(
+                        "competitive_rotation_min_absolute_roi_pct"
+                    ),
+                    default=str(MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT),
+                    low=MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+                    high=Decimal("100"),
+                )
             ),
         }
     )
