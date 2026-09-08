@@ -301,6 +301,56 @@ def _rotation_rank(row: Mapping[str, Any]) -> tuple[float, ...]:
     )
 
 
+def competitive_rotation_is_better(
+    candidate: Mapping[str, Any],
+    incumbent: Mapping[str, Any],
+    *,
+    min_improvement_fraction: float = (
+        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION
+    ),
+    min_absolute_roi_pct: float = (
+        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT
+    ),
+) -> bool:
+    """Require finite ROI evidence and both competitive improvement gates."""
+
+    candidate_roi = _number(
+        candidate.get("risk_adjusted_daily_roi_pct"),
+        math.nan,
+    )
+    incumbent_roi = _number(
+        incumbent.get("risk_adjusted_daily_roi_pct"),
+        math.nan,
+    )
+    if not math.isfinite(candidate_roi) or not math.isfinite(incumbent_roi):
+        return False
+    relative_improvement = max(
+        MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+        _number(
+            min_improvement_fraction,
+            MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+        ),
+    )
+    absolute_improvement = max(
+        MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+        _number(
+            min_absolute_roi_pct,
+            MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+        ),
+    )
+    improvement = candidate_roi - incumbent_roi
+    relative_threshold = (
+        incumbent_roi * (1.0 + relative_improvement)
+        if incumbent_roi > 0
+        else incumbent_roi + absolute_improvement
+    )
+    return bool(
+        candidate_roi > incumbent_roi
+        and improvement >= absolute_improvement
+        and candidate_roi >= relative_threshold
+    )
+
+
 def _rotation_candidate_is_executable(
     row: Mapping[str, Any],
     account_index: int,
@@ -357,6 +407,7 @@ def build_lifecycle_plan(
     hard_failure_threshold: int = 1,
     expected_account_uid_key: str = "",
     expected_host_id: str = "",
+    pending_retire_token_ids: set[str] | None = None,
     max_scoring_sample_age_sec: float = MAX_PROMOTION_SCORING_SAMPLE_AGE_SEC,
     competitive_rotation_enabled: bool = False,
     competitive_rotation_samples: int = MIN_COMPETITIVE_ROTATION_SAMPLES,
@@ -418,6 +469,11 @@ def build_lifecycle_plan(
     previous_rotation_candidates = previous.get("rotation_candidates")
     if not isinstance(previous_rotation_candidates, Mapping):
         previous_rotation_candidates = {}
+    pending_retire_tokens = {
+        str(token_id)
+        for token_id in (pending_retire_token_ids or set())
+        if str(token_id)
+    }
     max_canaries = min(
         MAX_ACTIVE_CANARIES_LIMIT,
         max(0, int(max_active_canaries)),
@@ -456,6 +512,7 @@ def build_lifecycle_plan(
         "max_active_canaries": max_canaries,
         "canary_limit_exceeded": active_canaries > max_canaries,
         "excess_canary_tokens": list(excess_canary_tokens),
+        "pending_retire_token_ids": sorted(pending_retire_tokens),
         "competitive_rotation": {
             "enabled": bool(competitive_rotation_enabled),
             "status": (
@@ -486,28 +543,32 @@ def build_lifecycle_plan(
             if isinstance(state, Mapping)
         },
     }
-    if proposal.get("status") != "ready":
-        output["reason"] = "proposal_not_ready"
+
+    def reject_invalid_proposal(reason: str) -> dict[str, Any]:
+        output["reason"] = reason
+        if competitive_rotation_enabled:
+            output["rotation_candidates"] = {}
+            output["competitive_rotation"]["candidate_count"] = 0
+            output["competitive_rotation"]["status"] = "sample_streak_broken"
         return output
+
+    if proposal.get("status") != "ready":
+        return reject_invalid_proposal("proposal_not_ready")
     proposal_generated_at = _number(proposal.get("generated_at"), -1.0)
     age = now_ts - proposal_generated_at
     if proposal_generated_at <= 0 or age < -30 or age > max_proposal_age_sec:
-        output["reason"] = "proposal_stale_or_invalid"
-        return output
+        return reject_invalid_proposal("proposal_stale_or_invalid")
     account = _proposal_account(proposal, account_index)
     if account is None:
-        output["reason"] = "account_not_in_proposal"
-        return output
+        return reject_invalid_proposal("account_not_in_proposal")
     if expected_account_uid_key and str(
         account.get("account_uid_key") or ""
     ).strip() != expected_account_uid_key:
-        output["reason"] = "proposal_account_identity_mismatch"
-        return output
+        return reject_invalid_proposal("proposal_account_identity_mismatch")
     if expected_host_id and str(account.get("host_id") or "").strip().lower() != (
         expected_host_id.strip().lower()
     ):
-        output["reason"] = "proposal_host_identity_mismatch"
-        return output
+        return reject_invalid_proposal("proposal_host_identity_mismatch")
 
     new_sample = proposal_generated_at > last_sample + 0.001
     output.update(
@@ -862,6 +923,8 @@ def build_lifecycle_plan(
             rotation_status = "existing_retirement_takes_priority"
         elif output["promote"]:
             rotation_status = "promotion_frees_canary_slot"
+        elif pending_retire_tokens:
+            rotation_status = "existing_retirement_pending"
         elif reviewing_canary_tokens:
             rotation_status = "incumbent_review_pending"
         output["competitive_rotation"]["status"] = rotation_status
@@ -873,6 +936,7 @@ def build_lifecycle_plan(
         and not output["canary_limit_exceeded"]
         and not output["retire"]
         and not output["promote"]
+        and not pending_retire_tokens
         and not reviewing_canary_tokens
     ):
         proposal_canaries = _token_rows(account.get("canary"))
@@ -896,24 +960,20 @@ def build_lifecycle_plan(
         if ready_candidates and incumbent_canaries:
             candidate = max(ready_candidates, key=_rotation_rank)
             incumbent = min(incumbent_canaries, key=_rotation_rank)
-            candidate_roi = _number(
-                candidate.get("risk_adjusted_daily_roi_pct"),
-                -1.0,
-            )
             incumbent_roi = _number(
                 incumbent.get("risk_adjusted_daily_roi_pct"),
-                -1.0,
+                math.nan,
+            )
+            candidate_roi = _number(
+                candidate.get("risk_adjusted_daily_roi_pct"),
+                math.nan,
             )
             improvement = candidate_roi - incumbent_roi
-            relative_threshold = (
-                incumbent_roi * (1.0 + rotation_improvement)
-                if incumbent_roi > 0
-                else incumbent_roi + rotation_absolute_roi
-            )
-            if (
-                candidate_roi > incumbent_roi
-                and improvement >= rotation_absolute_roi
-                and candidate_roi >= relative_threshold
+            if competitive_rotation_is_better(
+                candidate,
+                incumbent,
+                min_improvement_fraction=rotation_improvement,
+                min_absolute_roi_pct=rotation_absolute_roi,
             ):
                 incumbent_token = str(incumbent.get("token_id") or "")
                 candidate_token = str(candidate.get("token_id") or "")

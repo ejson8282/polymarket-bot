@@ -113,6 +113,7 @@ try:
         account_execution as stable_lifecycle_account_execution,
         build_lifecycle_plan,
         candidate_is_executable_for_account,
+        competitive_rotation_is_better,
         is_directional_up_down_market,
     )
 except ImportError:
@@ -132,6 +133,7 @@ except ImportError:
         account_execution as stable_lifecycle_account_execution,
         build_lifecycle_plan,
         candidate_is_executable_for_account,
+        competitive_rotation_is_better,
         is_directional_up_down_market,
     )
 try:
@@ -8382,13 +8384,19 @@ class PolyLPSMulti:
         *,
         allow_canary: bool = False,
         require_account_execution: bool = False,
+        observer_snapshot: Optional[
+            tuple[Mapping[str, Dict[str, Any]], Optional[float]]
+        ] = None,
     ) -> Dict[str, Any]:
         token_id = str(market.get("token_id") or "").strip()
         paired_token_id = str(market.get("paired_token_id") or "").strip()
         if not token_id.isdigit() or not paired_token_id.isdigit():
             raise ValueError("invalid replacement token pair")
 
-        _, candidates, observer_age = self._reward_observer_snapshot()
+        if observer_snapshot is None:
+            _, candidates, observer_age = self._reward_observer_snapshot()
+        else:
+            candidates, observer_age = observer_snapshot
         candidate = candidates.get(token_id)
         max_observer_age = float(policy.get("max_observer_age_sec") or 900.0)
         if observer_age is None or observer_age > max_observer_age:
@@ -8564,6 +8572,101 @@ class PolyLPSMulti:
         validated = dict(candidate)
         validated["account_admission_level"] = admission_level
         return validated
+
+    def _validate_competitive_rotation_selection(
+        self,
+        selection: Mapping[str, Any],
+        policy: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        incumbent_token_id = str(selection.get("retire_token_id") or "").strip()
+        replacement_market = selection.get("replacement_market")
+        if not incumbent_token_id.isdigit() or not isinstance(
+            replacement_market,
+            Mapping,
+        ):
+            raise ValueError("competitive rotation selection is invalid")
+
+        pending_tokens = {
+            token_id
+            for token_id in self._stable_lifecycle_managed_tokens()
+            if bool(
+                (
+                    self.market_cfg.get(token_id)
+                    or self._night_market_cfg.get(token_id)
+                    or {}
+                ).get("lifecycle_retire_pending")
+            )
+        }
+        if pending_tokens:
+            raise ValueError("existing lifecycle retirement is pending")
+
+        incumbent_cfg = self.market_cfg.get(
+            incumbent_token_id
+        ) or self._night_market_cfg.get(incumbent_token_id)
+        if not isinstance(incumbent_cfg, Mapping) or str(
+            incumbent_cfg.get("lifecycle_stage") or "full"
+        ).lower() != "canary":
+            raise ValueError("competitive incumbent is no longer canary")
+
+        _, candidates, observer_age = self._reward_observer_snapshot()
+        shared_snapshot = (candidates, observer_age)
+        replacement_candidate = self._validate_stable_replacement_candidate(
+            replacement_market,
+            policy,
+            allow_canary=True,
+            require_account_execution=True,
+            observer_snapshot=shared_snapshot,
+        )
+        replacement_admission = stable_lifecycle_account_admission(
+            replacement_candidate,
+            int(self._account_idx),
+        )
+        if replacement_admission is None or replacement_admission[0] != "canary":
+            raise ValueError("competitive candidate admission changed")
+
+        incumbent_candidate = candidates.get(incumbent_token_id)
+        if not isinstance(incumbent_candidate, Mapping):
+            raise ValueError("competitive incumbent evidence is unavailable")
+        if str(incumbent_candidate.get("paired_token_id") or "") != str(
+            incumbent_cfg.get("paired_token_id") or ""
+        ):
+            raise ValueError("competitive incumbent token pair changed")
+        incumbent_eligible, incumbent_level, incumbent_reasons = (
+            candidate_is_executable_for_account(
+                incumbent_candidate,
+                int(self._account_idx),
+                allow_canary=True,
+                expected_account_uid_key=str(
+                    getattr(self, "_stable_lifecycle_account_uid_key", "") or ""
+                ),
+                expected_host_id=str(
+                    getattr(self, "_runtime_host_id", "") or ""
+                ),
+            )
+        )
+        if not incumbent_eligible or incumbent_level != "canary":
+            reason = (
+                incumbent_reasons[0]
+                if incumbent_reasons
+                else "incumbent_not_account_executable"
+            )
+            raise ValueError(f"competitive incumbent changed: {reason}")
+        if not competitive_rotation_is_better(
+            replacement_candidate,
+            incumbent_candidate,
+            min_improvement_fraction=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_min_improvement_fraction",
+                MIN_COMPETITIVE_ROTATION_IMPROVEMENT_FRACTION,
+            ),
+            min_absolute_roi_pct=getattr(
+                self,
+                "_stable_lifecycle_competitive_rotation_min_absolute_roi_pct",
+                MIN_COMPETITIVE_ROTATION_ABSOLUTE_ROI_PCT,
+            ),
+        ):
+            raise ValueError("competitive improvement is no longer sufficient")
+        return replacement_candidate
 
     def _load_stable_replacement_command(
         self,
@@ -9810,6 +9913,17 @@ class PolyLPSMulti:
         canary_budget = self._stable_lifecycle_canary_budget_usdc(
             lifecycle_available
         )
+        pending_tokens = [
+            token_id
+            for token_id in sorted(self._stable_lifecycle_managed_tokens())
+            if bool(
+                (
+                    self.market_cfg.get(token_id)
+                    or self._night_market_cfg.get(token_id)
+                    or {}
+                ).get("lifecycle_retire_pending")
+            )
+        ]
         plan = build_lifecycle_plan(
             proposal,
             account_index=int(self._account_idx),
@@ -9841,6 +9955,7 @@ class PolyLPSMulti:
             ),
             expected_account_uid_key=account_uid_key,
             expected_host_id=runtime_host_id,
+            pending_retire_token_ids=set(pending_tokens),
             competitive_rotation_enabled=getattr(
                 self,
                 "_stable_lifecycle_competitive_rotation_enabled",
@@ -9863,17 +9978,6 @@ class PolyLPSMulti:
             ),
         )
         retire_results = []
-        pending_tokens = [
-            token_id
-            for token_id in sorted(self._stable_lifecycle_managed_tokens())
-            if bool(
-                (
-                    self.market_cfg.get(token_id)
-                    or self._night_market_cfg.get(token_id)
-                    or {}
-                ).get("lifecycle_retire_pending")
-            )
-        ]
         retire_rows = {
             str(row.get("token_id") or ""): row
             for row in plan.get("retire") or []
@@ -9888,6 +9992,8 @@ class PolyLPSMulti:
                 },
             )
         policy = proposal.get("policy") or {}
+        if not isinstance(policy, Mapping):
+            policy = {}
         competitive_rotation = plan.get("competitive_rotation")
         if not isinstance(competitive_rotation, Mapping):
             competitive_rotation = {}
@@ -9920,23 +10026,10 @@ class PolyLPSMulti:
                     )
                     continue
                 try:
-                    replacement_candidate = (
-                        self._validate_stable_replacement_candidate(
-                            replacement_market,
-                            policy,
-                            allow_canary=True,
-                            require_account_execution=True,
-                        )
+                    self._validate_competitive_rotation_selection(
+                        selection,
+                        policy,
                     )
-                    replacement_admission = stable_lifecycle_account_admission(
-                        replacement_candidate,
-                        int(self._account_idx),
-                    )
-                    if (
-                        replacement_admission is None
-                        or replacement_admission[0] != "canary"
-                    ):
-                        raise ValueError("competitive candidate admission changed")
                 except Exception as exc:
                     retire_results.append(
                         {

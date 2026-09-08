@@ -524,6 +524,108 @@ def test_competitive_rotation_streak_resets_after_missing_sample():
     )
 
 
+def test_competitive_rotation_invalid_proposal_breaks_sample_streak():
+    now = time.time()
+    state = {}
+    account = {
+        "account_index": 1,
+        "account_uid_key": "account-a",
+        "host_id": "vps1",
+        "add": [],
+        "canary": [_rotation_candidate("301", "302", roi=1.0)],
+        "keep": [_market("101", "102", risk_adjusted_daily_roi_pct=0.4)],
+        "review": [],
+    }
+    common = {
+        "account_index": 1,
+        "configured_token_ids": {"101", "102"},
+        "managed_token_ids": {"101"},
+        "managed_market_stages": {"101": "canary"},
+        "max_active_canaries": 1,
+        "canary_budget_usdc": 100,
+        "expected_account_uid_key": "account-a",
+        "expected_host_id": "vps1",
+        "competitive_rotation_enabled": True,
+    }
+    for offset in (0, 300):
+        state = build_lifecycle_plan(
+            _proposal(generated_at=now + offset, account=account),
+            previous_state=state,
+            now_ts=now + offset + 1,
+            **common,
+        )
+    assert state["rotation_candidates"]["301"][
+        "consecutive_executable_samples"
+    ] == 2
+
+    blocked = build_lifecycle_plan(
+        {"status": "blocked", "generated_at": now + 600, "accounts": []},
+        previous_state=state,
+        now_ts=now + 601,
+        **common,
+    )
+    assert blocked["rotation_candidates"] == {}
+    assert blocked["competitive_rotation"]["status"] == "sample_streak_broken"
+
+    recovered = build_lifecycle_plan(
+        _proposal(generated_at=now + 900, account=account),
+        previous_state=blocked,
+        now_ts=now + 901,
+        **common,
+    )
+    assert recovered["rotation_candidates"]["301"][
+        "consecutive_executable_samples"
+    ] == 1
+    assert recovered["retire"] == []
+
+
+def test_competitive_rotation_defers_to_persisted_pending_retirement():
+    now = time.time()
+    previous = {
+        "version": 4,
+        "account_index": 1,
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+    }
+    plan = build_lifecycle_plan(
+        _proposal(
+            generated_at=now,
+            account={
+                "account_index": 1,
+                "add": [],
+                "canary": [_rotation_candidate("301", "302", roi=1.0)],
+                "keep": [
+                    _market("101", "102", risk_adjusted_daily_roi_pct=0.4),
+                    _market("201", "202", risk_adjusted_daily_roi_pct=0.6),
+                ],
+                "review": [],
+            },
+        ),
+        account_index=1,
+        configured_token_ids={"101", "102", "201", "202"},
+        managed_token_ids={"101", "201"},
+        managed_market_stages={"101": "canary", "201": "canary"},
+        pending_retire_token_ids={"201"},
+        previous_state=previous,
+        now_ts=now + 1,
+        max_active_canaries=2,
+        canary_budget_usdc=100,
+        competitive_rotation_enabled=True,
+    )
+
+    assert plan["pending_retire_token_ids"] == ["201"]
+    assert plan["retire"] == []
+    assert plan["competitive_rotation"]["selected"] == []
+    assert plan["competitive_rotation"]["status"] == (
+        "existing_retirement_pending"
+    )
+
+
 def test_competitive_rotation_defers_to_existing_retirement():
     now = time.time()
     previous = {

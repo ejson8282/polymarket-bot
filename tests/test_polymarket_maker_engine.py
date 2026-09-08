@@ -1709,6 +1709,53 @@ def test_stable_lifecycle_promotes_canary_after_three_scoring_proposals(
     ]
 
 
+def _competitive_observer_candidate(
+    token_id: str,
+    paired_token_id: str,
+    *,
+    roi: float,
+    account_uid_key: str = "uid-key-1",
+    host_id: str = "vps1",
+) -> dict:
+    return {
+        "token_id": token_id,
+        "paired_token_id": paired_token_id,
+        "condition_id": f"condition-{token_id}",
+        "stable_lp_recommended": False,
+        "daily_reward_usd": 80,
+        "stable_lp_min_daily_reward_usdc": 50,
+        "weather_market": False,
+        "market_type": "always_on",
+        "market_phase": "normal",
+        "market_active": True,
+        "market_closed": False,
+        "market_archived": False,
+        "accepting_orders": True,
+        "market_end_ts": time.time() + 86400,
+        "front_depth_status": "verified",
+        "front_depth_observed_at": time.time(),
+        "yes_front_bid_notional_usd": 100,
+        "no_front_bid_notional_usd": 100,
+        "stability_score": 60,
+        "fill_risk": 20,
+        "risk_adjusted_daily_roi_pct": roi,
+        "account_admission": [
+            {"account_index": 1, "level": "canary", "reason_codes": []}
+        ],
+        "account_execution": [
+            {
+                "account_index": 1,
+                "account_uid_key": account_uid_key,
+                "host_id": host_id,
+                "executable": True,
+                "executable_q_min": 15,
+                "canary_front_depth_floor_usdc": 10,
+            }
+        ],
+        "canary_proposal_eligible_account_indexes": [1],
+    }
+
+
 def test_stable_lifecycle_competitive_rotation_uses_safe_retirement_path(
     tmp_path,
 ):
@@ -1732,6 +1779,153 @@ def test_stable_lifecycle_competitive_rotation_uses_safe_retirement_path(
         "202": {
             "paired_token_id": "201",
             "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._stable_lifecycle_state = {
+        "version": 4,
+        "account_index": 1,
+        "account_uid_key": "uid-key-1",
+        "host_id": "vps1",
+        "last_proposal_generated_at": now - 300,
+        "rotation_candidates": {
+            "301": {
+                "consecutive_executable_samples": 2,
+                "last_seen_proposal_generated_at": now - 300,
+            }
+        },
+    }
+    engine._stable_lifecycle_max_proposal_age_sec = 900
+    engine._stable_lifecycle_max_add_per_cycle = 5
+    engine._stable_lifecycle_max_active_canaries = 2
+    engine._stable_lifecycle_canary_principal_fraction = Decimal("0.10")
+    engine._stable_lifecycle_canary_max_usdc = Decimal("100")
+    engine._stable_lifecycle_promotion_scoring_threshold = 3
+    engine._stable_lifecycle_soft_failure_threshold = 3
+    engine._stable_lifecycle_hard_failure_threshold = 1
+    engine._stable_lifecycle_competitive_rotation_enabled = True
+    engine._stable_lifecycle_competitive_rotation_samples = 3
+    engine._stable_lifecycle_competitive_rotation_min_improvement_fraction = 0.30
+    engine._stable_lifecycle_competitive_rotation_min_absolute_roi_pct = 0.10
+    engine._last_balance = Decimal("1000")
+    engine.min_front_bid_notional_usdc = Decimal("2000")
+    engine._eligibility_observer_path = tmp_path / "observer.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": time.time(),
+                "candidates": [
+                    _competitive_observer_candidate("101", "102", roi=0.40),
+                    _competitive_observer_candidate("301", "302", roi=0.65),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._stable_rotation_proposal_path = tmp_path / "proposal.json"
+    engine._stable_rotation_proposal_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "generated_at": now,
+                "accounts": [
+                    {
+                        "account_index": 1,
+                        "account_uid_key": "uid-key-1",
+                        "host_id": "vps1",
+                        "add": [],
+                        "canary": [
+                            {
+                                "token_id": "301",
+                                "paired_token_id": "302",
+                                "stable_admission_level": "canary",
+                                "risk_adjusted_daily_roi_pct": 0.65,
+                                "estimated_daily_gross_usd": 6.5,
+                                "executable_reward_share_pct": 2.5,
+                                "executable_q_min": 12.5,
+                                "rewards_min_size_shares": 10,
+                                "stability_score": 50,
+                                "fill_risk": 20,
+                                "account_execution_evidence": {
+                                    "account_index": 1,
+                                    "account_uid_key": "uid-key-1",
+                                    "host_id": "vps1",
+                                    "executable_q_min": 12.5,
+                                },
+                            }
+                        ],
+                        "keep": [
+                            {
+                                "token_id": "101",
+                                "paired_token_id": "102",
+                                "risk_adjusted_daily_roi_pct": 0.40,
+                            },
+                            {
+                                "token_id": "201",
+                                "paired_token_id": "202",
+                                "risk_adjusted_daily_roi_pct": 0.60,
+                            },
+                        ],
+                        "review": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
+    engine._promote_stable_lifecycle_market = lambda *_args: pytest.fail(
+        "competitive rotation must not promote an incumbent"
+    )
+    engine._write_stable_lifecycle_state = lambda state: setattr(
+        engine,
+        "_stable_lifecycle_state",
+        dict(state),
+    )
+
+    asyncio.run(engine._stable_market_lifecycle_once())
+
+    engine._retire_stable_lifecycle_market.assert_awaited_once_with(
+        "101",
+        ["competitive_rotation_better_candidate"],
+    )
+    assert engine._stable_lifecycle_state["retire_results"] == [
+        {"token_id": "101", "status": "removed"}
+    ]
+    assert engine._stable_lifecycle_state["competitive_rotation"][
+        "selected"
+    ][0]["replacement_token_id"] == "301"
+
+
+def test_stable_lifecycle_pending_retirement_blocks_new_competitive_rotation(
+    tmp_path,
+):
+    now = time.time()
+    engine = object.__new__(PolyLPSMulti)
+    engine._stable_market_lifecycle_enabled = True
+    engine._runtime_market_updates_enabled = True
+    engine._stable_lifecycle_runtime_updates_enabled = True
+    engine._runtime_mode = "multi_roster"
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102", "lifecycle_stage": "canary"},
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+        "201": {
+            "paired_token_id": "202",
+            "lifecycle_stage": "canary",
+            "lifecycle_retire_pending": True,
+        },
+        "202": {
+            "paired_token_id": "201",
+            "lifecycle_stage": "canary",
+            "lifecycle_retire_pending": True,
             "_dual_side_auto": True,
         },
     }
@@ -1813,16 +2007,8 @@ def test_stable_lifecycle_competitive_rotation_uses_safe_retirement_path(
         ),
         encoding="utf-8",
     )
-    engine._validate_stable_replacement_candidate = Mock(
-        return_value={
-            "account_admission": [
-                {"account_index": 1, "level": "canary", "reason_codes": []}
-            ]
-        }
-    )
-    engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
-    engine._promote_stable_lifecycle_market = lambda *_args: pytest.fail(
-        "competitive rotation must not promote an incumbent"
+    engine._retire_stable_lifecycle_market = AsyncMock(
+        return_value="position_or_exit_pending"
     )
     engine._write_stable_lifecycle_state = lambda state: setattr(
         engine,
@@ -1833,16 +2019,15 @@ def test_stable_lifecycle_competitive_rotation_uses_safe_retirement_path(
     asyncio.run(engine._stable_market_lifecycle_once())
 
     engine._retire_stable_lifecycle_market.assert_awaited_once_with(
-        "101",
-        ["competitive_rotation_better_candidate"],
+        "201",
+        ["retirement_already_pending"],
     )
-    assert engine._stable_lifecycle_state["retire_results"] == [
-        {"token_id": "101", "status": "removed"}
-    ]
     assert engine._stable_lifecycle_state["competitive_rotation"][
         "selected"
-    ][0]["replacement_token_id"] == "301"
-    engine._validate_stable_replacement_candidate.assert_called_once()
+    ] == []
+    assert engine._stable_lifecycle_state["competitive_rotation"]["status"] == (
+        "existing_retirement_pending"
+    )
 
 
 def test_stable_lifecycle_competitive_rotation_revalidates_before_retirement(
@@ -1910,7 +2095,7 @@ def test_stable_lifecycle_competitive_rotation_revalidates_before_retirement(
             },
         },
     )
-    engine._validate_stable_replacement_candidate = Mock(
+    engine._validate_competitive_rotation_selection = Mock(
         side_effect=ValueError("candidate no longer eligible")
     )
     engine._retire_stable_lifecycle_market = AsyncMock(return_value="removed")
@@ -1932,6 +2117,75 @@ def test_stable_lifecycle_competitive_rotation_revalidates_before_retirement(
             ),
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("candidate_roi", "incumbent_roi"),
+    [
+        (0.01, 0.40),
+        (0.65, 0.60),
+        (float("nan"), 0.40),
+        (0.65, float("nan")),
+    ],
+)
+def test_competitive_rotation_revalidates_latest_roi_thresholds(
+    tmp_path,
+    candidate_roi,
+    incumbent_roi,
+):
+    engine = object.__new__(PolyLPSMulti)
+    engine._account_idx = 1
+    engine._runtime_host_id = "vps1"
+    engine._stable_lifecycle_account_uid_key = "uid-key-1"
+    engine._stable_lifecycle_competitive_rotation_min_improvement_fraction = 0.30
+    engine._stable_lifecycle_competitive_rotation_min_absolute_roi_pct = 0.10
+    engine.min_front_bid_notional_usdc = Decimal("2000")
+    engine.market_cfg = {
+        "101": {"paired_token_id": "102", "lifecycle_stage": "canary"},
+        "102": {
+            "paired_token_id": "101",
+            "lifecycle_stage": "canary",
+            "_dual_side_auto": True,
+        },
+    }
+    engine._night_market_cfg = {}
+    engine._eligibility_observer_path = tmp_path / "observer.json"
+    engine._eligibility_observer_path.write_text(
+        json.dumps(
+            {
+                "generated_at": time.time(),
+                "candidates": [
+                    _competitive_observer_candidate(
+                        "101",
+                        "102",
+                        roi=incumbent_roi,
+                    ),
+                    _competitive_observer_candidate(
+                        "301",
+                        "302",
+                        roi=candidate_roi,
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="competitive improvement is no longer sufficient",
+    ):
+        engine._validate_competitive_rotation_selection(
+            {
+                "retire_token_id": "101",
+                "replacement_market": {
+                    "token_id": "301",
+                    "paired_token_id": "302",
+                    "condition_id": "condition-301",
+                },
+            },
+            {"max_observer_age_sec": 900, "max_depth_age_sec": 600},
+        )
 
 
 def test_stable_lifecycle_promotion_revalidates_current_live_order_set():
