@@ -5815,6 +5815,117 @@ def test_managed_balance_change_above_principal_does_not_rebalance(monkeypatch):
     assert resized == []
 
 
+def _timeout_notice_engine(tmp_path, account_index=2, order_id="exit-1"):
+    engine = object.__new__(PolyLPSMulti)
+    engine._account_idx = account_index
+    engine._state_path = tmp_path / f"engine_state_{account_index}.json"
+    engine._unwind_check_interval_sec = 0
+    engine._unwind_max_age_sec = 14_400
+    engine._exit_dust_threshold = 0.5
+    engine._active_exit_orders = {"101": order_id}
+    engine._pending_unwinds = [{
+        "token_id": "101", "fill_price": 0.16, "fill_size": 20,
+        "order_id": order_id, "placed_at": 1,
+        "reason": "position_reconcile_rehydrated",
+    }]
+    engine._read_open_orders = AsyncMock(return_value=[{"id": order_id, "status": "LIVE"}])
+    engine._notify_attention = Mock()
+    engine._execute_exchange_cancel = AsyncMock()
+    engine._resume_halted_markets = Mock()
+    return engine
+
+
+def _run_timeout_rounds(engine, monkeypatch, positions=(20, 20, 20)):
+    engine._running = True
+    values = iter(positions)
+    calls = 0
+
+    async def position(_token):
+        nonlocal calls
+        calls += 1
+        if calls == len(positions):
+            engine._running = False
+        return next(values)
+
+    engine._get_token_position = position
+    monkeypatch.setattr(engine_module.asyncio, "sleep", AsyncMock())
+    asyncio.run(engine.unwind_tracking_loop())
+
+
+def test_exit_timeout_notifies_once_without_changing_sell(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path)
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._notify_attention.assert_called_once()
+    assert engine._notify_attention.call_args.args[0] == "退出单等待超时"
+    assert engine._pending_unwinds[0]["order_id"] == "exit-1"
+    assert engine._active_exit_orders == {"101": "exit-1"}
+    engine._execute_exchange_cancel.assert_not_called()
+    engine._resume_halted_markets.assert_not_called()
+
+
+def test_exit_timeout_rehydration_after_restart_does_not_repeat(tmp_path, monkeypatch):
+    first = _timeout_notice_engine(tmp_path)
+    _run_timeout_rounds(first, monkeypatch)
+    restarted = _timeout_notice_engine(tmp_path)
+    restarted._pending_unwinds[0]["placed_at"] = 100
+    _run_timeout_rounds(restarted, monkeypatch)
+    restarted._notify_attention.assert_not_called()
+    assert len(restarted._pending_unwinds) == 1
+
+
+def test_exit_timeout_new_order_and_other_account_can_notify(tmp_path, monkeypatch):
+    for account, order in ((1, "exit-1"), (2, "exit-1"), (2, "exit-2")):
+        engine = _timeout_notice_engine(tmp_path, account, order)
+        _run_timeout_rounds(engine, monkeypatch)
+        engine._notify_attention.assert_called_once()
+
+
+def test_exit_timeout_order_replacement_in_same_record_gets_own_notice(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path)
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._pending_unwinds[0]["order_id"] = "exit-2"
+    engine._read_open_orders.return_value = [{"id": "exit-2", "status": "LIVE"}]
+    _run_timeout_rounds(engine, monkeypatch)
+    assert engine._notify_attention.call_count == 2
+
+
+def test_exit_timeout_unknown_position_does_not_consume_notice(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path)
+    _run_timeout_rounds(engine, monkeypatch, positions=(None, -1))
+    engine._notify_attention.assert_not_called()
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._notify_attention.assert_called_once()
+
+
+def test_exit_timeout_store_failure_preserves_tracking_and_retries(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path)
+    with monkeypatch.context() as fault:
+        fault.setattr(engine_module, "claim_exit_timeout_notice", Mock(side_effect=OSError("disk")))
+        _run_timeout_rounds(engine, fault)
+    engine._notify_attention.assert_not_called()
+    assert len(engine._pending_unwinds) == 1
+    assert engine._active_exit_orders == {"101": "exit-1"}
+    engine._execute_exchange_cancel.assert_not_called()
+    engine._resume_halted_markets.assert_not_called()
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._notify_attention.assert_called_once()
+
+
+def test_exit_timeout_notification_failure_does_not_flood(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path)
+    engine._notify_attention.side_effect = RuntimeError("transport")
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._notify_attention.assert_called_once()
+    assert len(engine._pending_unwinds) == 1
+
+
+def test_exit_timeout_without_order_id_dedupes_local_episode(tmp_path, monkeypatch):
+    engine = _timeout_notice_engine(tmp_path, order_id="")
+    engine._read_open_orders.return_value = []
+    _run_timeout_rounds(engine, monkeypatch)
+    engine._notify_attention.assert_called_once()
+
+
 def test_missing_exit_order_with_inventory_stays_pending():
     engine = object.__new__(PolyLPSMulti)
     engine._running = True
