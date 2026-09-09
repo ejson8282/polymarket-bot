@@ -37,6 +37,10 @@ from event_bus import EventBus
 from cross_side_sentinel import CrossSideSentinel
 from sibling_registry import SiblingOrderRegistry, resolve_conflict
 try:
+    from .exit_timeout_notices import claim_exit_timeout_notice
+except ImportError:
+    from exit_timeout_notices import claim_exit_timeout_notice
+try:
     from .account_profiles import (
         LPAccountProfile,
         parse_lp_account_profile,
@@ -14509,11 +14513,38 @@ class PolyLPSMulti:
                 pass
         return best_tid, best_pos
 
+    def _claim_unwind_timeout_notice(self, unwind: dict) -> bool:
+        token_id = str(unwind.get("token_id") or "")
+        order_id = str(unwind.get("order_id") or "")
+        # Older submission records may lack an exchange ID. Keep their single
+        # local episode distinct without treating it as a confirmed order.
+        identity = order_id or f"pending:{unwind.get('placed_at', 0)}"
+        key = (token_id, identity)
+        if unwind.get("timeout_notice_key") == key:
+            return False
+        try:
+            path = self._state_path.with_name(
+                f"exit_timeout_notices_{self._account_idx}.sqlite3"
+            )
+            claimed = claim_exit_timeout_notice(
+                path, self._account_idx, token_id, identity
+            )
+        except Exception as exc:
+            # A failed notice write must not abort position/order tracking or
+            # fall back to a Discord message on every polling cycle.
+            if not unwind.get("timeout_notice_store_error"):
+                log(f"[unwind] timeout notice persistence failed: {type(exc).__name__}")
+                unwind["timeout_notice_store_error"] = True
+            return False
+        unwind["timeout_notice_key"] = key
+        unwind.pop("timeout_notice_store_error", None)
+        return claimed
+
     async def unwind_tracking_loop(self) -> None:
         """Periodically check pending unwind SELL orders.
         - If position is zero or dust, cancel any residual order and resume unrelated markets.
         - If the order is no longer live but material inventory remains, keep the halt.
-        - If age > unwind_max_age_sec and still open — Discord alert for manual review.
+        - If age > unwind_max_age_sec and still open, alert once per exit order.
         """
         while self._running:
             await asyncio.sleep(self._unwind_check_interval_sec)
@@ -14637,7 +14668,11 @@ class PolyLPSMulti:
                         still_pending.append(uw)
                         continue
 
-                    if age > self._unwind_max_age_sec:
+                    if (
+                        age > self._unwind_max_age_sec
+                        and position_is_known
+                        and self._claim_unwind_timeout_notice(uw)
+                    ):
                         # Timed out — notify via Discord for manual review, keep order alive
                         hours = age / 3600
                         log(f"[unwind] timeout alert token={token_id} age={hours:.1f}h order_id={oid} position={position}")
