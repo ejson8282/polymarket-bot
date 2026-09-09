@@ -8,7 +8,8 @@ Related owner lease: polymarket-bot issue #40.
 ## Scope
 
 This change fixes submission bookkeeping and preserves safe proxy error codes.
-It does not claim to fix the unidentified production cancellation failure.
+It does not replenish cancellation gas, repair network connectivity, or remove
+historical pending records by itself.
 No configuration, signing, service, Dashboard or Polymarket changes are included.
 No deployment, restart, live submission or cancellation is authorized by this
 document. Deployment must remain a separate exact-SHA action.
@@ -40,6 +41,30 @@ real order. Resolve them with exact account/idempotency-ledger and official
 order evidence before activating this version. Legacy phantom records can
 therefore keep new keys blocked; this is an explicit deployment prerequisite,
 not evidence that reconciliation has already succeeded in production.
+
+An absent signer-ledger lookup alone is insufficient: the current proxy loader
+also returns an empty ledger for a missing, unreadable or malformed ledger file.
+Do not add an automatic age-based or `found=false` purge. Even an empty official
+open-order list does not rule out an already filled order.
+
+Any historical cleanup needs a separately authorized, account-scoped maintenance
+window, not a side effect of deploying this patch:
+
+1. Quiesce the affected account's runner and other submission writers. Do not
+   stop or alter another account or Polymarket. Confirm the runner cannot write
+   its in-memory registry back while maintenance is in progress.
+2. Archive the original registry outside the source repository, with its hash
+   and an exact account/idempotency-key allowlist. Never clear the whole registry.
+3. Read and validate the actual ledger file as a dictionary with the expected
+   account entries; reject missing, corrupt, unreadable or incomplete evidence.
+   Match each selected key against the ledger, official orders/activity and
+   current positions. Classify only proven never-submitted records as phantoms;
+   preserve ambiguous records, real orders, generations and manual orders.
+4. Recheck the registry and ledger hashes before any authorized atomic change.
+   Abort if either changed. Preserve all other accounts and keys, and retain an
+   external audit of exactly which pending rows were removed and why.
+5. Validate the resulting registry and official position/order agreement while
+   still paused. Resuming submissions requires its own explicit authorization.
 
 ## Exit sizing boundary
 
@@ -75,7 +100,9 @@ capital instead of presenting a canary order as a working LP strategy.
 
 ## Acceptance gates
 
-1. Run Predict regression tests and compile/diff checks.
+1. Run Predict regression tests and compile/diff checks. The GitHub Predict
+   safety job must explicitly include `tests/test_predictfun_exit_recovery.py`;
+   a green job that omits this file is not evidence for these regressions.
 2. With read-only runtime access explicitly permitted, identify the actual cancel
    error and reconcile all historical unknown submissions. Preserve manual orders.
 3. Review the exact patch and obtain the required merge/deployment authorization.

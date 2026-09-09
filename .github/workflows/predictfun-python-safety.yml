@@ -51,6 +51,7 @@ jobs:
           python -m pytest -q
           tests/test_predictfun_maker_safety.py
           tests/test_predictfun_live_execution.py
+          tests/test_predictfun_exit_recovery.py
           tests/test_predictfun_release.py
           tests/test_predictfun_status.py
           tests/test_predictfun_ws_watch.py
