@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "small_cap_lp_state",
+  "strategy_type": "small_cap_lp",
+  "runtime_scope": "small_cap_lp",
+  "source": "synthetic",
+  "mode": "unavailable",
+  "generated_at": "2026-09-09T02:00:00Z",
+  "freshness": {
+    "status": "unavailable",
+    "observed_at": null,
+    "max_age_sec": 300,
+    "age_sec": null,
+    "reason": "runtime_not_deployed"
+  },
+  "transport": {
+    "status": "unavailable",
+    "service_url": null,
+    "authentication": null,
+    "dashboard_route_family": "/api/pm/small-cap"
+  },
+  "capabilities": {
+    "stage": "contract_only",
+    "mutation_commands": {
+      "pause_account": false,
+      "resume_account": false,
+      "set_budget_tier": false,
+      "request_reassessment": false,
+      "apply_assignment": false
+    },
+    "disabled_reasons": [
+      "runtime_not_deployed",
+      "transport_not_implemented",
+      "atomic_budget_not_integrated",
+      "cross_host_conflict_guard_not_integrated"
+    ]
+  },
+  "group": {
+    "strategy_group": "fixture-small-cap",
+    "revision": 1,
+    "routing_roster_sha256": "1bddbdac0885ab2d46fe602062700467ce9da356f7481a01d5052d5f0d2eddc3",
+    "market_universe_sha256": "24c403f5fc4e9d628eb7ec1f761a316e803635f1dfe8fa197c946517ce000e88"
+  },
+  "universe": {
+    "markets": [
+      {
+        "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "token_id": "101",
+        "paired_token_id": "102"
+      },
+      {
+        "condition_id": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "token_id": "201",
+        "paired_token_id": "202"
+      }
+    ],
+    "night_markets": []
+  },
+  "accounts": [],
+  "accounting_complete": false,
+  "receipts": []
+}

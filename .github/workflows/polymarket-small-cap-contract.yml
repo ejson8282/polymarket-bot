@@ -1,0 +1,43 @@
+name: Polymarket small-cap contract
+
+on:
+  pull_request:
+    paths:
+      - "platforms/polymarket/maker/small_cap_contract.py"
+      - "platforms/polymarket/maker/account_roster.py"
+      - "platforms/polymarket/maker/reward_ledger.py"
+      - "tests/test_polymarket_small_cap_contract.py"
+      - "tests/fixtures/polymarket_small_cap_contract/**"
+      - "docs/SMALL_CAP_LP_CONTRACT.md"
+      - ".github/workflows/polymarket-small-cap-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "platforms/polymarket/maker/small_cap_contract.py"
+      - "platforms/polymarket/maker/account_roster.py"
+      - "platforms/polymarket/maker/reward_ledger.py"
+      - "tests/test_polymarket_small_cap_contract.py"
+      - "tests/fixtures/polymarket_small_cap_contract/**"
+      - "docs/SMALL_CAP_LP_CONTRACT.md"
+      - ".github/workflows/polymarket-small-cap-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polymarket-small-cap-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate non-live contract and synthetic fixtures
+        run: >-
+          python -m unittest discover -s tests
+          -p test_polymarket_small_cap_contract.py -v
