@@ -295,6 +295,9 @@ def _cancel(value: Any, now: datetime, path: str) -> None:
         stamps.append(_time(c[key], path + "." + key) if c[key] is not None else None)
     trigger, requested, confirmed = stamps
     _require(all(t is None or t <= now for t in stamps), path, "future_cancellation")
+    if c["freshness"]["observed_at"] is not None:
+        observed = _time(c["freshness"]["observed_at"])
+        _require(all(t is None or t <= observed for t in stamps), path, "cancellation_after_observation")
     if requested is not None:
         _require(trigger is not None and requested >= trigger, path)
     if c["status"] == "synthetic_confirmed":
@@ -506,15 +509,21 @@ def validate_transition(previous: dict, current: dict, *, previous_now: str, now
     if any(group[k] != old_group[k] for k in ("market_universe_sha256", "routing_roster_sha256")):
         _require(group["revision"] > old_group["revision"], "group.revision", "revision_not_advanced")
     old_by_index = {a["identity"]["account_index"]: a for a in before["accounts"]}
+    old_by_id = {a["identity"]["account_id"]: a for a in before["accounts"]}
     old_by_uid = {a["identity"]["account_uid"]: a for a in before["accounts"]}
     old_by_maker = {_maker_key(a["identity"]): a for a in before["accounts"]}
     for account in after["accounts"]:
         ident = account["identity"]
-        prior = old_by_index.get(ident["account_index"],
-                                 old_by_uid.get(ident["account_uid"], old_by_maker.get(_maker_key(ident))))
-        if prior is None:
+        matches = [row for row in (old_by_index.get(ident["account_index"]),
+                                   old_by_id.get(ident["account_id"]),
+                                   old_by_uid.get(ident["account_uid"]),
+                                   old_by_maker.get(_maker_key(ident))) if row is not None]
+        if not matches:
             _require(group["revision"] > old_group["revision"], "group.revision", "revision_not_advanced")
             continue
+        prior = matches[0]
+        _require(all(row["identity"] == prior["identity"] for row in matches),
+                 "account.identity", "identity_reference_conflict")
         _require(ident == prior["identity"], "account.identity", "fixed_ownership_mismatch")
         _require(account["assignment_revision"] >= prior["assignment_revision"],
                  "assignment_revision", "revision_regression")
@@ -634,6 +643,7 @@ def validate_receipt(raw: Any, command: dict, *, now: str) -> dict:
              "result applied_assignment_revision freshness runtime_receipt_freshness", "receipt")
     generated, consumed = _time(r["generated_at"]), _time(now)
     _require(generated <= consumed, "receipt.generated_at", "future_generation")
+    _require(_time(c["created_at"]) <= generated, "receipt.generated_at", "receipt_before_command")
     _require(type(r["schema_version"]) is int and r["schema_version"] == SCHEMA_VERSION, "receipt.schema_version")
     embedded = _command_shape(r["command"])
     _require(embedded == c and r["command_sha256"] == _command_hash(c), "receipt", "receipt_identity_mismatch")

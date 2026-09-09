@@ -387,6 +387,30 @@ class SmallCapContractTests(unittest.TestCase):
         c["confirmation_latency_ms"] = 2000
         self.assert_bad(self.state)
 
+    def test_cancel_events_cannot_follow_their_status_observation(self):
+        for status in ("pending", "synthetic_confirmed"):
+            with self.subTest(status=status):
+                state = copy.deepcopy(self.state)
+                c = self.assignment(state)["cancellation"]
+                c.update(status=status, protection_triggered_at="2026-09-09T01:59:50Z",
+                         cancel_requested_at="2026-09-09T01:59:52Z",
+                         cancel_confirmed_at="2026-09-09T01:59:55Z" if status == "synthetic_confirmed" else None,
+                         confirmation_latency_ms=5000 if status == "synthetic_confirmed" else None,
+                         freshness=stamp(60))
+                self.assert_bad(state, "cancellation_after_observation")
+
+    def test_cancel_events_may_equal_status_observation(self):
+        for status, age in (("pending", 8), ("synthetic_confirmed", 5)):
+            with self.subTest(status=status):
+                state = copy.deepcopy(self.state)
+                c = self.assignment(state)["cancellation"]
+                c.update(status=status, protection_triggered_at="2026-09-09T01:59:50Z",
+                         cancel_requested_at="2026-09-09T01:59:52Z",
+                         cancel_confirmed_at="2026-09-09T01:59:55Z" if status == "synthetic_confirmed" else None,
+                         confirmation_latency_ms=5000 if status == "synthetic_confirmed" else None,
+                         freshness=stamp(age))
+                self.assertEqual(self.validate(state), state)
+
     def test_subsecond_cancel_latency_and_stale_book_boundary(self):
         c = self.assignment()["cancellation"]
         c.update(status="synthetic_confirmed", protection_triggered_at="2026-09-09T01:59:50.001Z",
@@ -447,6 +471,44 @@ class SmallCapContractTests(unittest.TestCase):
     def test_unavailable_report_is_not_an_empty_authoritative_roster(self):
         with self.assertRaisesRegex(SmallCapContractError, "state_not_available"):
             validate_transition(self.state, synthetic_state("unavailable"), previous_now=FIXTURE_TIME, now=FIXTURE_TIME)
+
+    def test_account_id_cannot_rebind_all_other_identity_fields(self):
+        changed = copy.deepcopy(self.state)
+        account = changed["accounts"][0]
+        ident = account["identity"]
+        ident.update(account_index=21, host_id="new-host", maker_address="0x" + "e" * 40)
+        ident["account_uid"] = f'{ident["chain_id"]}:{ident["signature_type"]}:{ident["maker_address"]}'
+        ident["account_uid_key"] = hashlib.sha256(ident["account_uid"].encode()).hexdigest()[:16]
+        for row in account["assignments"] + account["accounting"]:
+            row["account_uid"] = ident["account_uid"]
+        changed["group"].update(revision=2, routing_roster_sha256="e" * 64)
+        self.validate(changed)
+        original = copy.deepcopy(changed)
+        with self.assertRaisesRegex(SmallCapContractError, "fixed_ownership_mismatch"):
+            self.transition(changed)
+        self.assertEqual(changed, original)
+
+    def test_identity_references_cannot_match_different_previous_accounts(self):
+        changed = copy.deepcopy(self.state)
+        first, second = [a["identity"] for a in changed["accounts"]]
+        first["account_id"], second["account_id"] = second["account_id"], first["account_id"]
+        changed["group"].update(revision=2, routing_roster_sha256="e" * 64)
+        self.validate(changed)
+        with self.assertRaisesRegex(SmallCapContractError, "identity_reference_conflict"):
+            self.transition(changed)
+
+    def test_genuinely_new_account_with_distinct_identity_remains_allowed(self):
+        changed = copy.deepcopy(self.state)
+        account = copy.deepcopy(changed["accounts"][0])
+        ident = account["identity"]
+        ident.update(account_id="fixture-21", account_index=21, host_id="new-host",
+                     maker_address="0x" + "e" * 40)
+        ident["account_uid"] = f'{ident["chain_id"]}:{ident["signature_type"]}:{ident["maker_address"]}'
+        ident["account_uid_key"] = hashlib.sha256(ident["account_uid"].encode()).hexdigest()[:16]
+        account.update(assignments=[], accounting=[])
+        changed["accounts"].append(account)
+        changed["group"].update(revision=2, routing_roster_sha256="e" * 64)
+        self.assertEqual(self.transition(changed), changed)
 
     def test_assignment_changes_require_revision_advance_but_samples_do_not(self):
         changed = copy.deepcopy(self.state)
@@ -546,6 +608,31 @@ class SmallCapContractTests(unittest.TestCase):
         receipt["generated_at"] = "2026-09-09T02:10:00Z"
         receipt.update(status="unknown", last_known_status="rejected", reason="receipt_stale")
         validate_receipt(receipt, command, now="2026-09-09T02:10:00Z")
+
+    def test_receipt_generation_cannot_precede_command_without_observation(self):
+        original_command = synthetic_command(self.state)
+        future_command = copy.deepcopy(original_command)
+        future_command.update(created_at="2026-09-10T02:00:00Z", expires_at="2026-09-10T02:02:00Z")
+        for absent in ("missing", "unavailable"):
+            with self.subTest(absent=absent):
+                receipt = reject_command(original_command, self.state, now=FIXTURE_TIME)
+                receipt.update(source="synthetic_fixture", status="unknown", reason="awaiting_receipt",
+                               command=future_command,
+                               command_sha256=hashlib.sha256(json.dumps(future_command, sort_keys=True,
+                                                                      separators=(",", ":")).encode()).hexdigest(),
+                               freshness=stamp(absent=absent))
+                with self.assertRaisesRegex(SmallCapContractError, "receipt_before_command"):
+                    validate_receipt(receipt, future_command, now=FIXTURE_TIME)
+
+    def test_receipt_can_equal_command_time_or_be_read_after_command_expiry(self):
+        command = synthetic_command(self.state)
+        receipt = reject_command(command, self.state, now=FIXTURE_TIME)
+        receipt.update(source="synthetic_fixture", status="unknown", reason="awaiting_receipt",
+                       freshness=stamp(absent="missing"))
+        for generated in (FIXTURE_TIME, "2026-09-10T02:00:00Z"):
+            with self.subTest(generated=generated):
+                receipt["generated_at"] = generated
+                self.assertEqual(validate_receipt(receipt, command, now=generated), receipt)
 
     def test_review_unchanged_payload_valid_after_one_millisecond(self):
         command = synthetic_command(self.state)

@@ -137,6 +137,10 @@ Malformed commands raise an error, rather than manufacturing a runtime receipt.
 reports at their respective observation times: no revision regression, no host
 or maker/index reassignment, group revision advancement for roster/universe
 changes, and assignment revision advancement for allocation input changes.
+Prior identities are matched by account index, logical `account_id`, full UID,
+and chain/maker; all matching keys must refer to the same prior identity.
+Keeping a logical ID while replacing its index, host and maker is not a new
+account, even if the group revision and roster hash advance.
 For every condition appearing in both supplied universes, the ordered YES/NO
 token pair is immutable: token replacement or swapping outcomes is rejected even
 if group and assignment revisions advance. Condition remaps require a separate
@@ -285,6 +289,9 @@ timestamps separately. `confirmation_latency_ms` ends at confirmation and is
 rounded up to milliseconds. It is null for pending, unknown, or unavailable
 cancellation, not zero. Only `synthetic_confirmed` can carry measured sample
 latency in v1. This does not confirm cancellation of any actual order.
+When a status observation is present, it must be at or after every included
+trigger/request/confirmation. Equality is allowed; a later report generation
+time cannot make an earlier state observation prove a later cancellation.
 
 ## Economics and Accounting
 
@@ -354,6 +361,11 @@ unavailable runtime-receipt freshness. The command and SHA-256 of its canonical
 sorted compact JSON remain attached so the exact identity and payload can be
 checked. Repeating it is deterministic, but there is no durable deduplication
 or automatic retry mechanism.
+
+Every receipt must satisfy `command.created_at <= receipt.generated_at <= now`,
+including missing/unknown receipts without an observation timestamp. Available
+receipt observations must also be at or after command creation. Reading a
+historical receipt does not require the command to remain unexpired.
 
 The receipt validator also accepts explicitly `synthetic_fixture` pending or
 unknown examples for consumer tests. A newly published stale local receipt must
