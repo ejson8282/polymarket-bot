@@ -1,5 +1,13 @@
 # small_cap_lp Contract v1 (Non-Live Foundation)
 
+Historical budget model notice: after #142, the user clarified that independent
+events may reuse the same actual account capital. This v1 contract's global
+sum-of-resting-BUY `occupied_usdc`/`available_usdc` arithmetic and the two-market
+70U reservation example below do NOT implement that corrected model. They remain
+only the old synthetic schema's meaning and tests. The explicit replacement is
+defined offline in [Budget Model v2](SMALL_CAP_LP_BUDGET_MODEL_V2.md); do not deploy
+v1 assumptions as the new strategy or silently inject v2 budgets into schema 1.
+
 Base: `064706e6938240d2b321c9103e91709b00151a71`.
 Scope: `platforms/polymarket/maker/small_cap_contract.py`, its focused test,
 and `tests/fixtures/polymarket_small_cap_contract/`.
