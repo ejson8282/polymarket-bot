@@ -565,6 +565,14 @@ def _inventory_exit_intents(
 ) -> list[OrderIntent]:
     if str(inventory.get("enabled", True)).lower() in {"false", "0", "no"}:
         return []
+    source = str(plan.get("orderbook_source") or "")
+    if (
+        source in {"ws:required", "ws:liquidity_sentinel", "config:market_mode_guard"}
+        or source.endswith("_error")
+        or plan.get("skip_reason") == "orderbook unavailable"
+    ):
+        # Guard-only plans carry market-summary prices, not a usable exit book.
+        return []
     pct = _dec(inventory.get("exit_quote_size_pct_of_position"), "1")
     min_exit = _dec(inventory.get("min_exit_size"), "1")
     if pct <= 0:

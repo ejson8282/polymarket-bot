@@ -14,6 +14,34 @@ TERMINAL_ORDER_STATUSES = frozenset(
 )
 
 
+SAFE_PROXY_ERROR_CODES = frozenset({
+    "insufficient_bnb_for_cancel", "bsc_rpc_unavailable",
+    "predict_sdk_not_installed", "account_alias_not_found",
+    "explicit_cancel_confirmation_required", "missing_hashes",
+    "invalid_order_hash", "order_lookup_failed", "order_account_mismatch",
+    "off_book_remove_failed", "on_chain_cancel_receipt_unverified",
+    "cancel_verification_timeout", "predictfun_get_failed",
+    "predictfun_post_failed", "upstream_error", "max_notional_exceeded",
+    "server_order_notional_limit_invalid", "idempotency_key_payload_mismatch",
+})
+
+
+class PredictFunProxyError(RuntimeError):
+    """A safe diagnostic, never an upstream body, URL or exception detail."""
+
+    def __init__(self, error: object, http_status: int) -> None:
+        self.code = (
+            error if isinstance(error, str) and error in SAFE_PROXY_ERROR_CODES
+            else "proxy_request_failed"
+        )
+        self.http_status = http_status
+        super().__init__(f"{self.code} (HTTP {http_status})")
+
+
+def _error_label(exc: Exception) -> str:
+    return str(exc) if isinstance(exc, PredictFunProxyError) else type(exc).__name__
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     intent_id: str
@@ -263,7 +291,7 @@ class PredictFunLiveExecutor:
                 return recovered
             return self._error(
                 "create",
-                f"Predict.fun submit failed: {type(exc).__name__}",
+                f"Predict.fun submit failed: {_error_label(exc)}",
                 intent_id=order.intent_id,
                 account_id=order.account_id,
                 order_id=(recovered.order_id if recovered is not None else ""),
@@ -425,7 +453,7 @@ class PredictFunLiveExecutor:
                 return terminal
             return self._error(
                 "cancel",
-                f"Predict.fun cancel failed: {type(exc).__name__}",
+                f"Predict.fun cancel failed: {_error_label(exc)}",
                 intent_id=intent_id,
                 account_id=self.account_id,
                 order_id=order_id,
@@ -446,7 +474,12 @@ class PredictFunLiveExecutor:
             message=(
                 "order cancelled on chain"
                 if ok
-                else str(payload.get("error") or "cancel not verified")
+                else (
+                    payload["error"]
+                    if isinstance(payload.get("error"), str)
+                    and payload["error"] in SAFE_PROXY_ERROR_CODES
+                    else "cancel not verified"
+                )
             ),
             order_id=order_id,
             status="cancelled" if ok else "open",
@@ -619,8 +652,8 @@ class PredictFunLiveExecutor:
                     self._retry_sleep(attempt)
                     continue
                 if response.status_code >= 400 or payload.get("ok") is False:
-                    raise RuntimeError(
-                        str(payload.get("error") or response.status_code)
+                    raise PredictFunProxyError(
+                        payload.get("error"), response.status_code
                     )
                 return payload
             except (requests.RequestException, OSError, TimeoutError) as exc:
