@@ -471,6 +471,10 @@ def validate_state(raw: Any, *, now: str) -> dict:
         conditions, assignments = set(), set()
         for j, assignment in enumerate(_list(a["assignments"], p + ".assignments")):
             _assignment(assignment, a, universe, clock, f"{p}.assignments[{j}]")
+            horizon = assignment["economics"]["horizon_end"]
+            if horizon is not None:
+                _require(consumed < _time(horizon),
+                         f"{p}.assignments[{j}].economics.horizon_end", "horizon_expired")
             _require(assignment["condition_id"] not in conditions and assignment["assignment_id"] not in assignments,
                      p, "duplicate_assignment")
             conditions.add(assignment["condition_id"])

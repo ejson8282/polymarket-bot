@@ -357,6 +357,27 @@ class SmallCapContractTests(unittest.TestCase):
         e["net_increment_usdc"] = metric("3.9")
         self.assert_bad(self.state, "economics_arithmetic_mismatch")
 
+    def test_economic_horizon_expires_before_metric_ttl_at_consumer(self):
+        e = self.assignment()["economics"]
+        e.update(status="shadow_only", history_calibration="synthetic_only", missing_reasons=[],
+                 horizon_end="2026-09-09T02:00:10Z")
+        for key, value in {"lower_reward_increment_usdc": "4", "scoring_uptime": "0.8",
+                           "yes_exit_stress_usdc": "1", "no_exit_stress_usdc": "2",
+                           "verified_history_stress_usdc": "1.5", "fees_usdc": "0.1",
+                           "switching_cost_usdc": "0.2", "net_increment_usdc": "0.9"}.items():
+            e[key] = metric(value)
+        original = copy.deepcopy(self.state)
+        self.assertEqual(validate_state(self.state, now="2026-09-09T02:00:09.999999Z"), original)
+        command = synthetic_command(self.state, action="resume_account", now=FIXTURE_TIME)
+        for now in ("2026-09-09T02:00:10Z", "2026-09-09T02:00:10.000001Z",
+                    "2026-09-09T02:00:11Z"):
+            with self.subTest(now=now):
+                with self.assertRaisesRegex(SmallCapContractError, "horizon_expired"):
+                    validate_state(self.state, now=now)
+                with self.assertRaisesRegex(SmallCapContractError, "horizon_expired"):
+                    validate_command(command, self.state, now=now)
+        self.assertEqual(self.state, original)
+
     def test_cancel_latency_ends_at_confirmation_not_request(self):
         c = self.assignment()["cancellation"]
         c.update(status="synthetic_confirmed", protection_triggered_at="2026-09-09T01:59:50Z",

@@ -78,6 +78,10 @@ validate_receipt(receipt, command, now=FIXTURE_TIME)
 not echo raw untrusted values. Examples: `invalid_fields`, `invalid_money`,
 `unknown_budget`, `identity_mismatch`, `universe_hash_mismatch`,
 `revision_conflict`, `duplicate_evidence`, `state_not_fresh`, `command_expired`.
+Economic horizons are exclusive end times: consuming a report at or after any
+declared `economics.horizon_end` raises `horizon_expired`, even when individual
+metric TTLs remain fresh. Command validation inherits this report guard. A
+still-cached estimate must not become a current recommendation after its window.
 Review guards additionally report `evidence_expired`, `evidence_before_revision`,
 `revision_boundary_not_advanced`, `revision_boundary_mismatch`,
 `condition_token_remap`, and `duplicate_maker`.
