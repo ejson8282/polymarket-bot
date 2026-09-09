@@ -9,6 +9,7 @@ from platforms.predictfun.maker.executor import (
     PredictFunLiveExecutor,
 )
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.intents import build_intents_from_plans
 from platforms.predictfun.maker.reconcile import (
     reconcile_once,
     reconcile_reduce_only,
@@ -152,3 +153,30 @@ def test_cancel_failure_has_safe_error_code_without_raw_payload(monkeypatch, cod
     assert expected in result.message
     assert "HTTP 502" in result.message
     assert "DO_NOT_LOG_THIS" not in result.message
+
+
+@pytest.mark.parametrize("source, reason, expected", [
+    ("ws:required", "fresh ws orderbook required", 0),
+    ("ws:liquidity_sentinel", "liquidity collapsed", 0),
+    ("config:market_mode_guard", "market mode not allowed", 0),
+    ("rest_error", "orderbook unavailable", 0),
+    ("rest", "orderbook unavailable", 0),
+    ("ws", "no legal passive quote inside reward band", 1),
+    ("rest", "no legal passive quote inside reward band", 1),
+    ("rest_reconcile", "no legal passive quote inside reward band", 1),
+])
+def test_exit_cannot_use_prices_from_missing_or_blocked_book(source, reason, expected):
+    plan = {
+        "market": {"id": 42, "status": "OPEN", "trading_status": "OPEN",
+                   "decimal_precision": 2, "yes_token_id": "yes", "no_token_id": "no"},
+        "can_quote": False, "skip_reason": reason, "orderbook_source": source,
+        "best_yes_bid": "0.68", "best_yes_ask": "0.72",
+        "yes_quotes": [], "no_quotes": [],
+    }
+    intents = build_intents_from_plans(
+        [plan], accounts_config=[{"account_id": "account_01"}],
+        inventory_positions=[{"account_id": "account_01", "market_id": 42,
+                              "outcome": "NO", "size": "10"}],
+    )
+    assert len(intents) == expected
+    assert all(i.purpose == "inventory_exit" and i.side == "SELL" for i in intents)

@@ -8,6 +8,7 @@ Related owner lease: polymarket-bot issue #40.
 ## Scope
 
 This change fixes submission bookkeeping and preserves safe proxy error codes.
+It also prevents exit SELLs from bypassing explicit missing-book safety guards.
 It does not replenish cancellation gas, repair network connectivity, or remove
 historical pending records by itself.
 No configuration, signing, service, Dashboard or Polymarket changes are included.
@@ -32,6 +33,14 @@ document. Deployment must remain a separate exact-SHA action.
    response bodies, exception details, URLs and credentials are never copied into
    this diagnostic. Cancellation still requires verified success or an official
    terminal order status; missing order data is not success.
+4. Guard-only plans retain market-summary bid/ask fields. Inventory exit planning
+   previously used those fields even when the plan required a missing fresh WS
+   book, failed a liquidity/mode guard, or reported an unavailable book. These
+   plans no longer produce exit SELLs. A usable book with no qualifying maker
+   reward quote can still produce an exit; `can_quote=false` alone is not a ban.
+   This closes a price-source bypass, not the separate WS subscription/connectivity
+   problem. A held market absent from WS must regain usable book coverage before
+   a WS-required exit can be accepted.
 
 ## Historical pending records
 
