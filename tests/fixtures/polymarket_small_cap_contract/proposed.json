@@ -1,0 +1,1249 @@
+{
+  "schema_version": 1,
+  "kind": "small_cap_lp_state",
+  "strategy_type": "small_cap_lp",
+  "runtime_scope": "small_cap_lp",
+  "source": "synthetic",
+  "mode": "proposal_only",
+  "generated_at": "2026-09-09T02:00:00Z",
+  "freshness": {
+    "status": "fresh",
+    "observed_at": "2026-09-09T02:00:00Z",
+    "max_age_sec": 300,
+    "age_sec": 0,
+    "reason": null
+  },
+  "transport": {
+    "status": "unavailable",
+    "service_url": null,
+    "authentication": null,
+    "dashboard_route_family": "/api/pm/small-cap"
+  },
+  "capabilities": {
+    "stage": "contract_only",
+    "mutation_commands": {
+      "pause_account": false,
+      "resume_account": false,
+      "set_budget_tier": false,
+      "request_reassessment": false,
+      "apply_assignment": false
+    },
+    "disabled_reasons": [
+      "runtime_not_deployed",
+      "transport_not_implemented",
+      "atomic_budget_not_integrated",
+      "cross_host_conflict_guard_not_integrated"
+    ]
+  },
+  "group": {
+    "strategy_group": "fixture-small-cap",
+    "revision": 1,
+    "routing_roster_sha256": "1bddbdac0885ab2d46fe602062700467ce9da356f7481a01d5052d5f0d2eddc3",
+    "market_universe_sha256": "24c403f5fc4e9d628eb7ec1f761a316e803635f1dfe8fa197c946517ce000e88"
+  },
+  "universe": {
+    "markets": [
+      {
+        "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "token_id": "101",
+        "paired_token_id": "102"
+      },
+      {
+        "condition_id": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "token_id": "201",
+        "paired_token_id": "202"
+      }
+    ],
+    "night_markets": []
+  },
+  "accounts": [
+    {
+      "identity": {
+        "account_index": 7,
+        "account_id": "fixture-7",
+        "host_id": "fixture-host-7",
+        "chain_id": 137,
+        "signature_type": 2,
+        "maker_address": "0x0000000000000000000000000000000000000007",
+        "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+        "account_uid_key": "375475bfff620ae0"
+      },
+      "strategy_group": "fixture-small-cap",
+      "market_universe_sha256": "24c403f5fc4e9d628eb7ec1f761a316e803635f1dfe8fa197c946517ce000e88",
+      "assignment_revision": 1,
+      "assignment_effective_at": "2026-09-09T01:57:00Z",
+      "status": "not_deployed",
+      "budget": {
+        "tier_usdc": "200",
+        "asset_equity_usdc": {
+          "current": "200",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "cash_usdc": {
+          "current": "200",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "inventory_cost_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "remaining_buy_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "pending_buy_reserved_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "unknown_buy_reserved_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "fee_reserve_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "effective_limit_usdc": {
+          "current": "200",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "occupied_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "available_usdc": {
+          "current": "200",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        }
+      },
+      "assignments": [
+        {
+          "assignment_id": "fixture-7-0",
+          "assignment_revision": 1,
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": "proposed",
+          "quote": {
+            "yes_price": "0.94",
+            "no_price": "0.04",
+            "yes_shares": "100",
+            "no_shares": "100",
+            "notional_usdc": "98"
+          },
+          "scoring": {
+            "status": "unverified",
+            "samples": [],
+            "independent_valid_count": 0
+          },
+          "books": [
+            {
+              "token_id": "101",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            },
+            {
+              "token_id": "102",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            }
+          ],
+          "cancellation": {
+            "status": "unavailable",
+            "protection_triggered_at": null,
+            "cancel_requested_at": null,
+            "cancel_confirmed_at": null,
+            "confirmation_latency_ms": null,
+            "freshness": {
+              "status": "unavailable",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "runtime_not_deployed"
+            }
+          },
+          "economics": {
+            "status": "uncalibrated",
+            "horizon_end": null,
+            "history_calibration": "missing",
+            "missing_reasons": [
+              "fees_unknown",
+              "exit_depth_unknown",
+              "history_unavailable"
+            ],
+            "expansion_allowed": false,
+            "lower_reward_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "scoring_uptime": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "yes_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "no_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "verified_history_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "fees_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "switching_cost_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "net_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            }
+          }
+        },
+        {
+          "assignment_id": "fixture-7-1",
+          "assignment_revision": 1,
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "status": "proposed",
+          "quote": {
+            "yes_price": "0.94",
+            "no_price": "0.04",
+            "yes_shares": "100",
+            "no_shares": "100",
+            "notional_usdc": "98"
+          },
+          "scoring": {
+            "status": "unverified",
+            "samples": [],
+            "independent_valid_count": 0
+          },
+          "books": [
+            {
+              "token_id": "201",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            },
+            {
+              "token_id": "202",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            }
+          ],
+          "cancellation": {
+            "status": "unavailable",
+            "protection_triggered_at": null,
+            "cancel_requested_at": null,
+            "cancel_confirmed_at": null,
+            "confirmation_latency_ms": null,
+            "freshness": {
+              "status": "unavailable",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "runtime_not_deployed"
+            }
+          },
+          "economics": {
+            "status": "uncalibrated",
+            "horizon_end": null,
+            "history_calibration": "missing",
+            "missing_reasons": [
+              "fees_unknown",
+              "exit_depth_unknown",
+              "history_unavailable"
+            ],
+            "expansion_allowed": false,
+            "lower_reward_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "scoring_uptime": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "yes_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "no_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "verified_history_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "fees_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "switching_cost_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "net_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            }
+          }
+        }
+      ],
+      "accounting": [
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "native_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "sponsored_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "maker_rebate",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "trading_pnl",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "inventory_unrealized_pnl",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "estimated_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "fees",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "net_cash_flow",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x0000000000000000000000000000000000000007",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "cash_flow_adjusted_nav_change",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "identity": {
+        "account_index": 12,
+        "account_id": "fixture-12",
+        "host_id": "fixture-host-12",
+        "chain_id": 137,
+        "signature_type": 2,
+        "maker_address": "0x000000000000000000000000000000000000000c",
+        "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+        "account_uid_key": "0b04d14195798f43"
+      },
+      "strategy_group": "fixture-small-cap",
+      "market_universe_sha256": "24c403f5fc4e9d628eb7ec1f761a316e803635f1dfe8fa197c946517ce000e88",
+      "assignment_revision": 1,
+      "assignment_effective_at": "2026-09-09T01:57:00Z",
+      "status": "not_deployed",
+      "budget": {
+        "tier_usdc": "100",
+        "asset_equity_usdc": {
+          "current": "100",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "cash_usdc": {
+          "current": "100",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "inventory_cost_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "remaining_buy_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "pending_buy_reserved_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "unknown_buy_reserved_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "fee_reserve_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "effective_limit_usdc": {
+          "current": "100",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "occupied_usdc": {
+          "current": "0",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        },
+        "available_usdc": {
+          "current": "100",
+          "last_known": null,
+          "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-09-09T02:00:00Z",
+            "max_age_sec": 300,
+            "age_sec": 0,
+            "reason": null
+          }
+        }
+      },
+      "assignments": [
+        {
+          "assignment_id": "fixture-12-0",
+          "assignment_revision": 1,
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": "proposed",
+          "quote": {
+            "yes_price": "0.94",
+            "no_price": "0.04",
+            "yes_shares": "100",
+            "no_shares": "100",
+            "notional_usdc": "98"
+          },
+          "scoring": {
+            "status": "unverified",
+            "samples": [],
+            "independent_valid_count": 0
+          },
+          "books": [
+            {
+              "token_id": "101",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            },
+            {
+              "token_id": "102",
+              "ws_received": {
+                "status": "stale",
+                "observed_at": "2026-09-09T01:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 3600,
+                "reason": "sample_expired"
+              },
+              "book_event_at": "2026-09-09T01:00:00Z",
+              "rest_fetched": {
+                "status": "fresh",
+                "observed_at": "2026-09-09T02:00:00Z",
+                "max_age_sec": 30,
+                "age_sec": 0,
+                "reason": null
+              },
+              "rest_complete": true,
+              "usable_source": "rest",
+              "external_front_depth_usdc": {
+                "current": null,
+                "last_known": null,
+                "freshness": {
+                  "status": "missing",
+                  "observed_at": null,
+                  "max_age_sec": 300,
+                  "age_sec": null,
+                  "reason": "not_observed"
+                }
+              },
+              "own_orders_scope_complete": false
+            }
+          ],
+          "cancellation": {
+            "status": "unavailable",
+            "protection_triggered_at": null,
+            "cancel_requested_at": null,
+            "cancel_confirmed_at": null,
+            "confirmation_latency_ms": null,
+            "freshness": {
+              "status": "unavailable",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "runtime_not_deployed"
+            }
+          },
+          "economics": {
+            "status": "uncalibrated",
+            "horizon_end": null,
+            "history_calibration": "missing",
+            "missing_reasons": [
+              "fees_unknown",
+              "exit_depth_unknown",
+              "history_unavailable"
+            ],
+            "expansion_allowed": false,
+            "lower_reward_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "scoring_uptime": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "yes_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "no_exit_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "verified_history_stress_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "fees_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "switching_cost_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            },
+            "net_increment_usdc": {
+              "current": null,
+              "last_known": null,
+              "freshness": {
+                "status": "missing",
+                "observed_at": null,
+                "max_age_sec": 300,
+                "age_sec": null,
+                "reason": "not_observed"
+              }
+            }
+          }
+        }
+      ],
+      "accounting": [
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "native_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "sponsored_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "maker_rebate",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "trading_pnl",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "inventory_unrealized_pnl",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "estimated_lp",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "fees",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "net_cash_flow",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        },
+        {
+          "business_day": "2026-09-09",
+          "account_uid": "137:2:0x000000000000000000000000000000000000000c",
+          "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "accounting_type": "cash_flow_adjusted_nav_change",
+          "asset_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+          "amount_usdc": {
+            "current": null,
+            "last_known": null,
+            "freshness": {
+              "status": "missing",
+              "observed_at": null,
+              "max_age_sec": 300,
+              "age_sec": null,
+              "reason": "not_observed"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounting_complete": false,
+  "receipts": []
+}
