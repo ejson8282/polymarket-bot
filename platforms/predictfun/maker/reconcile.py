@@ -11,7 +11,7 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from platforms.predictfun.maker.executor import DryRunExecutor, ExecutableOrder, PredictFunExecutor
+from platforms.predictfun.maker.executor import DryRunExecutor, ExecutableOrder, ExecutionResult, PredictFunExecutor
 from platforms.predictfun.maker.intents import utc_now
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
 
@@ -103,7 +103,6 @@ def recover_uncertain_submissions(
         if key not in seen and not registry.active_for_intent(
             order.intent_id, order.account_id
         ):
-            registry.record_submission_pending(order)
             candidates.append(order)
             seen.add(key)
 
@@ -116,6 +115,10 @@ def recover_uncertain_submissions(
             registry.record_create(order, result)
         elif result.status == "rejected":
             registry.record_submission_rejected(order)
+        elif result.status == "unknown":
+            # A plan is not a submission. Retain it only when the signer ledger
+            # confirms an unresolved attempt; an absent lookup is not evidence.
+            registry.record_submission_pending(order)
         results.append(asdict(result))
     return results
 
@@ -132,12 +135,30 @@ def _create_with_recovery(
         if recovered is not None and recovered.ok:
             registry.record_create(order, recovered)
             return recovered
+        if recovered is not None and recovered.status == "unknown":
+            registry.record_submission_pending(order)
+            return recovered
         if recovered is not None and recovered.status == "rejected":
             # A definitive rejection proves that no orphan order exists. Move
             # this intent to a fresh key so the replacement receives a fresh
             # signed-order expiration instead of replaying the rejected one.
             registry.record_submission_rejected(order)
             order = _with_submission_key(order, registry)
+
+    if any(
+        pending.account_id == order.account_id
+        and (pending.idempotency_key or pending.intent_id)
+        != (order.idempotency_key or order.intent_id)
+        for pending in registry.pending_submissions()
+    ):
+        return ExecutionResult(
+            intent_id=order.intent_id,
+            account_id=order.account_id,
+            action="create",
+            ok=False,
+            message="unresolved account submission; new idempotency key blocked",
+            status="preflight_blocked",
+        )
 
     registry.record_submission_pending(order)
     result = executor.create(order)
@@ -326,8 +347,13 @@ def reconcile_reduce_only(
             "actions": len(results),
             "create": sum(1 for row in results if row.get("action") == "create"),
             "cancel": sum(1 for row in results if row.get("action") == "cancel"),
-            "failed": sum(1 for row in results if not row.get("ok")),
-            "blocked": 0,
+            "failed": sum(
+                1 for row in results if not row.get("ok")
+                and row.get("status") != "preflight_blocked"
+            ),
+            "blocked": sum(
+                1 for row in results if row.get("status") == "preflight_blocked"
+            ),
             "reduce_only": 1,
             "create_suppressed": len(exit_creates) if cancel_failed else 0,
         },
