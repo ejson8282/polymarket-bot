@@ -155,6 +155,41 @@ class ObservationTests(unittest.TestCase):
                 self.transport.responses["/data/orders"] = page([order(**changes)])
                 self.assertIsNone(self.collect()["samples"]["orders"]["current"])
 
+    def test_known_order_status_prefixes_normalize_before_scoring(self):
+        for status in ("LIVE", "MATCHED", "DELAYED", "CANCELED", "CANCELLED", "UNMATCHED", "PENDING"):
+            with self.subTest(status=status):
+                self.transport.calls.clear()
+                self.transport.responses["/data/orders"] = page([order(status="ORDER_STATUS_" + status)])
+                result = self.collect()
+                for section in ("orders_before_scoring", "orders"):
+                    sample = result["samples"][section]
+                    self.assertEqual(sample["status"], "current")
+                    self.assertEqual(sample["current"]["rows"][0]["status"], status)
+                self.assertEqual(bool(result["scoring"]), status == "LIVE")
+                self.assertEqual(sum(path == "/order-scoring" for path, _ in self.transport.calls), int(status == "LIVE"))
+                if status == "LIVE":
+                    self.assertIs(result["scoring"]["order-1"]["current"]["scoring"], True)
+
+    def test_unknown_order_status_prefixes_remain_unknown(self):
+        for status in ("ORDER_STATUS_NEW", "ORDER_STATUS_", "ORDER_STATUS_ORDER_STATUS_LIVE", "ORDER_STATUS_live"):
+            with self.subTest(status=status):
+                self.transport.calls.clear()
+                self.transport.responses["/data/orders"] = page([order(status=status)])
+                result = self.collect()
+                for section in ("orders_before_scoring", "orders"):
+                    self.assertEqual(result["samples"][section]["reason"], "unknown_order_status")
+                    self.assertIsNone(result["samples"][section]["current"])
+                self.assertEqual(result["scoring"], {})
+                self.assertFalse(any(path == "/order-scoring" for path, _ in self.transport.calls))
+
+    def test_bare_and_prefixed_order_rows_are_equivalent_across_pages_and_scoring(self):
+        self.transport.responses["/data/orders"] = lambda p: (
+            page([order()], "next") if p["next_cursor"] == INITIAL_CURSOR
+            else page([order(status="ORDER_STATUS_LIVE")]))
+        result = self.collect()
+        self.assertEqual(len(result["samples"]["orders"]["current"]["rows"]), 1)
+        self.assertIs(result["scoring"]["order-1"]["current"]["scoring"], True)
+
     def test_matched_retrying_failed_trades_remain_visible_not_refunded(self):
         for status in ("MATCHED", "MINED", "RETRYING", "FAILED", "TRADE_STATUS_CONFIRMED"):
             with self.subTest(status=status):
@@ -190,6 +225,43 @@ class ObservationTests(unittest.TestCase):
         rows = self.collect()["samples"]["trades"]["current"]["rows"]
         self.assertEqual(len(rows), 2)
         self.assertEqual({row["quantity"] for row in rows}, {"54.22", "10"})
+
+    def test_same_component_conflicting_roles_fail_closed_on_same_or_later_page(self):
+        maker = trade()
+        taker = trade(trader_side="TAKER", maker_address=IDENTITY["maker_address"],
+                      taker_order_id="order-1", asset_id="token-no", side="BUY", size="54.22", price="0.10")
+        for records in ([maker, taker], [taker, maker]):
+            for paginated in (False, True):
+                with self.subTest(first_role=records[0]["trader_side"], paginated=paginated):
+                    self.transport.responses["/data/trades"] = (
+                        lambda p: page([records[0]], "next") if p["next_cursor"] == INITIAL_CURSOR
+                        else page([records[1]])) if paginated else page(records)
+                    result = self.collect()
+                    sample = result["samples"]["trades"]
+                    self.assertEqual(sample["status"], "unknown")
+                    self.assertEqual(sample["reason"], "duplicate_conflict")
+                    self.assertIsNone(sample["current"])
+                    self.assertIsNone(sample["last_known"])
+                    for capability in ("live_enabled", "mutation_enabled", "budget_admission_enabled", "atomic_snapshot"):
+                        self.assertIs(result[capability], False)
+
+    def test_distinct_trade_orders_and_exact_repeats_survive_role_checks(self):
+        maker = trade()
+        maker["maker_orders"].append({**maker["maker_orders"][0], "order_id": "maker-2", "matched_amount": "10"})
+        taker = trade(trader_side="TAKER", maker_address=IDENTITY["maker_address"],
+                      taker_order_id="taker-1", asset_id="token-yes")
+        later = trade(id="trade-2")
+        records = [maker, taker, later]
+        self.transport.responses["/data/trades"] = lambda p: (
+            page(records, "next") if p["next_cursor"] == INITIAL_CURSOR else page(deepcopy(records)))
+        sample = self.collect()["samples"]["trades"]
+        self.assertEqual(sample["status"], "current")
+        self.assertTrue(sample["current"]["pagination_complete"])
+        rows = sample["current"]["rows"]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual({(r["trade_id"], r["order_id"], r["role"]) for r in rows}, {
+            ("trade-1", "order-1", "MAKER"), ("trade-1", "maker-2", "MAKER"),
+            ("trade-1", "taker-1", "TAKER"), ("trade-2", "order-1", "MAKER")})
 
     def test_conflicting_trade_component_and_window_are_not_silently_ignored(self):
         changed = trade()

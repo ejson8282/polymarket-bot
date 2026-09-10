@@ -64,8 +64,11 @@ coverage remain null. Only the balance and selected allowance are observations.
 Maker fills use the account's matching `maker_orders` components, including that
 component's own token, side, matched quantity and price, not the top-level trade.
 For example, a top-level complementary trade can have a different side, size and
-price. Component identity is trade/role/order; exact duplicates coalesce and
-conflicting duplicates invalidate the section. Taker rows require matching
+price. Within the verified maker scope, stable component identity is trade/order;
+role remains evidence, so reporting the same order as both MAKER and TAKER
+invalidates the section instead of counting twice. Different order IDs within
+the same trade remain distinct. Exact duplicates coalesce and conflicting
+duplicates invalidate the section, including across pages. Taker rows require matching
 public maker identity. MATCHED/MINED/RETRYING/CONFIRMED/FAILED stay distinct and
 are all visible. Fees are unknown, not zero; there is no PnL or refund inference.
 
@@ -81,6 +84,8 @@ and newly appeared orders are listed in `scoring_unchecked_order_ids`. The
 second orders pass invalidates scoring if the corresponding row changed or
 cannot be checked. It does not make subsequent changes impossible or imply a
 matched pair, minimum duration, Q, profitability or promotion readiness.
+Known `ORDER_STATUS_` values normalize to their bare status before deduplication
+and scoring selection. Unknown statuses remain unknown, never implicitly LIVE.
 
 ## Freshness and Output Safety
 

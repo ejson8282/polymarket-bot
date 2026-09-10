@@ -130,6 +130,8 @@ def _orders(raw, maker, _after, _before):
     _require(quantity > 0 and 0 <= matched <= quantity, "invalid_remaining")
     _require(raw.get("side") in {"BUY", "SELL"}, "invalid_side")
     status = raw.get("status")
+    if isinstance(status, str) and status.startswith("ORDER_STATUS_"):
+        status = status[len("ORDER_STATUS_"):]
     _require(status in {"LIVE", "MATCHED", "DELAYED", "CANCELED", "CANCELLED", "UNMATCHED", "PENDING"}, "unknown_order_status")
     oid = _id(raw.get("id"))
     return [{"key": oid, "order_id": oid, "condition_id": _id(raw.get("market")),
@@ -192,9 +194,11 @@ def _pages(transport, path, params, normalize, maker, after, before, max_pages, 
         _require(raw_count <= max_rows, "row_limit")
         for raw in body["data"]:
             for row in normalize(raw, maker, after, before):
-                prior = rows.get(row["key"])
+                # Role is evidence, not another economic fill for the same order.
+                component = (row["trade_id"], row["order_id"]) if path == "/data/trades" else row["order_id"]
+                prior = rows.get(component)
                 _require(prior is None or prior == row, "duplicate_conflict")
-                rows[row["key"]] = row
+                rows[component] = row
                 _require(len(rows) <= max_rows, "component_limit")
         if next_cursor == END_CURSOR:
             return {"rows": sorted(rows.values(), key=lambda r: r["key"]), "pages": page_number,
