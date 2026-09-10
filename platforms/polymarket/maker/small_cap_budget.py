@@ -421,13 +421,22 @@ class BudgetLedger:
     def _unknown(self, state, data, now):
         order = state["orders"][data["intent_id"]]
         require(order["state"] in ACTIVE, "unknown_state")
+        if order["state"] != "unknown":
+            self._require_new_order_evidence(order, now)
         order["state"] = "unknown"
+
+    def _require_new_order_evidence(self, order, now):
+        # A fresh-by-TTL proof from an earlier attempt cannot resolve new risk.
+        order["reconcile_after"] = now
+        order["proof_watermark_before_transition"] = order.get("proof", {}).get("watermark", 0)
 
     def _cancel_request(self, state, data, now):
         order = state["orders"][data["intent_id"]]
         require(order["state"] in {"live", "pending", "cancel_requested"}, "cancel_requires_reconciliation")
+        if order["state"] != "cancel_requested":
+            order["cancel_requested_at"] = now
+            self._require_new_order_evidence(order, now)
         order["state"] = "cancel_requested"
-        order.setdefault("cancel_requested_at", now)
 
     def _order_proof(self, state, data, now):
         proof = data["proof"]
@@ -438,6 +447,10 @@ class BudgetLedger:
         require(set(proof["includes_fill_ids"]) == fills and len(proof["includes_fill_ids"]) == len(fills), "order_fill_coverage")
         require(decimal(proof["remaining"]) == self._remaining(state, data["intent_id"]), "order_remaining_conflict")
         require(stamp(proof["observed_at"]) >= stamp(order["created_at"]), "order_proof_before_intent")
+        require(stamp(proof["observed_at"]) >= stamp(order.get("reconcile_after", order["created_at"])),
+                "order_proof_before_transition")
+        require(proof["watermark"] > order.get("proof_watermark_before_transition", 0),
+                "order_proof_reused_after_transition")
         for fill_id in fills:
             require(stamp(state["fills"][fill_id]["occurred_at"]) <= stamp(proof["observed_at"]), "order_proof_before_fill")
         order["proof"] = deepcopy(proof)
@@ -576,7 +589,8 @@ class BudgetLedger:
         for cid, condition in state["conditions"].items():
             orders = [self._order_view(state, i) for i, o in state["orders"].items() if o["condition_id"] == cid]
             cap = event_capacity(orders, condition["yes_token"], condition["no_token"], condition["mode"])
-            notional = decimal(cap["actual_buy_notional_usdc"])
+            # Computed products/sums can exceed the wire input's decimal scale.
+            notional = Decimal(cap["actual_buy_notional_usdc"])
             total += notional
             reasons = list(finance["reasons"])
             if condition["category"] != "standard" or not condition["mock_eligible"]:
@@ -616,14 +630,17 @@ class BudgetLedger:
             if ceiling is not None:
                 if notional + fee_reserve > ceiling:
                     reasons.append("event_cash_notional")
-                if condition["mode"] == "paired" and decimal(cap["capacity"]) > ceiling:
+                if condition["mode"] == "paired" and Decimal(cap["capacity"]) > ceiling:
                     reasons.append("legacy_paired_capacity")
             if condition["mode"] == "paired" and notional:
-                if not decimal(cap["yes_shares"]) or not decimal(cap["no_shares"]):
+                # Cancelling/unknown legs reserve risk, but cannot qualify a pair.
+                qualified = event_capacity([o for o in orders if o["state"] in {"pending", "live"}],
+                                           condition["yes_token"], condition["no_token"])
+                if not Decimal(qualified["yes_shares"]) or not Decimal(qualified["no_shares"]):
                     reasons.append("paired_leg_missing")
-                elif min(decimal(cap["yes_shares"]), decimal(cap["no_shares"])) < decimal(condition["minimum_shares"]):
+                elif min(Decimal(qualified["yes_shares"]), Decimal(qualified["no_shares"])) < decimal(condition["minimum_shares"]):
                     reasons.append("paired_leg_below_minimum")
-            if any(o["side"] == "SELL" and o["state"] in ACTIVE for o in orders):
+            if any(o["side"] == "SELL" and o["state"] in ACTIVE and decimal(o["remaining"]) > 0 for o in orders):
                 reasons.append("exit_sell_priority")
             score = "mock_pass" if len(scoring) == 2 and all(v is True for v in scoring) else "failed" if False in scoring else "unknown"
             if score != "mock_pass":

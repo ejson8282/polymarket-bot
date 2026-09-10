@@ -1,7 +1,8 @@
 # Small-Cap Budget Model v2: Event-Local Capital Reuse
 
 Status: implemented synthetic/offline transaction model, pending independent
-review. Base `4bbc3e84afe263bf71f2643b02943f06346a8e22`; lease #143.
+review. Review base `e8f37233c24e033920dd06a00b03f81a1b3aaff3`; lease #143.
+The original implementation base was `4bbc3e84afe263bf71f2643b02943f06346a8e22`.
 This is not an executor, allocator, exchange adapter, or live clearance.
 The existing stable/aggressive engines are neither imported nor modified.
 
@@ -112,6 +113,8 @@ digits. Floats, NaN, infinity and exponential inputs are rejected. Computed
 deficits may be negative and block new BUY. Private Decimal precision is 80;
 SQLite stores amounts in JSON TEXT, not REAL. Bool is rejected for integer
 identity/revision/watermark fields.
+Computed products and sums retain full Decimal precision; the wire input scale
+limit is not reapplied to internally calculated notional or aggregate shares.
 
 ### Mock Evidence
 
@@ -137,6 +140,12 @@ Probability inputs require 0 < best_ask <= 1 and 0 <= reward_low <= reward_high
 <= 1. Null remains unknown rather than zero. Invalid samples roll back without
 changing the previous evidence. Cancel confirmation observations cannot predate
 the cancel request or the fills that they cover.
+Each new cancel attempt and transition to unknown records a reconciliation time
+floor and the last known proof watermark. Both cancellation confirmation and
+order reconciliation require evidence at/after that transition and a greater
+watermark than its pre-transition proof, including when timestamps are equal.
+Retrying the same pending cancellation does not move its time floor. A proof
+that still reports live can resolve an attempt, but cannot cancel a later one.
 
 ## Capacity, Capital and Examples
 
@@ -162,6 +171,9 @@ and absolute margin1, cost98 passes but capacity100 exceeds99 and fails.
 This does not rename shares as cash or relax the existing engine.
 
 Paired mode requires two positive, minimum-qualified legs whenever BUY remains.
+Pending/live legs qualify the pair; cancelling/unknown legs only reserve risk
+and cannot qualify its missing side. A replacement must still fit alongside
+every cancelling leg until exhaustive cancellation confirmation releases it.
 Each order also meets minimum, tick, mock reward zone, no-cross, trusted front
 depth and expiry/category gates. Partial/full fills recheck both sides and may
 produce cancel_buy_proposal for the remaining side. Weather/up_down and near-end
@@ -203,7 +215,10 @@ SELL uses independently observed stock, subtracting known unreflected SELL fills
 and active SELL reservations. Unreflected BUY fills are not offered as settled
 stock. Unknown BUY/cash does not block a proven-stock exit; unknown SELL keeps
 share reservation. SELL reserves no cash and takes priority over new BUY on its
-condition. Unknown/untrusted inventory or insufficient shares still block SELL.
+condition while remaining shares are positive. A fully filled historical SELL
+does not permanently block new BUY; all finance, inventory, uncertainty and
+market-evidence gates still apply. Unknown/untrusted inventory or insufficient
+shares still block SELL.
 
 ## Atomicity and Replay
 

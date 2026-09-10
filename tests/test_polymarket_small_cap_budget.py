@@ -534,6 +534,124 @@ class LedgerTests(unittest.TestCase):
             self.apply("cancel_confirmed", self.proof_data("70"), now=later(1))
         self.apply("cancel_confirmed", self.proof_data("70", when=later(1)), now=later(1))
 
+    def test_second_cancel_requires_evidence_after_latest_attempt(self):
+        self.submit()
+        self.ack()
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(1))
+        proof = self.proof_data("70", when=later(2))
+        self.apply("reconcile_order", {**proof, "resolved_state": "live"}, now=later(2))
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(3))
+        self.ledger.close()
+        self.ledger = BudgetLedger(self.path)
+        before = self.view(later(3))
+        with self.assertRaisesRegex(BudgetError, "order_proof_before_transition"):
+            self.apply("cancel_confirmed", proof, now=later(3))
+        self.assertEqual(self.view(later(3)), before)
+        self.assertEqual(before["orders"]["o1"]["cancel_requested_at"], later(3))
+        self.assert_amount(before["conditions"]["A"]["actual_buy_notional_usdc"], 49)
+        fresh = self.proof_data("70", watermark=2, when=later(3))
+        self.apply("cancel_confirmed", fresh, now=later(3))
+        self.assert_amount(self.view(later(3))["conditions"]["A"]["actual_buy_notional_usdc"], 0)
+
+    def test_reconcile_order_cannot_bypass_cancel_evidence_floor(self):
+        self.submit()
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(2))
+        old = self.proof_data("70", when=later(1))
+        before = self.view(later(2))
+        for resolved in ("live", "cancelled"):
+            with self.subTest(resolved=resolved), self.assertRaisesRegex(BudgetError, "order_proof_before_transition"):
+                self.apply("reconcile_order", {**old, "resolved_state": resolved}, now=later(2))
+            self.assertEqual(self.view(later(2)), before)
+        fresh = self.proof_data("70", when=later(2))
+        self.apply("reconcile_order", {**fresh, "resolved_state": "cancelled"}, now=later(2))
+
+    def test_same_timestamp_unknown_requires_new_proof_watermark(self):
+        self.submit()
+        proof = {**self.proof_data("70"), "resolved_state": "live"}
+        self.apply("reconcile_order", proof)
+        self.apply("unknown", {"intent_id": "o1"})
+        before = self.view()
+        with self.assertRaisesRegex(BudgetError, "order_proof_reused_after_transition"):
+            self.apply("reconcile_order", proof)
+        self.assertEqual(self.view(), before)
+        newer = {**self.proof_data("70", watermark=2), "resolved_state": "live"}
+        self.apply("reconcile_order", newer)
+        self.assertEqual(self.view()["orders"]["o1"]["state"], "live")
+
+    def test_pre_unknown_proof_rejected_even_with_new_watermark(self):
+        self.submit()
+        self.apply("unknown", {"intent_id": "o1"}, now=later(2))
+        old = {**self.proof_data("70", watermark=2, when=later(1)), "resolved_state": "live"}
+        with self.assertRaisesRegex(BudgetError, "order_proof_before_transition"):
+            self.apply("reconcile_order", old, now=later(2))
+        fresh = {**self.proof_data("70", watermark=2, when=later(2)), "resolved_state": "live"}
+        self.apply("reconcile_order", fresh, now=later(2))
+
+    def test_cancel_retry_does_not_postpone_same_attempt_proof(self):
+        self.submit()
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(1))
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(3))
+        self.apply("cancel_confirmed", self.proof_data("70", when=later(2)), now=later(3))
+        self.assertEqual(self.view(later(3))["orders"]["o1"]["state"], "cancelled")
+
+    def test_pending_cancel_leg_reserves_risk_but_cannot_qualify_pair(self):
+        self.paired()
+        pair = [order(price="0.50"), order("n", "A-NO", price="0.40")]
+        self.assertTrue(self.submit(pair, revision=2)["receipt"]["accepted"])
+        self.apply("cancel_requested", {"intent_id": "n"})
+        row = self.view()["conditions"]["A"]
+        self.assert_amount(row["no_shares"], 70)
+        self.assert_amount(row["actual_buy_notional_usdc"], 63)
+        self.assertIn("paired_leg_missing", row["reasons"])
+        self.assertEqual(row["action"], "cancel_buy_proposal")
+        result = self.submit([order("y2", qty="10", price="0.50")], revision=2)
+        self.assertFalse(result["receipt"]["accepted"])
+        self.assertIn("paired_leg_missing", result["receipt"]["reasons"])
+        self.assertNotIn("y2", self.view()["orders"])
+
+    def test_replacement_pair_still_counts_cancelling_leg_capacity(self):
+        self.paired()
+        self.submit([order(price="0.50"), order("n", "A-NO", price="0.40")], revision=2)
+        self.apply("cancel_requested", {"intent_id": "n"})
+        blocked = self.submit([order("large-n", "A-NO", qty="40", price="0.40")], revision=2)
+        self.assertIn("legacy_paired_capacity", blocked["receipt"]["reasons"])
+        allowed = self.submit([order("small-n", "A-NO", qty="20", price="0.40")], revision=2)
+        self.assertTrue(allowed["receipt"]["accepted"])
+        self.assert_amount(allowed["current"]["conditions"]["A"]["no_shares"], 90)
+
+    def test_filled_sell_no_longer_blocks_buy_after_inventory_reconciliation(self):
+        self.apply("sources", {"inventory": evidence("inventory", {"A-YES": {"shares": "20", "cost_usdc": "14"}}, 2)})
+        self.assertTrue(self.submit([order("sell", qty="20", side="SELL")])["receipt"]["accepted"])
+        fill = self.fill_data("20", intent="sell", status="CONFIRMED")
+        fill["inventory_cost_usdc"] = "14"
+        fill_id = self.apply("fill", fill)["receipt"]["fill_id"]
+        self.apply("sources", sources(watermark=3, coverage=[fill_id]))
+        self.ledger.close()
+        self.ledger = BudgetLedger(self.path)
+        self.assertEqual(self.view()["orders"]["sell"]["remaining"], "0")
+        self.assertTrue(self.submit([order("after-exit", qty="10")])["receipt"]["accepted"])
+
+    def test_partial_sell_still_has_exit_priority(self):
+        self.apply("sources", {"inventory": evidence("inventory", {"A-YES": {"shares": "20", "cost_usdc": "14"}}, 2)})
+        self.submit([order("sell", qty="20", side="SELL")])
+        fill = self.fill_data("10", intent="sell", status="CONFIRMED")
+        fill["inventory_cost_usdc"] = "7"
+        self.apply("fill", fill)
+        self.assert_amount(self.view()["orders"]["sell"]["remaining"], 10)
+        self.assertIn("exit_sell_priority", self.submit([order("after-partial", qty="10")])["receipt"]["reasons"])
+
+    def test_full_scale_decimal_product_and_fill_survive_reopen(self):
+        qty, price = "1.123456789012", "0.13"
+        result = self.submit([order(qty=qty, price=price)])
+        self.assertTrue(result["receipt"]["accepted"])
+        self.assert_amount(result["current"]["displayed_cross_condition_notional_usdc"], "0.14604938257156")
+        self.apply("fill", self.fill_data("0.123456789012", price=price))
+        self.ledger.close()
+        self.ledger = BudgetLedger(self.path)
+        self.assert_amount(self.view()["inventory_cost_usdc"], "0.01604938257156")
+        self.assert_amount(self.view()["adjusted_cash_usdc"], "99.98395061742844")
+        self.assert_amount(self.view()["displayed_cross_condition_notional_usdc"], "0.13")
+
     def test_unknown_fees_remain_null_in_diagnostics(self):
         data = books(watermark=2)
         data["samples"]["A-YES"]["fee_rate"] = None
