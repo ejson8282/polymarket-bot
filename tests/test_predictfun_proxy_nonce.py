@@ -15,6 +15,7 @@ def proxy(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "ORDER_LEDGER_FILE", tmp_path / "ledger.json")
+    monkeypatch.setitem(sys.modules, "web3.middleware", SimpleNamespace(ExtraDataToPOAMiddleware="poa-test"))
     return module
 
 
@@ -143,6 +144,7 @@ def test_rpc_chain_and_same_block_validation(proxy, monkeypatch, chain, nonce, c
         HTTPProvider = staticmethod(lambda *a, **kw: object())
         to_checksum_address = staticmethod(lambda a: a)
         def __init__(self, provider):
+            self.middleware_onion = SimpleNamespace(inject=lambda middleware, layer: None)
             self.eth = SimpleNamespace(chain_id=chain,
                                        get_block=lambda block: {"number": 123, "timestamp": int(time.time())},
                                        contract=lambda **kw: SimpleNamespace(functions=funcs))
@@ -170,6 +172,7 @@ def test_stale_or_future_rpc_block_refuses_nonce(proxy, monkeypatch, age):
     class Web3:
         HTTPProvider = staticmethod(lambda *a, **kw: object())
         def __init__(self, provider):
+            self.middleware_onion = SimpleNamespace(inject=lambda middleware, layer: None)
             self.eth = SimpleNamespace(chain_id=56, get_block=lambda tag: {
                 "number": 123, "timestamp": 10000 - age}, contract=fail)
     monkeypatch.setattr(proxy.time, "time", lambda: 10000)

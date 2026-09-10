@@ -6,7 +6,7 @@
 - Repository: ejson8282/polymarket-bot.
 - Base: main at `4b36da6adcc21ca1a1502895ebb59959c214e6e1`.
 - Branch: `agent/predict-recovery-quarantine-20260910`, independent worktree.
-- Files: Predict API proxy, offline recovery planner, two focused test files,
+- Files: Predict API proxy, recovery planner/read-only collector, focused tests,
   and this document. No Polymarket engine or Dashboard changes.
 - Runtime mode of this work: RESEARCH. No services touched; no merge, deployment,
   restart, nonce transaction, runtime migration or trading activation authorized
@@ -27,6 +27,7 @@ contains `nonces(address)`, `isValidNonce(address,uint256)`, `incrementNonce()`,
 
 Sources:
 - https://github.com/PredictDotFun/sdk-python/blob/6da1708e1f3a9341f5cfd8d0b91bb66c8f43bef1/src/predict_sdk/abis/CTFExchange.json
+- https://github.com/PredictDotFun/sdk-python/blob/6da1708e1f3a9341f5cfd8d0b91bb66c8f43bef1/src/predict_sdk/abis/NegRiskCtfExchange.json
 - https://dev.predict.fun/how-to-create-or-cancel-orders-679306m0
 - https://dev.predict.fun/-deployed-contracts-1860295m0
 
@@ -107,8 +108,9 @@ consistent plan always returns `activation_allowed=false` and
 1. Review this foundation, including actual smart-account nonce semantics and
    the upper bound for every old signing path. Do not assume all unknown orders
    used nonce zero merely because it was the default.
-2. Implement/review the evidence collector and an account-exclusive, backed-up,
-   compare-and-swap maintenance adapter. No production editing shortcut.
+2. Independently review the read-only evidence collector and implement an
+   account-exclusive, backed-up, compare-and-swap maintenance adapter. No
+   production editing shortcut. The collector is implemented, not live-accepted.
 3. Deploy the approved proxy version and enable protections for the selected
    account before any invalidation. Verify denied exact-key replay and fresh
    nonce reads without releasing a new order.
@@ -124,3 +126,45 @@ consistent plan always returns `activation_allowed=false` and
 No claim is made that the account is ready today or that these steps have already
 been performed. Official historical support is useful but no longer the only
 possible recovery path.
+
+## Read-only evidence collection
+
+The `recovery_evidence` module now provides:
+
+- `ProxyAccountReader`: account-pinned GET requests to only `orders`, `positions`
+  and `allowances`; rejects redirects, credentials in the proxy origin, unknown
+  routes and oversized responses. It deliberately cannot call `submissions`,
+  since that existing GET may update the signer ledger. No API keys are needed
+  by this client; existing proxy authentication remains on the Mac mini.
+- `collect_account_baseline`: bounded complete pagination; explicit alias,
+  status, response shape and maker identity checks; finite nonnegative USDT
+  balance required. Missing/error/partial results raise, never become zero.
+  Nonempty orders/positions remain nonempty but are represented by hashes so
+  signed-order fields are not exported. A snapshot taking over 60s is rejected.
+- `collect_nonce_barrier`: no transaction methods in its ABI. Validates chain
+  56, a recent head, successful canonical receipt with at least 12 confirmations,
+  the exact exchange/maker `NonceIncremented` event and current/old nonce validity
+  at the same block. Rechecks the head hash to reject an observed reorg. The
+  supplied old nonce upper bound must still come from reviewed signing evidence;
+  this collector does not invent that missing historical fact.
+
+Use `make_bsc_reader` for real Web3 clients. Both this factory and the proxy's
+nonce reader install Web3 v6/v7-compatible PoA middleware and use a 10s provider
+timeout. A real read-only BSC probe reproduced `ExtraDataLengthError` without
+PoA handling and succeeded with it; mocked ABI tests alone did not catch this.
+
+Run nonce collection before beginning the account baseline. The planner now
+requires `baseline.started_at >= nonce.observed_at`, not merely a baseline that
+finishes after the transaction. It also binds confirmation count to block numbers
+and requires the barrier to be mined after fence enforcement, avoiding use of
+an old receipt that was only looked up later.
+
+The fence/writer-quiescence verifier and runtime CAS migration are NOT supplied
+by this module. No production nonce receipt was created or verified during its
+test run. Tests use synthetic receipts/RPC adapters, including negative cases.
+The PR remains Draft; no production data should be migrated using a hand-filled
+`ready_for_independent_review` result.
+
+Validation after collector/PoA changes: all `tests/test_predictfun*.py` passed
+(355 tests); changed Python files compile and `git diff --check` passes. Tests
+do not replace production migration or confirmed nonce-transaction acceptance.

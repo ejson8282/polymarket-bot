@@ -1091,6 +1091,11 @@ def _read_exchange_nonce(env: dict[str, str], exchange: str, maker: str) -> int:
                   or env.get("BNB_RPC_URL") or PREDICT_BSC_RPC_URL)
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+        try:
+            from web3.middleware import ExtraDataToPOAMiddleware as poa
+        except ImportError:
+            from web3.middleware import geth_poa_middleware as poa
+        w3.middleware_onion.inject(poa, layer=0)
         if w3.eth.chain_id != 56:
             raise ValueError("wrong_chain")
         latest = w3.eth.get_block("latest")

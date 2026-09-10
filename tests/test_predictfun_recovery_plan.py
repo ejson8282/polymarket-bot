@@ -19,6 +19,7 @@ def inputs():
                   "enforced_at": "2026-09-10T11:00:00Z", "verified_at": "2026-09-10T11:59:55Z"},
         "baseline": {"account_id": "account_01", "ok": True, "pagination_complete": True,
                      "open_orders": [], "positions": [], "maker": "0x" + "1" * 40,
+                     "started_at": "2026-09-10T11:59:51Z",
                      "observed_at": "2026-09-10T11:59:56Z"},
         "nonce_evidence": [{**row, "chain_id": 56, "old_nonce_upper_bound": 0,
                             "current_nonce": 1, "old_nonce_valid": False,
@@ -26,6 +27,10 @@ def inputs():
                             "confirmations": 12, "maker": "0x" + "1" * 40,
                             "exchange": EXCHANGES[(False, True)],
                             "signing_audit_sha256": "a" * 64, "tx_hash": "0x" + "b" * 64,
+                            "nonce_event_verified": True, "block_number": 111,
+                            "receipt_block_number": 100, "block_hash": "0x" + "c" * 64,
+                            "receipt_block_hash": "0x" + "d" * 64,
+                            "mined_at": "2026-09-10T11:59:10Z",
                             "confirmed_at": "2026-09-10T11:59:30Z",
                             "observed_at": "2026-09-10T11:59:50Z"}],
     }
@@ -48,6 +53,9 @@ def test_review_plan_never_mutates_or_authorizes_runtime():
     ("current_nonce", 0), ("current_nonce", True), ("old_nonce_upper_bound", None),
     ("old_nonce_valid", True), ("current_nonce_valid", False),
     ("receipt_success", False), ("confirmations", 1), ("chain_id", 137),
+    ("nonce_event_verified", False), ("receipt_block_hash", ""),
+    ("block_hash", ""), ("block_number", 112),
+    ("mined_at", "2026-09-10T10:59:59Z"),
     ("maker", "0x" + "2" * 40), ("exchange", EXCHANGES[(True, True)]),
     ("is_neg_risk", True), ("is_yield_bearing", None), ("market_id", 43),
     ("signing_audit_sha256", ""), ("tx_hash", ""),
@@ -67,6 +75,7 @@ def test_unverified_nonce_barrier_blocks(field, value):
     ("ok", False), ("account_id", "account_02"), ("maker", ""),
     ("observed_at", "2026-09-10T11:58:00Z"),
     ("observed_at", "2026-09-10T11:59:00Z"),
+    ("started_at", "2026-09-10T11:59:40Z"),
 ])
 def test_incomplete_or_pre_barrier_baseline_blocks(field, value):
     args = inputs()

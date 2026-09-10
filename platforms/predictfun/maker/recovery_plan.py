@@ -100,7 +100,11 @@ barrier in its exact maker/exchange context. No default 24-hour expiry inference
             and item.get("old_nonce_valid") is False
             and item.get("current_nonce_valid") is True
             and item.get("receipt_success") is True
+            and item.get("nonce_event_verified") is True
+            and _uint(item.get("block_number"))
+            and _uint(item.get("receipt_block_number"))
             and type(item.get("confirmations")) is int and item["confirmations"] >= 12
+            and item["confirmations"] == item["block_number"] - item["receipt_block_number"] + 1
             and item.get("market_id") == pending.get("market_id")
             and type(item.get("is_neg_risk")) is bool
             and type(item.get("is_yield_bearing")) is bool
@@ -114,12 +118,16 @@ barrier in its exact maker/exchange context. No default 24-hour expiry inference
             and item["exchange"].lower() == EXCHANGES.get((item["is_neg_risk"], item["is_yield_bearing"]))
             and re.fullmatch(r"[0-9a-f]{64}", str(item.get("signing_audit_sha256", ""))) is not None
             and re.fullmatch(r"0x[0-9a-fA-F]{64}", str(item.get("tx_hash", ""))) is not None
+            and re.fullmatch(r"0x[0-9a-fA-F]{64}", str(item.get("block_hash", ""))) is not None
+            and re.fullmatch(r"0x[0-9a-fA-F]{64}", str(item.get("receipt_block_hash", ""))) is not None
             and recent(item.get("observed_at"))
         )
         # The fresh account baseline must follow the confirmed invalidation.
         try:
-            valid = valid and _time(baseline.get("observed_at")) >= _time(item.get("confirmed_at"))
-            valid = valid and _time(item.get("confirmed_at")) >= _time(fence.get("enforced_at"))
+            valid = valid and _time(baseline.get("observed_at")) >= _time(baseline.get("started_at"))
+            valid = valid and _time(baseline.get("started_at")) >= _time(item.get("observed_at"))
+            valid = valid and _time(item.get("mined_at")) >= _time(fence.get("enforced_at"))
+            valid = valid and _time(item.get("confirmed_at")) >= _time(item.get("mined_at"))
             valid = valid and _time(item.get("observed_at")) >= _time(item.get("confirmed_at"))
         except (TypeError, ValueError, OverflowError):
             valid = False
