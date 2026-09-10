@@ -146,6 +146,13 @@ order reconciliation require evidence at/after that transition and a greater
 watermark than its pre-transition proof, including when timestamps are equal.
 Retrying the same pending cancellation does not move its time floor. A proof
 that still reports live can resolve an attempt, but cannot cancel a later one.
+Every consumed proof is also durably bound to its resolved outcome. An identical
+proof can repeat only that outcome; changing live to cancelled requires a new
+sample with a greater watermark and valid observation time. This applies even
+without another cancel/unknown transition and survives reopen/replay. Existing
+proofs lacking an outcome marker cannot be reused as cancellation evidence;
+new evidence is required. Historical event-key replay returns its old receipt
+without changing the current order state.
 
 ## Capacity, Capital and Examples
 

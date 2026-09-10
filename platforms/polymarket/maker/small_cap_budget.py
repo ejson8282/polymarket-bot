@@ -438,9 +438,11 @@ class BudgetLedger:
             self._require_new_order_evidence(order, now)
         order["state"] = "cancel_requested"
 
-    def _order_proof(self, state, data, now):
+    def _order_proof(self, state, data, now, *, resolved_state):
         proof = data["proof"]
-        self._evidence(state, "order:" + data["intent_id"], proof, state["orders"][data["intent_id"]].get("proof"), now)
+        previous_order = state["orders"][data["intent_id"]]
+        previous_proof = previous_order.get("proof")
+        self._evidence(state, "order:" + data["intent_id"], proof, previous_proof, now)
         require(_fresh(proof, now) and proof.get("exhaustive") is True, "order_reconciliation_required")
         order = self._bind_order(state, data["intent_id"], data["exchange_order_id"])
         fills = {key for key, fill in state["fills"].items() if fill["intent_id"] == data["intent_id"]}
@@ -451,20 +453,23 @@ class BudgetLedger:
                 "order_proof_before_transition")
         require(proof["watermark"] > order.get("proof_watermark_before_transition", 0),
                 "order_proof_reused_after_transition")
+        if proof == previous_proof:
+            require(previous_order.get("proof_resolved_state") == resolved_state, "order_proof_outcome_conflict")
         for fill_id in fills:
             require(stamp(state["fills"][fill_id]["occurred_at"]) <= stamp(proof["observed_at"]), "order_proof_before_fill")
         order["proof"] = deepcopy(proof)
+        order["proof_resolved_state"] = resolved_state
         return order
 
     def _cancel_confirm(self, state, data, now):
         require(state["orders"][data["intent_id"]]["state"] in {"cancel_requested", "cancelled"}, "cancel_not_requested")
-        order = self._order_proof(state, data, now)
+        order = self._order_proof(state, data, now, resolved_state="cancelled")
         require(stamp(order["proof"]["observed_at"]) >= stamp(order["cancel_requested_at"]), "cancel_proof_before_request")
         order["state"] = "cancelled"
 
     def _reconcile_order(self, state, data, now):
         require(data["resolved_state"] in {"live", "cancelled"}, "reconcile_state")
-        order = self._order_proof(state, data, now)
+        order = self._order_proof(state, data, now, resolved_state=data["resolved_state"])
         require(order["state"] != "cancelled" or data["resolved_state"] == "cancelled", "cancelled_resurrection")
         order["state"] = data["resolved_state"]
 

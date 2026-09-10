@@ -594,6 +594,46 @@ class LedgerTests(unittest.TestCase):
         self.apply("cancel_confirmed", self.proof_data("70", when=later(2)), now=later(3))
         self.assertEqual(self.view(later(3))["orders"]["o1"]["state"], "cancelled")
 
+    def _assert_consumed_proof_outcome_is_immutable(self, side):
+        if side == "SELL":
+            self.apply("sources", {"inventory": evidence("inventory", {"A-YES": {"shares": "100", "cost_usdc": "20"}}, 2)})
+        self.assertTrue(self.submit([order(qty="100", side=side)])["receipt"]["accepted"])
+        self.ack()
+        self.apply("cancel_requested", {"intent_id": "o1"}, now=later(1))
+        proof = self.proof_data("100", when=later(2))
+        live = {**proof, "resolved_state": "live"}
+        first = self.apply("reconcile_order", live, key="live-proof", now=later(2))
+        self.ledger.close()
+        self.ledger = BudgetLedger(self.path)
+        replay = self.apply("reconcile_order", live, key="live-proof", now=later(3))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["receipt"], first["receipt"])
+        self.assertTrue(self.apply("reconcile_order", live, now=later(3))["receipt"]["accepted"])
+        before = self.view(later(3))
+        conflicting = {**proof, "resolved_state": "cancelled"}
+        with self.assertRaisesRegex(BudgetError, "order_proof_outcome_conflict"):
+            self.apply("reconcile_order", conflicting, key="conflicting-outcome", now=later(3))
+        self.assertEqual(self.view(later(3)), before)
+        self.assertEqual(self.ledger.db.execute("SELECT count(*) FROM events WHERE key='conflicting-outcome'").fetchone()[0], 0)
+        with self.assertRaisesRegex(BudgetError, "idempotency_conflict"):
+            self.apply("reconcile_order", conflicting, key="live-proof", now=later(3))
+        self.assertFalse(self.submit([order("replacement", qty="100", side=side)], now=later(3))["receipt"]["accepted"])
+        fresh = {**self.proof_data("100", watermark=2, when=later(4)), "resolved_state": "cancelled"}
+        self.apply("reconcile_order", fresh, now=later(4))
+        self.ledger.close()
+        self.ledger = BudgetLedger(self.path)
+        replay = self.apply("reconcile_order", live, key="live-proof", now=later(4))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["current"]["orders"]["o1"]["state"], "cancelled")
+        self.assertEqual(replay["current"]["orders"]["o1"]["proof_resolved_state"], "cancelled")
+        self.assertTrue(self.submit([order("replacement", qty="100", side=side)], now=later(4))["receipt"]["accepted"])
+
+    def test_live_proof_cannot_release_buy_with_conflicting_outcome(self):
+        self._assert_consumed_proof_outcome_is_immutable("BUY")
+
+    def test_live_proof_cannot_release_sell_with_conflicting_outcome(self):
+        self._assert_consumed_proof_outcome_is_immutable("SELL")
+
     def test_pending_cancel_leg_reserves_risk_but_cannot_qualify_pair(self):
         self.paired()
         pair = [order(price="0.50"), order("n", "A-NO", price="0.40")]
