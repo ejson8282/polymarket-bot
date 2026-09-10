@@ -25,6 +25,7 @@ import urllib.request
 sys.dont_write_bytecode = True
 
 from platforms.predictfun.ws_relay import probe_relay
+from platforms.predictfun.recovery_release_floor import check_release_transition
 
 
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
@@ -37,6 +38,7 @@ ARCHIVE_PATHS = (
     "platforms/__init__.py",
     "platforms/predictfun/__init__.py",
     "platforms/predictfun/deploy_ws_relay.py",
+    "platforms/predictfun/recovery_release_floor.py",
     "platforms/predictfun/ws_relay.py",
     "deploy/mac-mini/predictfun_api_proxy.py",
     "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist",
@@ -502,6 +504,7 @@ def activate_release(
         raise RelayDeploymentError(
             f"relay current changed: expected {expected}, found {previous_sha}"
         )
+    recovery_floor = check_release_transition(paths.runtime_root, "macmini", target_sha, previous_sha)
     release = paths.release_root / target_sha
     verify_release(release, target_sha)
     _validate_secret_file(paths.secret_file)
@@ -587,9 +590,11 @@ def activate_release(
     domain = f"gui/{paths.uid}"
     service = f"{domain}/{LABEL}"
     api_service = f"{domain}/{API_LABEL}"
+    recovery_floor.require_unchanged()
     try:
         runner.run(("launchctl", "bootout", service), check=False)
         runner.run(("launchctl", "bootout", api_service), check=False)
+        recovery_floor.require_unchanged()
         _atomic_symlink(paths.current_link, release)
         _atomic_write(paths.launch_agent, plist_content, 0o644)
         _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
@@ -653,10 +658,12 @@ def activate_release(
             raise RelayDeploymentError(
                 f"relay public market subscription failed: {last_error}"
             )
+        recovery_floor.require_unchanged()
         return {
             "status": "activated",
             "target_sha": target_sha,
             "previous_sha": previous_sha,
+            "recovery_release_floor_sha256": recovery_floor.digest,
             "authorization_id": authorization_id,
             "service": LABEL,
             "api_service": API_LABEL,
@@ -667,6 +674,8 @@ def activate_release(
     except Exception as exc:
         runner.run(("launchctl", "bootout", service), check=False)
         runner.run(("launchctl", "bootout", api_service), check=False)
+        recovery_floor.require_unchanged()
+        recovery_floor.require_release(previous_sha)
         if previous_target is None:
             try:
                 paths.current_link.unlink()

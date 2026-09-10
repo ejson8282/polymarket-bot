@@ -28,6 +28,7 @@ from platforms.predictfun.maker.release_guard import (
     SOURCE_REPOSITORY,
     verify_release,
 )
+from platforms.predictfun.recovery_release_floor import check_release_transition
 
 
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -1116,6 +1117,7 @@ def activate_release(
     if not str(authorization_id or "").strip():
         raise DeploymentError("authorization ID is required")
     previous_sha = _require_expected_current(paths, expected_current)
+    recovery_floor = check_release_transition(paths.runtime_root, paths.profile, target_sha, previous_sha)
     release = paths.release_root / target_sha
     verify_release(
         release,
@@ -1173,6 +1175,7 @@ def activate_release(
     previous_mode = _runtime_execution_mode(paths)
     runner_start_attempted = False
 
+    recovery_floor.require_unchanged()
     try:
         runner.run(("systemctl", "stop", paths.timer_name), check=False)
         previous_stop_started_at = datetime.now(timezone.utc)
@@ -1180,6 +1183,7 @@ def activate_release(
         if service_active and previous_mode == "live":
             _verify_live_shutdown_cleanup(paths, previous_stop_started_at)
         runner.run(("systemctl", "stop", paths.ws_service_name), check=False)
+        recovery_floor.require_unchanged()
         _atomic_symlink(paths.current_link, release)
         _atomic_write(
             paths.release_env,
@@ -1229,10 +1233,12 @@ def activate_release(
         runner.run(
             ("systemctl", "disable", "--now", paths.timer_name), check=False
         )
+        recovery_floor.require_unchanged()
         return {
             "status": "activated",
             "target_sha": target_sha,
             "previous_sha": previous_sha,
+            "recovery_release_floor_sha256": recovery_floor.digest,
             "profile": paths.profile,
             "execution_mode": _validate_execution_profile(paths),
             "account_id": (
@@ -1307,6 +1313,10 @@ def activate_release(
                 "was not verified; Predict services remain stopped and disabled "
                 f"for manual recovery: {cleanup_error}"
             ) from exc
+        # Services have been stopped above. A changed/missing policy must never
+        # trigger a blind restore into an unprotected pre-recovery release.
+        recovery_floor.require_unchanged()
+        recovery_floor.require_release(previous_sha)
         if previous_target is None:
             try:
                 paths.current_link.unlink()

@@ -25,6 +25,44 @@ from platforms.predictfun.deploy_ws_relay import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("damage", ["changed", "missing", "corrupt"])
+def test_failed_mac_activation_never_restarts_old_release_after_floor_damage(tmp_path, damage):
+    from platforms.predictfun.recovery_release_floor import RecoveryReleaseFloorError
+    paths, sha = _prepare(tmp_path)
+    old = "a" * 40
+    previous = paths.release_root / old
+    previous.mkdir()
+    paths.current_link.symlink_to(previous)
+    directory = paths.runtime_root / "recovery-release-floor"
+    directory.mkdir(parents=True)
+    policy_file = directory / "policy.json"
+    policy = {"version": 1, "repository": "ejson8282/polymarket-bot", "profile": "macmini",
+              "recovery_id": "c" * 64, "allowed_releases": sorted([old, sha])}
+    policy_file.write_text(json.dumps(policy))
+    policy_file.chmod(0o400)
+    directory.chmod(0o500)
+    def fail_probe(*args):
+        directory.chmod(0o700)
+        if damage == "missing":
+            policy_file.unlink()
+            directory.rmdir()
+        else:
+            policy_file.chmod(0o600)
+            policy_file.write_text(json.dumps({**policy, "allowed_releases": [sha]}) if damage == "changed" else "{")
+            policy_file.chmod(0o400)
+            directory.chmod(0o500)
+        return {"ok": False}
+    runner = LaunchctlRunner()
+    with pytest.raises(RecoveryReleaseFloorError):
+        activate_release(paths, runner, target_sha=sha, expected_current=old,
+                         confirm=CONFIRMATION, authorization_id="synthetic-floor-test",
+                         api_probe=fail_probe)
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert runner.calls[-2:] == [
+        ("launchctl", "bootout", "gui/501/ai.codex.predictfun-ws-relay"),
+        ("launchctl", "bootout", "gui/501/ai.codex.predictfun-api-proxy")]
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ("git", *args),

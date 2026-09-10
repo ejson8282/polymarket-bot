@@ -33,6 +33,46 @@ from platforms.predictfun.maker.runner import _release_metadata
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("damage", ["changed", "missing", "corrupt"])
+def test_failed_activation_never_rolls_back_after_recovery_floor_changes(tmp_path, monkeypatch, damage):
+    from platforms.predictfun.recovery_release_floor import RecoveryReleaseFloorError
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    old = "a" * 40
+    previous = paths.release_root / old
+    previous.mkdir()
+    paths.current_link.symlink_to(previous)
+    directory = paths.runtime_root / "recovery-release-floor"
+    directory.mkdir(parents=True)
+    policy_file = directory / "policy.json"
+    policy = {"version": 1, "repository": "ejson8282/polymarket-bot", "profile": "vps1",
+              "recovery_id": "c" * 64, "allowed_releases": sorted([sha, old])}
+    policy_file.write_text(json.dumps(policy))
+    policy_file.chmod(0o400)
+    directory.chmod(0o500)
+    def fail_acceptance(*args):
+        directory.chmod(0o700)
+        if damage == "missing":
+            policy_file.unlink()
+            directory.rmdir()
+        else:
+            policy_file.chmod(0o600)
+            policy_file.write_text(json.dumps({**policy, "allowed_releases": [sha]}) if damage == "changed" else "{")
+            policy_file.chmod(0o400)
+            directory.chmod(0o500)
+        raise RuntimeError("synthetic acceptance failure")
+    monkeypatch.setattr(deploy_release_module, "_verify_runner_state", fail_acceptance)
+    monkeypatch.setattr(deploy_release_module, "_verify_ws_state", lambda *a: {})
+    runner = SystemdRunner(paths, sha)
+    with pytest.raises(RecoveryReleaseFloorError):
+        activate_release(paths, runner, target_sha=sha, expected_current=old,
+                         confirm=CONFIRMATION, authorization_id="synthetic-floor-test")
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert runner.calls[-3:] == [("systemctl", "stop", paths.timer_name),
+                                ("systemctl", "stop", paths.service_name),
+                                ("systemctl", "stop", paths.ws_service_name)]
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ("git", *args),
