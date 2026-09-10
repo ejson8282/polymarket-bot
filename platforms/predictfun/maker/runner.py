@@ -34,6 +34,7 @@ from platforms.predictfun.maker.executor import (
     PredictFunReadOnlyExecutor,
 )
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.recovery_migration import report_writer_lease
 from platforms.predictfun.maker.research import build_research_state
 from platforms.predictfun.maker.risk import blocked_execution_report, evaluate_risk
 from platforms.predictfun.maker.reconcile import (
@@ -533,6 +534,14 @@ def run_loop(
     once: bool = False,
 ) -> dict[str, Any]:
     cfg = load_config(config_path)
+    report_path = _configured_path(config_path, cfg, "execution_report_path", "../../../data/predictfun_execution_report.json")
+    with report_writer_lease(report_path):
+        return _run_loop_locked(config_path=config_path, cfg=cfg, interval_sec=interval_sec, once=once)
+
+
+def _run_loop_locked(
+    *, config_path: Path, cfg: dict[str, Any], interval_sec: float, once: bool = False,
+) -> dict[str, Any]:
     api_key = os.getenv(str(cfg.get("api_key_env") or "PREDICTFUN_API_KEY"), "")
     client = PredictFunClient(base_url=str(cfg["base_url"]), api_key=api_key)
 

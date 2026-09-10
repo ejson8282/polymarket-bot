@@ -15,8 +15,9 @@
   commits change Predict runtime files. Existing historical pending remains.
 
 This is a recovery foundation, not an automatic unblocker. Existing pending
-records remain blocking. There is deliberately no apply, discard, cancel,
-incrementNonce, service-control or activation command in this change.
+records remain blocking. There is no discard, cancel, incrementNonce,
+service-control or activation command. The report replacement library below is
+not wired to an HTTP endpoint, runner auto-recovery or a production CLI.
 
 ## Verified mechanism and limits
 
@@ -159,12 +160,67 @@ finishes after the transaction. It also binds confirmation count to block number
 and requires the barrier to be mined after fence enforcement, avoiding use of
 an old receipt that was only looked up later.
 
-The fence/writer-quiescence verifier and runtime CAS migration are NOT supplied
-by this module. No production nonce receipt was created or verified during its
-test run. Tests use synthetic receipts/RPC adapters, including negative cases.
-The PR remains Draft; no production data should be migrated using a hand-filled
-`ready_for_independent_review` result.
+The collector itself does not install a signer fence. No production nonce receipt
+was created or verified during its test run. Tests use synthetic receipts/RPC
+adapters, including negative cases. The PR remains Draft; no production data
+should be migrated using a hand-filled `ready_for_independent_review` result.
 
-Validation after collector/PoA changes: all `tests/test_predictfun*.py` passed
-(355 tests); changed Python files compile and `git diff --check` passes. Tests
-do not replace production migration or confirmed nonce-transaction acceptance.
+## Reviewed report replacement and durable archive
+
+`recovery_migration.prepare_report_recovery` now constructs an offline replacement
+proposal only after the consistency planner passes. The proposal preserves all
+known order records, unselected pending rows, other-account generations and
+top-level report fields. Only the selected pending rows move to `recovery_archive`;
+their complete original payload and evidence/source hashes are retained. Their
+historical result stays `unknown`, with resolution `nonce_invalidated_unknown`,
+not a fabricated exchange cancellation/rejection. Account/intent generations
+advance beyond the archived keys so a future authorized quote does not reuse them.
+
+The registry preserves this archive across serialization and ordinary history
+trimming, reseeds generation counters from it and rejects direct archived-key
+reentry. Malformed archives or keys present in both pending and archive fail
+closed. No existing pending entry is migrated automatically on startup.
+
+The runner now holds an exclusive per-report file lease for its full lifetime,
+including shutdown reconciliation. `replace_reviewed_report` takes the same
+nonblocking lease. It requires an explicit authorization reference, full release
+SHA, independently reviewed proposal hash, exact current file hash and a mandatory
+live maintenance verifier. It regenerates the narrow replacement from the source
+and plan, rejecting even hash-approved unrelated edits. It writes private,
+fsynced external backups and a hash manifest before an atomic report replacement,
+rechecks the live guard and file immediately before replacement, and leaves an
+applied marker only after verifying the replacement. It never resumes trading
+or automatically restores a pre-barrier ledger/report. A post-replace disk error
+must leave the account paused for manual hash reconciliation; no blind retry.
+
+`verify_vps1_writers_stopped` is called twice by the adapter and verifies:
+the local VPS1 Tailscale address, exact immutable release basename, both Predict runner service and timer inactive
+and masked, zero PIDs, and no visible manual/legacy runner command. All subprocess
+calls are `ip -j address show`, `systemctl show` or `ps`; it cannot stop or mask
+anything. The adapter takes the global VPS1 deployment lock itself, refuses a
+different report path or account, and holds both locks through the write. The new file lease cannot
+fence an old binary, a remote writer or an arbitrary root process; the service and
+process checks do not pretend otherwise. Never use this library with an older
+runner or a callback that merely returns success.
+
+### Still required before a production recovery
+
+- Independently review this fixed PR head, particularly the callback trust boundary.
+- Establish the historical signed nonce upper bound; a missing ledger entry or
+  current nonce of zero alone is insufficient evidence.
+- Supply a reviewed Mac mini signer-fence installation/verification procedure and
+  exact smart-account nonce transaction path. No such operation is automated here.
+- Bind the fresh signer-fence and RPC/account
+  collectors into the production maintenance entrypoint. The library accepts a
+  required verifier callback; that callback is a trusted integration boundary,
+  not cryptographic authorization and not yet a shipped production command.
+- Enforce the post-barrier rollback floor across deployments before activation.
+  The archive flag is an audit instruction, not a hard deployment-wrapper guard.
+- Obtain separate explicit authorization for the exact deployment/configuration,
+  affected exchange nonce transactions and subsequent limited-live activation.
+
+Validation after migration/lease changes: all `tests/test_predictfun*.py` passed
+(383 tests). Tests include archive round trips/generation preservation, old-key
+reentry rejection, active writer exclusion, failed guards, disk-full backup,
+concurrent file change, scope tampering and inactive-but-unmasked units. These
+tests do not replace production migration or confirmed transaction acceptance.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 from platforms.predictfun.maker.executor import (
@@ -66,6 +68,7 @@ class ManagedOrderRegistry:
         history_limit: int = 1000,
         submission_generations: dict[str, dict[str, int]] | None = None,
         pending_submissions: list[PendingSubmission] | None = None,
+        recovery_archive: list[dict[str, Any]] | None = None,
     ) -> None:
         self.history_limit = max(1, int(history_limit))
         self._orders = {order.order_id: order for order in orders or [] if order.order_id}
@@ -77,7 +80,20 @@ class ManagedOrderRegistry:
             for row in pending_submissions or []
             if row.account_id and row.intent_id and row.idempotency_key
         }
+        self._recovery_archive = self._validate_recovery_archive(recovery_archive)
+        self._quarantined_keys = {
+            (row["pending"]["account_id"], row["pending"]["idempotency_key"])
+            for row in self._recovery_archive
+        }
+        if self._quarantined_keys.intersection(self._pending_submissions):
+            raise ValueError("quarantined_key_still_pending")
         self._seed_generations_from_orders()
+        for row in self._recovery_archive:
+            pending = row["pending"]
+            generations = self._submission_generations.setdefault(pending["account_id"], {})
+            intent = pending["intent_id"]
+            generations[intent] = max(generations.get(intent, 0),
+                                      self._generation_for_key(intent, pending["idempotency_key"]))
 
     @classmethod
     def from_state(cls, state: dict[str, Any] | None, *, history_limit: int = 1000) -> "ManagedOrderRegistry":
@@ -169,7 +185,37 @@ class ManagedOrderRegistry:
             history_limit=history_limit,
             submission_generations=generations,
             pending_submissions=pending_submissions,
+            recovery_archive=state.get("recovery_archive") if isinstance(state, dict) else None,
         )
+
+    @staticmethod
+    def _validate_recovery_archive(raw: object) -> list[dict[str, Any]]:
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise ValueError("invalid_recovery_archive")
+        seen: set[tuple[str, str]] = set()
+        for row in raw:
+            if not isinstance(row, dict) or not isinstance(row.get("pending"), dict):
+                raise ValueError("invalid_recovery_archive")
+            pending = row["pending"]
+            account, intent, key = (pending.get(k) for k in
+                                    ("account_id", "intent_id", "idempotency_key"))
+            if (any(not isinstance(v, str) or not v for v in (account, intent, key))
+                    or row.get("resolution") != "nonce_invalidated_unknown"
+                    or row.get("historical_submission_outcome") != "unknown"
+                    or any(re.fullmatch(r"[0-9a-f]{64}", str(row.get(k, ""))) is None
+                           for k in ("evidence_sha256", "source_registry_sha256"))):
+                raise ValueError("invalid_recovery_archive")
+            if key != intent:
+                match = re.fullmatch(re.escape(intent) + r":g([1-9][0-9]{0,158})", key)
+                if match is None or int(match.group(1)) < 2:
+                    raise ValueError("invalid_recovery_generation")
+            pair = (account, key)
+            if pair in seen:
+                raise ValueError("duplicate_recovery_archive")
+            seen.add(pair)
+        return deepcopy(raw)
 
     def idempotency_key_for_create(self, intent_id: str, account_id: str) -> str:
         """Return a stable key for this attempt and rotate after successful creates."""
@@ -189,6 +235,8 @@ class ManagedOrderRegistry:
             return
         now = utc_now()
         key = (order.account_id, idempotency_key)
+        if key in self._quarantined_keys:
+            raise ValueError("quarantined_submission_replay")
         existing = self._pending_submissions.get(key)
         self._pending_submissions[key] = PendingSubmission(
             intent_id=order.intent_id,
@@ -268,6 +316,8 @@ class ManagedOrderRegistry:
     def record_create(self, order: ExecutableOrder, result: ExecutionResult) -> None:
         if not result.ok or not result.order_id:
             return
+        if (order.account_id, order.idempotency_key or order.intent_id) in self._quarantined_keys:
+            raise ValueError("quarantined_submission_replay")
         self.discard_pending(order)
         now = utc_now()
         idempotency_key = str(order.idempotency_key or order.intent_id).strip()
@@ -406,6 +456,7 @@ class ManagedOrderRegistry:
                     ),
                 )
             ],
+            "recovery_archive": deepcopy(self._recovery_archive),
             "orders": [asdict(order) for order in rows],
         }
 
