@@ -65,7 +65,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class ProxyAccountReader:
-    """A GET-only client pinned to one account and three known read routes."""
+    """A GET-only client pinned to one account and known read-only routes."""
 
     def __init__(self, base_url: str, account_id: str):
         parsed = urlsplit(base_url)
@@ -80,10 +80,11 @@ class ProxyAccountReader:
         self.opener = build_opener(_NoRedirect())
 
     def __call__(self, resource: str, query: dict[str, object]) -> dict[str, Any]:
-        if resource not in {"orders", "positions", "allowances"}:
+        if resource not in {"orders", "positions", "allowances", "recovery-fence"}:
             raise ValueError("recovery_read_route_not_allowed")
         allowed = {"orders": {"first", "after", "status"},
-                   "positions": {"first", "after", "isResolved"}, "allowances": set()}
+                   "positions": {"first", "after", "isResolved"}, "allowances": set(),
+                   "recovery-fence": set()}
         if set(query) - allowed[resource]:
             raise ValueError("recovery_read_query_not_allowed")
         url = f"{self.base}/predictfun/accounts/{self.account_id}/{resource}"
@@ -101,6 +102,42 @@ class ProxyAccountReader:
             return payload
         except Exception:
             raise ValueError("recovery_account_read_failed") from None
+
+
+def collect_signer_fence(
+    read: Callable, *, account_id: str, keys: list[str], release_sha: str,
+    fence_id: str, clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Verify this proxy's fence, never infer that other writers are stopped."""
+    if (not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", account_id)
+            or not isinstance(release_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", release_sha)
+            or not isinstance(fence_id, str) or not re.fullmatch(r"[0-9a-f]{64}", fence_id)
+            or not isinstance(keys, list) or not keys
+            or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", k) for k in keys)
+            or len(set(keys)) != len(keys)):
+        raise ValueError("fence_collection_input_invalid")
+    started = clock()
+    result = read("recovery-fence", {})
+    finished = clock()
+    if not 0 <= finished - started <= 10:
+        raise ValueError("fence_snapshot_too_slow")
+    if (not isinstance(result, dict) or result.get("ok") is not True
+            or result.get("alias") != account_id or result.get("account_id") != account_id
+            or result.get("signing_blocked") is not True or result.get("strict_ledger") is not True
+            or result.get("release_sha") != release_sha or result.get("fence_id") != fence_id
+            or result.get("keys") != sorted(keys)
+            or type(result.get("installed_at")) is not int
+            or type(result.get("verified_at")) is not int
+            or not 0 < result["installed_at"] <= result["verified_at"]
+            or not started - 5 <= result["verified_at"] <= finished + 5):
+        raise ValueError("signer_fence_response_invalid")
+    return {
+        "account_id": account_id, "keys": sorted(keys), "enforced": True,
+        "strict_ledger": True, "fence_id": fence_id, "release_sha": release_sha,
+        "enforced_at": _iso(result["installed_at"]), "verified_at": _iso(finished),
+        "all_writers_quiesced": False, "activation_allowed": False,
+        "response_sha256": _digest(result),
+    }
 
 
 def collect_account_baseline(

@@ -339,9 +339,173 @@ def test_all_runtime_ledger_reads_have_explicit_integrity_policy(proxy):
     tree = ast.parse(Path(proxy.__file__).read_text())
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name) and node.func.id == "_load_order_ledger"]
-    assert len(calls) == 8
+    assert len(calls) == 9
     for call in calls:
         assert len(call.keywords) == 1 and call.keywords[0].arg == "strict"
         value = call.keywords[0].value
         assert (isinstance(value, ast.Name) and value.id == "strict_ledger") or (
             isinstance(value, ast.Constant) and value.value is True)
+
+
+def fenced_ledger():
+    return {"orders": {"account_01:old:g2": {"quarantined": True, "order_nonce": "0"}},
+            "recovery_fences": {"account_01": {"signing_blocked": True,
+                "keys": ["old:g2"], "installed_at": 10000, "fence_id": "a" * 64}}}
+
+
+@pytest.mark.parametrize("operation", ["submit", "preview", "sign"])
+@pytest.mark.parametrize("key", ["old:g2", "new:g3", None])
+def test_account_fence_blocks_old_new_and_keyless_signing(proxy, monkeypatch, operation, key):
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(fenced_ledger()))
+    before = proxy.ORDER_LEDGER_FILE.read_bytes()
+    monkeypatch.setattr(proxy, "_sign_order_payload_unlocked", fail)
+    monkeypatch.setattr(proxy, "_authenticated_request", fail)
+    monkeypatch.setattr(proxy, "_write_order_ledger", fail)
+    request = body(key)
+    if key is None:
+        request.pop("idempotency_key")
+    # Submit requires a key independently; preview/signing do not.
+    expected = "missing_idempotency_key" if operation == "submit" and key is None else "account_recovery_signing_blocked"
+    with pytest.raises(ValueError, match=expected):
+        if operation == "submit":
+            proxy.submit_order(env(require_order_ledger=True), "account_01", request)
+        elif operation == "preview":
+            proxy.preview_order(env(require_order_ledger=True), "account_01", request)
+        else:
+            proxy._signed_order_payload(env(require_order_ledger=True), "account_01", request)
+    assert proxy.ORDER_LEDGER_FILE.read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["idempotency_key", "intent_id"])
+def test_preview_cannot_sign_quarantined_key_without_account_fence(proxy, monkeypatch, field):
+    ledger = fenced_ledger()
+    del ledger["recovery_fences"]
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(ledger))
+    monkeypatch.setattr(proxy, "_sign_order_payload_unlocked", fail)
+    request = body()
+    request.pop("idempotency_key")
+    request[field] = "old:g2"
+    with pytest.raises(ValueError, match="submission_quarantined"):
+        proxy.preview_order(env(require_order_ledger=True), "account_01", request)
+
+
+@pytest.mark.parametrize("bad", [None, [], {"account_01": None},
+    {"account_01": {"signing_blocked": False}}, {"account_01": {"signing_blocked": "true"}}])
+def test_invalid_fences_block_even_legacy_accounts(proxy, monkeypatch, bad):
+    ledger = fenced_ledger()
+    ledger["recovery_fences"] = bad
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(ledger))
+    monkeypatch.setattr(proxy, "_sign_order_payload_unlocked", fail)
+    with pytest.raises(ValueError, match="recovery_fence_invalid"):
+        proxy._signed_order_payload(env(), "account_02", body("other"))
+
+
+@pytest.mark.parametrize("field,value", [("keys", []), ("keys", ["old:g2", "old:g2"]),
+    ("keys", [1]), ("keys", ["bad/key"]), ("installed_at", True),
+    ("installed_at", 0), ("fence_id", "invalid")])
+def test_incomplete_fence_metadata_rejected(proxy, field, value):
+    ledger = fenced_ledger()
+    ledger["recovery_fences"]["account_01"][field] = value
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(ledger))
+    with pytest.raises(ValueError, match="recovery_fence_invalid"):
+        proxy.recovery_fence_status(env(require_order_ledger=True), "account_01")
+
+
+def test_fence_missing_permanent_key_marker_is_not_verified(proxy):
+    ledger = fenced_ledger()
+    ledger["orders"] = {}
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(ledger))
+    with pytest.raises(ValueError, match="key_not_quarantined"):
+        proxy.recovery_fence_status(env(require_order_ledger=True), "account_01")
+
+
+def test_fence_status_is_read_only_and_does_not_claim_process_quiescence(proxy, monkeypatch):
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(fenced_ledger()))
+    before = proxy.ORDER_LEDGER_FILE.read_bytes()
+    monkeypatch.setattr(proxy, "_sign_order_payload_unlocked", fail)
+    monkeypatch.setattr(proxy, "_authenticated_request", fail)
+    monkeypatch.setattr(proxy, "_write_order_ledger", fail)
+    monkeypatch.setenv("PREDICTFUN_RELEASE_SHA", "b" * 40)
+    result = proxy.recovery_fence_status(env(require_order_ledger=True), "account_01")
+    assert result["signing_blocked"] is True
+    assert result["strict_ledger"] is True
+    assert result["keys"] == ["old:g2"]
+    assert result["release_sha"] == "b" * 40
+    assert result["all_writers_quiesced"] is False
+    assert result["activation_allowed"] is False
+    other = proxy.recovery_fence_status(env(require_order_ledger=True), "account_02")
+    assert other["signing_blocked"] is False and other["keys"] == []
+    assert proxy.ORDER_LEDGER_FILE.read_bytes() == before
+
+
+def test_valid_fence_does_not_disable_other_account_signing(proxy, monkeypatch):
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(fenced_ledger()))
+    seen = []
+    monkeypatch.setattr(proxy, "_sign_order_payload_unlocked", lambda e, a, b: seen.append(a))
+    proxy._signed_order_payload(env(require_order_ledger=True), "account_02", body("other"))
+    assert seen == ["account_02"]
+
+
+def test_fence_rechecked_before_upstream_post(proxy, monkeypatch):
+    proxy.ORDER_LEDGER_FILE.write_text('{"orders":{}}')
+    def signed(*args):
+        proxy.ORDER_LEDGER_FILE.write_text(json.dumps(fenced_ledger()))
+        return {"order": {"nonce": "0", "expiration": "9999999999", "side": 0,
+                "makerAmount": str(8 * 10**17), "maker": "owner"}, "signed_order": {},
+                "amounts": {"pricePerShare": "400000000000000000"},
+                "order_hash": "0x" + "a" * 64, "signer_mode": "predict_account"}
+    monkeypatch.setattr(proxy, "_signed_order_payload", signed)
+    monkeypatch.setattr(proxy, "_authenticated_request", fail)
+    with pytest.raises(ValueError, match="account_recovery_signing_blocked"):
+        proxy.submit_order(env(require_order_ledger=True), "account_01", body("new:g3"))
+    assert json.loads(proxy.ORDER_LEDGER_FILE.read_text()) == fenced_ledger()
+
+
+def test_fence_get_dispatch_has_no_write_or_upstream_action(proxy, monkeypatch):
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(fenced_ledger()))
+    monkeypatch.setattr(proxy, "load_env", lambda p: env(require_order_ledger=True))
+    monkeypatch.setattr(proxy, "_authenticated_request", fail)
+    monkeypatch.setattr(proxy, "_write_order_ledger", fail)
+    handler = object.__new__(proxy.Handler)
+    handler.client_address = ("127.0.0.1", 1)
+    handler.path = "/predictfun/accounts/account_01/recovery-fence"
+    responses = []
+    handler._write_json = lambda code, data: responses.append((code, data))
+    handler.do_GET()
+    assert responses[0][0] == 200 and responses[0][1]["signing_blocked"] is True
+    handler.path += "?enable=true"
+    handler.do_GET()
+    assert responses[-1][0] == 502
+    assert responses[-1][1]["error"] == "unsupported_query_parameter"
+
+
+def test_other_account_submit_preserves_entire_fence(proxy, monkeypatch):
+    original = fenced_ledger()
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(original))
+    monkeypatch.setattr(proxy, "_signed_order_payload", lambda *a: {
+        "order": {"nonce": "0", "expiration": "9999999999", "side": 0,
+            "makerAmount": str(8 * 10**17), "maker": "owner"}, "signed_order": {},
+        "amounts": {"pricePerShare": "400000000000000000"},
+        "order_hash": "0x" + "a" * 64, "signer_mode": "predict_account"})
+    monkeypatch.setattr(proxy, "_authenticated_request", lambda *a, **k: (
+        201, {"success": True, "data": {"orderId": "other-order"}}))
+    result = proxy.submit_order(env(require_order_ledger=True), "account_02", body("other"))
+    assert result["ok"] is True
+    after = json.loads(proxy.ORDER_LEDGER_FILE.read_text())
+    assert after["recovery_fences"] == original["recovery_fences"]
+    assert after["orders"]["account_01:old:g2"] == original["orders"]["account_01:old:g2"]
+
+
+def test_fence_blocks_cached_success_replay(proxy, monkeypatch):
+    ledger = fenced_ledger()
+    ledger["orders"]["account_01:cached"] = {
+        "ok": True, "request_fingerprint": proxy._order_request_fingerprint(body("cached"))}
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(ledger))
+    monkeypatch.setattr(proxy, "_signed_order_payload", fail)
+    with pytest.raises(ValueError, match="account_recovery_signing_blocked"):
+        proxy.submit_order(env(require_order_ledger=True), "account_01", body("cached"))
+
+
+def test_fence_status_missing_ledger_is_unknown_not_unfenced(proxy):
+    with pytest.raises(ValueError, match="order_ledger_unavailable"):
+        proxy.recovery_fence_status(env(), "account_01")

@@ -142,8 +142,8 @@ possible recovery path.
 
 The `recovery_evidence` module now provides:
 
-- `ProxyAccountReader`: account-pinned GET requests to only `orders`, `positions`
-  and `allowances`; rejects redirects, credentials in the proxy origin, unknown
+- `ProxyAccountReader`: account-pinned GET requests to only `orders`, `positions`,
+  `allowances` and the local `recovery-fence` status; rejects redirects, credentials in the proxy origin, unknown
   routes and oversized responses. It deliberately cannot call `submissions`,
   since that existing GET may update the signer ledger. No API keys are needed
   by this client; existing proxy authentication remains on the Mac mini.
@@ -240,5 +240,58 @@ could erase strict-account quarantine by rebuilding corrupt shared storage. The
 follow-up adds shared policy to all eight ledger-read sites and regression cases
 for missing/malformed/invalid-shape storage, both account call orders, failures
 before/after POST, status refresh and cancellation completion. All tests use
-temporary files and stubbed signing/network/transaction calls. The fix is pending
-independent re-review; it does not close the remaining activation gates above.
+temporary files and stubbed signing/network/transaction calls. Independent review
+at `f5ee5234` closed that P1; it did not close the remaining activation gates above.
+
+## Account signing fence and read-only verification
+
+The proxy now understands `recovery_fences` in the existing nonsecret ledger.
+Each account entry requires a reviewed 64-character `fence_id`, positive integer
+`installed_at`, `signing_blocked: true`, and a nonempty sorted unique list of exact
+keys. Every listed `alias:key` must also have a permanent `quarantined: true` row.
+Malformed fence metadata or a missing key marker blocks ledger use, including
+legacy accounts. A valid fence blocks only its own account's order signing.
+
+While the entry is present, that account cannot submit an old key, a fresh key,
+or return a cached successful submission as though it were a new successful
+action. Preview also signs, so both preview and direct order signing use the same
+guard under the account lock, before private-key handling. A second check before
+the upstream POST catches a fence observed after signing. Even without an account
+fence, a quarantined key supplied to preview is refused. Other accounts retain
+their own mode and preserve the fence during unrelated ledger updates.
+
+`GET /predictfun/accounts/{alias}/recovery-fence` performs only a strict local
+ledger read under existing locks. It returns the account, exact keys, fence ID,
+installation/observation times, configured shared integrity policy and release
+identity. It does not contact the venue, sign, refresh order status or write the
+ledger. A missing ledger is an error, not an empty/unfenced account. Query
+parameters are refused, and there is no POST enable/disable route.
+
+`collect_signer_fence` binds that GET response to the reviewed account, full
+release SHA, fence ID and exact key set. Missing protections, mismatched identity,
+stale/future observation or a collection taking over 10 seconds are refused.
+The output deliberately keeps `all_writers_quiesced=false` and
+`activation_allowed=false`; it cannot pass the recovery planner by itself.
+
+This is runtime support and a read-only observation contract, NOT a deployed
+fence installer. Installation/removal still requires a reviewed maintenance
+adapter with stopped/drained writers, strict storage enabled before restart,
+external backups and compare-and-swap verification. These process-local locks
+cannot stop an old binary, an external writer, or a request already beyond the
+last check when someone edits a file. Do not install by hot-editing the live
+ledger. A valid pre-fence ledger restore still needs the separate rollback-floor
+guard. No nonce transaction or historical signing bound is established here.
+
+Cancellation, allowance and authentication APIs are not disabled by this order
+signing fence; existing permissions and safety checks remain in effect. Therefore
+the status is not proof of complete account inactivity. Account-wide transaction
+quiescence must be checked independently before a nonce barrier or migration.
+
+All new tests use temporary ledgers and stubbed signing/upstream methods. The GET
+handler and bounded collector are covered, including fresh/new/keyless signing,
+cached results, metadata damage, mismatched evidence and cross-account writes.
+No production marker, configuration, release or service was changed.
+
+Validation for this follow-up: `tests/test_predictfun*.py` **471 passed**;
+changed Python modules/tests compile; `git diff --check` passes. The new signing
+fence and collection contract still require fixed-head independent review.

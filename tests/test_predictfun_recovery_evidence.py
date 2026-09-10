@@ -8,6 +8,7 @@ import pytest
 
 from platforms.predictfun.maker.recovery_evidence import (
     ProxyAccountReader, _NoRedirect, collect_account_baseline, collect_nonce_barrier, make_bsc_reader,
+    collect_signer_fence,
 )
 from platforms.predictfun.maker.recovery_plan import EXCHANGES, assess_recovery
 
@@ -220,6 +221,44 @@ def test_client_refuses_mutating_or_recovering_routes(resource):
     client = ProxyAccountReader("http://127.0.0.1:8791", "account_01")
     with pytest.raises(ValueError, match="route_not_allowed"):
         client(resource, {})
+
+
+def fence_response():
+    return {"ok": True, "alias": "account_01", "account_id": "account_01",
+            "signing_blocked": True, "strict_ledger": True, "release_sha": "a" * 40,
+            "fence_id": "b" * 64, "keys": ["old:g2"], "installed_at": 9990,
+            "verified_at": 10000}
+
+
+def test_collect_fence_pins_release_keys_identity_without_claiming_quiescence():
+    def read(resource, query):
+        assert resource == "recovery-fence" and query == {}
+        return {**fence_response(), "all_writers_quiesced": True}
+    result = collect_signer_fence(read, account_id="account_01", keys=["old:g2"],
+        release_sha="a" * 40, fence_id="b" * 64, clock=lambda: 10000)
+    assert result["enforced"] is True
+    assert result["all_writers_quiesced"] is False
+    assert result["activation_allowed"] is False
+    assert len(result["response_sha256"]) == 64
+
+
+@pytest.mark.parametrize("field,value", [("ok", False), ("alias", "account_02"),
+    ("account_id", "account_02"), ("signing_blocked", False), ("strict_ledger", False),
+    ("release_sha", "c" * 40), ("fence_id", "c" * 64), ("keys", []),
+    ("verified_at", 9900), ("verified_at", 10006), ("verified_at", True),
+    ("installed_at", 10001), ("installed_at", 0)])
+def test_fence_collector_rejects_stale_missing_or_mismatched_evidence(field, value):
+    response = {**fence_response(), field: value}
+    with pytest.raises(ValueError, match="signer_fence_response_invalid"):
+        collect_signer_fence(lambda *a: response, account_id="account_01", keys=["old:g2"],
+            release_sha="a" * 40, fence_id="b" * 64, clock=lambda: 10000)
+
+
+def test_fence_collector_refuses_slow_snapshot():
+    ticks = iter([10000, 10011])
+    with pytest.raises(ValueError, match="snapshot_too_slow"):
+        collect_signer_fence(lambda *a: fence_response(), account_id="account_01", keys=["old:g2"],
+            release_sha="a" * 40, fence_id="b" * 64, clock=lambda: next(ticks))
 
 
 def test_client_is_get_only_and_does_not_follow_redirects():

@@ -47,6 +47,7 @@ TRADE_APPROVAL_RE = re.compile(
     r"^/predictfun/accounts/([^/]+)/trade-approval/?$"
 )
 CAPABILITIES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/capabilities/?$")
+RECOVERY_FENCE_RE = re.compile(r"^/predictfun/accounts/([^/]+)/recovery-fence/?$")
 ACCOUNT_RE = re.compile(r"^/predictfun/accounts/([^/]+)/account/?$")
 ACCOUNT_STATE_RE = re.compile(r"^/predictfun/accounts/([^/]+)/state/?$")
 ACCOUNT_ORDERS_RE = re.compile(r"^/predictfun/accounts/([^/]+)/orders/?$")
@@ -116,6 +117,8 @@ def _load_order_ledger(*, strict: bool = False) -> dict[str, object]:
         if strict:
             raise ValueError("order_ledger_invalid")
         return {"version": 1, "orders": {}}
+    if "recovery_fences" in payload:
+        strict = True
     orders = payload.get("orders")
     if not isinstance(orders, dict):
         if strict:
@@ -127,7 +130,67 @@ def _load_order_ledger(*, strict: bool = False) -> dict[str, object]:
         for key, row in orders.items()
     ):
         raise ValueError("order_ledger_invalid")
+    _validate_recovery_fences(payload)
     return payload
+
+
+def _validate_recovery_fences(ledger: dict[str, object]) -> None:
+    fences = ledger.get("recovery_fences", {})
+    if not isinstance(fences, dict):
+        raise ValueError("recovery_fence_invalid")
+    orders = ledger.get("orders", {})
+    for alias, fence in fences.items():
+        if (not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", alias)
+                or not isinstance(fence, dict) or fence.get("signing_blocked") is not True
+                or type(fence.get("installed_at")) is not int or fence["installed_at"] <= 0
+                or not isinstance(fence.get("fence_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", fence["fence_id"])):
+            raise ValueError("recovery_fence_invalid")
+        keys = fence.get("keys")
+        if (not isinstance(keys, list) or not keys
+                or any(not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", key)
+                       for key in keys)
+                or keys != sorted(set(keys))):
+            raise ValueError("recovery_fence_invalid")
+        for key in keys:
+            row = orders.get(f"{alias}:{key}")
+            if not isinstance(row, dict) or row.get("quarantined") is not True:
+                raise ValueError("recovery_fence_key_not_quarantined")
+
+
+def _require_order_signing_allowed(ledger: dict[str, object], alias: str,
+                                   body: dict[str, object]) -> None:
+    if alias in ledger.get("recovery_fences", {}):
+        raise ValueError("account_recovery_signing_blocked")
+    # Preview also signs. It must not provide an alternate route for an old key.
+    for name in ("idempotency_key", "intent_id"):
+        if body.get(name):
+            key = _validated_idempotency_value(body[name])
+            row = ledger.get("orders", {}).get(f"{alias}:{key}")
+            if isinstance(row, dict) and row.get("quarantined") is True:
+                raise ValueError("submission_quarantined")
+
+
+def recovery_fence_status(env: dict[str, str], alias: str) -> dict[str, object]:
+    if not _account_row(env, alias):
+        raise ValueError("account_alias_not_found")
+    strict_ledger = _shared_ledger_requires_strict(env)
+    # No upstream calls, signing, status refresh or ledger writes on this route.
+    with _account_lock(alias), _LEDGER_LOCK:
+        ledger = _load_order_ledger(strict=True)
+        fence = ledger.get("recovery_fences", {}).get(alias)
+        return {
+            "ok": True, "alias": alias, "account_id": alias,
+            "signing_blocked": fence is not None,
+            "strict_ledger": strict_ledger,
+            "fence_id": fence["fence_id"] if fence else None,
+            "keys": list(fence["keys"]) if fence else [],
+            "installed_at": fence["installed_at"] if fence else None,
+            "verified_at": int(time.time()),
+            "release_sha": str(os.environ.get("PREDICTFUN_RELEASE_SHA") or ""),
+            "all_writers_quiesced": False,
+            "activation_allowed": False,
+        }
 
 
 def _quarantined_submission(alias: str, key: str) -> dict[str, object]:
@@ -1141,15 +1204,21 @@ def _bind_exchange_nonce(
 
 
 def _signed_order_payload(env: dict[str, str], alias: str, body: dict[str, object]) -> dict[str, object]:
+    strict_ledger = _shared_ledger_requires_strict(env)
+    with _account_lock(alias):
+        with _LEDGER_LOCK:
+            ledger = _load_order_ledger(strict=strict_ledger)
+            _require_order_signing_allowed(ledger, alias, body)
+        return _sign_order_payload_unlocked(env, alias, body)
+
+
+def _sign_order_payload_unlocked(env: dict[str, str], alias: str, body: dict[str, object]) -> dict[str, object]:
     from eth_account import Account
     from eth_account.messages import encode_defunct, encode_typed_data, _hash_eip191_message
 
     row = _account_row(env, alias)
     if not row:
         raise ValueError("account_alias_not_found")
-    strict_ledger = _shared_ledger_requires_strict(env)
-    if strict_ledger:
-        _load_order_ledger(strict=True)
     private_key = normalize_private_key(row.get("private_key"))
     account = Account.from_key(private_key)
     order, amounts, flags = _build_order(row, account.address, body)
@@ -1232,6 +1301,8 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
             previous = rows.get(ledger_key)
+            if alias in ledger.get("recovery_fences", {}):
+                raise ValueError("account_recovery_signing_blocked")
             if isinstance(previous, dict):
                 if previous.get("quarantined") is True:
                     return _quarantined_submission(alias, ledger_key.split(":", 1)[1])
@@ -1318,6 +1389,7 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
         )
         with _LEDGER_LOCK:
             ledger = _load_order_ledger(strict=strict_ledger)
+            _require_order_signing_allowed(ledger, alias, signed_body)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
             if isinstance(rows.get(ledger_key), dict) and rows[ledger_key].get("quarantined") is True:
@@ -1888,6 +1960,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/predictfun/accounts/{alias}/allowances",
                         "/predictfun/accounts/{alias}/trade-approval",
                         "/predictfun/accounts/{alias}/capabilities",
+                        "/predictfun/accounts/{alias}/recovery-fence",
                         "/predictfun/accounts/{alias}/state",
                         "/predictfun/accounts/{alias}/account",
                         "/predictfun/accounts/{alias}/orders",
@@ -1900,6 +1973,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         env = load_env(SECRET_FILE)
         capabilities_match = CAPABILITIES_RE.match(parsed.path)
+        recovery_fence_match = RECOVERY_FENCE_RE.match(parsed.path)
         state_match = ACCOUNT_STATE_RE.match(parsed.path)
         account_match = ACCOUNT_RE.match(parsed.path)
         orders_match = ACCOUNT_ORDERS_RE.match(parsed.path)
@@ -1911,6 +1985,7 @@ class Handler(BaseHTTPRequestHandler):
         submission_match = ORDER_SUBMISSION_RE.match(parsed.path)
         account_route = (
             capabilities_match
+            or recovery_fence_match
             or state_match
             or account_match
             or orders_match
@@ -1924,7 +1999,11 @@ class Handler(BaseHTTPRequestHandler):
         if account_route:
             alias = account_route.group(1)
             try:
-                if capabilities_match:
+                if recovery_fence_match:
+                    if parsed.query:
+                        raise ValueError("unsupported_query_parameter")
+                    result = recovery_fence_status(env, alias)
+                elif capabilities_match:
                     result = account_capabilities(env, alias)
                 elif submission_match:
                     result = submission_status(
