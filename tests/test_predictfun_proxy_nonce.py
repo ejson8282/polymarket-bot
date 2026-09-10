@@ -201,7 +201,7 @@ def test_signing_uses_chain_nonce_and_legacy_mode_does_not_read_rpc(proxy, monke
     result = proxy._signed_order_payload(env(require_order_ledger=True, use_exchange_nonce=True), "account_01", body())
     assert result["signed_order"]["nonce"] == "4"
     assert len(calls) == 1
-    result = proxy._signed_order_payload(env(), "account_02", body())
+    result = proxy._signed_order_payload(env(require_order_ledger=True, use_exchange_nonce=True), "account_02", body())
     assert result["signed_order"]["nonce"] == "0"
     assert len(calls) == 1
 
@@ -222,3 +222,126 @@ def test_nonce_is_recorded_before_upstream_submit(proxy, monkeypatch):
     assert proxy.submit_order(env(require_order_ledger=True), "account_01", body())["ok"] is True
     row = json.loads(proxy.ORDER_LEDGER_FILE.read_text())["orders"]["account_01:old:g2"]
     assert row["order_nonce"] == "5"
+
+
+@pytest.mark.parametrize("contents", [None, "{", "[]", '{"orders":[]}',
+    '{"orders":{"account_01:old:g2":null}}',
+    '{"orders":{"account_01:old:g2":{"quarantined":"true"}}}'])
+@pytest.mark.parametrize("aliases", [("account_01", "account_02"), ("account_02", "account_01")])
+@pytest.mark.parametrize("operation", ["submit", "status", "cancel"])
+def test_shared_ledger_loss_cannot_be_bootstrapped_by_legacy_account(
+    proxy, monkeypatch, contents, aliases, operation,
+):
+    settings = env(require_order_ledger=True, use_exchange_nonce=True)
+    original = {"orders": {"account_01:old:g2": {"quarantined": True, "order_nonce": "0"}}}
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(original))
+    assert proxy.submit_order(settings, "account_01", body())["error"] == "submission_quarantined"
+    if contents is None:
+        proxy.ORDER_LEDGER_FILE.unlink()
+    else:
+        proxy.ORDER_LEDGER_FILE.write_text(contents)
+    monkeypatch.setattr(proxy, "_signed_order_payload", fail)
+    monkeypatch.setattr(proxy, "_authenticated_request", fail)
+    monkeypatch.setattr(proxy, "_cancel_gas_context", fail)
+    monkeypatch.setattr(proxy, "_write_order_ledger", fail)
+    for alias in aliases:
+        with pytest.raises(ValueError, match="order_ledger"):
+            if operation == "submit":
+                proxy.submit_order(settings, alias, body())
+            elif operation == "status":
+                proxy.submission_status(settings, alias, "old:g2")
+            else:
+                proxy.cancel_orders_on_chain(settings, alias, {
+                    "cancel": True, "confirm": "CANCEL_PREDICTFUN_ORDERS",
+                    "hashes": ["0x" + "a" * 64]})
+    assert (proxy.ORDER_LEDGER_FILE.read_text() if proxy.ORDER_LEDGER_FILE.exists() else None) == contents
+    # Restoring the fixture proves neither account overwrote quarantine/nonce.
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(original))
+    assert proxy.submission_status(settings, "account_01", "old:g2")["submission_state"] == "quarantined"
+    assert json.loads(proxy.ORDER_LEDGER_FILE.read_text()) == original
+
+
+@pytest.mark.parametrize("stage", ["before_post", "after_post", "status_refresh"])
+def test_legacy_writer_rereads_shared_integrity_at_each_mutation(proxy, monkeypatch, stage):
+    settings = env(require_order_ledger=True)
+    original = {"orders": {"account_01:old:g2": {"quarantined": True, "order_nonce": "0"}}}
+    if stage == "status_refresh":
+        original["orders"]["account_02:other"] = {"ok": False, "error": "submission_pending",
+            "order_hash": "0x" + "a" * 64}
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps(original))
+    posts = []
+    def signed(*args):
+        if stage == "before_post":
+            proxy.ORDER_LEDGER_FILE.write_text("{")
+        return {"order": {"nonce": "0", "expiration": "9999999999", "side": 0,
+                "makerAmount": str(8 * 10**17), "maker": "owner"}, "signed_order": {},
+                "amounts": {"pricePerShare": "400000000000000000"},
+                "order_hash": "0x" + "a" * 64, "signer_mode": "predict_account"}
+    def upstream(*args, **kwargs):
+        posts.append(kwargs.get("method", "GET"))
+        proxy.ORDER_LEDGER_FILE.write_text("{")
+        return 200, {"success": True, "data": {"id": "test-order", "status": "OPEN"}}
+    monkeypatch.setattr(proxy, "_signed_order_payload", signed)
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+    with pytest.raises(ValueError, match="order_ledger"):
+        if stage == "status_refresh":
+            proxy.submission_status(settings, "account_02", "other")
+        else:
+            proxy.submit_order(settings, "account_02", body("other"))
+    assert proxy.ORDER_LEDGER_FILE.read_text() == "{"
+    assert posts == ([] if stage == "before_post" else ["GET" if stage == "status_refresh" else "POST"])
+
+
+def test_shared_policy_validates_all_accounts_without_short_circuit(proxy):
+    settings = env(require_order_ledger=True)
+    rows = json.loads(settings["PREDICTFUN_ACCOUNT_KEYS_JSON"])
+    rows["account_02"]["require_order_ledger"] = "false"
+    settings["PREDICTFUN_ACCOUNT_KEYS_JSON"] = json.dumps(rows)
+    with pytest.raises(ValueError, match="must_be_boolean"):
+        proxy._shared_ledger_requires_strict(settings)
+    assert proxy._shared_ledger_requires_strict(env()) is False
+    assert proxy._shared_ledger_requires_strict(env(require_order_ledger=True)) is True
+
+
+def test_cancel_completion_cannot_rebuild_damaged_shared_ledger(proxy, monkeypatch):
+    settings = env(require_order_ledger=True)
+    proxy.ORDER_LEDGER_FILE.write_text(json.dumps({"orders": {
+        "account_01:old:g2": {"quarantined": True, "order_nonce": "0"}}}))
+    maker = "0x" + "2" * 40
+    monkeypatch.setattr(proxy, "_cancel_gas_context", lambda *a: (
+        {"predict_account": maker, "private_key": "synthetic-only"}, {"ok": True}))
+    fake_builder = SimpleNamespace(cancel_orders=lambda *a: SimpleNamespace(
+        success=True, receipt={"status": 1, "transactionHash": b"x" * 32}))
+    monkeypatch.setitem(sys.modules, "predict_sdk", SimpleNamespace(
+        CancelOrdersOptions=lambda **k: k, ChainId=SimpleNamespace(BNB_MAINNET=56),
+        Order=lambda **k: k, OrderBuilder=SimpleNamespace(make=lambda *a: fake_builder),
+        OrderBuilderOptions=lambda **k: k, Side=int, SignatureType=int))
+    calls = []
+    def upstream(*a, **kw):
+        calls.append(kw.get("method", "GET"))
+        if len(calls) == 1:
+            return 200, {"success": True, "data": {"order": {"maker": maker}}}
+        if len(calls) == 2:
+            return 200, {"success": True}
+        proxy.ORDER_LEDGER_FILE.write_text("{")
+        return 200, {"success": True, "data": {"status": "CANCELLED"}}
+    monkeypatch.setattr(proxy, "_authenticated_request", upstream)
+    monkeypatch.setattr(proxy, "_write_order_ledger", fail)
+    with pytest.raises(ValueError, match="order_ledger"):
+        proxy.cancel_orders_on_chain(settings, "account_02", {
+            "cancel": True, "confirm": "CANCEL_PREDICTFUN_ORDERS", "hashes": ["0x" + "a" * 64]})
+    assert calls == ["GET", "POST", "GET"]
+    assert proxy.ORDER_LEDGER_FILE.read_text() == "{"
+
+
+def test_all_runtime_ledger_reads_have_explicit_integrity_policy(proxy):
+    import ast
+    tree = ast.parse(Path(proxy.__file__).read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "_load_order_ledger"]
+    assert len(calls) == 8
+    for call in calls:
+        assert len(call.keywords) == 1 and call.keywords[0].arg == "strict"
+        value = call.keywords[0].value
+        assert (isinstance(value, ast.Name) and value.id == "strict_ledger") or (
+            isinstance(value, ast.Constant) and value.value is True)

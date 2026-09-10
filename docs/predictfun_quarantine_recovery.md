@@ -61,7 +61,17 @@ Two per-account settings are introduced, neither enabled by this PR:
   wrong chain, invalid current nonce or a still-valid immediately preceding nonce
   abort signing. An explicit old nonce is rejected, never silently upgraded.
 
-Other accounts retain their existing mode. Enabling these settings is a separate
+Nonce selection and trading modes remain per-account. Ledger integrity is shared:
+if any configured account requires strict storage, every account's submit, status
+recovery and cancellation bookkeeping reads must use strict validation. A legacy
+account cannot rebuild a missing/corrupt ledger and erase protected account keys.
+All account policy rows are validated, including disabled accounts, without
+short-circuiting malformed flags. Cancellation checks integrity before any action
+and again before recording completion; damage during a transaction must not reset
+storage or imply that the already-attempted transaction never happened.
+
+This shared storage failure can temporarily block other accounts too; it does not
+enable their nonce feature or change their trading mode. Enabling settings is a separate
 configuration operation on the existing Mac mini service; no new private-key
 file or local signer is required.
 
@@ -220,7 +230,15 @@ runner or a callback that merely returns success.
   affected exchange nonce transactions and subsequent limited-live activation.
 
 Validation after migration/lease changes: all `tests/test_predictfun*.py` passed
-(383 tests). Tests include archive round trips/generation preservation, old-key
+(425 tests). Tests include archive round trips/generation preservation, old-key
 reentry rejection, active writer exclusion, failed guards, disk-full backup,
 concurrent file change, scope tampering and inactive-but-unmasked units. These
 tests do not replace production migration or confirmed transaction acceptance.
+
+The fixed-head review of `981b0618` found that a tolerant legacy-account writer
+could erase strict-account quarantine by rebuilding corrupt shared storage. The
+follow-up adds shared policy to all eight ledger-read sites and regression cases
+for missing/malformed/invalid-shape storage, both account call orders, failures
+before/after POST, status refresh and cancellation completion. All tests use
+temporary files and stubbed signing/network/transaction calls. The fix is pending
+independent re-review; it does not close the remaining activation gates above.

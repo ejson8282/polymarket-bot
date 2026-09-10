@@ -148,6 +148,19 @@ def _requires_strict_ledger(row: dict[str, object]) -> bool:
     return row.get("require_order_ledger") is True
 
 
+def _shared_ledger_requires_strict(env: dict[str, str]) -> bool:
+    """Integrity is shared by all writers even though nonce policy is per account."""
+    try:
+        accounts = json.loads(env.get("PREDICTFUN_ACCOUNT_KEYS_JSON") or "{}")
+    except (TypeError, ValueError):
+        raise ValueError("recovery_accounts_invalid") from None
+    if not isinstance(accounts, dict) or any(not isinstance(row, dict) for row in accounts.values()):
+        raise ValueError("recovery_accounts_invalid")
+    # Validate every row; short-circuiting any() could hide malformed protections.
+    policies = [_requires_strict_ledger(row) for row in accounts.values()]
+    return any(policies)
+
+
 def _write_order_ledger(payload: dict[str, object]) -> None:
     ORDER_LEDGER_FILE.parent.mkdir(parents=True, exist_ok=True)
     temporary = ORDER_LEDGER_FILE.with_suffix(".tmp")
@@ -1134,7 +1147,7 @@ def _signed_order_payload(env: dict[str, str], alias: str, body: dict[str, objec
     row = _account_row(env, alias)
     if not row:
         raise ValueError("account_alias_not_found")
-    strict_ledger = _requires_strict_ledger(row)
+    strict_ledger = _shared_ledger_requires_strict(env)
     if strict_ledger:
         _load_order_ledger(strict=True)
     private_key = normalize_private_key(row.get("private_key"))
@@ -1208,7 +1221,7 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
     account_row = _account_row(env, alias)
     if not account_row:
         return {"ok": False, "error": "account_alias_not_found", "alias": alias}
-    strict_ledger = _requires_strict_ledger(account_row)
+    strict_ledger = _shared_ledger_requires_strict(env)
     self_trade_prevention = _require_maker_order_safety(body)
     ledger_key = _idempotency_key(alias, body)
     request_fingerprint = _order_request_fingerprint(body)
@@ -1403,10 +1416,11 @@ def submission_status(
         }
     raw_key = _validated_idempotency_value(idempotency_key)
     ledger_key = f"{alias}:{raw_key}"
+    strict_ledger = _shared_ledger_requires_strict(env)
 
     with _account_lock(alias):
         with _LEDGER_LOCK:
-            ledger = _load_order_ledger(strict=_requires_strict_ledger(account_row))
+            ledger = _load_order_ledger(strict=strict_ledger)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
             stored = rows.get(ledger_key)
@@ -1450,7 +1464,7 @@ def submission_status(
                     }
                 )
                 with _LEDGER_LOCK:
-                    ledger = _load_order_ledger(strict=_requires_strict_ledger(account_row))
+                    ledger = _load_order_ledger(strict=strict_ledger)
                     rows = ledger.get("orders")
                     rows = rows if isinstance(rows, dict) else {}
                     if isinstance(rows.get(ledger_key), dict) and rows[ledger_key].get("quarantined") is True:
@@ -1624,7 +1638,11 @@ def cancel_orders_on_chain(
     ):
         return {"ok": False, "error": "invalid_order_hash", "alias": alias}
 
+    strict_ledger = _shared_ledger_requires_strict(env)
     with _account_lock(alias):
+        if strict_ledger:
+            with _LEDGER_LOCK:
+                _load_order_ledger(strict=True)
         context, gas_preflight = _cancel_gas_context(
             env, alias, body.get("min_gas_bnb") or "0.0001"
         )
@@ -1790,7 +1808,7 @@ def cancel_orders_on_chain(
         }
         if ok:
             with _LEDGER_LOCK:
-                ledger = _load_order_ledger()
+                ledger = _load_order_ledger(strict=strict_ledger)
                 rows = ledger.get("orders")
                 rows = rows if isinstance(rows, dict) else {}
                 hash_set = {value.lower() for value in hashes}
