@@ -104,6 +104,18 @@ VPS deployment verifies effective commands before starting either service and
 before restarting an approved rollback. A damaged binding prevents rollback
 restart. Legacy installations with no external root directory remain compatible.
 
+Mac activation snapshots each agent's effective disabled flag and verified
+running/unloaded state before changing services. A plist on disk is not evidence
+that its service was running. Failed activation restores the original flags and
+restarts only agents that were previously running; previously unloaded agents
+stay unloaded, including the initial disabled bootstrap installation. Protected
+plist bytes are never rewritten. Failed rollback commands or verification report
+an incomplete rollback requiring manual inspection, not a successful restoration.
+Unknown probe results, loaded-but-inactive jobs and disabled-but-loaded jobs stop
+activation before mutation because their prior state cannot be safely recreated
+using RunAtLoad/bootstrap. Only an explicit missing-service response establishes
+that an agent is unloaded. Damaged recovery guards still prohibit any restart.
+
 An existing or partially installed protection directory makes another initial
 `apply` fail. A failed install, masked main unit, changed service hook or a future
 new-release allowlist requires a separately reviewed root maintenance/repair;
