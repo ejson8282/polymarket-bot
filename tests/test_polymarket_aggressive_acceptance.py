@@ -18,6 +18,109 @@ SPENDER = "0x" + "c" * 40
 IDENTITY = {"maker_address": MAKER, "chain_id": 137, "signature_type": 2}
 
 
+def make_legacy_release(parent, sha, monkeypatch):
+    root = parent / sha
+    root.mkdir()
+    hashes = {}
+    for name in audit._PINNED_LEGACY_FILES:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# synthetic reviewed source: " + name + "\n")
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(audit, "_PINNED_LEGACY_FILES", hashes)
+    monkeypatch.setattr(audit, "_PINNED_LEGACY_SHA", sha)
+    manifest = {"source_repository": "ejson8282/polymarket-bot", "commit": sha,
+                "engine_sha256": hashes["platforms/polymarket/maker/engine.py"],
+                "artifacts_sha256": {name: hashes[name] for name in audit._LEGACY_DECLARED_FILES}}
+    (root / ".release-manifest.json").write_text(json.dumps(manifest))
+    return root, manifest
+
+
+@pytest.fixture
+def legacy_release(tmp_path, monkeypatch):
+    return make_legacy_release(tmp_path, audit._PINNED_LEGACY_SHA, monkeypatch)
+
+
+@pytest.mark.parametrize("full_manifest", [False, True])
+def test_pinned_legacy_checks_all_artifacts_without_rewriting(legacy_release, full_manifest):
+    root, manifest = legacy_release
+    if full_manifest:
+        manifest["artifacts_sha256"] = dict(audit._PINNED_LEGACY_FILES)
+        (root / ".release-manifest.json").write_text(json.dumps(manifest))
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    result = audit.verify_runtime_release(root, root.name)
+    assert result["method"] == "pinned_git_legacy_manifest"
+    assert result["verified_artifacts"] == 19
+    assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("name", sorted(audit._PINNED_LEGACY_FILES))
+@pytest.mark.parametrize("failure", ["missing", "tamper", "symlink"])
+def test_every_legacy_artifact_fails_closed(legacy_release, tmp_path, name, failure):
+    root, manifest = legacy_release
+    path = root / name
+    original = path.read_bytes()
+    path.unlink()
+    if failure == "tamper":
+        path.write_bytes(b"not reviewed")
+        # A matching forged runtime digest is insufficient against the Git pin.
+        if name in manifest["artifacts_sha256"]:
+            manifest["artifacts_sha256"][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            (root / ".release-manifest.json").write_text(json.dumps(manifest))
+    if failure == "symlink":
+        outside = tmp_path / "outside"
+        outside.write_bytes(original)
+        path.symlink_to(outside)
+    with pytest.raises(audit.AcceptanceError):
+        audit.verify_runtime_release(root, root.name)
+
+
+@pytest.mark.parametrize("change", ["repository", "commit", "engine", "extra", "missing", "hash", "wrong_type"])
+def test_legacy_manifest_identity_and_declared_set_remain_strict(legacy_release, change):
+    root, manifest = legacy_release
+    if change in {"repository", "commit", "engine"}:
+        key = {"repository": "source_repository", "commit": "commit", "engine": "engine_sha256"}[change]
+        manifest[key] = "wrong"
+    elif change == "extra":
+        manifest["artifacts_sha256"]["unexpected.py"] = "f" * 64
+    elif change == "missing":
+        manifest["artifacts_sha256"].pop(next(iter(manifest["artifacts_sha256"])))
+    elif change == "hash":
+        manifest["artifacts_sha256"][next(iter(manifest["artifacts_sha256"]))] = "f" * 64
+    else:
+        manifest["artifacts_sha256"] = []
+    (root / ".release-manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(audit.AcceptanceError):
+        audit.verify_runtime_release(root, root.name)
+
+
+def test_unknown_release_keeps_original_strict_verifier(tmp_path, monkeypatch):
+    calls = []
+    def strict(root, sha):
+        calls.append((root, sha))
+        raise RuntimeError("original verifier rejected")
+    monkeypatch.setattr(audit, "_verify_release_manifest", strict)
+    root, sha = tmp_path / ("b" * 40), "b" * 40
+    with pytest.raises(RuntimeError, match="original verifier"):
+        audit.verify_runtime_release(root, sha)
+    assert calls == [(root, sha)]
+
+
+def test_legacy_release_path_mismatch_rejected(legacy_release):
+    root, _ = legacy_release
+    renamed = root.with_name("wrong")
+    root.rename(renamed)
+    with pytest.raises(audit.AcceptanceError, match="path_mismatch"):
+        audit.verify_runtime_release(renamed, root.name)
+
+
+def test_legacy_catalog_covers_full_required_set():
+    assert audit._PINNED_LEGACY_SHA == "6ff20650f93b3758e5a41599c7a86e22e131eddf"
+    assert len(audit._PINNED_LEGACY_FILES) == 19
+    assert len(audit._LEGACY_DECLARED_FILES) == 9
+    assert audit._LEGACY_DECLARED_FILES < set(audit._PINNED_LEGACY_FILES)
+
+
 def order(side="BUY", status="LIVE"):
     return {"id": "order1", "market": "condition1", "asset_id": "12", "maker_address": MAKER,
             "original_size": "20", "size_matched": "5", "side": side, "status": status, "price": "0.4"}
@@ -334,6 +437,28 @@ def host_audit(runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "AccountReads", client)
     context.run = lambda: audit.run_host("aggressive-a", tooling_sha=release, clock=lambda: context.now)
     return context
+
+
+def test_host_acceptance_uses_pinned_legacy_integrity(host_audit, monkeypatch):
+    sha = host_audit.state["release_sha"]
+    make_legacy_release(host_audit.root, sha, monkeypatch)
+    result = host_audit.run()
+    assert result["status"] == "pass"
+    assert result["runtime_integrity"]["verified_artifacts"] == 19
+    assert result["runtime_integrity"]["method"] == "pinned_git_legacy_manifest"
+    assert result["live_enabled"] is False
+    assert result["mutation_enabled"] is False
+
+
+def test_host_final_integrity_recheck_blocks_changed_legacy_source(host_audit, monkeypatch):
+    sha = host_audit.state["release_sha"]
+    root, _ = make_legacy_release(host_audit.root, sha, monkeypatch)
+    def assets(tokens):
+        (root / "platforms/polymarket/maker/account_profiles.py").write_text("tampered")
+        return {"cash_units": "200", "holdings": {}}
+    host_audit.reads.assets = assets
+    with pytest.raises(audit.AcceptanceError, match="runtime_git_artifact_mismatch"):
+        host_audit.run()
 
 
 @pytest.mark.parametrize("mismatch", ["host", "chain", "uid", "missing_uid"])

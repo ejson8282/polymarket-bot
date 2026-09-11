@@ -36,6 +36,35 @@ TOOLING_FILES = {"platforms/polymarket/maker/" + name + ".py" for name in (
     "deploy_release", "market_universe", "remote_signer", "reward_ledger", "small_cap_observation")}
 
 
+# Git-derived hashes, not values copied from a runtime manifest.
+_PINNED_LEGACY_SHA = "6ff20650f93b3758e5a41599c7a86e22e131eddf"
+_PINNED_LEGACY_FILES = {
+    "platforms/polymarket/maker/account_profiles.py": "ad527beef524adcec92912df542117d3471c1bff7b750a5e4a79a25e9825dc18",
+    "platforms/polymarket/maker/account_roster.py": "c539485f0dbcd610e709e0be205dc59631544b1e60fc57a72c5d298ab7e982b1",
+    "platforms/polymarket/maker/aggressive_proxy.py": "721284f8bb22b27688e20fcbeeb0d50fe8da198d8dac3712e7ee137c053445b5",
+    "platforms/polymarket/maker/aggressive_recovery.py": "e5dba2bdd24ea32768bd3ca7579907b2a66ccd828feb5a6b9cf462a5b7cea8a6",
+    "platforms/polymarket/maker/engine.py": "f5266f89cf2403e25ac830a70635984a4976101696b8e7d0a580c44f2bd194c1",
+    "platforms/polymarket/maker/exchange_maintenance.py": "6a7de493540e64e0c392fa2d399274c0869388f62be3605c77c92a4205f3c0c9",
+    "platforms/polymarket/maker/multi_runner.py": "476205cff372d95635e0e003d502c4999dfa7fdf667b5b3089a868e476227ac8",
+    "platforms/polymarket/maker/order_scoring_observer.py": "848d64528e520dc539e19539fff0f028cc6d0b799d9847712223e54f0deaa106",
+    "platforms/polymarket/maker/quote_feasibility.py": "3d2a774b6771405392eed59ae72360137179ad0517e0cc5e3934fdffddd999ab",
+    "platforms/polymarket/maker/release_guard.py": "df3e3a966427a6ee2da798548db7f821c79d1f2aa6e7b24843ab5bf4b0b47acd",
+    "platforms/polymarket/maker/reward_fast_lane.py": "a1e342040ccb2044e8f01d2508b7ffa86b2fcd463e3b1f76779b6f06d3931cb0",
+    "platforms/polymarket/maker/reward_observer.py": "e6b85306f6ebd89aa89022150bfe76101a7df53e74b8e4b6c350a0f93ce23a07",
+    "platforms/polymarket/maker/reward_shadow_allocator.py": "dec4b67d9c0b059af89f44097132f1be82cd69979980eae159adf8549ba24193",
+    "platforms/polymarket/maker/sibling_registry.py": "26c7d9c6f5a36730e60506f677db24e4b6ba3c72ef51aeb831a0e77f3ef29fec",
+    "platforms/polymarket/maker/stable_lifecycle_commands.py": "87687e16e8b428bb5dc2cdb730c5a0f344d70e583909c4c4615cd1dfbe7db017",
+    "platforms/polymarket/maker/stable_market_lifecycle.py": "c0905a8a34bd452cc12521ab33710a198b64e36ec630a799d4c6c3a81ef3c1ef",
+    "platforms/polymarket/maker/stable_rotation_commands.py": "46734dcca32e82f7d08f58d9a886059d65adac45c8aa2e024ce0f4c80be1441a",
+    "platforms/polymarket/maker/stable_rotation_planner.py": "9f4521691c78e9838961c2c9490afc8d96fc9294943ed4cad5e323d9e8d6dbbb",
+    "platforms/polymarket/maker/stage_aggressive_market.py": "a8b7bef84ae4f1db8480ffb134b2ffe0b9e684f811ee35a7b831152b99bb1f42"
+}
+_LEGACY_DECLARED_FILES = {"platforms/polymarket/maker/" + name + ".py" for name in (
+    "engine", "multi_runner", "aggressive_proxy", "reward_observer",
+    "stable_rotation_planner", "stable_rotation_commands", "order_scoring_observer",
+    "aggressive_recovery", "stage_aggressive_market")}
+
+
 class AcceptanceError(ValueError):
     """Public error code, without raw payloads or credentials."""
 
@@ -102,6 +131,35 @@ def verify_tooling(expected_sha):
                 path.stat().st_size <= 500_000 and hashlib.sha256(path.read_bytes()).hexdigest() == digest,
                 "tooling_source_mismatch")
     return {"commit": expected_sha, "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+
+
+def verify_runtime_release(release_dir, target_sha):
+    if target_sha != _PINNED_LEGACY_SHA:
+        _verify_release_manifest(release_dir, target_sha)
+        return {"method": "release_manifest", "commit": target_sha}
+    require(release_dir.name == target_sha and not release_dir.is_symlink(),
+            "runtime_release_path_mismatch")
+    manifest_path = release_dir / ".release-manifest.json"
+    manifest = read_json(manifest_path, release_dir)
+    require(manifest.get("source_repository") == "ejson8282/polymarket-bot"
+            and manifest.get("commit") == target_sha, "runtime_manifest_identity_mismatch")
+    declared = manifest.get("artifacts_sha256")
+    require(isinstance(declared, dict) and set(declared) in (
+        _LEGACY_DECLARED_FILES, set(_PINNED_LEGACY_FILES)), "runtime_manifest_artifact_set_mismatch")
+    require(manifest.get("engine_sha256") ==
+            _PINNED_LEGACY_FILES["platforms/polymarket/maker/engine.py"],
+            "runtime_manifest_engine_mismatch")
+    for name, expected in _PINNED_LEGACY_FILES.items():
+        path = release_dir / name
+        require(path.resolve().is_relative_to(release_dir.resolve()) and not path.is_symlink()
+                and path.is_file() and path.stat().st_size <= 5_000_000
+                and hashlib.sha256(path.read_bytes()).hexdigest() == expected,
+                "runtime_git_artifact_mismatch")
+        require(name not in declared or declared[name] == expected,
+                "runtime_manifest_artifact_hash_mismatch")
+    return {"method": "pinned_git_legacy_manifest", "commit": target_sha,
+            "verified_artifacts": len(_PINNED_LEGACY_FILES),
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
 
 
 def configured_identity(config):
@@ -335,7 +393,7 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
     paths = aggressive_paths_for_profile(profile)
     release = _current_release(paths)
     release_dir = paths.release_root / release
-    _verify_release_manifest(release_dir, release)
+    runtime_integrity = verify_runtime_release(release_dir, release)
     contract = _runtime_contract(paths, release_dir)
     # Never route aggressive acceptance through the stable signer or an arbitrary URL.
     require(contract["signer_url"] == "http://100.91.159.54:8421", "dedicated_signer_required")
@@ -398,6 +456,8 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
         except Exception:
             report.update(runtime_paused_verified=False, reason="final_runtime_recheck_unavailable")
     require(verify_tooling(tooling_sha) == tooling, "tooling_changed_during_audit")
+    require(verify_runtime_release(release_dir, release) == runtime_integrity,
+            "runtime_integrity_changed_during_audit")
     finished = clock()
     # All accounts and sources are judged at the final host report timestamp.
     for report in outputs:
@@ -414,6 +474,7 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
     return {"kind": "aggressive_paused_account_acceptance", "schema_version": 1,
             "host_id": profile, "runtime_release_sha": release, "tooling_sha": tooling["commit"],
             "tooling_manifest_sha256": tooling["manifest_sha256"], "generated_at": finished.isoformat(),
+            "runtime_integrity": runtime_integrity,
             "status": "pass" if outputs and all(o["account_audit_passed"] for o in outputs) else "blocked",
             "live_enabled": False, "mutation_enabled": False, "accounts": outputs}
 
