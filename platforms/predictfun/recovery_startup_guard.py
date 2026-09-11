@@ -117,6 +117,40 @@ def _read(path: Path, *, protected: bool = False, limit: int = 2_000_000) -> byt
         os.close(fd)
 
 
+def verify_artifact(profile: str, release: Path, expected_manifest_hash: str) -> dict:
+    """Hash the complete immutable artifact against an independently pinned manifest."""
+    spec = PROFILES[profile]
+    if (release.parent != spec.release_root or release.resolve(strict=True) != release
+            or not _hex(release.name, 40)):
+        raise StartupGuardError("guard_release_path_invalid")
+    manifest_raw = _read(release / ".release-manifest.json")
+    if _sha(manifest_raw) != expected_manifest_hash:
+        raise StartupGuardError("guard_manifest_digest_mismatch")
+    manifest = _json(manifest_raw)
+    files = manifest.get("files")
+    if (manifest.get("source_repository") != REPOSITORY or manifest.get("artifact") != spec.artifact
+            or manifest.get("commit") != release.name or not isinstance(files, dict) or not files):
+        raise StartupGuardError("guard_manifest_invalid")
+    actual = set()
+    for path in [release, *release.rglob("*")]:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_mode & 0o222:
+            raise StartupGuardError("guard_release_not_immutable")
+        if stat.S_ISREG(info.st_mode) and path != release / ".release-manifest.json":
+            actual.add(path.relative_to(release).as_posix())
+        elif not stat.S_ISDIR(info.st_mode) and path != release / ".release-manifest.json":
+            raise StartupGuardError("guard_release_special_file")
+    if set(files) != actual:
+        raise StartupGuardError("guard_release_file_set_mismatch")
+    for name, digest in files.items():
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or not _hex(digest, 64):
+            raise StartupGuardError("guard_manifest_path_invalid")
+        if _sha(_read(release / relative, limit=64_000_000)) != digest:
+            raise StartupGuardError("guard_release_file_hash_mismatch")
+    return manifest
+
+
 def verify_startup(profile: str, component: str) -> dict:
     """Verify installed guard, required root anchor, policy and entire release."""
     if profile not in PROFILES or component not in PROFILES[profile].components:
@@ -154,31 +188,8 @@ def verify_startup(profile: str, component: str) -> dict:
         release = link.resolve(strict=True)
         if release.parent != spec.release_root or release.name not in manifests:
             raise StartupGuardError("guard_release_not_approved")
-        manifest_raw = _read(release / ".release-manifest.json")
-        if _sha(manifest_raw) != manifests[release.name]:
-            raise StartupGuardError("guard_manifest_digest_mismatch")
-        manifest = _json(manifest_raw)
-        files = manifest.get("files")
-        if (manifest.get("source_repository") != REPOSITORY or manifest.get("artifact") != spec.artifact
-                or manifest.get("commit") != release.name or not isinstance(files, dict) or not files):
-            raise StartupGuardError("guard_manifest_invalid")
-        actual = set()
-        for path in [release, *release.rglob("*")]:
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or info.st_mode & 0o222:
-                raise StartupGuardError("guard_release_not_immutable")
-            if stat.S_ISREG(info.st_mode) and path != release / ".release-manifest.json":
-                actual.add(path.relative_to(release).as_posix())
-            elif not stat.S_ISDIR(info.st_mode) and path != release / ".release-manifest.json":
-                raise StartupGuardError("guard_release_special_file")
-        if set(files) != actual:
-            raise StartupGuardError("guard_release_file_set_mismatch")
-        for name, digest in files.items():
-            relative = Path(name)
-            if relative.is_absolute() or ".." in relative.parts or not _hex(digest, 64):
-                raise StartupGuardError("guard_manifest_path_invalid")
-            if _sha(_read(release / relative, limit=64_000_000)) != digest:
-                raise StartupGuardError("guard_release_file_hash_mismatch")
+        manifest = verify_artifact(profile, release, manifests[release.name])
+        files = manifest["files"]
         entry, *arguments = spec.components[component]
         if entry not in files:
             raise StartupGuardError("guard_entrypoint_missing")

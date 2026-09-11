@@ -25,6 +25,62 @@ from platforms.predictfun.deploy_ws_relay import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("fail_probe", [False, True])
+def test_guarded_mac_activation_never_rewrites_protected_plists(tmp_path, monkeypatch, fail_probe):
+    from types import SimpleNamespace
+    paths, sha = _prepare(tmp_path)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    for path in (paths.launch_agent, paths.api_launch_agent):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic protected binding")
+    checks = []
+    installed = SimpleNamespace(require_unchanged=lambda: checks.append(True))
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition", lambda *a: installed)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files",
+                        lambda p: {paths.launch_agent: b"", paths.api_launch_agent: b""})
+    monkeypatch.setattr(relay_deploy, "_atomic_write", lambda *a: pytest.fail("protected plist overwrite"))
+    monkeypatch.setattr(relay_deploy, "_restore", lambda *a: pytest.fail("protected plist restore"))
+    runner = LaunchctlRunner()
+    args = dict(target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                authorization_id="synthetic-guarded-test",
+                api_probe=lambda url: {"ok": not fail_probe, "release_sha": sha},
+                discover_market=lambda url: 10835, relay_probe=lambda *a: {"ok": True})
+    if fail_probe:
+        with pytest.raises(RelayDeploymentError):
+            activate_release(paths, runner, **args)
+    else:
+        assert activate_release(paths, runner, **args)["status"] == "activated"
+    assert checks
+    assert ("launchctl", "enable", "gui/501/ai.codex.predictfun-api-proxy") in runner.calls
+    assert all(p.read_bytes() == b"synthetic protected binding" for p in (paths.launch_agent, paths.api_launch_agent))
+
+
+def test_guarded_mac_damage_refuses_rollback_restarts(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from platforms.predictfun.recovery_service_binding import BindingError
+    paths, sha = _prepare(tmp_path)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    damaged = False
+    def recheck():
+        if damaged:
+            raise BindingError("synthetic removed anchor")
+    def probe(url):
+        nonlocal damaged
+        damaged = True
+        return {"ok": False}
+    installed = SimpleNamespace(require_unchanged=recheck)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition", lambda *a: installed)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files",
+                        lambda p: {paths.launch_agent: b"", paths.api_launch_agent: b""})
+    monkeypatch.setattr(relay_deploy, "_restore", lambda *a: pytest.fail("must not restore after damage"))
+    runner = LaunchctlRunner()
+    with pytest.raises(BindingError):
+        activate_release(paths, runner, target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                         authorization_id="synthetic-damage-test", api_probe=probe)
+    assert runner.calls[-2:] == [("launchctl", "bootout", "gui/501/ai.codex.predictfun-ws-relay"),
+                                ("launchctl", "bootout", "gui/501/ai.codex.predictfun-api-proxy")]
+
+
 @pytest.fixture(autouse=True)
 def restore_floor_permissions(tmp_path):
     yield

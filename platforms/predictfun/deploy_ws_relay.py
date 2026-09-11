@@ -26,6 +26,7 @@ sys.dont_write_bytecode = True
 
 from platforms.predictfun.ws_relay import probe_relay
 from platforms.predictfun.recovery_release_floor import check_release_transition
+from platforms.predictfun import recovery_service_binding
 
 
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
@@ -40,6 +41,8 @@ ARCHIVE_PATHS = (
     "platforms/predictfun/deploy_ws_relay.py",
     "platforms/predictfun/recovery_release_floor.py",
     "platforms/predictfun/recovery_startup_guard.py",
+    "platforms/predictfun/recovery_service_binding.py",
+    "platforms/predictfun/recovery_bootstrap.py",
     "platforms/predictfun/ws_relay.py",
     "deploy/mac-mini/predictfun_api_proxy.py",
     "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist",
@@ -506,6 +509,12 @@ def activate_release(
             f"relay current changed: expected {expected}, found {previous_sha}"
         )
     recovery_floor = check_release_transition(paths.runtime_root, "macmini", target_sha, previous_sha)
+    startup_bindings = recovery_service_binding.check_transition(
+        "macmini", paths.runtime_root, paths.release_root, paths.python, target_sha, previous_sha)
+    if startup_bindings is not None:
+        expected_paths = set(recovery_service_binding.binding_files("macmini"))
+        if expected_paths != {paths.launch_agent, paths.api_launch_agent}:
+            raise RelayDeploymentError("guarded launch agent paths mismatch")
     release = paths.release_root / target_sha
     verify_release(release, target_sha)
     _validate_secret_file(paths.secret_file)
@@ -592,15 +601,24 @@ def activate_release(
     service = f"{domain}/{LABEL}"
     api_service = f"{domain}/{API_LABEL}"
     recovery_floor.require_unchanged()
+    if startup_bindings is not None:
+        startup_bindings.require_unchanged()
     try:
         runner.run(("launchctl", "bootout", service), check=False)
         runner.run(("launchctl", "bootout", api_service), check=False)
         recovery_floor.require_unchanged()
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
         _atomic_symlink(paths.current_link, release)
-        _atomic_write(paths.launch_agent, plist_content, 0o644)
-        _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
+        if startup_bindings is None:
+            _atomic_write(paths.launch_agent, plist_content, 0o644)
+            _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
         runner.run(("plutil", "-lint", str(paths.launch_agent)))
         runner.run(("plutil", "-lint", str(paths.api_launch_agent)))
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
+            runner.run(("launchctl", "enable", api_service))
+            runner.run(("launchctl", "enable", service))
         runner.run(
             ("launchctl", "bootstrap", domain, str(paths.api_launch_agent))
         )
@@ -660,6 +678,8 @@ def activate_release(
                 f"relay public market subscription failed: {last_error}"
             )
         recovery_floor.require_unchanged()
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
         return {
             "status": "activated",
             "target_sha": target_sha,
@@ -677,6 +697,8 @@ def activate_release(
         runner.run(("launchctl", "bootout", api_service), check=False)
         recovery_floor.require_unchanged()
         recovery_floor.require_release(previous_sha)
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
         if previous_target is None:
             try:
                 paths.current_link.unlink()
@@ -684,8 +706,9 @@ def activate_release(
                 pass
         else:
             _atomic_symlink(paths.current_link, previous_target)
-        _restore(paths.launch_agent, snapshot)
-        _restore(paths.api_launch_agent, api_snapshot)
+        if startup_bindings is None:
+            _restore(paths.launch_agent, snapshot)
+            _restore(paths.api_launch_agent, api_snapshot)
         if api_snapshot.content is not None:
             runner.run(
                 (

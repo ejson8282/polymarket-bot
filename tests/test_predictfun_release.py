@@ -81,6 +81,34 @@ def test_failed_activation_never_rolls_back_after_recovery_floor_changes(tmp_pat
                                 ("systemctl", "stop", paths.ws_service_name)]
 
 
+@pytest.mark.parametrize("damaged", [False, True])
+def test_guarded_vps_checks_effective_commands_before_start(tmp_path, monkeypatch, damaged):
+    from types import SimpleNamespace
+    from platforms.predictfun.recovery_service_binding import BindingError
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    runner = SystemdRunner(paths, sha)
+    checks = []
+    installed = SimpleNamespace(require_unchanged=lambda: checks.append("anchor"))
+    monkeypatch.setattr(deploy_release_module.recovery_service_binding, "check_transition", lambda *a: installed)
+    def effective(profile, command_runner):
+        checks.append("effective")
+        assert command_runner.calls[-1][:2] == ("systemctl", "daemon-reload")
+        if damaged:
+            raise BindingError("synthetic effective override")
+    monkeypatch.setattr(deploy_release_module.recovery_service_binding, "verify_effective_vps", effective)
+    args = dict(target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                authorization_id="synthetic-startup-binding-test")
+    if damaged:
+        with pytest.raises(BindingError):
+            activate_release(paths, runner, **args)
+        assert not any(call[:2] == ("systemctl", "start") for call in runner.calls)
+    else:
+        assert activate_release(paths, runner, **args)["status"] == "activated"
+    assert "effective" in checks
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ("git", *args),

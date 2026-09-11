@@ -40,32 +40,71 @@ modify files, reload a service, start a process or send a transaction. Exec mode
 is a future service startup operation and must not be run without explicit
 service activation authorization.
 
-## Required installation integration, still open
+## One-time installation integration
 
-The standalone guard only protects launches that actually invoke it. It is not
-yet connected to any production service. The maintenance installer must:
+`recovery_bootstrap.py` now provides read-only `plan` and explicit root-only
+`apply`. It has not been run in production. The separate root authorization is
+not supplied by the program's confirmation string. The operator must first get
+approval for the exact node, reviewed merged release, plan digest and service
+maintenance window.
 
-1. Verify the exact host, current immutable release and reviewed installation-plan
-   digest, plus explicit profile-scoped authorization. Hold the node deployment
-   lock throughout. Verify all affected Predict writers are stopped/drained.
-2. Derive the guard/policy/manifest digests from the reviewed artifacts and create
-   external private backups and a compare-and-swap manifest before any writes.
-   Do not derive approval merely from self-declared JSON booleans.
-3. Install the standalone file and required root anchor. On a VPS, add a persistent
-   root-owned systemd drop-in that replaces ExecStart with the external guard and
-   cannot disappear when an old wrapper overwrites the main unit. The drop-in
-   must also prevent legacy ExecStartPre commands running unverified release code.
-4. On Mac mini, bind both launch agents to the external guard, with verified
-   protection against the known legacy wrapper replacing those plists. A
-   root-owned file alone is insufficient if its parent is user-writable: atomic
-   replacement must also be prevented. Do not lock the whole LaunchAgents
-   directory or change unrelated projects to achieve this.
-5. Update the current Mac deployment wrapper to preserve and verify installed
-   guarded launch bindings. It must not overwrite them with legacy templates.
-6. Verify effective service-manager commands and guard check-mode results on every
-   affected host. Keep services disabled/paused; installation must not trade or
-   silently restart. Installation failure leaves a stopped recovery state, never
-   an automatic restore to an unguarded pre-barrier setup.
+The initial merged recovery release must already be the exact `current` release.
+This installer does not prepare/deploy a release or change the current symlink.
+It must be invoked from that reviewed immutable release, using the existing
+trusted Python interpreter. Its implementation can also be called via tests with
+synthetic paths; those tests do not prove production ownership or service state.
+
+The procedure is deliberately initial-install-only:
+
+1. `plan --profile <node> --current-sha <full-sha> --recovery-id <64-hex>` hashes
+   the entire immutable artifact and captures exact startup-file preimages. It
+   emits a plan envelope and its digest, never changes a service or file. The
+   envelope is to be retained outside the source/release tree for review.
+2. `apply --plan <reviewed-envelope.json> --plan-sha256 <reviewed-digest>
+   --authorization-id <approved-id>
+   --confirm INSTALL_PREDICT_RECOVERY:<node>:<full-sha>` requires root and takes
+   the same node deployment lock used by that node's deployment wrapper.
+3. Independent command probes verify the node IP and known Predict processes.
+   VPS services/timer must be stopped and disabled, with zero service MainPID;
+   Mac agents must be disabled and fully unloaded and API/WS listeners drained.
+   Command errors are not interpreted as stopped. The installer never issues a
+   stop, start, enable, bootstrap, kickstart or trading command.
+4. A private root-owned external backup contains the plan/authorization record
+   and original startup files before writes. Bindings are compared again after
+   the backup. The policy initially approves only this exact current artifact;
+   neither ancestor commits nor arbitrary future releases are approved.
+5. The root-owned external anchor pins the installed guard, policy, exact
+   artifact manifest and exact service binding hashes. A VPS persistent drop-in
+   clears old executable hooks and replaces ExecStart. On Mac only the two
+   Predict plists are replaced with the fixed guard commands, made root-owned
+   read-only and marked `UF_IMMUTABLE` to reject the legacy wrapper's atomic
+   replacement. The enclosing LaunchAgents directory is not locked or modified.
+6. The installer validates installed bytes/permissions, systemd's effective
+   commands after daemon-reload (including later overrides), guard check-mode
+   results and final stopped/disabled state. It then writes an installation
+   receipt. Failure does not remove protection or restart/restore an old service.
+
+Backups are `/var/lib/predictfun-recovery-backups/<plan-digest>` on each VPS and
+`/Library/Application Support/PredictFunRecoveryBackups/<plan-digest>` on Mac.
+The root binding checker and both new deployment wrappers preserve these
+bindings, pin target AND rollback artifact hashes, and reject missing/changed
+anchors/policies/bindings. Mac deployment does not rewrite or restore protected
+plists; explicit future activation can enable/bootstrap the validated bindings.
+VPS deployment verifies effective commands before starting either service and
+before restarting an approved rollback. A damaged binding prevents rollback
+restart. Legacy installations with no external root directory remain compatible.
+
+An existing or partially installed protection directory makes another initial
+`apply` fail. A failed install, masked main unit, changed service hook or a future
+new-release allowlist requires a separately reviewed root maintenance/repair;
+this tool provides no overwrite/unlock/skip-protection option. In particular,
+masked units must not be interpreted as having verifiable effective ExecStart.
+
+These probes establish the selected node's known process/service state, not
+global signer quiescence or absence of every possible external client. Cross-node
+writer fencing, the signer-ledger CAS and nonce evidence remain separate gates.
+No secret file, ledger, account configuration or execution report is read or
+written by this installation command.
 
 This targets accidental rollback through the supported deployment paths. A
 privileged operator intentionally replacing the guard, anchor, interpreter or
@@ -91,9 +130,14 @@ The September 11 goal remains active until these production outcomes are proven.
 The pending request for read-only historical Mac mini ledger/request metadata
 does not authorize reading private keys, `.env`, API keys, or transaction execution.
 
-Validation so far: **536 Predict tests passed**, including 22 external-guard
-tests, plus changed-file compilation and diff check. Tests use a synthetic trust
-root and fake exec; they do not install root files or start services. The Mac
-immutable archive carries the guard source for a future reviewed installer.
-The recovery floor tests now restore only their own temporary directory
-permissions in teardown; the isolated full-suite run had no cleanup warnings.
+Validation before this follow-up: **536 Predict tests passed**. The new focused
+suite exercises synthetic root installation, initial-install refusal, independent
+stopped probes, durable backups/CAS, effective command mismatch and preservation
+of protected bindings in both real wrapper control flows with fake service
+managers. On macOS an additional temporary-file test runs the actual legacy
+atomic-write helper and confirms `UF_IMMUTABLE` rejects replacement; it restores
+the flag on only its own file afterwards. This test does not prove the ownership
+or flags of production plists. No test starts or modifies production services.
+The Mac immutable archive includes the bootstrap and binding-check modules.
+Final follow-up validation: **579 Predict tests passed in 12.00 seconds**,
+nine changed Python files compiled, and diff whitespace checks passed.
