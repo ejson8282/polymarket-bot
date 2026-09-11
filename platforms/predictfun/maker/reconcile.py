@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 from platforms.predictfun.maker.executor import DryRunExecutor, ExecutableOrder, ExecutionResult, PredictFunExecutor
 from platforms.predictfun.maker.intents import utc_now
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.market_exclusions import MarketExclusions
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -79,6 +80,7 @@ def recover_uncertain_submissions(
     *,
     registry: ManagedOrderRegistry,
     executor: PredictFunExecutor,
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> list[dict[str, Any]]:
     """Adopt only submissions proven by the exact account/idempotency ledger."""
 
@@ -98,6 +100,8 @@ def recover_uncertain_submissions(
     for item in diff.get("create") or []:
         if not isinstance(item, dict):
             continue
+        if market_exclusions.blocks(str(item.get("account_id") or "acct01"), item.get("market_id")):
+            continue
         order = _with_submission_key(_to_order(item), registry)
         key = (order.account_id, order.idempotency_key or order.intent_id)
         if key not in seen and not registry.active_for_intent(
@@ -108,6 +112,8 @@ def recover_uncertain_submissions(
 
     results: list[dict[str, Any]] = []
     for order in candidates:
+        if market_exclusions.blocks(order.account_id, order.market_id):
+            continue
         result = recover(order)
         if result is None:
             continue
@@ -177,11 +183,12 @@ def reconcile_once(
     executor: PredictFunExecutor | None = None,
     managed_state: dict[str, Any] | None = None,
     mode: str = "dry_run",
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> dict[str, Any]:
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
     recover_uncertain_submissions(
-        intents_state, registry=registry, executor=executor
+        intents_state, registry=registry, executor=executor, market_exclusions=market_exclusions
     )
     diff = intents_state.get("diff") if isinstance(intents_state.get("diff"), dict) else {}
     results = []
@@ -191,6 +198,8 @@ def reconcile_once(
             intent_id = str(item.get("intent_id") or "")
             account_id = str(item.get("account_id") or "acct01")
             for managed in registry.active_for_intent(intent_id, account_id):
+                if market_exclusions.blocks(managed.account_id, managed.market_id):
+                    continue
                 result = executor.cancel(
                     managed.order_id,
                     intent_id=managed.intent_id,
@@ -202,6 +211,8 @@ def reconcile_once(
     if not cancel_failed:
         for item in diff.get("create") or []:
             if isinstance(item, dict):
+                if market_exclusions.blocks(str(item.get("account_id") or "acct01"), item.get("market_id")):
+                    continue
                 raw_order = _to_order(item)
                 if registry.active_for_intent(
                     raw_order.intent_id, raw_order.account_id
@@ -239,6 +250,7 @@ def reconcile_once(
         },
         "results": results,
         "managed_orders": registry.to_state(),
+        "manual_market_exclusions": market_exclusions.summary(registry.active()),
     }
 
 
@@ -249,16 +261,19 @@ def reconcile_cancel_only(
     reason: str,
     risk_state: dict[str, Any] | None = None,
     mode: str = "dry_run",
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> dict[str, Any]:
     """Cancel engine-owned orders while keeping all create actions disabled."""
 
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
     recover_uncertain_submissions(
-        {}, registry=registry, executor=executor
+        {}, registry=registry, executor=executor, market_exclusions=market_exclusions
     )
     results: list[dict[str, Any]] = []
     for managed in registry.active():
+        if market_exclusions.blocks(managed.account_id, managed.market_id):
+            continue
         result = executor.cancel(
             managed.order_id,
             intent_id=managed.intent_id,
@@ -281,6 +296,7 @@ def reconcile_cancel_only(
         },
         "results": results,
         "managed_orders": registry.to_state(),
+        "manual_market_exclusions": market_exclusions.summary(registry.active()),
         "risk": risk_state or {},
     }
 
@@ -292,13 +308,14 @@ def reconcile_reduce_only(
     executor: PredictFunExecutor | None = None,
     risk_state: dict[str, Any] | None = None,
     mode: str = "dry_run",
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> dict[str, Any]:
     """Cancel maker quotes and allow only position-reducing exit intents."""
 
     executor = executor or DryRunExecutor()
     registry = _registry_for_mode(managed_state, mode)
     recover_uncertain_submissions(
-        intents_state, registry=registry, executor=executor
+        intents_state, registry=registry, executor=executor, market_exclusions=market_exclusions
     )
     desired_exit_ids = {
         str(item.get("intent_id") or "")
@@ -308,6 +325,8 @@ def reconcile_reduce_only(
     results: list[dict[str, Any]] = []
     cancel_failed = False
     for managed in registry.active():
+        if market_exclusions.blocks(managed.account_id, managed.market_id):
+            continue
         if managed.purpose == "inventory_exit" and managed.intent_id in desired_exit_ids:
             continue
         result = executor.cancel(
@@ -328,6 +347,8 @@ def reconcile_reduce_only(
     ]
     if not cancel_failed:
         for item in exit_creates:
+            if market_exclusions.blocks(str(item.get("account_id") or "acct01"), item.get("market_id")):
+                continue
             raw_order = _to_order(item)
             if registry.active_for_intent(
                 raw_order.intent_id, raw_order.account_id
@@ -359,6 +380,7 @@ def reconcile_reduce_only(
         },
         "results": results,
         "managed_orders": registry.to_state(),
+        "manual_market_exclusions": market_exclusions.summary(registry.active()),
         "risk": risk_state or {},
     }
 
@@ -373,7 +395,7 @@ def main() -> None:
     cfg = load_json(config_path)
     intents_path = _configured_path(config_path, cfg, "intents_path", "../../../data/predictfun_desired_orders.json")
     report_path = _configured_path(config_path, cfg, "execution_report_path", "../../../data/predictfun_execution_report.json")
-    report = reconcile_once(load_json(intents_path))
+    report = reconcile_once(load_json(intents_path), market_exclusions=MarketExclusions.from_config(cfg))
     write_json(report_path, report)
     print(json.dumps(report, indent=2))
 

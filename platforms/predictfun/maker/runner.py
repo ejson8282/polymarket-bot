@@ -34,6 +34,7 @@ from platforms.predictfun.maker.executor import (
     PredictFunReadOnlyExecutor,
 )
 from platforms.predictfun.maker.managed_orders import ManagedOrderRegistry
+from platforms.predictfun.maker.market_exclusions import MarketExclusions
 from platforms.predictfun.maker.recovery_migration import report_writer_lease
 from platforms.predictfun.maker.research import build_research_state
 from platforms.predictfun.maker.risk import blocked_execution_report, evaluate_risk
@@ -396,6 +397,7 @@ def _apply_manual_order_constraints(
 def _cancel_managed_on_shutdown(
     report_path: Path,
     executor: PredictFunExecutor,
+    *, market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> dict[str, Any]:
     previous = load_json(report_path)
     managed_state = (
@@ -409,6 +411,7 @@ def _cancel_managed_on_shutdown(
         reason="runner_shutdown",
         risk_state={"status": "BLOCKED", "reason": "runner_shutdown"},
         mode="live",
+        market_exclusions=market_exclusions,
     )
     write_json(report_path, report)
     return report
@@ -542,6 +545,7 @@ def run_loop(
 def _run_loop_locked(
     *, config_path: Path, cfg: dict[str, Any], interval_sec: float, once: bool = False,
 ) -> dict[str, Any]:
+    market_exclusions = MarketExclusions.from_config(cfg)
     api_key = os.getenv(str(cfg.get("api_key_env") or "PREDICTFUN_API_KEY"), "")
     client = PredictFunClient(base_url=str(cfg["base_url"]), api_key=api_key)
 
@@ -688,6 +692,7 @@ def _run_loop_locked(
                     intents_state,
                     registry=registry,
                     executor=executor,
+                    market_exclusions=market_exclusions,
                 )
                 state["last_submission_recovery"] = {
                     "checked_at": _utc_now(),
@@ -818,6 +823,7 @@ def _run_loop_locked(
                     row.account_id: str(row.total) for row in live_balances
                 },
                 "manual_order_constraints": manual_order_constraints,
+                "manual_market_exclusions": market_exclusions.summary(registry.active()),
                 "reads": state.get("account_reads") or {},
                 "discarded_simulated_orders": discarded_simulated_orders,
             }
@@ -884,6 +890,7 @@ def _run_loop_locked(
                     reason="risk_gate",
                     risk_state=risk_state,
                     mode=action_mode,
+                    market_exclusions=market_exclusions,
                 )
             elif execution_mode == "reduce_only":
                 report = reconcile_reduce_only(
@@ -892,6 +899,7 @@ def _run_loop_locked(
                     executor=executor,
                     risk_state=risk_state,
                     mode=action_mode,
+                    market_exclusions=market_exclusions,
                 )
             else:
                 report = reconcile_once(
@@ -899,6 +907,7 @@ def _run_loop_locked(
                     managed_state=managed_state,
                     executor=executor,
                     mode=action_mode,
+                    market_exclusions=market_exclusions,
                 )
             write_json(report_path, report)
 
@@ -950,6 +959,7 @@ def _run_loop_locked(
                             "error": state["last_error"],
                         },
                         mode="live",
+                        market_exclusions=market_exclusions,
                     )
                     write_json(report_path, report)
                 except Exception as cancel_exc:
@@ -1013,7 +1023,9 @@ def _run_loop_locked(
 
     if effective_mode == "live" and _STOP:
         try:
-            report = _cancel_managed_on_shutdown(report_path, executor)
+            report = _cancel_managed_on_shutdown(
+                report_path, executor, market_exclusions=market_exclusions,
+            )
             shutdown_summary = report.get("summary") or {}
             state["shutdown_cancel_summary"] = shutdown_summary
             state["last_execution_summary"] = shutdown_summary
