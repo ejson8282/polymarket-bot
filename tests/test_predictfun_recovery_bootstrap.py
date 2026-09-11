@@ -128,8 +128,38 @@ def test_install_then_verify_without_starting_or_changing_current(tmp_path, monk
     assert not any("--exec" in call for call in runner.calls)
     for component in spec.components:
         assert guard.verify_startup(profile, component)["release_sha"] == SHA
+    check_calls = [call for call in runner.calls if "--component" in call]
+    assert len(check_calls) == 2
+    expected_user = "kevinsmacmini" if profile == "macmini" else "ubuntu"
+    assert all(call[call.index("-u") + 1] == expected_user for call in check_calls)
     with pytest.raises(bootstrap.BootstrapError, match="partially_installed"):
         bootstrap.build_plan(profile, SHA, "d" * 64)
+
+
+def test_root_umask_does_not_make_guard_directory_unreadable(tmp_path, monkeypatch):
+    spec = fixture_node(tmp_path, monkeypatch)
+    plan = bootstrap.build_plan("vps1", SHA, "d" * 64)
+    previous_umask = os.umask(0o077)
+    try:
+        install(plan)
+    finally:
+        os.umask(previous_umask)
+    assert spec.security_root.stat().st_mode & 0o777 == 0o755
+
+
+def test_failed_unprivileged_guard_check_does_not_record_acceptance(tmp_path, monkeypatch):
+    fixture_node(tmp_path, monkeypatch)
+    plan = bootstrap.build_plan("vps1", SHA, "d" * 64)
+    runner = FakeRunner("vps1")
+    original = runner.run
+    def cannot_read(args):
+        if args[0] == "/usr/sbin/runuser":
+            raise bootstrap.BootstrapError("synthetic service user cannot read")
+        return original(args)
+    runner.run = cannot_read
+    with pytest.raises(bootstrap.BootstrapError):
+        install(plan, runner)
+    assert not list(bootstrap.BACKUPS["vps1"].glob("*/installed.json"))
 
 
 @pytest.mark.parametrize("damage", ["hash", "authorization", "wrong_confirmation", "not_root", "checkout", "changed_binding"])

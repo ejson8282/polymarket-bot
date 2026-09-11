@@ -51,7 +51,8 @@ maintenance window.
 The initial merged recovery release must already be the exact `current` release.
 This installer does not prepare/deploy a release or change the current symlink.
 It must be invoked from that reviewed immutable release, using the existing
-trusted Python interpreter. Its implementation can also be called via tests with
+trusted Python interpreter with `-I -B` and the absolute bootstrap script path.
+Its implementation can also be called via tests with
 synthetic paths; those tests do not prove production ownership or service state.
 
 The procedure is deliberately initial-install-only:
@@ -81,7 +82,7 @@ The procedure is deliberately initial-install-only:
    replacement. The enclosing LaunchAgents directory is not locked or modified.
 6. The installer validates installed bytes/permissions, systemd's effective
    commands after daemon-reload (including later overrides), guard check-mode
-   results and final stopped/disabled state. It then writes an installation
+   results as the actual service user (not root), and final stopped/disabled state. It then writes an installation
    receipt. Failure does not remove protection or restart/restore an old service.
 
 Backups are `/var/lib/predictfun-recovery-backups/<plan-digest>` on each VPS and
@@ -139,5 +140,5 @@ atomic-write helper and confirms `UF_IMMUTABLE` rejects replacement; it restores
 the flag on only its own file afterwards. This test does not prove the ownership
 or flags of production plists. No test starts or modifies production services.
 The Mac immutable archive includes the bootstrap and binding-check modules.
-Final follow-up validation: **579 Predict tests passed in 12.00 seconds**,
+Final follow-up validation: **581 Predict tests passed in 11.20 seconds**,
 nine changed Python files compiled, and diff whitespace checks passed.

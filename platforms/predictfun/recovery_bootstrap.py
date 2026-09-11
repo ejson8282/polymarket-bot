@@ -239,6 +239,7 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
             raise BootstrapError("bootstrap_plan_changed_after_backup")
         guard._protected_parents(spec.security_root)
         spec.security_root.mkdir(mode=0o755)
+        spec.security_root.chmod(0o755)
         source = guard._read(release / GUARD_SOURCE)
         if guard._sha(source) != plan["guard_sha256"]:
             raise BootstrapError("bootstrap_guard_source_changed")
@@ -271,7 +272,12 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
             runner.run(("systemctl", "daemon-reload"))
             binding.verify_effective_vps(profile, runner)
         for component in spec.components:
-            result = json.loads(runner.run((str(spec.python), "-I", "-B", str(spec.security_root / "guard.py"),
+            # Root being able to read the installation is not evidence that
+            # the unprivileged service account can traverse/read it.
+            as_user = (("/usr/bin/sudo", "-n", "-u", "kevinsmacmini", "--") if profile == "macmini"
+                       else ("/usr/sbin/runuser", "-u", "ubuntu", "--"))
+            result = json.loads(runner.run((*as_user, str(spec.python), "-I", "-B",
+                                            str(spec.security_root / "guard.py"),
                                             "--profile", profile, "--component", component)))
             if result.get("ok") is not True or result.get("release_sha") != sha:
                 raise BootstrapError("bootstrap_startup_check_failed")
