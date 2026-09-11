@@ -375,7 +375,7 @@ def test_final_runtime_recheck_reages_every_sample(host_audit, monkeypatch):
     checks = []
     def active():
         checks.append(True)
-        if len(checks) > 1:
+        if len(checks) == 2:
             ctx.now += timedelta(seconds=5)
         return True
     monkeypatch.setattr(audit, "service_active", active)
@@ -453,6 +453,59 @@ def test_tooling_manifest_cannot_omit_source(tooling_bundle):
     (root / ".tooling-manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(audit.AcceptanceError, match="tooling_manifest_mismatch"):
         audit.verify_tooling(commit)
+
+
+@pytest.mark.parametrize("change", [None, "proxy", "identity", "unpause", "stale"])
+def test_final_sweep_rechecks_each_account_not_only_the_last(host_audit, monkeypatch, change):
+    ctx = host_audit
+    second = parse_runtime_roster({"runtime_scope": "aggressive", "accounts": [{
+        "account_index": 2, "host_id": "aggressive-a", "funder": SIGNER, "clash_port": 18082,
+        "lp_account": {"account_id": "aggressive-a-2", "enabled": True,
+                       "profile_type": "aggressive", "target_principal_usdc": "200"}}]})[0]
+    ctx.contract["local_accounts"].append(second)
+    config = deepcopy(ctx.config)
+    config["account"]["funder"] = SIGNER
+    config["lp_account"] = second.generation_entry()["lp_account"]
+    config["runtime_account"].update(account_index=2, clash_port=18082)
+    config["proxy_pool"]["items"][0]["url"] = "http://127.0.0.1:18082"
+    state = deepcopy(ctx.state)
+    state.update(account_index=2, account_id=second.profile.account_id,
+                 account_uid_key=hashlib.sha256(f"137:2:{SIGNER}".encode()).hexdigest()[:16])
+    (ctx.root / "config_2.json").write_text(json.dumps(config))
+    (ctx.root / "engine_state_2.json").write_text(json.dumps(state))
+    (ctx.root / ".account_2.paused").touch()
+    if change == "stale":
+        ctx.state["ts"] = (NOW - timedelta(seconds=59)).isoformat()
+        ctx.save()
+    monkeypatch.setattr(audit, "RemoteSignerClient", lambda *a, funder, **kw:
+        SimpleNamespace(derive_existing_creds=lambda: {**credentials(), "funder": funder},
+                        _session=SimpleNamespace(close=lambda: None)))
+    def client(identity, creds, proxy):
+        reads = Reads()
+        reads.identity, reads.close = identity, lambda: None
+        if identity["maker_address"] == SIGNER:
+            def assets(tokens):
+                if change == "proxy":
+                    ctx.config["proxy_pool"]["items"][0]["url"] = "http://127.0.0.1:18999"
+                elif change == "identity":
+                    ctx.config["account"]["signature_type"] = 0
+                    ctx.state["account_uid_key"] = hashlib.sha256(f"137:0:{MAKER}".encode()).hexdigest()[:16]
+                elif change == "unpause":
+                    ctx.state["paused"] = False
+                    (ctx.root / ".account_1.paused").unlink()
+                elif change == "stale":
+                    ctx.now += timedelta(seconds=2)
+                ctx.save()
+                return {"cash_units": "200", "holdings": {}}
+            reads.assets = assets
+        return reads
+    monkeypatch.setattr(audit, "AccountReads", client)
+    report = ctx.run()
+    assert len(report["accounts"]) == 2
+    assert report["status"] == ("pass" if change is None else "blocked")
+    assert report["accounts"][0]["runtime_paused_verified"] is (change is None)
+    assert report["accounts"][0]["account_audit_passed"] is (change is None)
+    assert report["accounts"][1]["runtime_paused_verified"] is True
 
 
 def test_chain_assets_exact_units_and_read_only_rpc(monkeypatch):

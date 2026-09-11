@@ -296,7 +296,10 @@ Checks include:
   before and after collection. A stale state never proves a running service.
 - Engine CLOB endpoint, chain, signature type and hashed `account_uid_key` must
   match the audited account; signature defaults to0, as in the engine. Identity
-  and account proxy routing cannot change during collection.
+  and account proxy routing cannot change during collection. After collecting all
+  accounts, a final sweep checks every account again, not only the last one. Each
+  `runtime_final_check` records its observed state timestamp and verification time;
+  state freshness is also evaluated at the final host report timestamp.
 - Authenticated collateral, complete bounded open-order/24-hour trade pages,
   live BUY scoring and re-read orders via the merged observation adapter.
 - Official public positions and six-decimal chain collateral/CTF balances at a

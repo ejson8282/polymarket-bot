@@ -339,7 +339,7 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
     contract = _runtime_contract(paths, release_dir)
     # Never route aggressive acceptance through the stable signer or an arbitrary URL.
     require(contract["signer_url"] == "http://100.91.159.54:8421", "dedicated_signer_required")
-    outputs = []
+    outputs, verifications = [], []
     for account in contract["local_accounts"]:
         reads, remote = None, None
         phase = "runtime_contract"
@@ -349,7 +349,8 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
             marker = paths.data_dir / f".account_{account.account_index}.paused"
             config = read_json(config_path, paths.runtime_root)
             identity = configured_identity(config)
-            def verify():
+            def verify(account=account, config=config, identity=identity, config_path=config_path,
+                       state_path=state_path, marker=marker):
                 require(_current_release(paths) == release, "release_changed_during_audit")
                 current_contract = _runtime_contract(paths, release_dir)
                 require(current_contract["roster_sha256"] == contract["roster_sha256"] and
@@ -357,10 +358,12 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
                 current_config = read_json(config_path, paths.runtime_root)
                 require(configured_identity(current_config) == identity and
                         current_config.get("proxy_pool") == config.get("proxy_pool"), "config_changed_during_audit")
-                check_runtime(account, current_config,
-                    read_json(state_path, paths.runtime_root), contract, release,
+                current_state = read_json(state_path, paths.runtime_root)
+                active, checked_at = service_active(), clock()
+                check_runtime(account, current_config, current_state, contract, release,
                     paused_marker=marker.is_file() and marker.resolve().is_relative_to(paths.runtime_root.resolve()),
-                    service_active=service_active(), now=clock())
+                    service_active=active, now=checked_at)
+                return {"state_ts": current_state["ts"], "checked_at": checked_at.isoformat()}
             verify()
             proxy_items = [p for p in (config.get("proxy_pool") or {}).get("items", []) if p.get("enabled", True)]
             require(len(proxy_items) == 1, "one_account_proxy_required")
@@ -377,6 +380,7 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
             verify()
             report.update(runtime_paused_verified=True, account_index=account.account_index)
             outputs.append(report)
+            verifications.append((report, verify))
         except AcceptanceError as exc:
             outputs.append({"account_index": account.account_index, "account_audit_passed": False, "reason": str(exc)})
         except Exception:
@@ -386,6 +390,13 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
                 reads.close()
             if remote:
                 remote._session.close()
+    for report, verify in verifications:
+        try:
+            report["runtime_final_check"] = verify()
+        except AcceptanceError as exc:
+            report.update(runtime_paused_verified=False, reason=str(exc))
+        except Exception:
+            report.update(runtime_paused_verified=False, reason="final_runtime_recheck_unavailable")
     require(verify_tooling(tooling_sha) == tooling, "tooling_changed_during_audit")
     finished = clock()
     # All accounts and sources are judged at the final host report timestamp.
@@ -393,6 +404,13 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
         if "observation" in report:
             report.update(assess_acceptance(report["observation"], report["positions"], report["chain_assets"],
                           amount(report["principal_limit"]), now=finished))
+            evidence = report.get("runtime_final_check")
+            fresh = bool(evidence) and 0 <= (finished-timestamp(evidence["state_ts"])).total_seconds() <= 60
+            report["runtime_paused_verified"] = report["runtime_paused_verified"] and fresh
+            report["checks"]["final_runtime"] = "pass" if report["runtime_paused_verified"] else "blocked"
+            report["account_audit_passed"] = report["account_audit_passed"] and report["runtime_paused_verified"]
+            if not fresh:
+                report.setdefault("reason", "final_runtime_state_stale_or_unavailable")
     return {"kind": "aggressive_paused_account_acceptance", "schema_version": 1,
             "host_id": profile, "runtime_release_sha": release, "tooling_sha": tooling["commit"],
             "tooling_manifest_sha256": tooling["manifest_sha256"], "generated_at": finished.isoformat(),
