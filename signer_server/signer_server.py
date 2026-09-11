@@ -24,6 +24,7 @@ keep working unchanged.
 import dataclasses
 import json
 import os
+import re
 import time
 import threading
 import logging
@@ -195,6 +196,11 @@ def _derive_credentials(client: CredentialsClobClient):
     return _credential_transport_recovery.run(client.create_or_derive_api_creds)
 
 
+def _derive_existing_credentials(client: CredentialsClobClient):
+    # The standard SDK's derive_api_key uses GET; never fall back to creation.
+    return _credential_transport_recovery.run(client.derive_api_key)
+
+
 def _resolve_funder(requested: str | None) -> str:
     """Map a requested funder to a key-map entry.
 
@@ -292,6 +298,17 @@ class DeriveCredsResponse(BaseModel):
     api_secret: str
     api_passphrase: str
     address: str
+
+
+class ExistingCredsRequest(BaseModel):
+    funder: str = Field(..., pattern=r"^0x[0-9a-fA-F]{40}$")
+
+
+class ExistingCredsResponse(DeriveCredsResponse):
+    mode: str = "existing_only"
+    funder: str
+    chain_id: int
+    signature_type: int
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +424,40 @@ async def derive_creds(request: Request, body: DeriveCredsRequest | None = None,
         _record_readiness(funder_key, False)
         logger.error(f"derive-creds | funder={funder_key[:10] or 'legacy'}… | result=error | {type(e).__name__}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/derive-existing-creds", response_model=ExistingCredsResponse)
+async def derive_existing_creds(body: ExistingCredsRequest, _=Depends(verify_auth)):
+    """Retrieve existing L2 credentials, not restricted-capability credentials.
+
+    The authenticated caller must keep them in memory and use a GET-only client.
+    This route neither creates API credentials nor signs/submits orders.
+    """
+    _check_rate_limit()
+    funder = body.funder.lower()
+    # Do not inherit the legacy unspecified-funder sentinel fallback.
+    if funder not in KEY_MAP:
+        raise HTTPException(status_code=404, detail="existing_credentials_account_unknown")
+    if HOST.rstrip("/") != "https://clob.polymarket.com" or CHAIN_ID != 137 or SIGNATURE_TYPE not in (0, 1, 2):
+        raise HTTPException(status_code=503, detail="existing_credentials_configuration_invalid")
+    try:
+        client = _get_credentials_client(funder)
+        creds, _ = await run_in_threadpool(_derive_existing_credentials, client)
+        address = await run_in_threadpool(client.get_address)
+        if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise ValueError("invalid_address")
+        if not all(isinstance(getattr(creds, name, None), str) and getattr(creds, name).strip()
+                   for name in ("api_key", "api_secret", "api_passphrase")):
+            raise ValueError("existing_credentials_missing")
+        return ExistingCredsResponse(
+            api_key=creds.api_key, api_secret=creds.api_secret,
+            api_passphrase=creds.api_passphrase, address=address.lower(),
+            funder=funder, chain_id=CHAIN_ID, signature_type=SIGNATURE_TYPE,
+        )
+    except Exception:
+        # Upstream exceptions may contain response bodies or credentials.
+        logger.warning("derive-existing-creds | result=unavailable")
+        raise HTTPException(status_code=503, detail="existing_credentials_unavailable") from None
 
 
 @app.post("/sign-order", response_model=SignOrderResponse)
