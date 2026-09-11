@@ -25,6 +25,14 @@ from platforms.predictfun.deploy_ws_relay import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def restore_floor_permissions(tmp_path):
+    yield
+    directory = tmp_path / "home/predictfun-ws-runtime/recovery-release-floor"
+    if directory.is_dir() and not directory.is_symlink():
+        directory.chmod(0o700)
+
+
 @pytest.mark.parametrize("damage", ["changed", "missing", "corrupt"])
 def test_failed_mac_activation_never_restarts_old_release_after_floor_damage(tmp_path, damage):
     from platforms.predictfun.recovery_release_floor import RecoveryReleaseFloorError

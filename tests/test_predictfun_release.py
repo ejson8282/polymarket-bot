@@ -33,6 +33,14 @@ from platforms.predictfun.maker.runner import _release_metadata
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def restore_floor_permissions(tmp_path):
+    yield
+    directory = tmp_path / "runtime/recovery-release-floor"
+    if directory.is_dir() and not directory.is_symlink():
+        directory.chmod(0o700)
+
+
 @pytest.mark.parametrize("damage", ["changed", "missing", "corrupt"])
 def test_failed_activation_never_rolls_back_after_recovery_floor_changes(tmp_path, monkeypatch, damage):
     from platforms.predictfun.recovery_release_floor import RecoveryReleaseFloorError

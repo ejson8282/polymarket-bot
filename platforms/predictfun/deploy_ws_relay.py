@@ -39,6 +39,7 @@ ARCHIVE_PATHS = (
     "platforms/predictfun/__init__.py",
     "platforms/predictfun/deploy_ws_relay.py",
     "platforms/predictfun/recovery_release_floor.py",
+    "platforms/predictfun/recovery_startup_guard.py",
     "platforms/predictfun/ws_relay.py",
     "deploy/mac-mini/predictfun_api_proxy.py",
     "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist",

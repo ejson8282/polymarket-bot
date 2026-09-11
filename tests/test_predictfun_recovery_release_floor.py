@@ -15,6 +15,14 @@ import platforms.predictfun.deploy_ws_relay as mini
 OLD, NEW = "a" * 40, "b" * 40
 
 
+@pytest.fixture(autouse=True)
+def restore_floor_permissions(tmp_path):
+    yield
+    directory = tmp_path / "recovery-release-floor"
+    if directory.is_dir() and not directory.is_symlink():
+        directory.chmod(0o700)
+
+
 def policy(profile="vps1"):
     return {"version": 1, "repository": "ejson8282/polymarket-bot",
             "profile": profile, "recovery_id": "c" * 64,
