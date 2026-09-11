@@ -206,7 +206,9 @@ class LaunchctlRunner(CommandRunner):
         if command[:2] == ("launchctl", "print"):
             if command[-1].split("/")[-1] not in self.loaded:
                 raise subprocess.CalledProcessError(113, command, stderr="Could not find service")
-            return "state = running"
+            return (f"{command[-1]} = {{\n\tstate = running\n"
+                    "\tresource coalition = {\n\t\tstate = active\n\t}\n"
+                    "\tjetsam coalition = {\n\t\tstate = active\n\t}\n}")
         if command[:2] == ("launchctl", "bootout"):
             self.loaded.discard(command[-1].split("/")[-1])
         if command[:2] in (("launchctl", "enable"), ("launchctl", "disable")):
@@ -243,7 +245,7 @@ class DelayedLaunchctlRunner(LaunchctlRunner):
                 and command[-1].split("/")[-1] in self.loaded):
             self.calls.append(command)
             self.delayed_prints -= 1
-            return "state = waiting"
+            return f"{command[-1]} = {{\n\tstate = waiting\n}}"
         return super().run(args, cwd=cwd, env=env, check=check)
 
 
@@ -557,7 +559,7 @@ def test_unverifiable_initial_state_never_mutates_services(tmp_path, failure):
                 if failure == "print_error":
                     raise subprocess.CalledProcessError(1, command, stderr="permission denied")
                 if failure == "waiting":
-                    return "state = waiting"
+                    return f"{command[-1]} = {{\n\tstate = waiting\n}}"
             return super().run(args, **kwargs)
     runner = UnknownRunner(running=(relay_deploy.API_LABEL,))
     if failure == "missing_plist":
@@ -620,3 +622,29 @@ def test_launch_agent_state_rejects_invalid_override_map(output):
     with pytest.raises(RelayDeploymentError, match="enablement entry"):
         relay_deploy._launch_agent_state(InvalidRunner(), "gui/501", relay_deploy.LABEL,
                                         relay_deploy.FileSnapshot(None))
+
+
+@pytest.mark.parametrize("state,accepted", [
+    ("\tstate = running\n\tresource coalition = {\n\t\tstate = active\n\t}\n", True),
+    ("\tresource coalition = {\n\t\tstate = running\n\t}\n", False),
+    ("\tstate = waiting\n\tresource coalition = {\n\t\tstate = running\n\t}\n", False),
+    ("\tstate = running\n\tstate = waiting\n", False),
+])
+def test_only_direct_launch_agent_state_is_used(state, accepted):
+    service = f"gui/501/{relay_deploy.API_LABEL}"
+    class StateRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            return f"{service} = {{\n{state}}}"
+    if accepted:
+        assert relay_deploy._launch_agent_loaded(StateRunner(), service)
+    else:
+        with pytest.raises(RelayDeploymentError):
+            relay_deploy._launch_agent_loaded(StateRunner(), service)
+
+
+def test_launch_agent_state_rejects_wrong_service_response():
+    class WrongServiceRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            return "gui/501/unrelated = {\n\tstate = running\n}"
+    with pytest.raises(RelayDeploymentError, match="state response"):
+        relay_deploy._launch_agent_loaded(WrongServiceRunner(), f"gui/501/{relay_deploy.API_LABEL}")

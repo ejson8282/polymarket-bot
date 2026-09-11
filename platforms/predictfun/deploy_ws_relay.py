@@ -496,7 +496,12 @@ def _launch_agent_loaded(runner: CommandRunner, service: str) -> bool:
         if exc.returncode == 113 and "Could not find service" in (exc.stderr or ""):
             return False
         raise RelayDeploymentError("cannot verify launch agent state") from None
-    states = re.findall(r"^\s*state = ([^\r\n]+)$", output, re.MULTILINE)
+    # launchctl indents direct job fields once; coalitions have nested states.
+    # Bind the response to the requested job and never scan nested diagnostics.
+    lines = output.splitlines()
+    if not lines or lines[0] != f"{service} = {{" or lines[-1] != "}":
+        raise RelayDeploymentError("invalid launch agent state response")
+    states = re.findall(r"^\tstate = ([^\r\n]+)$", output, re.MULTILINE)
     if states != ["running"]:
         raise RelayDeploymentError("launch agent state is not stable running/unloaded")
     return True
