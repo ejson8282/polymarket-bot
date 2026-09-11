@@ -309,12 +309,17 @@ observation are still required to finish aggressive LP delivery.
 ## Rollout Order and Rollback
 
 1. Review and merge the fixed source head under the existing authorization gate.
-2. Separately authorize updating ONLY the dedicated aggressive Mac signer to the
-   merged SHA, preserving its environment, dependency pins and launchd settings.
-   Keep the prior code/dependency bundle as rollback. Verify `/health`, authenticated
+2. Separately authorize updating ONLY `ai.codex.polymarket-aggressive-signer`
+   (8421) to the merged SHA. The two current signers share a source working
+   directory even though their processes and account sets are separate. Do NOT
+   overwrite that shared directory. Stage an immutable aggressive-only source
+   and dependency bundle, then repoint only the aggressive launcher to it,
+   preserving its environment, credential storage and other launchd settings.
+   Keep the original aggressive launcher target and bundle as rollback. Verify `/health`, authenticated
    existing-only derivation for both registered accounts (output success/failure
    only), auth denial and unavailable-key behavior. Failure restores the old
-   bundle and restarts only that aggressive signer. Do not restart stable signer8420.
+   launcher target and restarts only that aggressive signer. Verify the stable
+   signer's source hashes, launcher and PID remain unchanged; do not restart8420.
 3. Run this acceptance command from a reviewed immutable tooling release against
    each existing paused aggressive runtime first. No engine restart is needed
    merely to collect the report. Keep reports in protected runtime audit storage,
