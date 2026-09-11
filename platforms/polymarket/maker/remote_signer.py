@@ -4,6 +4,7 @@ Calls the Mac Mini signer_server for derive-creds and sign-order.
 """
 
 import os
+import re
 import time
 import random
 import logging
@@ -187,6 +188,41 @@ class RemoteSignerClient:
             json=payload,
         )
         return resp.json()
+
+    def derive_existing_creds(self) -> dict:
+        """Retrieve only existing credentials, with no legacy/create fallback.
+
+        Uses a separate bounded session so redirects, implicit retries and raw
+        exception logging cannot widen this acceptance-only bootstrap.
+        """
+        if not self.funder or not re.fullmatch(r"0x[0-9a-f]{40}", self.funder):
+            raise ValueError("existing_credentials_explicit_funder_required")
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.post(
+                    f"{self.server_url}/derive-existing-creds",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                    json={"funder": self.funder}, timeout=(5, self.TIMEOUT),
+                    allow_redirects=False,
+                )
+                if response.status_code != 200:
+                    raise ValueError("unavailable")
+                data = response.json()
+            if not isinstance(data, dict) or data.get("mode") != "existing_only":
+                raise ValueError("mode")
+            if data.get("funder") != self.funder or type(data.get("chain_id")) is not int or data["chain_id"] != 137:
+                raise ValueError("identity")
+            if type(data.get("signature_type")) is not int or data["signature_type"] not in (0, 1, 2):
+                raise ValueError("signature")
+            if not isinstance(data.get("address"), str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", data["address"]):
+                raise ValueError("address")
+            if not all(isinstance(data.get(k), str) and data[k].strip()
+                       for k in ("api_key", "api_secret", "api_passphrase")):
+                raise ValueError("credentials")
+            return data
+        except Exception:
+            raise ValueError("existing_credentials_unavailable_or_invalid") from None
 
     def sign_order(self, token_id: str, price: float, size: float, side: str) -> dict:
         """
