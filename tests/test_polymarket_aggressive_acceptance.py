@@ -2,6 +2,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +133,8 @@ def runtime():
         "lp_account": {"account_id": "aggressive-a-1", "enabled": True,
                        "profile_type": "aggressive", "target_principal_usdc": "200"}}]}
     account = parse_runtime_roster(roster)[0]
-    config = {"account": {"funder": MAKER, "signer_server_url": "http://100.91.159.54:8421"},
+    config = {"account": {"funder": MAKER, "signature_type": 2, "chain_id": 137,
+                         "signer_server_url": "http://100.91.159.54:8421"},
               "lp_account": account.generation_entry()["lp_account"], "markets": []}
     contract = {"roster_sha256": "d" * 64, "market_sha256": market_universe_sha256(config),
                 "signer_url": "http://100.91.159.54:8421"}
@@ -140,6 +142,7 @@ def runtime():
         "clash_port": 18081, "routing_roster_sha256": contract["roster_sha256"],
         "market_universe_sha256": contract["market_sha256"]}
     state = {"account_index": 1, "account_id": account.profile.account_id, "paused": True,
+        "account_uid_key": hashlib.sha256(f"137:2:{MAKER}".encode()).hexdigest()[:16],
         "ts": NOW.isoformat(), "release_sha": "e" * 40, "release_required": True,
         "runtime": {"host_id": "aggressive-a", "scope": "aggressive",
                     "routing_roster_sha256": contract["roster_sha256"],
@@ -248,13 +251,13 @@ def test_deadline_escapes_per_source_handlers_and_cli_redacts(monkeypatch, capsy
     def fail(): raise audit.AcceptanceDeadline()
     with pytest.raises(audit.AcceptanceDeadline):
         audit.sample(fail, lambda: NOW)
-    monkeypatch.setattr(audit, "run_host", lambda *a: fail())
-    assert audit.main(["--profile", "aggressive-a"]) == 2
+    monkeypatch.setattr(audit, "run_host", lambda *a, **kw: fail())
+    assert audit.main(["--profile", "aggressive-a", "--tooling-sha", "e"*40]) == 2
     report = json.loads(capsys.readouterr().out)
     assert report["reason"] == "acceptance_deadline_exceeded"
     def secret_failure(*args): raise RuntimeError("SECRET-DO-NOT-PRINT")
     monkeypatch.setattr(audit, "run_host", secret_failure)
-    assert audit.main(["--profile", "aggressive-b"]) == 2
+    assert audit.main(["--profile", "aggressive-b", "--tooling-sha", "e"*40]) == 2
     assert "SECRET-DO-NOT-PRINT" not in capsys.readouterr().out
 
 
@@ -271,6 +274,7 @@ def test_run_host_rechecks_paused_contract_after_reads(runtime, tmp_path, monkey
     monkeypatch.setattr(audit, "aggressive_paths_for_profile", lambda _: paths)
     monkeypatch.setattr(audit, "_current_release", lambda _: release)
     monkeypatch.setattr(audit, "_verify_release_manifest", lambda *a: {})
+    monkeypatch.setattr(audit, "verify_tooling", lambda *a: {"commit": release, "manifest_sha256": "f"*64})
     monkeypatch.setattr(audit, "_runtime_contract", lambda *a: contract)
     monkeypatch.setattr(audit, "service_active", lambda: True)
     calls = []
@@ -293,6 +297,162 @@ def test_run_host_rechecks_paused_contract_after_reads(runtime, tmp_path, monkey
     calls.clear()
     assert audit.run_host("aggressive-a", clock=lambda: NOW)["status"] == "blocked"
     assert calls == []
+
+
+@pytest.fixture
+def host_audit(runtime, tmp_path, monkeypatch):
+    account, config, state, contract, release = runtime
+    config["proxy_pool"] = {"items": [{"url": "http://127.0.0.1:18081", "enabled": True}]}
+    paths = SimpleNamespace(runtime_root=tmp_path, release_root=tmp_path, config_dir=tmp_path, data_dir=tmp_path)
+    contract.update(local_accounts=[account], env={"SIGNER_TOKEN": "test-token"})
+    context = SimpleNamespace(config=config, state=state, contract=contract, reads=Reads(), calls=[],
+                              now=NOW, creds=credentials(), root=tmp_path)
+    def save():
+        (tmp_path / "config_1.json").write_text(json.dumps(context.config))
+        (tmp_path / "engine_state_1.json").write_text(json.dumps(context.state))
+    context.save = save
+    save()
+    (tmp_path / ".account_1.paused").touch()
+    monkeypatch.setattr(audit, "aggressive_paths_for_profile", lambda _: paths)
+    monkeypatch.setattr(audit, "_current_release", lambda _: release)
+    monkeypatch.setattr(audit, "_verify_release_manifest", lambda *a: {})
+    monkeypatch.setattr(audit, "verify_tooling", lambda *a: {"commit": release, "manifest_sha256": "f"*64})
+    monkeypatch.setattr(audit, "_runtime_contract", lambda *a: contract)
+    monkeypatch.setattr(audit, "service_active", lambda: True)
+    def derive():
+        context.calls.append("derive")
+        return context.creds
+    monkeypatch.setattr(audit, "RemoteSignerClient", lambda *a, **kw:
+        SimpleNamespace(derive_existing_creds=derive, _session=SimpleNamespace(close=lambda: None)))
+    original_client = audit.AccountReads
+    def client(identity, creds, proxy):
+        verified = original_client(identity, creds, proxy)
+        verified.close()
+        context.reads.identity = identity
+        context.reads.close = lambda: None
+        return context.reads
+    monkeypatch.setattr(audit, "AccountReads", client)
+    context.run = lambda: audit.run_host("aggressive-a", tooling_sha=release, clock=lambda: context.now)
+    return context
+
+
+@pytest.mark.parametrize("mismatch", ["host", "chain", "uid", "missing_uid"])
+def test_host_identity_mismatch_rejected_before_credentials(host_audit, mismatch):
+    ctx = host_audit
+    if mismatch == "host":
+        ctx.config["rest_base_url"] = "https://example.invalid"
+    elif mismatch == "chain":
+        ctx.config["account"]["chain_id"] = 1
+    elif mismatch == "uid":
+        ctx.state["account_uid_key"] = hashlib.sha256(f"137:2:{SIGNER}".encode()).hexdigest()[:16]
+    else:
+        ctx.state.pop("account_uid_key")
+    ctx.save()
+    assert ctx.run()["status"] == "blocked"
+    assert ctx.calls == []
+
+
+def test_engine_default_eoa_signature_and_state_uid(host_audit):
+    ctx = host_audit
+    ctx.config["account"].pop("signature_type")
+    ctx.state["account_uid_key"] = hashlib.sha256(f"137:0:{MAKER}".encode()).hexdigest()[:16]
+    ctx.creds.update(signature_type=0, address=MAKER)
+    ctx.save()
+    assert ctx.run()["status"] == "pass"
+    assert ctx.reads.identity["signature_type"] == 0
+    ctx.creds["signature_type"] = 2
+    assert ctx.run()["status"] == "blocked"
+
+
+def test_final_runtime_recheck_reages_every_sample(host_audit, monkeypatch):
+    ctx = host_audit
+    def assets(tokens):
+        ctx.now += timedelta(seconds=56)
+        ctx.state["ts"] = ctx.now.isoformat()
+        ctx.save()
+        return {"cash_units": "200", "holdings": {}}
+    ctx.reads.assets = assets
+    checks = []
+    def active():
+        checks.append(True)
+        if len(checks) > 1:
+            ctx.now += timedelta(seconds=5)
+        return True
+    monkeypatch.setattr(audit, "service_active", active)
+    report = ctx.run()
+    assert report["status"] == "blocked"
+    assert report["generated_at"] == (NOW + timedelta(seconds=61)).isoformat()
+    row = report["accounts"][0]
+    assert row["checks"]["collateral"] == "stale"
+    assert row["checks"]["cash_reconciliation"] == "unknown"
+    assert row["observation"]["samples"]["collateral"]["current"] is None
+
+
+def test_final_tooling_recheck_latency_also_expires_samples(host_audit, monkeypatch):
+    ctx = host_audit
+    checks = []
+    def tooling(sha):
+        checks.append(1)
+        if len(checks) > 1:
+            ctx.now += timedelta(seconds=61)
+        return {"commit": sha, "manifest_sha256": "f"*64}
+    monkeypatch.setattr(audit, "verify_tooling", tooling)
+    report = ctx.run()
+    assert report["status"] == "blocked"
+    assert report["accounts"][0]["positions"]["current"] is None
+
+
+def test_identity_change_during_reads_cannot_relabel_old_evidence(host_audit):
+    ctx = host_audit
+    def assets(tokens):
+        ctx.config["account"]["signature_type"] = 0
+        ctx.state["account_uid_key"] = hashlib.sha256(f"137:0:{MAKER}".encode()).hexdigest()[:16]
+        ctx.save()
+        return {"cash_units": "200", "holdings": {}}
+    ctx.reads.assets = assets
+    result = ctx.run()
+    assert result["status"] == "blocked"
+    assert result["accounts"][0]["reason"] == "config_changed_during_audit"
+
+
+@pytest.fixture
+def tooling_bundle(tmp_path, monkeypatch):
+    commit = "a"*40
+    root = tmp_path / commit
+    hashes = {}
+    for name in audit.TOOLING_FILES:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# reviewed source\n")
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {"repository": "ejson8282/polymarket-bot", "commit": commit, "files": hashes}
+    (root / ".tooling-manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(audit, "__file__", str(root / "platforms/polymarket/maker/aggressive_acceptance.py"))
+    return root, commit, manifest
+
+
+def test_tooling_sha_is_distinct_and_required(tooling_bundle):
+    root, commit, manifest = tooling_bundle
+    assert audit.verify_tooling(commit)["commit"] == commit
+    for wrong in (None, commit[:8], "b"*40):
+        with pytest.raises(audit.AcceptanceError):
+            audit.verify_tooling(wrong)
+
+
+@pytest.mark.parametrize("name", sorted(audit.TOOLING_FILES))
+def test_every_tooling_module_is_covered_by_manifest(tooling_bundle, name):
+    root, commit, manifest = tooling_bundle
+    (root / name).write_text("# changed source\n")
+    with pytest.raises(audit.AcceptanceError, match="tooling_source_mismatch"):
+        audit.verify_tooling(commit)
+
+
+def test_tooling_manifest_cannot_omit_source(tooling_bundle):
+    root, commit, manifest = tooling_bundle
+    manifest["files"].pop("platforms/polymarket/maker/remote_signer.py")
+    (root / ".tooling-manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(audit.AcceptanceError, match="tooling_manifest_mismatch"):
+        audit.verify_tooling(commit)
 
 
 def test_chain_assets_exact_units_and_read_only_rpc(monkeypatch):

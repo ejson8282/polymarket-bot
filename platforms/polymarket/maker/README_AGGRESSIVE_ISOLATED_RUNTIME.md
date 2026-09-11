@@ -265,12 +265,22 @@ unchanged. Returned L2 credentials are NOT exchange-enforced read-only tokens;
 only the acceptance client's allowlisted GET operations make this workflow
 read-only. Credentials stay in memory and must not be printed or archived.
 
-Run from the reviewed immutable release, using its compatible isolated Python:
+Run from `/home/ubuntu/polymarket-aggressive-tooling/<full-tooling-sha>`,
+using its compatible isolated Python:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /home/ubuntu/polymarket-aggressive-venv/bin/python \
-  -m platforms.polymarket.maker.aggressive_acceptance --profile aggressive-a
+  -m platforms.polymarket.maker.aggressive_acceptance --profile aggressive-a \
+  --tooling-sha <full-tooling-sha>
 ```
+
+The tooling root name and `.tooling-manifest.json` must name that exact reviewed
+SHA and repository `ejson8282/polymarket-bot`. Its `files` map must contain SHA-256
+hashes of exactly the nine Python paths listed by `aggressive_acceptance.TOOLING_FILES`.
+Build these files from the merged Git object, never from a dirty checkout. Tooling
+sources are checked before and after reads. The report records `tooling_sha` and
+`tooling_manifest_sha256` separately from the existing `runtime_release_sha`;
+the old engine manifest does not establish the new tool's provenance.
 
 Use `aggressive-b` on VPS2. The command reads the existing fixed runtime root,
 roster, generated config and managed `env/runtime.env`; do not copy tokens into
@@ -284,6 +294,9 @@ Checks include:
 - Current release manifest, roster/config identity and digests, enabled managed
   aggressive profile, service active, fresh paused state and pause marker both
   before and after collection. A stale state never proves a running service.
+- Engine CLOB endpoint, chain, signature type and hashed `account_uid_key` must
+  match the audited account; signature defaults to0, as in the engine. Identity
+  and account proxy routing cannot change during collection.
 - Authenticated collateral, complete bounded open-order/24-hour trade pages,
   live BUY scoring and re-read orders via the merged observation adapter.
 - Official public positions and six-decimal chain collateral/CTF balances at a
@@ -294,7 +307,8 @@ Checks include:
   selected standard V2 exchange allowance must cover it. Negative-risk market
   allowance and executable market admission still require their own preflight.
 - Per-request connect/read limits, no redirects, bounded pages/response sizes,
-  per-sample 60-second freshness and a 240-second CLI deadline. Unknown/stale
+  per-sample 60-second freshness and a 240-second CLI deadline. All accounts are
+  re-aged at the final host report timestamp, after runtime/source rechecks. Unknown/stale
   results remain unknown and fail the audit; no data is silently changed to zero.
 
 Exit 0 means only `aggressive_paused_account_acceptance.status=pass`.

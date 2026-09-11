@@ -7,8 +7,10 @@ A passing paused-account audit is not a market/scoring or live-trading approval.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -27,6 +29,11 @@ from .deploy_aggressive_runtime import (
 )
 from .remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 from .small_cap_observation import ClobReadTransport, collect_account_observation, observation_at
+
+
+TOOLING_FILES = {"platforms/polymarket/maker/" + name + ".py" for name in (
+    "aggressive_acceptance", "account_profiles", "account_roster", "deploy_aggressive_runtime",
+    "deploy_release", "market_universe", "remote_signer", "reward_ledger", "small_cap_observation")}
 
 
 class AcceptanceError(ValueError):
@@ -76,6 +83,46 @@ def read_json(path, root):
     body = json.loads(path.read_text())
     require(isinstance(body, dict), "runtime_object_required")
     return body
+
+
+def verify_tooling(expected_sha):
+    require(isinstance(expected_sha, str) and re.fullmatch(r"[0-9a-f]{40}", expected_sha),
+            "tooling_full_sha_required")
+    root = Path(__file__).resolve().parents[3]
+    require(root.name == expected_sha, "tooling_release_path_mismatch")
+    manifest_path = root / ".tooling-manifest.json"
+    manifest = read_json(manifest_path, root)
+    require(manifest.get("repository") == "ejson8282/polymarket-bot" and
+            manifest.get("commit") == expected_sha and isinstance(manifest.get("files"), dict) and
+            set(manifest["files"]) == TOOLING_FILES, "tooling_manifest_mismatch")
+    for name, digest in manifest["files"].items():
+        path = root / name
+        require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) and
+                path.resolve().is_relative_to(root) and path.is_file() and not path.is_symlink() and
+                path.stat().st_size <= 500_000 and hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+                "tooling_source_mismatch")
+    return {"commit": expected_sha, "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+
+
+def configured_identity(config):
+    host = config.get("rest_base_url", "https://clob.polymarket.com")
+    require(isinstance(host, str) and host.rstrip("/") == "https://clob.polymarket.com",
+            "config_clob_host_mismatch")
+    account = config.get("account")
+    require(isinstance(account, dict), "config_account_invalid")
+    values = {}
+    # These defaults and integer string semantics match the existing engine.
+    for name, default, allowed in (("chain_id", 137, {137}), ("signature_type", 0, {0, 1, 2})):
+        raw = account.get(name, default)
+        require(type(raw) in (int, str) and re.fullmatch(r"[0-9]+", str(raw)), "config_" + name + "_invalid")
+        values[name] = int(raw)
+        require(values[name] in allowed, "config_" + name + "_mismatch")
+    return {**values, "maker_address": address(account.get("funder"))}
+
+
+def identity_key(identity):
+    raw = f"{identity['chain_id']}:{identity['signature_type']}:{identity['maker_address']}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def bounded_json(response):
@@ -195,6 +242,8 @@ def check_runtime(account, config, state, contract, release, *, paused_marker, s
             "aggressive_profile_required")
     require(parse_lp_account_profile(config, account.account_index) == account.profile, "profile_config_mismatch")
     require(address((config.get("account") or {}).get("funder")) == account.funder.lower(), "config_funder_mismatch")
+    identity = configured_identity(config)
+    require(state.get("account_uid_key") == identity_key(identity), "runtime_account_uid_mismatch")
     metadata = config.get("runtime_account") or {}
     require(metadata.get("account_index") == account.account_index and metadata.get("host_id") == account.host_id
             and metadata.get("runtime_scope") == "aggressive" and metadata.get("clash_port") == account.clash_port
@@ -233,10 +282,16 @@ def collect_acceptance(reads, identity, principal, *, clock=utcnow):
     for name in ("orders", "trades"):
         tokens.update(o["token_id"] for o in (observation["samples"][name]["current"] or {}).get("rows", []))
     assets = sample(lambda: reads.assets(sorted(tokens)), clock)
-    finished = clock()
-    observation = observation_at(observation, now=finished)
+    return assess_acceptance(observation, positions, assets, principal, now=clock())
+
+
+def assess_acceptance(observation, positions, assets, principal, *, now):
+    observation = observation_at(observation, now=now)
+    positions, assets = deepcopy(positions), deepcopy(assets)
     for item in (positions, assets):
-        if item["status"] == "current" and (finished-timestamp(item["observed_from"])).total_seconds() > 60:
+        if item["status"] == "current" and not (
+                0 <= (now-timestamp(item["observed_from"])).total_seconds() <= 60 and
+                timestamp(item["observed_from"]) <= timestamp(item["observed_to"]) <= now):
             item.update(status="stale", reason="sample_expired", current=None)
     checks = {name: item["status"] for name, item in observation["samples"].items()}
     checks.update(positions=positions["status"], chain_assets=assets["status"])
@@ -275,7 +330,8 @@ def service_active():
     return result.returncode == 0 and result.stdout.strip() == "active"
 
 
-def run_host(profile, *, clock=utcnow):
+def run_host(profile, *, tooling_sha=None, clock=utcnow):
+    tooling = verify_tooling(tooling_sha)
     paths = aggressive_paths_for_profile(profile)
     release = _current_release(paths)
     release_dir = paths.release_root / release
@@ -292,12 +348,16 @@ def run_host(profile, *, clock=utcnow):
             state_path = paths.data_dir / f"engine_state_{account.account_index}.json"
             marker = paths.data_dir / f".account_{account.account_index}.paused"
             config = read_json(config_path, paths.runtime_root)
+            identity = configured_identity(config)
             def verify():
                 require(_current_release(paths) == release, "release_changed_during_audit")
                 current_contract = _runtime_contract(paths, release_dir)
                 require(current_contract["roster_sha256"] == contract["roster_sha256"] and
                         current_contract["market_sha256"] == contract["market_sha256"], "contract_changed_during_audit")
-                check_runtime(account, read_json(config_path, paths.runtime_root),
+                current_config = read_json(config_path, paths.runtime_root)
+                require(configured_identity(current_config) == identity and
+                        current_config.get("proxy_pool") == config.get("proxy_pool"), "config_changed_during_audit")
+                check_runtime(account, current_config,
                     read_json(state_path, paths.runtime_root), contract, release,
                     paused_marker=marker.is_file() and marker.resolve().is_relative_to(paths.runtime_root.resolve()),
                     service_active=service_active(), now=clock())
@@ -306,9 +366,6 @@ def run_host(profile, *, clock=utcnow):
             require(len(proxy_items) == 1, "one_account_proxy_required")
             proxy = proxy_items[0].get("url")
             require(proxy == f"http://127.0.0.1:{account.clash_port}", "isolated_account_proxy_required")
-            signature = (config.get("account") or {}).get("signature_type", 2)
-            require(type(signature) is int and signature in (0, 1, 2), "signature_type_invalid")
-            identity = {"maker_address": account.funder.lower(), "chain_id": 137, "signature_type": signature}
             remote = RemoteSignerClient(contract["signer_url"], token=contract["env"]["SIGNER_TOKEN"], funder=account.funder)
             phase = "existing_credentials"
             credentials = remote.derive_existing_creds()
@@ -329,8 +386,16 @@ def run_host(profile, *, clock=utcnow):
                 reads.close()
             if remote:
                 remote._session.close()
+    require(verify_tooling(tooling_sha) == tooling, "tooling_changed_during_audit")
+    finished = clock()
+    # All accounts and sources are judged at the final host report timestamp.
+    for report in outputs:
+        if "observation" in report:
+            report.update(assess_acceptance(report["observation"], report["positions"], report["chain_assets"],
+                          amount(report["principal_limit"]), now=finished))
     return {"kind": "aggressive_paused_account_acceptance", "schema_version": 1,
-            "host_id": profile, "runtime_release_sha": release, "generated_at": clock().isoformat(),
+            "host_id": profile, "runtime_release_sha": release, "tooling_sha": tooling["commit"],
+            "tooling_manifest_sha256": tooling["manifest_sha256"], "generated_at": finished.isoformat(),
             "status": "pass" if outputs and all(o["account_audit_passed"] for o in outputs) else "blocked",
             "live_enabled": False, "mutation_enabled": False, "accounts": outputs}
 
@@ -338,6 +403,7 @@ def run_host(profile, *, clock=utcnow):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, choices=("aggressive-a", "aggressive-b"))
+    parser.add_argument("--tooling-sha", required=True, help="Reviewed full SHA of this immutable acceptance tool")
     args = parser.parse_args(argv)
     # CLI is a separate bounded process; do not expose SDK exception bodies/logs.
     previous_logging = logging.root.manager.disable
@@ -347,7 +413,7 @@ def main(argv=None):
     previous_handler = signal.signal(signal.SIGALRM, expired)
     signal.alarm(240)
     try:
-        result = run_host(args.profile)
+        result = run_host(args.profile, tooling_sha=args.tooling_sha)
     except AcceptanceDeadline:
         result = {"kind": "aggressive_paused_account_acceptance", "status": "blocked",
                   "reason": "acceptance_deadline_exceeded", "live_enabled": False, "mutation_enabled": False}
