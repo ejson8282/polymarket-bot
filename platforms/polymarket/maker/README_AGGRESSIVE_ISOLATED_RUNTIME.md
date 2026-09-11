@@ -247,3 +247,110 @@ Redis, starts the engine with every account pause flag present, and waits for a
 fresh paused state. If verification fails, the aggressive engine is stopped and
 the previous aggressive release/config is restored. The normal LP service is
 snapshotted before and after; any change fails the activation.
+# Paused Real-Account Acceptance
+
+The existing aggressive runtime remains the only aggressive execution system.
+The `small_cap_observation` adapter is reused as a read-only input, not deployed
+as a second account allocator or a third engine. Existing roster/profile limits
+remain authoritative, including 50/100/150/200 or other reviewed principal
+amounts; this command does not change them.
+
+After an explicitly authorized, reviewed signer rollout, the dedicated signer
+supports `POST /derive-existing-creds` with a mandatory exact registered funder.
+Its upstream operation is standard SDK `derive_api_key` (`GET /auth/derive-api-key`),
+never `create_api_key` or `create_or_derive_api_creds`. Authentication, IP allowlist,
+manual lock and rate limits remain in force. A missing existing key fails closed;
+there is no fallback to the legacy unspecified-funder account. Legacy routes are
+unchanged. Returned L2 credentials are NOT exchange-enforced read-only tokens;
+only the acceptance client's allowlisted GET operations make this workflow
+read-only. Credentials stay in memory and must not be printed or archived.
+
+Run from `/home/ubuntu/polymarket-aggressive-tooling/<full-tooling-sha>`,
+using its compatible isolated Python:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /home/ubuntu/polymarket-aggressive-venv/bin/python \
+  -m platforms.polymarket.maker.aggressive_acceptance --profile aggressive-a \
+  --tooling-sha <full-tooling-sha>
+```
+
+The tooling root name and `.tooling-manifest.json` must name that exact reviewed
+SHA and repository `ejson8282/polymarket-bot`. Its `files` map must contain SHA-256
+hashes of exactly the nine Python paths listed by `aggressive_acceptance.TOOLING_FILES`.
+Build these files from the merged Git object, never from a dirty checkout. Tooling
+sources are checked before and after reads. The report records `tooling_sha` and
+`tooling_manifest_sha256` separately from the existing `runtime_release_sha`;
+the old engine manifest does not establish the new tool's provenance.
+
+Use `aggressive-b` on VPS2. The command reads the existing fixed runtime root,
+roster, generated config and managed `env/runtime.env`; do not copy tokens into
+arguments or shell history. This first deployment integration pins the existing
+dedicated Mac signer `http://100.91.159.54:8421` and the account's local HTTP proxy.
+It does not use `/ready`, legacy `/derive-creds`, engine initialization, service
+control, runtime commands, journals, config writes or order/cancel operations.
+
+Checks include:
+
+- Current release manifest, roster/config identity and digests, enabled managed
+  aggressive profile, service active, fresh paused state and pause marker both
+  before and after collection. A stale state never proves a running service.
+- Engine CLOB endpoint, chain, signature type and hashed `account_uid_key` must
+  match the audited account; signature defaults to0, as in the engine. Identity
+  and account proxy routing cannot change during collection. After collecting all
+  accounts, a final sweep checks every account again, not only the last one. Each
+  `runtime_final_check` records its observed state timestamp and verification time;
+  state freshness is also evaluated at the final host report timestamp.
+- Authenticated collateral, complete bounded open-order/24-hour trade pages,
+  live BUY scoring and re-read orders via the merged observation adapter.
+- Official public positions and six-decimal chain collateral/CTF balances at a
+  recent, hash-rechecked Polygon block; discovered position and cash mismatches
+  are blocked, not counted as profit or silently corrected.
+- No unresolved BUY liquidity during paused acceptance; SELL exits are read but
+  never cancelled. Cash must cover the existing configured principal, and the
+  selected standard V2 exchange allowance must cover it. Negative-risk market
+  allowance and executable market admission still require their own preflight.
+- Per-request connect/read limits, no redirects, bounded pages/response sizes,
+  per-sample 60-second freshness and a 240-second CLI deadline. All accounts are
+  re-aged at the final host report timestamp, after runtime/source rechecks. Unknown/stale
+  results remain unknown and fail the audit; no data is silently changed to zero.
+
+Exit 0 means only `aggressive_paused_account_acceptance.status=pass`.
+Exit 2 is blocked and prints a sanitized failing phase/check. Neither result
+enables trading. Empty orders mean scoring is untested, not passed. Public
+position discovery is not exhaustive on-chain inventory; 24-hour trade pages
+are not complete fill coverage or a capital-journal watermark. Fees, realized
+PnL and journal ingress remain outside this check. Fresh executable market
+planning, guardrail verification, explicit live authorization and actual scoring
+observation are still required to finish aggressive LP delivery.
+
+## Rollout Order and Rollback
+
+1. Review and merge the fixed source head under the existing authorization gate.
+2. Separately authorize updating ONLY `ai.codex.polymarket-aggressive-signer`
+   (8421) to the merged SHA. The two current signers share a source working
+   directory even though their processes and account sets are separate. Do NOT
+   overwrite that shared directory. Stage an immutable aggressive-only source
+   and dependency bundle, then repoint only the aggressive launcher to it,
+   preserving its environment, credential storage and other launchd settings.
+   Keep the original aggressive launcher target and bundle as rollback. Verify `/health`, authenticated
+   existing-only derivation for both registered accounts (output success/failure
+   only), auth denial and unavailable-key behavior. Failure restores the old
+   launcher target and restarts only that aggressive signer. Verify the stable
+   signer's source hashes, launcher and PID remain unchanged; do not restart8420.
+3. Run this acceptance command from a reviewed immutable tooling release against
+   each existing paused aggressive runtime first. No engine restart is needed
+   merely to collect the report. Keep reports in protected runtime audit storage,
+   not GitHub; they include account economic data, never credentials.
+4. The aggressive engine itself is still on its prior release. Review the full
+   cumulative engine/runtime diff before separately authorizing deployment through
+   `deploy_aggressive_runtime.py`, with exact target/current rollback SHAs. Preserve
+   existing roster/principal/market limits and paused state. A new acceptance
+   command passing does not waive the cumulative-diff review or permit activation.
+5. After approved paused deployment and acceptance, obtain explicit authority for
+   the one-market small-principal live trial; verify actual orders, scoring,
+   cancellation/exit protection and account reconciliation. Do not auto-start VPS2.
+
+No new production service, schema migration or budget-ledger import is introduced
+by the acceptance integration. Removing the command and restoring the previous
+dedicated signer bundle rolls back this capability without changing accounts,
+orders, profiles or balances.
