@@ -48,22 +48,26 @@ not supplied by the program's confirmation string. The operator must first get
 approval for the exact node, reviewed merged release, plan digest and service
 maintenance window.
 
-The initial merged recovery release must already be the exact `current` release.
-This installer does not prepare/deploy a release or change the current symlink.
-It must be invoked from that reviewed immutable release, using the existing
+The merged recovery release must already be prepared as an immutable artifact.
+This installer does not build/download it. The plan pins BOTH the old current
+artifact and the target. After installing the bindings, and while every selected
+node service remains stopped, apply may promote only that reviewed target through
+a compare-and-swap of current. No prior activation of an unprotected release is
+needed. It must be invoked from the reviewed target artifact, using the existing
 trusted Python interpreter with `-I -B` and the absolute bootstrap script path.
 Its implementation can also be called via tests with
 synthetic paths; those tests do not prove production ownership or service state.
 
 The procedure is deliberately initial-install-only:
 
-1. `plan --profile <node> --current-sha <full-sha> --recovery-id <64-hex>` hashes
-   the entire immutable artifact and captures exact startup-file preimages. It
+1. `plan --profile <node> --current-sha <old-full-sha> --target-sha <target-full-sha>
+   --recovery-id <64-hex>` hashes both complete immutable artifacts and captures
+   the current link identity and exact startup-file preimages. It
    emits a plan envelope and its digest, never changes a service or file. The
    envelope is to be retained outside the source/release tree for review.
 2. `apply --plan <reviewed-envelope.json> --plan-sha256 <reviewed-digest>
    --authorization-id <approved-id>
-   --confirm INSTALL_PREDICT_RECOVERY:<node>:<full-sha>` requires root and takes
+   --confirm INSTALL_PREDICT_RECOVERY:<node>:<target-full-sha>` requires root and takes
    the same node deployment lock used by that node's deployment wrapper.
 3. Independent command probes verify the node IP and known Predict processes.
    VPS services/timer must be stopped and disabled, with zero service MainPID;
@@ -72,7 +76,7 @@ The procedure is deliberately initial-install-only:
    stop, start, enable, bootstrap, kickstart or trading command.
 4. A private root-owned external backup contains the plan/authorization record
    and original startup files before writes. Bindings are compared again after
-   the backup. The policy initially approves only this exact current artifact;
+   the backup. The policy initially approves only this exact target artifact;
    neither ancestor commits nor arbitrary future releases are approved.
 5. The root-owned external anchor pins the installed guard, policy, exact
    artifact manifest and exact service binding hashes. A VPS persistent drop-in
@@ -80,10 +84,15 @@ The procedure is deliberately initial-install-only:
    Predict plists are replaced with the fixed guard commands, made root-owned
    read-only and marked `UF_IMMUTABLE` to reject the legacy wrapper's atomic
    replacement. The enclosing LaunchAgents directory is not locked or modified.
-6. The installer validates installed bytes/permissions, systemd's effective
+6. The installer rechecks stopped writers and the original current link before
+   atomically promoting the reviewed target. It validates installed bytes/permissions, systemd's effective
    commands after daemon-reload (including later overrides), guard check-mode
-   results as the actual service user (not root), and final stopped/disabled state. It then writes an installation
-   receipt. Failure does not remove protection or restart/restore an old service.
+   results as the actual service user (not root), and final stopped/disabled
+   state. It then writes an installation
+   receipt with both old and target SHAs. Failure does not remove protection,
+   restore old current, or restart an old service. The runtime config and live
+   authorization environment remain unchanged; installation never grants live
+   authority for the new SHA.
 
 Backups are `/var/lib/predictfun-recovery-backups/<plan-digest>` on each VPS and
 `/Library/Application Support/PredictFunRecoveryBackups/<plan-digest>` on Mac.
@@ -140,5 +149,5 @@ atomic-write helper and confirms `UF_IMMUTABLE` rejects replacement; it restores
 the flag on only its own file afterwards. This test does not prove the ownership
 or flags of production plists. No test starts or modifies production services.
 The Mac immutable archive includes the bootstrap and binding-check modules.
-Final follow-up validation: **581 Predict tests passed in 11.20 seconds**,
+Final follow-up validation: **585 Predict tests passed in 11.33 seconds**,
 nine changed Python files compiled, and diff whitespace checks passed.

@@ -109,7 +109,7 @@ class FakeRunner(bootstrap.Runner):
 
 def install(plan, runner=None):
     return bootstrap.apply_plan(plan, plan_sha256=guard._sha(bootstrap._encode(plan)),
-        authorization_id="synthetic-approval", confirmation=f"INSTALL_PREDICT_RECOVERY:{plan['profile']}:{SHA}",
+        authorization_id="synthetic-approval", confirmation=f"INSTALL_PREDICT_RECOVERY:{plan['profile']}:{plan['target_sha']}",
         runner=runner or FakeRunner(plan["profile"]))
 
 
@@ -160,6 +160,41 @@ def test_failed_unprivileged_guard_check_does_not_record_acceptance(tmp_path, mo
     with pytest.raises(bootstrap.BootstrapError):
         install(plan, runner)
     assert not list(bootstrap.BACKUPS["vps1"].glob("*/installed.json"))
+
+
+@pytest.mark.parametrize("profile", ["vps1", "vps2", "macmini"])
+def test_install_can_promote_prepared_exact_release_while_stopped(tmp_path, monkeypatch, profile):
+    import shutil
+    spec = fixture_node(tmp_path, monkeypatch, profile)
+    target_sha = "b" * 40
+    target = spec.release_root / target_sha
+    shutil.copytree(spec.release_root / SHA, target)
+    manifest = target / ".release-manifest.json"
+    data = json.loads(manifest.read_bytes())
+    data["commit"] = target_sha
+    manifest.chmod(0o600)
+    manifest.write_text(json.dumps(data))
+    manifest.chmod(0o444)
+    monkeypatch.setattr(bootstrap, "BOOTSTRAP_SOURCE", target / "platforms/predictfun/recovery_bootstrap.py")
+    plan = bootstrap.build_plan(profile, SHA, "d" * 64, target_sha)
+    assert (spec.release_root / "current").resolve().name == SHA
+    result = install(plan)
+    assert result["release_sha"] == target_sha and result["previous_sha"] == SHA
+    assert (spec.release_root / "current").resolve() == target
+    assert dict(binding.inspect_installed(profile).manifests) == {target_sha: plan["manifest_sha256"]}
+    assert result["activation_allowed"] is False
+
+
+def test_current_link_replacement_after_review_is_rejected(tmp_path, monkeypatch):
+    spec = fixture_node(tmp_path, monkeypatch)
+    plan = bootstrap.build_plan("vps1", SHA, "d" * 64)
+    link = spec.release_root / "current"
+    # Keep the old inode allocated so the replacement cannot reuse it.
+    link.rename(spec.release_root / "previous-link")
+    link.symlink_to(spec.release_root / SHA)
+    with pytest.raises(bootstrap.BootstrapError, match="plan_changed"):
+        install(plan)
+    assert not spec.security_root.exists()
 
 
 @pytest.mark.parametrize("damage", ["hash", "authorization", "wrong_confirmation", "not_root", "checkout", "changed_binding"])

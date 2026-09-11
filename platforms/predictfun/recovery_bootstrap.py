@@ -2,7 +2,8 @@
 
 Plan is read-only. Apply never stops, starts or resumes a writer: it requires
 disabled/stopped services before and after the operation. It does not touch the
-signer ledger, secrets, order reports, current symlink or account configuration.
+signer ledger, secrets, order reports or account configuration. A reviewed plan
+may switch current to one already-prepared exact artifact, while still stopped.
 """
 from __future__ import annotations
 
@@ -90,14 +91,20 @@ def _binding_snapshot(path: Path) -> tuple[dict, bytes | None]:
     return _snapshot(path)
 
 
-def build_plan(profile: str, current_sha: str, recovery_id: str) -> dict:
-    if profile not in guard.PROFILES or not guard._hex(current_sha, 40) or not guard._hex(recovery_id, 64):
+def build_plan(profile: str, current_sha: str, recovery_id: str, target_sha: str | None = None) -> dict:
+    target_sha = current_sha if target_sha is None else target_sha
+    if (profile not in guard.PROFILES or not guard._hex(current_sha, 40)
+            or not guard._hex(target_sha, 40) or not guard._hex(recovery_id, 64)):
         raise BootstrapError("bootstrap_identity_invalid")
     spec = guard.PROFILES[profile]
     link = spec.release_root / "current"
-    release = spec.release_root / current_sha
-    if not link.is_symlink() or link.resolve(strict=True) != release:
+    previous = spec.release_root / current_sha
+    release = spec.release_root / target_sha
+    if not link.is_symlink() or link.resolve(strict=True) != previous:
         raise BootstrapError("bootstrap_current_mismatch")
+    current_link = {"target": os.readlink(link), "inode": link.lstat().st_ino}
+    previous_hash = guard._sha(guard._read(previous / ".release-manifest.json"))
+    guard.verify_artifact(profile, previous, previous_hash)
     for path in (spec.security_root, spec.runtime_root / "recovery-release-floor"):
         # Initial installation only. Partial/repeated installation needs a new
         # explicit repair review, never an overwrite or a legacy fallback.
@@ -116,8 +123,10 @@ def build_plan(profile: str, current_sha: str, recovery_id: str) -> dict:
     if any(item.get("flags", 0) for item in snapshots.values()):
         raise BootstrapError("bootstrap_existing_file_flags_require_review")
     policy = {"version": 1, "repository": guard.REPOSITORY, "profile": profile,
-              "recovery_id": recovery_id, "allowed_releases": [current_sha]}
+              "recovery_id": recovery_id, "allowed_releases": [target_sha]}
     return {"version": 1, "profile": profile, "current_sha": current_sha,
+            "target_sha": target_sha, "current_link": current_link,
+            "previous_manifest_sha256": previous_hash,
             "recovery_id": recovery_id, "manifest_sha256": manifest_hash,
             "guard_sha256": guard._sha(source), "policy": policy,
             "before_bindings": snapshots,
@@ -150,10 +159,10 @@ def require_stopped(profile: str, runner: Runner) -> None:
         for unit in (*binding.UNITS.values(), "predictfun-dryrun.timer"):
             state = runner.run(("systemctl", "show", unit, "--property=LoadState,ActiveState,MainPID,UnitFileState"))
             fields = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
-            if (fields.get("LoadState") not in {"loaded", "masked"}
+            if (fields.get("LoadState") != "loaded"
                     or fields.get("ActiveState") != "inactive"
                     or (unit.endswith(".service") and fields.get("MainPID") != "0")
-                    or fields.get("UnitFileState") not in {"disabled", "masked", "masked-runtime"}):
+                    or fields.get("UnitFileState") != "disabled"):
                 raise BootstrapError("bootstrap_service_not_disabled_and_stopped")
     # pgrep prints PIDs only; do not return potentially sensitive command lines.
     pattern = (r"(platforms/predictfun/(maker/runner|ws_watch|ws_relay)\.py|"
@@ -200,10 +209,35 @@ def _write(path: Path, raw: bytes, mode: int) -> None:
             os.unlink(temporary)
 
 
+def _switch_reviewed_current(plan: dict) -> None:
+    spec = guard.PROFILES[plan["profile"]]
+    link = spec.release_root / "current"
+    if (not link.is_symlink()
+            or {"target": os.readlink(link), "inode": link.lstat().st_ino} != plan["current_link"]
+            or link.resolve(strict=True) != spec.release_root / plan["current_sha"]):
+        raise BootstrapError("bootstrap_current_cas_failed")
+    target = spec.release_root / plan["target_sha"]
+    guard.verify_artifact(plan["profile"], target, plan["manifest_sha256"])
+    if plan["current_sha"] == plan["target_sha"]:
+        return
+    temporary = Path(tempfile.mkdtemp(prefix=".predict-recovery-", dir=spec.release_root))
+    try:
+        (temporary / "current").symlink_to(target)
+        os.replace(temporary / "current", link)
+        fd = os.open(spec.release_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        (temporary / "current").unlink(missing_ok=True)
+        temporary.rmdir()
+
+
 def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmation: str,
                runner: Runner | None = None) -> dict:
     profile = plan.get("profile")
-    sha = plan.get("current_sha")
+    sha = plan.get("target_sha")
     if (os.geteuid() != 0 or profile not in guard.PROFILES
             or confirmation != f"INSTALL_PREDICT_RECOVERY:{profile}:{sha}"
             or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", authorization_id)
@@ -215,7 +249,7 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
         raise BootstrapError("bootstrap_must_run_from_reviewed_release")
     runner = runner or Runner()
     with _lock(LOCKS[profile]):
-        if build_plan(profile, sha, plan["recovery_id"]) != plan:
+        if build_plan(profile, plan["current_sha"], plan["recovery_id"], sha) != plan:
             raise BootstrapError("bootstrap_plan_changed")
         require_stopped(profile, runner)
         backup_root = BACKUPS[profile]
@@ -235,7 +269,7 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
                 _write(backup / f"binding-{index}.before", raw, 0o600)
         # Recheck after durable backup, before any protection/binding write.
         require_stopped(profile, runner)
-        if build_plan(profile, sha, plan["recovery_id"]) != plan:
+        if build_plan(profile, plan["current_sha"], plan["recovery_id"], sha) != plan:
             raise BootstrapError("bootstrap_plan_changed_after_backup")
         guard._protected_parents(spec.security_root)
         spec.security_root.mkdir(mode=0o755)
@@ -268,6 +302,8 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
         installed = binding.inspect_installed(profile)
         if installed is None:
             raise BootstrapError("bootstrap_binding_install_missing")
+        require_stopped(profile, runner)
+        _switch_reviewed_current(plan)
         if profile != "macmini":
             runner.run(("systemctl", "daemon-reload"))
             binding.verify_effective_vps(profile, runner)
@@ -284,6 +320,7 @@ def apply_plan(plan: dict, *, plan_sha256: str, authorization_id: str, confirmat
         require_stopped(profile, runner)
         installed.require_unchanged()
         receipt = {"status": "installed_services_stopped", "profile": profile, "release_sha": sha,
+                   "previous_sha": plan["current_sha"],
                    "plan_sha256": plan_sha256, "anchor_sha256": installed.anchor_digest,
                    "authorization_id": authorization_id, "activation_allowed": False}
         _write(backup / "installed.json", _encode(receipt), 0o600)
@@ -296,6 +333,7 @@ def main(argv=None) -> int:
     plan_parser = sub.add_parser("plan")
     plan_parser.add_argument("--profile", choices=tuple(guard.PROFILES), required=True)
     plan_parser.add_argument("--current-sha", required=True)
+    plan_parser.add_argument("--target-sha", required=True)
     plan_parser.add_argument("--recovery-id", required=True)
     apply_parser = sub.add_parser("apply")
     apply_parser.add_argument("--plan", type=Path, required=True)
@@ -304,7 +342,7 @@ def main(argv=None) -> int:
     apply_parser.add_argument("--confirm", required=True)
     args = parser.parse_args(argv)
     if args.action == "plan":
-        plan = build_plan(args.profile, args.current_sha, args.recovery_id)
+        plan = build_plan(args.profile, args.current_sha, args.recovery_id, args.target_sha)
         print(json.dumps({"plan": plan, "plan_sha256": guard._sha(_encode(plan))}))
     else:
         _, raw = _snapshot(args.plan.absolute())
