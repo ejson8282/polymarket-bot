@@ -86,6 +86,7 @@ def build_intents_from_plans(
                 account_id=account_id,
                 market_id=market_id,
                 inventory=inventory,
+                market_exclusions=market_exclusions,
             )
             if (
                 plan.get("can_quote")
@@ -547,10 +548,12 @@ def _halt_market_buys_while_position(
     account_id: str,
     market_id: int,
     inventory: dict[str, Any],
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> bool:
     if _bool(inventory.get("halt_all_buys_while_any_position", False)):
         return any(
             position_account_id == account_id and size > 0
+            and not market_exclusions.excludes_inventory_budget(position_account_id, _market_id)
             for (position_account_id, _market_id, _outcome), size in positions.items()
         )
     if not _bool(inventory.get("halt_market_buys_while_position", True)):

@@ -36,3 +36,11 @@ This change does not clear pending submissions, invalidate signatures, relax
 recovery evidence requirements, or authorize resuming live BUYs. It does not
 add a production account/market policy to repository templates. Activation of
 an exact runtime policy and release requires a separate scoped authorization.
+
+The account-wide position BUY pause also excludes only explicitly designated
+manual inventory; other bot positions still pause BUYs. The release wrapper
+accepts an optional `manual_market_policy` in its Python `execute` activation
+API, containing exactly the two exclusion fields above. It validates the policy
+and target accounts before stopping services, includes it in the same atomic
+configuration/rollback transaction, and preserves these fields on subsequent
+deployments when no replacement policy is supplied.

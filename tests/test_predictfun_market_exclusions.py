@@ -382,6 +382,24 @@ def test_manual_inventory_never_adds_cash_or_releases_manual_buy_reservation(cas
     assert capped[0]["quote_enabled"] is False
 
 
+@pytest.mark.parametrize("separate,bot_position", [(False, False), (True, False), (True, True)])
+def test_account_wide_position_pause_uses_only_explicit_bot_inventory(separate, bot_position):
+    cfg = deepcopy(POLICY)
+    if separate:
+        cfg["manual_inventory_budget_exclusions"] = {"test_account": [42]}
+    positions = [asdict(position(42))]
+    if bot_position:
+        positions.append(asdict(position(44)))
+    rows = build_intents_from_plans(
+        [plan(42), plan(43)], accounts_config={"ids": ["test_account"]},
+        inventory_positions=positions,
+        inventory_config={"halt_all_buys_while_any_position": True},
+        market_exclusions=MarketExclusions.from_config(cfg))
+    buys = [r for r in rows if r.side == "BUY"]
+    assert bool(buys) is (separate and not bot_position)
+    assert not any(r.market_id == 42 for r in rows)
+
+
 def test_invalid_policy_stops_before_executor_construction(tmp_path, monkeypatch):
     cfg = {"manual_market_exclusions": None}
     def forbidden(*a, **k):

@@ -561,7 +561,10 @@ def _require_expected_current(
     return actual
 
 
-def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
+def _runtime_config_payload(
+    release: Path, paths: DeploymentPaths,
+    manual_market_policy: dict[str, Any] | None = None,
+) -> bytes:
     execution_mode = _validate_execution_profile(paths)
     source = release / "platforms/predictfun/maker/config.mainnet.json"
     try:
@@ -584,6 +587,23 @@ def _runtime_config_payload(release: Path, paths: DeploymentPaths) -> bytes:
     if not isinstance(accounts, dict):
         raise DeploymentError("Predict.fun mainnet config is missing accounts")
     account_ids = list(_deployment_account_ids(paths))
+    from platforms.predictfun.maker.market_exclusions import MarketExclusions
+    policy_keys = {"manual_market_exclusions", "manual_inventory_budget_exclusions"}
+    if manual_market_policy is None:
+        existing = {}
+        if paths.runtime_config.exists():
+            existing = json.loads(paths.runtime_config.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict):
+                raise DeploymentError("invalid existing runtime config")
+        policy = {key: existing.get(key, {}) for key in policy_keys}
+    else:
+        if not isinstance(manual_market_policy, dict) or set(manual_market_policy) != policy_keys:
+            raise DeploymentError("manual market policy requires exactly the two exclusion fields")
+        policy = manual_market_policy
+    exclusions = MarketExclusions.from_config(policy)
+    if any(account not in account_ids for account, _ in exclusions.pairs):
+        raise DeploymentError("manual market policy account outside deployment profile")
+    config.update(policy)
     accounts["enabled"] = True
     accounts["max_active_accounts"] = len(account_ids)
     accounts["ids"] = account_ids
@@ -1107,6 +1127,7 @@ def activate_release(
     expected_current: str,
     confirm: str,
     authorization_id: str,
+    manual_market_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_sha = _require_full_sha(target_sha, "target SHA")
     target_mode = _validate_execution_profile(paths)
@@ -1140,6 +1161,7 @@ def activate_release(
     _validate_predict_only_unit(timer_content, "dry-run timer unit")
     _validate_predict_only_unit(ws_service_content, "WebSocket service unit")
 
+    config_content = _runtime_config_payload(release, paths, manual_market_policy)
     service_uid, service_gid = _prepare_runtime_permissions(paths)
     snapshots = {
         "service": _snapshot(paths.service_unit),
@@ -1199,7 +1221,7 @@ def activate_release(
         )
         _atomic_write(
             paths.runtime_config,
-            _runtime_config_payload(release, paths),
+            config_content,
             0o400,
         )
         if os.geteuid() == 0:
@@ -1413,6 +1435,7 @@ def execute(
     expected_current: str = "none",
     confirm: str = "",
     authorization_id: str = "",
+    manual_market_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if action == "status":
         return status(paths, runner)
@@ -1427,6 +1450,7 @@ def execute(
                 expected_current=expected_current,
                 confirm=confirm,
                 authorization_id=authorization_id,
+                manual_market_policy=manual_market_policy,
             )
     raise DeploymentError(f"unsupported action: {action}")
 
