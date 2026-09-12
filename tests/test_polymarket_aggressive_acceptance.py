@@ -290,6 +290,115 @@ def test_host_swap_and_config_funder_mismatch_block(runtime):
         audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW)
 
 
+def reviewed_markets():
+    return {"markets": [{"token_id": "12", "paired_token_id": "13", "enabled": True,
+                         "price": "0.4", "size": "20", "budget": "50"}], "night_markets": []}
+
+
+def set_market_contract(config, state, contract, approved):
+    sha = market_universe_sha256(approved)
+    config["markets"] = deepcopy(approved["markets"])
+    config["night_markets"] = deepcopy(approved["night_markets"])
+    config["runtime_account"]["market_universe_sha256"] = sha
+    state["runtime"]["market_universe_sha256"] = sha
+    contract["market_sha256"] = sha
+
+
+@pytest.fixture
+def disabled_runtime(runtime):
+    approved = reviewed_markets()
+    set_market_contract(runtime[1], runtime[2], runtime[3], approved)
+    runtime[1]["markets"][0]["enabled"] = False
+    return runtime, approved
+
+
+def test_paused_disable_is_read_only_evidence_not_market_admission(disabled_runtime):
+    runtime, approved = disabled_runtime
+    before, approved_before = deepcopy(runtime[1]), deepcopy(approved)
+    proof = audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                                approved_markets=approved)
+    assert proof == {"method": "paused_restrictive_disable", "disabled_markets": 1,
+        "approved_sha256": runtime[3]["market_sha256"],
+        "actual_sha256": market_universe_sha256(before)}
+    assert runtime[1] == before and approved == approved_before
+
+
+@pytest.mark.parametrize("reference", [None, {}, {"markets": []}, []])
+def test_disabled_config_requires_matching_authoritative_reference(disabled_runtime, reference):
+    runtime, _ = disabled_runtime
+    with pytest.raises(audit.AcceptanceError, match="approved_market_reference"):
+        audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                            approved_markets=reference)
+
+
+@pytest.mark.parametrize("field,value", [("price", "0.5"), ("size", "21"), ("budget", "51"),
+    ("paired_token_id", "99"), ("token_id", "14"), ("side", "SELL"), ("enabled", 0),
+    ("enabled", "false"), ("enabled", None)])
+def test_disabled_market_does_not_mask_other_changes(disabled_runtime, field, value):
+    runtime, approved = disabled_runtime
+    runtime[1]["markets"][0][field] = value
+    with pytest.raises(audit.AcceptanceError):
+        audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                            approved_markets=approved)
+
+
+@pytest.mark.parametrize("change", ["duplicate", "remove", "add", "move_section", "missing_enabled", "missing_field"])
+def test_disabled_market_set_and_row_shape_remain_exact(disabled_runtime, change):
+    runtime, approved = disabled_runtime
+    config = runtime[1]
+    if change == "duplicate":
+        config["markets"].append(deepcopy(config["markets"][0]))
+    elif change == "remove":
+        config["markets"].clear()
+    elif change == "add":
+        config["markets"].append({**config["markets"][0], "token_id": "99"})
+    elif change == "move_section":
+        config["night_markets"] = config["markets"]
+        config["markets"] = []
+    else:
+        config["markets"][0].pop("enabled" if change == "missing_enabled" else "size")
+    with pytest.raises(audit.AcceptanceError):
+        audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                            approved_markets=approved)
+
+
+def test_disable_cannot_hide_enabling_another_market(runtime):
+    approved = reviewed_markets()
+    approved["markets"].append({"token_id": "20", "paired_token_id": "21", "enabled": False})
+    set_market_contract(runtime[1], runtime[2], runtime[3], approved)
+    runtime[1]["markets"][0]["enabled"] = False
+    runtime[1]["markets"][1]["enabled"] = True
+    with pytest.raises(audit.AcceptanceError, match="config_market_drift"):
+        audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                            approved_markets=approved)
+
+
+@pytest.mark.parametrize("failure", ["unpaused", "marker", "inactive", "stale", "future", "host", "metadata"])
+def test_restrictive_disable_never_bypasses_runtime_guards(disabled_runtime, failure):
+    runtime, approved = disabled_runtime
+    if failure == "unpaused": runtime[2]["paused"] = False
+    if failure == "stale": runtime[2]["ts"] = (NOW-timedelta(seconds=61)).isoformat()
+    if failure == "future": runtime[2]["ts"] = (NOW+timedelta(seconds=1)).isoformat()
+    if failure == "host": runtime[2]["runtime"]["host_id"] = "aggressive-b"
+    if failure == "metadata": runtime[1]["runtime_account"]["market_universe_sha256"] = "f"*64
+    with pytest.raises(audit.AcceptanceError):
+        audit.check_runtime(*runtime, paused_marker=failure != "marker", service_active=failure != "inactive",
+                            now=NOW, approved_markets=approved)
+
+
+def test_mixed_day_night_disable_and_order_independence(runtime):
+    approved = reviewed_markets()
+    approved["markets"].append({"token_id": "20", "paired_token_id": "21", "enabled": False})
+    approved["night_markets"].append({"token_id": "30", "paired_token_id": "31", "enabled": True})
+    set_market_contract(runtime[1], runtime[2], runtime[3], approved)
+    runtime[1]["markets"][0]["enabled"] = False
+    runtime[1]["night_markets"][0]["enabled"] = False
+    runtime[1]["markets"].reverse()
+    proof = audit.check_runtime(*runtime, paused_marker=True, service_active=True, now=NOW,
+                                approved_markets=approved)
+    assert proof["disabled_markets"] == 2
+
+
 def test_symlink_outside_runtime_rejected(tmp_path):
     root = tmp_path / "runtime"
     root.mkdir()
@@ -448,6 +557,72 @@ def test_host_acceptance_uses_pinned_legacy_integrity(host_audit, monkeypatch):
     assert result["runtime_integrity"]["method"] == "pinned_git_legacy_manifest"
     assert result["live_enabled"] is False
     assert result["mutation_enabled"] is False
+
+
+@pytest.fixture
+def disabled_host(host_audit, monkeypatch):
+    ctx = host_audit
+    approved = reviewed_markets()
+    set_market_contract(ctx.config, ctx.state, ctx.contract, approved)
+    ctx.config["markets"][0]["enabled"] = False
+    paths = SimpleNamespace(runtime_root=ctx.root, release_root=ctx.root, config_dir=ctx.root,
+        data_dir=ctx.root, base_config=ctx.root / "base.json", market_universe=ctx.root / "markets.json")
+    paths.base_config.write_text(json.dumps({"account": {}}))
+    paths.market_universe.write_text(json.dumps(approved))
+    monkeypatch.setattr(audit, "aggressive_paths_for_profile", lambda _: paths)
+    ctx.paths, ctx.approved = paths, approved
+    ctx.save()
+    return ctx
+
+
+def test_host_disabled_market_reaches_authenticated_audit_without_writes(disabled_host):
+    ctx = disabled_host
+    before = {p: p.read_bytes() for p in ctx.root.iterdir() if p.is_file()}
+    result = ctx.run()
+    assert result["status"] == "pass" and ctx.calls == ["derive"]
+    row = result["accounts"][0]
+    assert row["runtime_final_check"]["market_config_integrity"]["method"] == "paused_restrictive_disable"
+    assert row["market_admission"] == "not_evaluated"
+    assert row["live_enabled"] is row["mutation_enabled"] is row["budget_admission_enabled"] is False
+    assert all(p.read_bytes() == value for p, value in before.items())
+
+
+@pytest.mark.parametrize("change", ["price", "reference", "unpause", "marker", "buy"])
+def test_disabled_host_preflight_or_account_failure_remains_blocked(disabled_host, change):
+    ctx = disabled_host
+    if change == "price": ctx.config["markets"][0]["price"] = "0.5"
+    if change == "reference": ctx.paths.market_universe.write_text(json.dumps({"markets": []}))
+    if change == "unpause": ctx.state["paused"] = False
+    if change == "marker": (ctx.root / ".account_1.paused").unlink()
+    if change == "buy": ctx.reads.orders = [order()]
+    ctx.save()
+    result = ctx.run()
+    assert result["status"] == "blocked"
+    assert ctx.calls == (["derive"] if change == "buy" else [])
+
+
+@pytest.mark.parametrize("change", ["enabled", "price", "reference", "unpause", "marker", "stale"])
+def test_disabled_host_late_change_cannot_relabel_old_account_evidence(disabled_host, change):
+    ctx = disabled_host
+    def assets(tokens):
+        if change == "enabled": ctx.config["markets"][0]["enabled"] = True
+        if change == "price": ctx.config["markets"][0]["price"] = "0.5"
+        if change == "reference": ctx.paths.market_universe.write_text(json.dumps({"markets": []}))
+        if change == "unpause": ctx.state["paused"] = False
+        if change == "marker": (ctx.root / ".account_1.paused").unlink()
+        if change == "stale": ctx.now += timedelta(seconds=61)
+        ctx.save()
+        return {"cash_units": "200", "holdings": {}}
+    ctx.reads.assets = assets
+    assert ctx.run()["status"] == "blocked"
+
+
+def test_disabled_reference_loader_checks_source_digest(disabled_host):
+    ctx = disabled_host
+    loaded = audit.approved_market_config(ctx.paths, ctx.contract["market_sha256"])
+    assert loaded["markets"] == ctx.approved["markets"]
+    with pytest.raises(audit.AcceptanceError, match="approved_market_reference_mismatch"):
+        audit.approved_market_config(ctx.paths, "0"*64)
 
 
 def test_host_final_integrity_recheck_blocks_changed_legacy_source(host_audit, monkeypatch):
