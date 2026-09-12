@@ -26,6 +26,7 @@ from .account_roster import market_universe_sha256
 from .deploy_aggressive_runtime import (
     SERVICE_NAME, aggressive_paths_for_profile, _current_release,
     _runtime_contract, _verify_release_manifest,
+    _load_sanitized_base_config, apply_market_universe, load_json_object,
 )
 from .remote_signer import AddressStub, BuilderStub, RemoteSignerClient
 from .small_cap_observation import ClobReadTransport, collect_account_observation, observation_at
@@ -284,7 +285,51 @@ class AccountReads:
                 "coverage": "discovered_tokens_only"}
 
 
-def check_runtime(account, config, state, contract, release, *, paused_marker, service_active, now):
+def approved_market_config(paths, expected_sha):
+    config = apply_market_universe(_load_sanitized_base_config(paths.base_config),
+                                   load_json_object(paths.market_universe))
+    require(market_universe_sha256(config) == expected_sha, "approved_market_reference_mismatch")
+    return config
+
+
+def _paused_market_integrity(config, expected_sha, approved):
+    actual_sha = market_universe_sha256(config)
+    proof = {"method": "exact", "approved_sha256": expected_sha,
+             "actual_sha256": actual_sha, "disabled_markets": 0}
+    if actual_sha == expected_sha:
+        return proof
+    require(isinstance(approved, dict) and market_universe_sha256(approved) == expected_sha,
+            "approved_market_reference_required")
+    # Reconstruct only explicit true -> false restrictions; never normalize other drift.
+    reconstructed, disabled = deepcopy(config), 0
+    for section in ("markets", "night_markets"):
+        wanted, actual = approved.get(section, []), reconstructed.get(section, [])
+        require(isinstance(wanted, list) and isinstance(actual, list), "market_rows_invalid")
+        indices = []
+        for rows in (wanted, actual):
+            index = {}
+            for row in rows:
+                require(isinstance(row, dict) and isinstance(row.get("token_id"), str)
+                        and bool(row["token_id"]) and row["token_id"] not in index,
+                        "market_identity_invalid_or_duplicate")
+                index[row["token_id"]] = row
+            indices.append(index)
+        wanted_by_id, actual_by_id = indices
+        require(wanted_by_id.keys() == actual_by_id.keys(), "market_set_mismatch")
+        for token, row in actual_by_id.items():
+            expected = wanted_by_id[token]
+            require(type(expected.get("enabled")) is bool and type(row.get("enabled")) is bool,
+                    "explicit_market_enabled_required")
+            if expected["enabled"] is True and row["enabled"] is False:
+                row["enabled"] = True
+                disabled += 1
+    require(disabled > 0 and market_universe_sha256(reconstructed) == expected_sha,
+            "config_market_drift")
+    return {**proof, "method": "paused_restrictive_disable", "disabled_markets": disabled}
+
+
+def check_runtime(account, config, state, contract, release, *, paused_marker, service_active, now,
+                  approved_markets=None):
     require(service_active, "aggressive_service_not_active")
     require(paused_marker and state.get("paused") is True, "aggressive_not_confirmed_paused")
     require(type(state.get("account_index")) is int and state["account_index"] == account.account_index,
@@ -306,10 +351,10 @@ def check_runtime(account, config, state, contract, release, *, paused_marker, s
     require(metadata.get("account_index") == account.account_index and metadata.get("host_id") == account.host_id
             and metadata.get("runtime_scope") == "aggressive" and metadata.get("clash_port") == account.clash_port
             and metadata.get("routing_roster_sha256") == contract["roster_sha256"]
-            and metadata.get("market_universe_sha256") == contract["market_sha256"]
-            and market_universe_sha256(config) == contract["market_sha256"], "config_contract_mismatch")
+            and metadata.get("market_universe_sha256") == contract["market_sha256"], "config_contract_mismatch")
     require((config.get("account") or {}).get("signer_server_url", "").rstrip("/") == contract["signer_url"],
             "config_signer_mismatch")
+    return _paused_market_integrity(config, contract["market_sha256"], approved_markets)
 
 
 def sample(fn, clock):
@@ -416,12 +461,18 @@ def run_host(profile, *, tooling_sha=None, clock=utcnow):
                 current_config = read_json(config_path, paths.runtime_root)
                 require(configured_identity(current_config) == identity and
                         current_config.get("proxy_pool") == config.get("proxy_pool"), "config_changed_during_audit")
+                require(market_universe_sha256(current_config) == market_universe_sha256(config),
+                        "market_config_changed_during_audit")
+                approved = None
+                if market_universe_sha256(current_config) != current_contract["market_sha256"]:
+                    approved = approved_market_config(paths, current_contract["market_sha256"])
                 current_state = read_json(state_path, paths.runtime_root)
                 active, checked_at = service_active(), clock()
-                check_runtime(account, current_config, current_state, contract, release,
+                market_proof = check_runtime(account, current_config, current_state, contract, release,
                     paused_marker=marker.is_file() and marker.resolve().is_relative_to(paths.runtime_root.resolve()),
-                    service_active=active, now=checked_at)
-                return {"state_ts": current_state["ts"], "checked_at": checked_at.isoformat()}
+                    service_active=active, now=checked_at, approved_markets=approved)
+                return {"state_ts": current_state["ts"], "checked_at": checked_at.isoformat(),
+                        "market_config_integrity": market_proof}
             verify()
             proxy_items = [p for p in (config.get("proxy_pool") or {}).get("items", []) if p.get("enabled", True)]
             require(len(proxy_items) == 1, "one_account_proxy_required")
