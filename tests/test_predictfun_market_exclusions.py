@@ -10,10 +10,11 @@ import pytest
 from platforms.predictfun.maker import dry_run, runner
 from platforms.predictfun.maker.deploy_release import LiveCleanupError, _verify_live_shutdown_cleanup
 from platforms.predictfun.maker.dry_run import load_config
-from platforms.predictfun.maker.executor import AccountPosition, ExecutionResult, LiveOrder
+from platforms.predictfun.maker.executor import AccountBalance, AccountPosition, ExecutionResult, LiveOrder
 from platforms.predictfun.maker.intents import build_intent_state, build_intents_from_plans, utc_now
 from platforms.predictfun.maker.managed_orders import ManagedOrder, ManagedOrderRegistry
 from platforms.predictfun.maker.market_exclusions import MarketExclusions
+from platforms.predictfun.maker.risk import evaluate_risk
 from platforms.predictfun.maker.reconcile import (
     _to_order, reconcile_cancel_only, reconcile_once, reconcile_reduce_only,
     recover_uncertain_submissions,
@@ -224,7 +225,8 @@ def test_shutdown_keeps_excluded_existing_orders(tmp_path):
 
 
 @pytest.mark.parametrize("risk_mode", ["allow", "reduce_only", "blocked", "exception", "shutdown"])
-def test_real_runner_routes_use_policy_even_with_stale_plan(risk_mode, tmp_path, monkeypatch):
+@pytest.mark.parametrize("separate_budget", [False, True])
+def test_real_runner_routes_use_policy_even_with_stale_plan(risk_mode, separate_budget, tmp_path, monkeypatch):
     outputs = {key: key + ".json" for key in (
         "state_path", "intents_path", "execution_report_path", "runner_state_path",
         "ws_state_path", "simulation_state_path", "risk_state_path", "kill_switch_path",
@@ -232,6 +234,8 @@ def test_real_runner_routes_use_policy_even_with_stale_plan(risk_mode, tmp_path,
     )}
     cfg = {**POLICY, "base_url": "https://synthetic.invalid", "accounts": {"ids": ["test_account"]},
            "output": outputs, "simulation": {"enabled": False}}
+    if separate_budget:
+        cfg["manual_inventory_budget_exclusions"] = {"test_account": [42]}
     path = tmp_path / "config.json"
     path.write_text(json.dumps(cfg))
     report_path = tmp_path / outputs["execution_report_path"]
@@ -244,6 +248,13 @@ def test_real_runner_routes_use_policy_even_with_stale_plan(risk_mode, tmp_path,
     monkeypatch.setattr(runner, "PredictFunClient", lambda **k: object())
     monkeypatch.setattr(runner, "_refresh_status_snapshot", lambda **k: None)
     monkeypatch.setattr(runner, "_STOP", False)
+    original_capital = runner.build_account_capital_rows
+
+    def capital(*args, **kwargs):
+        assert [p.market_id for p in kwargs["positions"]] == ([43] if separate_budget else [42, 43])
+        return original_capital(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "build_account_capital_rows", capital)
 
     def generate(*args, **kwargs):
         if risk_mode == "exception":
@@ -272,6 +283,121 @@ def test_real_runner_routes_use_policy_even_with_stale_plan(risk_mode, tmp_path,
     assert result["manual_market_exclusions"]["excluded_managed_active_orders"] == 2
     if risk_mode in ("blocked", "exception", "shutdown"):
         assert any(c[0] == "cancel" for c in executor.calls)
+
+
+@pytest.mark.parametrize("raw", [None, [], True, {"test_account": [True]},
+                                 {"test_account": ["42"]}, {"test_account": [43]},
+                                 {"other_account": [42]}])
+def test_invalid_budget_policy_fails_before_execution(raw, tmp_path, monkeypatch):
+    cfg = {**POLICY, "manual_inventory_budget_exclusions": raw}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid budget policy reached live executor")
+    monkeypatch.setattr(runner, "_live_executor", forbidden)
+    with pytest.raises(ValueError):
+        runner.run_loop(config_path=path, interval_sec=1, once=True)
+
+
+def budget_risk(*, separate=True, positions=None, source="live", kill=False, buy="0.5"):
+    cfg = {**deepcopy(POLICY), "data": {"use_ws_orderbook_cache": False},
+           "risk": {"max_market_position_size": "100", "max_account_market_position_size": "100",
+                    "max_total_exposure_notional": "1.60"},
+           "accounts": {"ids": [{"account_id": "test_account", "inventory_warning": "1.60",
+                                  "daily_loss_stop": "0.5"}]}}
+    if separate:
+        cfg["manual_inventory_budget_exclusions"] = {"test_account": [42]}
+    if positions is None:
+        positions = [{"account_id": "test_account", "market_id": 42, "outcome": "YES",
+                      "size": "250", "value_usd": "20", "pnl_usd": "-5"}]
+    return evaluate_risk(cfg=cfg, plan_state={"ts": utc_now()},
+                         intents_state={"intents": [{"account_id": "test_account", "market_id": 43,
+                                                     "side": "BUY", "notional": buy}]},
+                         runner_state={}, ws_state={}, simulation_state={},
+                         inventory_state={"positions": positions}, inventory_source=source,
+                         kill_switch_state={"enabled": kill})
+
+
+@pytest.mark.parametrize("source", ["live", "live_read_only"])
+def test_explicit_manual_inventory_no_longer_consumes_bot_limits(source):
+    before = budget_risk(separate=False, source=source)
+    after = budget_risk(source=source)
+    assert before["reduce_only"] is True
+    assert after["blocked"] is False
+    assert after["summary"]["live_positions"] == 1
+    assert after["summary"]["manual_budget_excluded_positions"] == 1
+    assert after["summary"]["manual_position_value_by_account"] == {"test_account": "20"}
+    assert after["summary"]["bot_position_value_by_account"] == {}
+    checks = {r["name"]: r for r in after["checks"]}
+    assert checks["total_position_plus_buy_notional"]["value"] == "0.5"
+
+
+@pytest.mark.parametrize("account,market", [("test_account", 43), ("other_account", 42),
+                                           ("", 42), ("test_account", None),
+                                           ("test_account", 42.0), ("test_account", True)])
+def test_unapproved_or_malformed_inventory_still_counts(account, market):
+    result = budget_risk(positions=[{"account_id": account, "market_id": market,
+                                    "outcome": "YES", "size": "250", "value_usd": "20"}])
+    assert result["blocked"] is True
+    assert result["summary"]["manual_budget_excluded_positions"] == 0
+
+
+def test_manual_budget_does_not_disable_other_guards_or_hide_bot_inventory():
+    assert budget_risk(kill=True)["hard_blocked"] is True
+    assert budget_risk(buy="2")["reduce_only"] is True
+    assert budget_risk(source="simulation")["reduce_only"] is True
+    positions = [{"account_id": "test_account", "market_id": 42, "size": "250", "value_usd": "20"},
+                 {"account_id": "test_account", "market_id": 43, "size": "4", "value_usd": "2", "pnl_usd": "-1"}]
+    before = deepcopy(positions)
+    result = budget_risk(positions=positions)
+    assert result["reduce_only"] is True
+    assert result["summary"]["bot_position_value_by_account"] == {"test_account": "2"}
+    assert result["summary"]["manual_position_value_by_account"] == {"test_account": "20"}
+    assert positions == before
+
+
+@pytest.mark.parametrize("cash", ["0", "0.5", "10"])
+def test_manual_inventory_never_adds_cash_or_releases_manual_buy_reservation(cash):
+    policy = MarketExclusions.from_config({**POLICY, "manual_inventory_budget_exclusions": {"test_account": [42]}})
+    positions = [position(42)]
+    order = LiveOrder(order_id="manual-buy", intent_id="", account_id="test_account", market_id=42,
+                      outcome="YES", side="BUY", price=Decimal("0.5"), size=Decimal("2"),
+                      filled_size=Decimal("1"), status="open")
+    balances, _, constraints = runner._apply_manual_order_constraints(
+        balances=[AccountBalance(asset="USDT", available=Decimal(cash), total=Decimal(cash), account_id="test_account")],
+        positions=positions, live_orders=[order], registry=ManagedOrderRegistry())
+    rows = runner.build_account_capital_rows(
+        ["test_account"], balances=balances,
+        positions=[p for p in positions if not policy.excludes_inventory_budget(p.account_id, p.market_id)],
+        allow_fallback=False)
+    remaining = max(Decimal("0"), Decimal(cash) - Decimal("0.5"))
+    assert Decimal(rows[0]["available_cash"]) == remaining
+    assert Decimal(rows[0]["max_account_notional"]) <= remaining
+    assert Decimal(rows[0]["equity"]) <= Decimal(cash)
+    if remaining == 0:
+        assert rows[0]["quote_enabled"] is False
+    capped = runner._apply_configured_capital_caps(
+        rows, {"inventory": {"halt_new_buys_while_manual_buy_orders": True}},
+        manual_order_constraints=constraints)
+    assert capped[0]["quote_enabled"] is False
+
+
+@pytest.mark.parametrize("separate,bot_position", [(False, False), (True, False), (True, True)])
+def test_account_wide_position_pause_uses_only_explicit_bot_inventory(separate, bot_position):
+    cfg = deepcopy(POLICY)
+    if separate:
+        cfg["manual_inventory_budget_exclusions"] = {"test_account": [42]}
+    positions = [asdict(position(42))]
+    if bot_position:
+        positions.append(asdict(position(44)))
+    rows = build_intents_from_plans(
+        [plan(42), plan(43)], accounts_config={"ids": ["test_account"]},
+        inventory_positions=positions,
+        inventory_config={"halt_all_buys_while_any_position": True},
+        market_exclusions=MarketExclusions.from_config(cfg))
+    buys = [r for r in rows if r.side == "BUY"]
+    assert bool(buys) is (separate and not bot_position)
+    assert not any(r.market_id == 42 for r in rows)
 
 
 def test_invalid_policy_stops_before_executor_construction(tmp_path, monkeypatch):

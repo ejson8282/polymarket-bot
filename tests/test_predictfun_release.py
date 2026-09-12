@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -31,6 +32,38 @@ from platforms.predictfun.maker.runner import _release_metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_manual_policy_is_installed_then_preserved_without_touching_other_caps(tmp_path):
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    policy = {"manual_market_exclusions": {"account_01": [42]},
+              "manual_inventory_budget_exclusions": {"account_01": [42]}}
+    result = activate_release(paths, SystemdRunner(paths, sha), target_sha=sha,
+                              expected_current="none", confirm=CONFIRMATION,
+                              authorization_id="synthetic-manual-policy", manual_market_policy=policy)
+    assert result["status"] == "activated"
+    installed = json.loads(paths.runtime_config.read_text())
+    preserved = json.loads(deploy_release_module._runtime_config_payload(paths.release_root / sha, paths))
+    assert installed == preserved
+    assert {key: installed[key] for key in policy} == policy
+    assert installed["execution"]["mode"] == "dry_run"
+
+
+@pytest.mark.parametrize("policy", [
+    {"manual_market_exclusions": {}},
+    {"manual_market_exclusions": {}, "manual_inventory_budget_exclusions": {"account_01": [42]}},
+    {"manual_market_exclusions": {"wrong_account": [42]}, "manual_inventory_budget_exclusions": {}},
+])
+def test_bad_manual_policy_fails_before_service_stop(tmp_path, policy):
+    paths, sha = _paths(tmp_path)
+    prepare_release(paths, CommandRunner(), sha)
+    runner = SystemdRunner(paths, sha)
+    with pytest.raises((DeploymentError, ValueError)):
+        activate_release(paths, runner, target_sha=sha, expected_current="none",
+                         confirm=CONFIRMATION, authorization_id="synthetic-invalid-policy",
+                         manual_market_policy=policy)
+    assert not any(call[:2] == ("systemctl", "stop") for call in runner.calls)
 
 
 @pytest.fixture(autouse=True)
@@ -286,6 +319,9 @@ class SystemdRunner(CommandRunner):
                     ),
                     encoding="utf-8",
                 )
+                # Pin the fixture mtime to its report timestamp, not filesystem clock granularity.
+                stamp = datetime.fromisoformat(now).timestamp()
+                os.utime(self.paths.execution_report, (stamp, stamp))
             self.service_started = False
         if command == ("systemctl", "start", self.paths.ws_service_name):
             self.paths.ws_state.parent.mkdir(parents=True, exist_ok=True)

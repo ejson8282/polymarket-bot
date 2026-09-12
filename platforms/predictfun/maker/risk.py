@@ -12,6 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from platforms.predictfun.maker.intents import utc_now
+from platforms.predictfun.maker.market_exclusions import MarketExclusions
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -46,6 +47,7 @@ def evaluate_risk(
     risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
     data_cfg = cfg.get("data") if isinstance(cfg.get("data"), dict) else {}
     checks: list[dict[str, Any]] = []
+    market_exclusions = MarketExclusions.from_config(cfg)
 
     _check_bool(
         checks,
@@ -174,9 +176,20 @@ def evaluate_risk(
     max_account_position = _dec(risk_cfg.get("max_account_market_position_size"), str(max_position))
     position_value_by_account: dict[str, Decimal] = {}
     position_pnl_by_account: dict[str, Decimal] = {}
+    manual_value_by_account: dict[str, Decimal] = {}
+    manual_position_count = 0
     for pos in position_rows:
         if isinstance(pos, dict):
             account_id = _account_id(pos)
+            if source == "live" and market_exclusions.excludes_inventory_budget(
+                str(pos.get("account_id") or ""), pos.get("market_id")
+            ):
+                manual_position_count += 1
+                manual_value_by_account[account_id] = (
+                    manual_value_by_account.get(account_id, Decimal("0"))
+                    + abs(_dec(pos.get("value_usd")))
+                )
+                continue
             position_value_by_account[account_id] = (
                 position_value_by_account.get(account_id, Decimal("0"))
                 + abs(_dec(pos.get("value_usd")))
@@ -293,6 +306,13 @@ def evaluate_risk(
             "positions": len(position_rows),
             "sim_positions": len(position_rows) if source == "simulation" else 0,
             "live_positions": len(position_rows) if source == "live" else 0,
+            "manual_budget_excluded_positions": manual_position_count,
+            "manual_position_value_by_account": {
+                account: str(value) for account, value in sorted(manual_value_by_account.items())
+            },
+            "bot_position_value_by_account": {
+                account: str(value) for account, value in sorted(position_value_by_account.items())
+            },
         },
         "checks": checks,
     }

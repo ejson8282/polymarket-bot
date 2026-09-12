@@ -8,12 +8,20 @@ from typing import Any
 @dataclass(frozen=True)
 class MarketExclusions:
     pairs: frozenset[tuple[str, int]] = frozenset()
+    inventory_budget_pairs: frozenset[tuple[str, int]] = frozenset()
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "MarketExclusions":
         if not isinstance(cfg, dict):
             raise ValueError("invalid_predict_config")
-        raw = cfg.get("manual_market_exclusions", {})
+        pairs = cls._parse_pairs(cfg.get("manual_market_exclusions", {}))
+        budget_pairs = cls._parse_pairs(cfg.get("manual_inventory_budget_exclusions", {}))
+        if not budget_pairs.issubset(pairs):
+            raise ValueError("inventory_budget_exclusion_requires_market_exclusion")
+        return cls(pairs, budget_pairs)
+
+    @staticmethod
+    def _parse_pairs(raw: Any) -> frozenset[tuple[str, int]]:
         if not isinstance(raw, dict):
             raise ValueError("invalid_manual_market_exclusions")
         pairs = set()
@@ -25,7 +33,13 @@ class MarketExclusions:
                 if type(market) is not int or market <= 0:
                     raise ValueError("invalid_manual_market_exclusion_market")
                 pairs.add((account, market))
-        return cls(frozenset(pairs))
+        return frozenset(pairs)
+
+    def excludes_inventory_budget(self, account: str, market: object) -> bool:
+        # Unlike operation blocking, malformed identity must never remove risk.
+        if isinstance(market, str) and market.isascii() and market.isdigit():
+            market = int(market)
+        return type(market) is int and (account, market) in self.inventory_budget_pairs
 
     def blocks(self, account: str, market: object) -> bool:
         if not any(a == account for a, _ in self.pairs):
