@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -318,6 +319,9 @@ class SystemdRunner(CommandRunner):
                     ),
                     encoding="utf-8",
                 )
+                # Pin the fixture mtime to its report timestamp, not filesystem clock granularity.
+                stamp = datetime.fromisoformat(now).timestamp()
+                os.utime(self.paths.execution_report, (stamp, stamp))
             self.service_started = False
         if command == ("systemctl", "start", self.paths.ws_service_name):
             self.paths.ws_state.parent.mkdir(parents=True, exist_ok=True)
