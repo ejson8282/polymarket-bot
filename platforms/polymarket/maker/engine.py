@@ -1707,6 +1707,7 @@ class PolyLPSMulti:
             self._aggressive_guardrail_state_path
         )
         self._aggressive_guardrail_cancel_complete = False
+        self._aggressive_guardrail_ready = not self._aggressive_guardrails_enabled
         if self._aggressive_guardrail_latch_path.exists():
             self._aggressive_guardrail_state.latched = True
         # Heartbeat file — touched every second by heartbeat_loop so the dashboard
@@ -2534,6 +2535,23 @@ class PolyLPSMulti:
                 pass
 
     def _ensure_order_path_open(self, token_id: str, label: str) -> None:
+        for pending_token, epoch in getattr(self, "_buy_posts_inflight", {}).values():
+            if epoch != self._buy_submission_epoch(pending_token):
+                raise EventHaltPreempted(f"{label}:buy_cleanup_pending")
+        state = getattr(self, "_aggressive_guardrail_state", None)
+        if state is not None and state.latched:
+            raise EventHaltPreempted(f"{label}:aggressive_guardrail={state.reason}")
+        if (
+            getattr(self, "_aggressive_guardrails_enabled", False)
+            and not getattr(self, "_aggressive_guardrail_ready", False)
+        ):
+            raise EventHaltPreempted(f"{label}:aggressive_guardrail_startup")
+        if (
+            getattr(self, "_kill_switch_cancel_pending", False)
+            or getattr(self, "_require_recovery_gate", False)
+            or time.time() < getattr(self, "_cooldown_until", 0.0)
+        ):
+            raise EventHaltPreempted(f"{label}:kill_switch")
         if self._is_account_paused():
             raise EventHaltPreempted(f"{label}:account_paused")
         guard = self._exchange_maintenance_guard()
@@ -2544,6 +2562,18 @@ class PolyLPSMulti:
         reason = self._halt_preemption_reason(token_id)
         if reason:
             raise EventHaltPreempted(f"{label}:{reason}")
+
+    def _buy_submission_epoch(self, token_id: str) -> tuple[int, int]:
+        return (
+            getattr(self, "_buy_stop_epoch", 0),
+            getattr(self, "_buy_cancel_epochs", {}).get(token_id, 0),
+        )
+
+    def _invalidate_buy_submissions(self, token_id: str) -> None:
+        epochs = getattr(self, "_buy_cancel_epochs", None)
+        if epochs is None:
+            epochs = self._buy_cancel_epochs = {}
+        epochs[token_id] = epochs.get(token_id, 0) + 1
 
     def _set_event_state(self, token_id: str, state: str, reason: str) -> None:
         entry = self._event_state_entry(token_id)
@@ -3301,7 +3331,7 @@ class PolyLPSMulti:
             last_diag: Optional[tuple[Decimal, Decimal, Decimal, Decimal]] = None
             for force_refresh in (False, True):
                 avail = await self._get_collateral_available(force_refresh=force_refresh)
-                if avail is None or avail <= 0:
+                if avail is None or not avail.is_finite() or avail <= 0:
                     continue
                 margin = self.budget_reserve_safety_margin_usdc
                 allowed = max(Decimal("0"), avail - margin)
@@ -3317,7 +3347,9 @@ class PolyLPSMulti:
                 last_diag = (avail, allowed, projected, margin)
 
             if last_diag is None:
-                return None
+                raise SoftQuoteSkip(
+                    f"budget_reserve_balance_unavailable token={token_id[:16]} label={label}"
+                )
 
             avail, allowed, projected, margin = last_diag
             reserved = self._event_reserved_collateral(token_id)
@@ -4894,6 +4926,7 @@ class PolyLPSMulti:
 
     async def _cancel_risk_buys(self, token_id: str, reason: str) -> bool:
         """Cancel BUY liquidity and fail closed until the venue confirms it."""
+        self._invalidate_buy_submissions(token_id)
         # Risk paths already know the order IDs they are protecting. Dispatch
         # those cancellations before spending another network round-trip on
         # get_open_orders(), then use the official endpoint below to verify
@@ -4974,7 +5007,7 @@ class PolyLPSMulti:
             inflight = set()
             self._aggressive_pair_cancel_inflight = inflight
         if pair_key in inflight:
-            return True
+            return False
 
         inflight.add(pair_key)
         pair_reason = f"paired_quote:{reason}"
@@ -4999,6 +5032,7 @@ class PolyLPSMulti:
             # Preempt both planners before the first network round-trip so a
             # sibling task cannot recreate the opposite leg during cleanup.
             for target in targets:
+                self._invalidate_buy_submissions(target)
                 self._arm_halt_preemption(target, pair_reason)
                 self._defense_block_until[target] = max(
                     float(self._defense_block_until.get(target, 0.0)),
@@ -5017,8 +5051,23 @@ class PolyLPSMulti:
                 }:
                     self._set_event_state(target, EVENT_DEFENSIVE, pair_reason)
 
-            # Cancel the opposite leg first: it is the leg otherwise left live
-            # when the triggering side fails its feasibility gate.
+            # Dispatch both known BUY legs before an empty sibling's failed
+            # REST read can enter the global cancellation retry loop.
+            fast_cancels = []
+            for target in targets:
+                known_ids = [
+                    self._order_id(order)
+                    for order in getattr(self, "_market_live_orders", {}).get(target, [])
+                    if _order_is_live(order) and self._order_side(order) == "BUY"
+                ]
+                if known_ids:
+                    fast_cancels.append(self._cancel_order_ids(
+                        target, known_ids, f"{pair_reason}:fast_pair"
+                    ))
+            if fast_cancels:
+                await asyncio.gather(*fast_cancels, return_exceptions=True)
+
+            # Official reads still establish absence; an ACK is not that proof.
             for target in targets:
                 results.append(
                     await self._cancel_risk_buys(target, pair_reason)
@@ -5115,8 +5164,12 @@ class PolyLPSMulti:
                     except Exception as exc:
                         log(
                             f"[paired-invariant] pair={pair_key} "
-                            "action=defer_refresh_failed "
+                            "action=cancel_unverified_pair "
                             f"error={exc.__class__.__name__}:{exc}"
+                        )
+                        await self._cancel_coordinated_pair_quotes(
+                            token_id,
+                            "single_leg_invariant_refresh_failed",
                         )
                         continue
 
@@ -11485,16 +11538,33 @@ class PolyLPSMulti:
         temporary.replace(self._aggressive_guardrail_latch_path)
 
     async def _trigger_aggressive_guardrail(self, reason: str, now: float) -> None:
-        first_trigger = not self._aggressive_guardrail_latch_path.exists()
+        first_trigger = not getattr(self, "_aggressive_guardrail_notified", False)
+        if not self._aggressive_guardrail_state.latched:
+            self._buy_stop_epoch = getattr(self, "_buy_stop_epoch", 0) + 1
         self._aggressive_guardrail_state.latch(reason, now)
-        self._write_aggressive_guardrail_latch(reason, now)
-        self._pause_flag_path.touch(exist_ok=True)
-        self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
+        # Each durable stop is independent: one failed write must not prevent
+        # the other markers or the SELL-preserving cancellation below.
+        storage_errors = []
+        for name, write in (
+            ("latch", lambda: self._write_aggressive_guardrail_latch(reason, now)),
+            ("pause", lambda: self._pause_flag_path.touch(exist_ok=True)),
+            ("state", lambda: self._aggressive_guardrail_state.save(
+                self._aggressive_guardrail_state_path
+            )),
+        ):
+            try:
+                write()
+            except OSError as exc:
+                storage_errors.append(f"{name}:{exc.__class__.__name__}")
+        self._aggressive_guardrail_storage_error = ",".join(storage_errors)
+        if storage_errors:
+            log(f"[aggressive-guardrail] persistence failed: {storage_errors}")
         canceled = self._aggressive_guardrail_cancel_complete
         if not self._aggressive_guardrail_cancel_complete:
             canceled = await self._cancel_all_except_exit()
             self._aggressive_guardrail_cancel_complete = canceled
         if first_trigger:
+            self._aggressive_guardrail_notified = True
             state = self._aggressive_guardrail_state
             self._event_bus.publish(
                 "aggressive_guardrail_triggered",
@@ -11504,6 +11574,7 @@ class PolyLPSMulti:
                     "equity_usdc": state.last_equity_usdc or None,
                     "daily_loss_usdc": state.daily_loss_usdc,
                     "maker_orders_canceled": canceled,
+                    "storage_error": self._aggressive_guardrail_storage_error,
                 },
             )
             self.notify_discord(
@@ -11512,7 +11583,8 @@ class PolyLPSMulti:
                     f"原因：{reason}\n"
                     f"总权益：${state.last_equity_usdc or '未知'}\n"
                     f"当日损失：${state.daily_loss_usdc}\n"
-                    "做市单已撤销，退出 SELL 保留；需人工复位"
+                    f"{'做市单已确认撤销' if canceled else '做市单撤销待确认'}，"
+                    "退出 SELL 保留；需人工复位"
                 ),
                 "danger",
             )
@@ -11546,7 +11618,11 @@ class PolyLPSMulti:
         )
         self._aggressive_guardrail_state.last_collateral_usdc = str(collateral)
         self._aggressive_guardrail_state.last_position_value_usdc = str(position_value)
-        self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
+        try:
+            self._aggressive_guardrail_state.save(self._aggressive_guardrail_state_path)
+        except OSError:
+            await self._trigger_aggressive_guardrail("guardrail_reset_storage_failed", now)
+            return False
         self._aggressive_guardrail_latch_path.unlink(missing_ok=True)
         self._aggressive_guardrail_reset_path.unlink(missing_ok=True)
         self._aggressive_guardrail_reset_paused_path.unlink(missing_ok=True)
@@ -11555,6 +11631,9 @@ class PolyLPSMulti:
         else:
             self._pause_flag_path.unlink(missing_ok=True)
         self._aggressive_guardrail_cancel_complete = False
+        self._aggressive_guardrail_notified = False
+        self._aggressive_guardrail_storage_error = ""
+        self._aggressive_guardrail_ready = True
         self._event_bus.publish(
             "aggressive_guardrail_reset",
             {
@@ -11598,6 +11677,7 @@ class PolyLPSMulti:
                     await self._trigger_aggressive_guardrail(reason, time.time())
                 else:
                     now = time.time()
+                    snapshot_verified = False
                     try:
                         equity, collateral, position_value = (
                             await self._get_aggressive_equity_snapshot()
@@ -11612,17 +11692,26 @@ class PolyLPSMulti:
                             pause_equity=self.lp_account_profile.pause_equity_usdc,
                             daily_loss_limit=self.lp_account_profile.daily_loss_limit_usdc,
                         )
+                        snapshot_verified = True
                     except Exception as exc:
                         log(f"[aggressive-guardrail] equity refresh failed: {exc}")
                         reason = self._aggressive_guardrail_state.observe_failure(
                             now=now,
                             stale_after_sec=self._aggressive_guardrail_stale_after_sec,
                         )
-                    self._aggressive_guardrail_state.save(
-                        self._aggressive_guardrail_state_path
-                    )
                     if reason:
                         await self._trigger_aggressive_guardrail(reason, now)
+                    else:
+                        try:
+                            self._aggressive_guardrail_state.save(
+                                self._aggressive_guardrail_state_path
+                            )
+                            if snapshot_verified:
+                                self._aggressive_guardrail_ready = True
+                        except OSError:
+                            await self._trigger_aggressive_guardrail(
+                                "guardrail_storage_unavailable", now
+                            )
             except Exception as exc:
                 log(f"[aggressive-guardrail] loop error: {exc}")
             await asyncio.sleep(self._aggressive_guardrail_interval_sec)
@@ -13271,10 +13360,15 @@ class PolyLPSMulti:
 
     async def _submit_post_order(self, token_id: str, price: Decimal, size: Decimal, label: str) -> Any:
         self._ensure_order_path_open(token_id, f"submit_pre_sign:{label}")
+        submission_epoch = self._buy_submission_epoch(token_id)
         price = self._sibling_gate(token_id, "BUY", price, label)
         maintenance_claim = self._begin_exchange_buy_attempt(token_id, label)
         reserve_id: Optional[str] = None
         post_attempted = False
+        inflight_key = object()
+        post_task: Optional[asyncio.Task] = None
+        interrupted = False
+        receipt_received = False
         try:
             reserve_id = await self._acquire_budget_reserve(token_id, price, size, label)
             self._mark_latency(token_id, "t_send")
@@ -13300,14 +13394,78 @@ class PolyLPSMulti:
                 price,
                 f"submit_final:{label}",
             )
+            self._ensure_order_path_open(token_id, f"submit_final_guard:{label}")
+            if submission_epoch != self._buy_submission_epoch(token_id):
+                raise EventHaltPreempted(f"{label}:buy_intent_invalidated")
+            if not hasattr(self, "_buy_posts_inflight"):
+                self._buy_posts_inflight = {}
+            self._buy_posts_inflight[inflight_key] = (token_id, submission_epoch)
             post_attempted = True
-            resp = await asyncio.to_thread(
+            post_task = asyncio.create_task(asyncio.to_thread(
                 self.client.post_order,
                 signed,
                 OrderType.GTC,
                 post_only=True,
-            )
+            ))
+            # Canceling an asyncio waiter cannot stop the HTTP worker. Keep
+            # ownership and collateral until that worker yields its receipt.
+            while True:
+                try:
+                    resp = await asyncio.shield(post_task)
+                    receipt_received = True
+                    break
+                except asyncio.CancelledError:
+                    if post_task.cancelled():
+                        raise
+                    interrupted = True
+                    self._invalidate_buy_submissions(token_id)
             self._invalidate_all_orders_cache()
+            obsolete = submission_epoch != self._buy_submission_epoch(token_id)
+            try:
+                self._ensure_order_path_open(token_id, f"submit_receipt:{label}")
+            except EventHaltPreempted:
+                obsolete = True
+            if interrupted or obsolete:
+                order_id = self._order_id(resp) if isinstance(resp, dict) else ""
+                if order_id:
+                    self._track_managed_buy_order(order_id)
+                    # Preserve this known ID even if the following REST read
+                    # is unavailable; the existing fast-cancel lane uses it.
+                    orders = self._market_live_orders.setdefault(token_id, [])
+                    if not any(self._order_id(order) == order_id for order in orders):
+                        orders.append({
+                            "id": order_id, "asset_id": token_id,
+                            "side": "BUY", "status": "LIVE",
+                            "price": str(price), "size": str(size),
+                        })
+                async def clean_late_receipt() -> bool:
+                    paired = self._coordinated_pair_token(token_id)
+                    pair_key = self._aggressive_pair_key(token_id, paired) if paired else ""
+                    while pair_key and pair_key in getattr(self, "_aggressive_pair_cancel_inflight", set()):
+                        await asyncio.sleep(0.05)
+                    return await self._cancel_coordinated_pair_quotes(
+                        token_id, "late_buy_receipt"
+                    )
+
+                cleanup_task = asyncio.create_task(clean_late_receipt())
+                while True:
+                    try:
+                        cleared = await asyncio.shield(cleanup_task)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup_task.cancelled():
+                            self._force_exchange_maintenance(
+                                "late_buy_cleanup_interrupted", "late_buy_receipt", immediate_cancel=True
+                            )
+                            raise
+                        interrupted = True
+                if not cleared:
+                    self._force_exchange_maintenance(
+                        "late_buy_cancel_unverified", "late_buy_receipt", immediate_cancel=True
+                    )
+                if interrupted:
+                    raise asyncio.CancelledError
+                raise EventHaltPreempted(f"{label}:late_buy_receipt:cleared={cleared}")
             if maintenance_claim.startswith("recovery_probe:"):
                 candidate_order_id = (
                     self._order_id(resp) if isinstance(resp, dict) else ""
@@ -13347,6 +13505,10 @@ class PolyLPSMulti:
             self._finish_exchange_buy_attempt(maintenance_claim, success=True)
             return resp
         except asyncio.CancelledError:
+            if post_attempted and not receipt_received and not maintenance_claim.startswith("recovery_probe:"):
+                self._force_exchange_maintenance(
+                    "buy_post_ambiguous", "buy_post_interrupted", immediate_cancel=True
+                )
             if (
                 maintenance_claim.startswith("recovery_probe:")
                 and post_attempted
@@ -13361,6 +13523,10 @@ class PolyLPSMulti:
             self._finish_exchange_buy_attempt(maintenance_claim, success=False)
             raise
         except Exception as exc:
+            if post_attempted and not receipt_received and not maintenance_claim.startswith("recovery_probe:"):
+                self._force_exchange_maintenance(
+                    "buy_post_ambiguous", "buy_post_no_receipt", immediate_cancel=True
+                )
             self._record_exchange_maintenance_error(exc, "post_only_buy")
             if (
                 maintenance_claim.startswith("recovery_probe:")
@@ -13376,6 +13542,7 @@ class PolyLPSMulti:
             self._finish_exchange_buy_attempt(maintenance_claim, success=False)
             raise
         finally:
+            getattr(self, "_buy_posts_inflight", {}).pop(inflight_key, None)
             if reserve_id is not None:
                 await self._release_budget_reserve(reserve_id)
 
@@ -13461,7 +13628,7 @@ class PolyLPSMulti:
             response = await self._submit_post_order(token_id, price, size, label)
             await self._aggressive_pair_submit_succeeded(token_id, claim)
             return response
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             await self._aggressive_pair_submit_failed(
                 token_id,
                 claim,
@@ -13483,7 +13650,7 @@ class PolyLPSMulti:
                 response = await self._submit_post_order(token_id, price, size, label)
             await self._aggressive_pair_submit_succeeded(token_id, claim)
             return response
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             await self._aggressive_pair_submit_failed(
                 token_id,
                 claim,
@@ -13604,10 +13771,14 @@ class PolyLPSMulti:
         return verified
 
     async def trigger_global_kill_switch(self, reason: str) -> None:
+        # Close BUY admission before even waiting for a concurrent kill switch.
+        self._kill_switch_cancel_pending = True
+        self._buy_stop_epoch = getattr(self, "_buy_stop_epoch", 0) + 1
         async with self._kill_switch_lock:
             now = time.time()
             if now < self._cooldown_until and self._require_recovery_gate:
                 log(f"[kill-switch] already active reason={reason}")
+                self._kill_switch_cancel_pending = False
                 return
 
             protected = set(self._active_exit_orders.values())
@@ -13640,6 +13811,7 @@ class PolyLPSMulti:
 
             self._cooldown_until = time.time() + self.cooldown_seconds
             self._require_recovery_gate = True
+            self._kill_switch_cancel_pending = not canceled_ok
             msg = f"[ALERT] PolyLPS-Multi kill-switch: {reason}; cooldown={self.cooldown_seconds}s"
             log(msg)
             if not str(reason).startswith("exchange_maintenance:"):

@@ -27,6 +27,7 @@ on:
       - "tests/test_polymarket_deploy_release.py"
       - "tests/test_polymarket_aggressive_deploy.py"
       - "tests/test_polymarket_aggressive_guardrails.py"
+      - "tests/test_polymarket_aggressive_submit_safety.py"
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
@@ -72,6 +73,7 @@ on:
       - "tests/test_polymarket_deploy_release.py"
       - "tests/test_polymarket_aggressive_deploy.py"
       - "tests/test_polymarket_aggressive_guardrails.py"
+      - "tests/test_polymarket_aggressive_submit_safety.py"
       - "tests/test_polymarket_order_scoring_observer.py"
       - "tests/test_polymarket_release_guard.py"
       - "tests/test_polymarket_maker_engine.py"
@@ -121,6 +123,7 @@ jobs:
           tests/test_polymarket_deploy_release.py
           tests/test_polymarket_aggressive_deploy.py
           tests/test_polymarket_aggressive_guardrails.py
+          tests/test_polymarket_aggressive_submit_safety.py
           tests/test_polymarket_order_scoring_observer.py
           tests/test_polymarket_release_guard.py
           tests/test_polymarket_maker_engine.py
