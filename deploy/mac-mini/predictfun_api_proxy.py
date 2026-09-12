@@ -47,6 +47,7 @@ TRADE_APPROVAL_RE = re.compile(
     r"^/predictfun/accounts/([^/]+)/trade-approval/?$"
 )
 CAPABILITIES_RE = re.compile(r"^/predictfun/accounts/([^/]+)/capabilities/?$")
+RECOVERY_FENCE_RE = re.compile(r"^/predictfun/accounts/([^/]+)/recovery-fence/?$")
 ACCOUNT_RE = re.compile(r"^/predictfun/accounts/([^/]+)/account/?$")
 ACCOUNT_STATE_RE = re.compile(r"^/predictfun/accounts/([^/]+)/state/?$")
 ACCOUNT_ORDERS_RE = re.compile(r"^/predictfun/accounts/([^/]+)/orders/?$")
@@ -105,17 +106,122 @@ def _account_lock(alias: str) -> threading.RLock:
         return lock
 
 
-def _load_order_ledger() -> dict[str, object]:
+def _load_order_ledger(*, strict: bool = False) -> dict[str, object]:
     try:
         payload = json.loads(ORDER_LEDGER_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        if strict:
+            raise ValueError("order_ledger_unavailable") from exc
         return {"version": 1, "orders": {}}
     if not isinstance(payload, dict):
+        if strict:
+            raise ValueError("order_ledger_invalid")
         return {"version": 1, "orders": {}}
+    if "recovery_fences" in payload:
+        strict = True
     orders = payload.get("orders")
     if not isinstance(orders, dict):
+        if strict:
+            raise ValueError("order_ledger_invalid")
         payload["orders"] = {}
+    elif strict and any(
+        not isinstance(key, str) or not isinstance(row, dict)
+        or ("quarantined" in row and type(row["quarantined"]) is not bool)
+        for key, row in orders.items()
+    ):
+        raise ValueError("order_ledger_invalid")
+    _validate_recovery_fences(payload)
     return payload
+
+
+def _validate_recovery_fences(ledger: dict[str, object]) -> None:
+    fences = ledger.get("recovery_fences", {})
+    if not isinstance(fences, dict):
+        raise ValueError("recovery_fence_invalid")
+    orders = ledger.get("orders", {})
+    for alias, fence in fences.items():
+        if (not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", alias)
+                or not isinstance(fence, dict) or fence.get("signing_blocked") is not True
+                or type(fence.get("installed_at")) is not int or fence["installed_at"] <= 0
+                or not isinstance(fence.get("fence_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", fence["fence_id"])):
+            raise ValueError("recovery_fence_invalid")
+        keys = fence.get("keys")
+        if (not isinstance(keys, list) or not keys
+                or any(not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", key)
+                       for key in keys)
+                or keys != sorted(set(keys))):
+            raise ValueError("recovery_fence_invalid")
+        for key in keys:
+            row = orders.get(f"{alias}:{key}")
+            if not isinstance(row, dict) or row.get("quarantined") is not True:
+                raise ValueError("recovery_fence_key_not_quarantined")
+
+
+def _require_order_signing_allowed(ledger: dict[str, object], alias: str,
+                                   body: dict[str, object]) -> None:
+    if alias in ledger.get("recovery_fences", {}):
+        raise ValueError("account_recovery_signing_blocked")
+    # Preview also signs. It must not provide an alternate route for an old key.
+    for name in ("idempotency_key", "intent_id"):
+        if body.get(name):
+            key = _validated_idempotency_value(body[name])
+            row = ledger.get("orders", {}).get(f"{alias}:{key}")
+            if isinstance(row, dict) and row.get("quarantined") is True:
+                raise ValueError("submission_quarantined")
+
+
+def recovery_fence_status(env: dict[str, str], alias: str) -> dict[str, object]:
+    if not _account_row(env, alias):
+        raise ValueError("account_alias_not_found")
+    strict_ledger = _shared_ledger_requires_strict(env)
+    # No upstream calls, signing, status refresh or ledger writes on this route.
+    with _account_lock(alias), _LEDGER_LOCK:
+        ledger = _load_order_ledger(strict=True)
+        fence = ledger.get("recovery_fences", {}).get(alias)
+        return {
+            "ok": True, "alias": alias, "account_id": alias,
+            "signing_blocked": fence is not None,
+            "strict_ledger": strict_ledger,
+            "fence_id": fence["fence_id"] if fence else None,
+            "keys": list(fence["keys"]) if fence else [],
+            "installed_at": fence["installed_at"] if fence else None,
+            "verified_at": int(time.time()),
+            "release_sha": str(os.environ.get("PREDICTFUN_RELEASE_SHA") or ""),
+            "all_writers_quiesced": False,
+            "activation_allowed": False,
+        }
+
+
+def _quarantined_submission(alias: str, key: str) -> dict[str, object]:
+    return {
+        "ok": False, "alias": alias, "idempotency_key": key,
+        "found": True, "submission_state": "quarantined",
+        "status": "unknown", "order_status": "unknown",
+        "error": "submission_quarantined", "submission_ok": False,
+    }
+
+
+def _requires_strict_ledger(row: dict[str, object]) -> bool:
+    for name in ("use_exchange_nonce", "require_order_ledger"):
+        if name in row and type(row[name]) is not bool:
+            raise ValueError("recovery_setting_must_be_boolean")
+    if row.get("use_exchange_nonce") is True and row.get("require_order_ledger") is not True:
+        raise ValueError("exchange_nonce_requires_strict_ledger")
+    return row.get("require_order_ledger") is True
+
+
+def _shared_ledger_requires_strict(env: dict[str, str]) -> bool:
+    """Integrity is shared by all writers even though nonce policy is per account."""
+    try:
+        accounts = json.loads(env.get("PREDICTFUN_ACCOUNT_KEYS_JSON") or "{}")
+    except (TypeError, ValueError):
+        raise ValueError("recovery_accounts_invalid") from None
+    if not isinstance(accounts, dict) or any(not isinstance(row, dict) for row in accounts.values()):
+        raise ValueError("recovery_accounts_invalid")
+    # Validate every row; short-circuiting any() could hide malformed protections.
+    policies = [_requires_strict_ledger(row) for row in accounts.values()]
+    return any(policies)
 
 
 def _write_order_ledger(payload: dict[str, object]) -> None:
@@ -1038,7 +1144,75 @@ def run_auth_check(env: dict[str, str], alias: str) -> dict[str, object]:
     return {"ok": all("error" not in item for item in modes), "alias": alias, "modes": modes}
 
 
+def _uint256(value: object) -> int:
+    raw = str(value)
+    if not re.fullmatch(r"[0-9]+", raw) or int(raw) >= 2**256:
+        raise ValueError("order_nonce_invalid")
+    return int(raw)
+
+
+def _read_exchange_nonce(env: dict[str, str], exchange: str, maker: str) -> int:
+    from web3 import Web3
+
+    abi = [
+        {"type": "function", "name": "nonces", "stateMutability": "view",
+         "inputs": [{"name": "usr", "type": "address"}],
+         "outputs": [{"name": "", "type": "uint256"}]},
+        {"type": "function", "name": "isValidNonce", "stateMutability": "view",
+         "inputs": [{"name": "usr", "type": "address"},
+                    {"name": "nonce", "type": "uint256"}],
+         "outputs": [{"name": "", "type": "bool"}]},
+    ]
+    rpc_url = str(env.get("PREDICTFUN_BSC_RPC_URL") or env.get("BSC_RPC_URL")
+                  or env.get("BNB_RPC_URL") or PREDICT_BSC_RPC_URL)
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+        try:
+            from web3.middleware import ExtraDataToPOAMiddleware as poa
+        except ImportError:
+            from web3.middleware import geth_poa_middleware as poa
+        w3.middleware_onion.inject(poa, layer=0)
+        if w3.eth.chain_id != 56:
+            raise ValueError("wrong_chain")
+        latest = w3.eth.get_block("latest")
+        block = _uint256(latest["number"])
+        age = time.time() - _uint256(latest["timestamp"])
+        if age < -5 or age > 30:
+            raise ValueError("nonce_block_stale")
+        contract = w3.eth.contract(address=Web3.to_checksum_address(exchange), abi=abi)
+        owner = Web3.to_checksum_address(maker)
+        nonce = _uint256(contract.functions.nonces(owner).call(block_identifier=block))
+        if contract.functions.isValidNonce(owner, nonce).call(block_identifier=block) is not True:
+            raise ValueError("nonce_inconsistent")
+        if nonce and contract.functions.isValidNonce(owner, nonce - 1).call(block_identifier=block) is not False:
+            raise ValueError("previous_nonce_still_valid")
+        return nonce
+    except Exception:
+        # Do not put RPC URLs or provider exception bodies into client errors.
+        raise ValueError("exchange_nonce_read_failed") from None
+
+
+def _bind_exchange_nonce(
+    env: dict[str, str], order: dict[str, object],
+    body: dict[str, object], flags: dict[str, object],
+) -> None:
+    exchange = PREDICT_EXCHANGES[(bool(flags["isNegRisk"]), bool(flags["isYieldBearing"]))]
+    current = _read_exchange_nonce(env, exchange, str(order["maker"]))
+    if "nonce" in body and _uint256(body["nonce"]) != current:
+        raise ValueError("order_nonce_not_current")
+    order["nonce"] = str(current)
+
+
 def _signed_order_payload(env: dict[str, str], alias: str, body: dict[str, object]) -> dict[str, object]:
+    strict_ledger = _shared_ledger_requires_strict(env)
+    with _account_lock(alias):
+        with _LEDGER_LOCK:
+            ledger = _load_order_ledger(strict=strict_ledger)
+            _require_order_signing_allowed(ledger, alias, body)
+        return _sign_order_payload_unlocked(env, alias, body)
+
+
+def _sign_order_payload_unlocked(env: dict[str, str], alias: str, body: dict[str, object]) -> dict[str, object]:
     from eth_account import Account
     from eth_account.messages import encode_defunct, encode_typed_data, _hash_eip191_message
 
@@ -1048,6 +1222,9 @@ def _signed_order_payload(env: dict[str, str], alias: str, body: dict[str, objec
     private_key = normalize_private_key(row.get("private_key"))
     account = Account.from_key(private_key)
     order, amounts, flags = _build_order(row, account.address, body)
+    if row.get("use_exchange_nonce") is True:
+        _requires_strict_ledger(row)
+        _bind_exchange_nonce(env, order, body, flags)
     typed = _typed_data(order, is_neg_risk=bool(flags["isNegRisk"]), is_yield_bearing=bool(flags["isYieldBearing"]))
     signable = encode_typed_data(full_message=typed)
     order_hash = _hash_eip191_message(signable)
@@ -1113,17 +1290,22 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
     account_row = _account_row(env, alias)
     if not account_row:
         return {"ok": False, "error": "account_alias_not_found", "alias": alias}
+    strict_ledger = _shared_ledger_requires_strict(env)
     self_trade_prevention = _require_maker_order_safety(body)
     ledger_key = _idempotency_key(alias, body)
     request_fingerprint = _order_request_fingerprint(body)
     previous: object = None
     with _account_lock(alias):
         with _LEDGER_LOCK:
-            ledger = _load_order_ledger()
+            ledger = _load_order_ledger(strict=strict_ledger)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
             previous = rows.get(ledger_key)
+            if alias in ledger.get("recovery_fences", {}):
+                raise ValueError("account_recovery_signing_blocked")
             if isinstance(previous, dict):
+                if previous.get("quarantined") is True:
+                    return _quarantined_submission(alias, ledger_key.split(":", 1)[1])
                 if previous.get("request_fingerprint") != request_fingerprint:
                     return {
                         "ok": False,
@@ -1135,6 +1317,14 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
 
         signed_body = dict(body)
         signed_body.setdefault("salt", _idempotent_salt(ledger_key))
+        if isinstance(previous, dict):
+            # A legacy default is not evidence of a particular signed nonce.
+            if account_row.get("use_exchange_nonce") is True and "order_nonce" not in previous:
+                raise ValueError("legacy_submission_nonce_unknown")
+            prior_nonce = str(previous.get("order_nonce", signed_body.get("nonce", "0")))
+            if "nonce" in signed_body and str(signed_body["nonce"]) != prior_nonce:
+                raise ValueError("idempotency_key_nonce_mismatch")
+            signed_body["nonce"] = prior_nonce
         if not any(
             signed_body.get(key)
             for key in ("expiration", "expiration_secs", "expirationTimestamp")
@@ -1198,9 +1388,12 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
             or ""
         )
         with _LEDGER_LOCK:
-            ledger = _load_order_ledger()
+            ledger = _load_order_ledger(strict=strict_ledger)
+            _require_order_signing_allowed(ledger, alias, signed_body)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
+            if isinstance(rows.get(ledger_key), dict) and rows[ledger_key].get("quarantined") is True:
+                return _quarantined_submission(alias, ledger_key.split(":", 1)[1])
             rows[ledger_key] = {
                 "ok": False,
                 "alias": alias,
@@ -1213,6 +1406,7 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
                 "updated_at": int(time.time()),
                 "request_fingerprint": request_fingerprint,
                 "order_expiration": resolved_expiration,
+                "order_nonce": str(order.get("nonce", "0")),
             }
             ledger["orders"] = rows
             _write_order_ledger(ledger)
@@ -1261,9 +1455,11 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
         if not ok:
             result["upstream"] = _safe_upstream_error(response)
         with _LEDGER_LOCK:
-            ledger = _load_order_ledger()
+            ledger = _load_order_ledger(strict=strict_ledger)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
+            if isinstance(rows.get(ledger_key), dict) and rows[ledger_key].get("quarantined") is True:
+                return _quarantined_submission(alias, ledger_key.split(":", 1)[1])
             rows[ledger_key] = {
                 key: value
                 for key, value in result.items()
@@ -1272,6 +1468,7 @@ def submit_order(env: dict[str, str], alias: str, body: dict[str, object]) -> di
             rows[ledger_key]["updated_at"] = int(time.time())
             rows[ledger_key]["request_fingerprint"] = request_fingerprint
             rows[ledger_key]["order_expiration"] = resolved_expiration
+            rows[ledger_key]["order_nonce"] = str(order.get("nonce", "0"))
             ledger["orders"] = rows
             _write_order_ledger(ledger)
         return result
@@ -1282,7 +1479,8 @@ def submission_status(
 ) -> dict[str, object]:
     """Resolve one exact account-scoped submission without exposing secrets."""
 
-    if not _account_row(env, alias):
+    account_row = _account_row(env, alias)
+    if not account_row:
         return {
             "ok": False,
             "error": "account_alias_not_found",
@@ -1290,14 +1488,18 @@ def submission_status(
         }
     raw_key = _validated_idempotency_value(idempotency_key)
     ledger_key = f"{alias}:{raw_key}"
+    strict_ledger = _shared_ledger_requires_strict(env)
 
     with _account_lock(alias):
         with _LEDGER_LOCK:
-            ledger = _load_order_ledger()
+            ledger = _load_order_ledger(strict=strict_ledger)
             rows = ledger.get("orders")
             rows = rows if isinstance(rows, dict) else {}
             stored = rows.get(ledger_key)
             row = dict(stored) if isinstance(stored, dict) else None
+
+        if row is not None and row.get("quarantined") is True:
+            return _quarantined_submission(alias, raw_key)
 
         if row is None:
             return {
@@ -1334,9 +1536,11 @@ def submission_status(
                     }
                 )
                 with _LEDGER_LOCK:
-                    ledger = _load_order_ledger()
+                    ledger = _load_order_ledger(strict=strict_ledger)
                     rows = ledger.get("orders")
                     rows = rows if isinstance(rows, dict) else {}
+                    if isinstance(rows.get(ledger_key), dict) and rows[ledger_key].get("quarantined") is True:
+                        return _quarantined_submission(alias, raw_key)
                     rows[ledger_key] = row
                     ledger["orders"] = rows
                     _write_order_ledger(ledger)
@@ -1506,7 +1710,11 @@ def cancel_orders_on_chain(
     ):
         return {"ok": False, "error": "invalid_order_hash", "alias": alias}
 
+    strict_ledger = _shared_ledger_requires_strict(env)
     with _account_lock(alias):
+        if strict_ledger:
+            with _LEDGER_LOCK:
+                _load_order_ledger(strict=True)
         context, gas_preflight = _cancel_gas_context(
             env, alias, body.get("min_gas_bnb") or "0.0001"
         )
@@ -1672,7 +1880,7 @@ def cancel_orders_on_chain(
         }
         if ok:
             with _LEDGER_LOCK:
-                ledger = _load_order_ledger()
+                ledger = _load_order_ledger(strict=strict_ledger)
                 rows = ledger.get("orders")
                 rows = rows if isinstance(rows, dict) else {}
                 hash_set = {value.lower() for value in hashes}
@@ -1752,6 +1960,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/predictfun/accounts/{alias}/allowances",
                         "/predictfun/accounts/{alias}/trade-approval",
                         "/predictfun/accounts/{alias}/capabilities",
+                        "/predictfun/accounts/{alias}/recovery-fence",
                         "/predictfun/accounts/{alias}/state",
                         "/predictfun/accounts/{alias}/account",
                         "/predictfun/accounts/{alias}/orders",
@@ -1764,6 +1973,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         env = load_env(SECRET_FILE)
         capabilities_match = CAPABILITIES_RE.match(parsed.path)
+        recovery_fence_match = RECOVERY_FENCE_RE.match(parsed.path)
         state_match = ACCOUNT_STATE_RE.match(parsed.path)
         account_match = ACCOUNT_RE.match(parsed.path)
         orders_match = ACCOUNT_ORDERS_RE.match(parsed.path)
@@ -1775,6 +1985,7 @@ class Handler(BaseHTTPRequestHandler):
         submission_match = ORDER_SUBMISSION_RE.match(parsed.path)
         account_route = (
             capabilities_match
+            or recovery_fence_match
             or state_match
             or account_match
             or orders_match
@@ -1788,7 +1999,11 @@ class Handler(BaseHTTPRequestHandler):
         if account_route:
             alias = account_route.group(1)
             try:
-                if capabilities_match:
+                if recovery_fence_match:
+                    if parsed.query:
+                        raise ValueError("unsupported_query_parameter")
+                    result = recovery_fence_status(env, alias)
+                elif capabilities_match:
                     result = account_capabilities(env, alias)
                 elif submission_match:
                     result = submission_status(

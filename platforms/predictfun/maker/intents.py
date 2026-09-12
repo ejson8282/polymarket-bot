@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from platforms.predictfun.scanner import market_is_tradeable
+from platforms.predictfun.maker.market_exclusions import MarketExclusions
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ def build_intents_from_plans(
     inventory_positions: list[dict[str, Any]] | None = None,
     inventory_config: dict[str, Any] | None = None,
     planner_config: dict[str, Any] | None = None,
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
     accounts = _configured_accounts(accounts_config)
@@ -67,6 +69,8 @@ def build_intents_from_plans(
         fee_rate_bps = int(_dec(market.get("fee_rate_bps")))
         for account in _accounts_for_plan(accounts, plan_index, assignment):
             account_id = str(account["account_id"])
+            if market_exclusions.blocks(account_id, market_id):
+                continue
             account_markets = reserved_markets_by_account.setdefault(
                 account_id, set()
             )
@@ -149,6 +153,8 @@ def build_intents_from_plans(
                     _reserve_notional(reserved_notional_by_account, reserved_notional_by_account_market, intent)
 
         for account_id in _position_accounts_for_market(positions, market_id):
+            if market_exclusions.blocks(account_id, market_id):
+                continue
             if account_id not in configured_account_ids:
                 continue
             exit_intents = _inventory_exit_intents(
@@ -215,6 +221,7 @@ def build_intent_state(
     inventory_config: dict[str, Any] | None = None,
     planner_config: dict[str, Any] | None = None,
     mode: str = "dry_run",
+    market_exclusions: MarketExclusions = MarketExclusions(),
 ) -> dict[str, Any]:
     intents = build_intents_from_plans(
         plans,
@@ -222,6 +229,7 @@ def build_intent_state(
         inventory_positions=inventory_positions,
         inventory_config=inventory_config,
         planner_config=planner_config,
+        market_exclusions=market_exclusions,
     )
     desired = [intent_to_jsonable(intent) for intent in intents]
     previous_by_id = {
@@ -237,6 +245,7 @@ def build_intent_state(
         item
         for intent_id, item in previous_by_id.items()
         if intent_id not in desired_by_id
+        and not market_exclusions.blocks(str(item.get("account_id") or "acct01"), item.get("market_id"))
     ]
 
     total_notional = sum(_dec(item.get("notional")) for item in desired)
@@ -274,6 +283,7 @@ def build_intent_state(
         "ts": utc_now(),
         "environment": environment,
         "mode": mode,
+        "manual_market_exclusions": market_exclusions.as_dict(),
         "summary": {
             "desired": len(desired),
             "create": len(creates),

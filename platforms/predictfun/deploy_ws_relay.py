@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -25,6 +26,8 @@ import urllib.request
 sys.dont_write_bytecode = True
 
 from platforms.predictfun.ws_relay import probe_relay
+from platforms.predictfun.recovery_release_floor import check_release_transition
+from platforms.predictfun import recovery_service_binding
 
 
 SOURCE_REPOSITORY = "ejson8282/polymarket-bot"
@@ -37,6 +40,10 @@ ARCHIVE_PATHS = (
     "platforms/__init__.py",
     "platforms/predictfun/__init__.py",
     "platforms/predictfun/deploy_ws_relay.py",
+    "platforms/predictfun/recovery_release_floor.py",
+    "platforms/predictfun/recovery_startup_guard.py",
+    "platforms/predictfun/recovery_service_binding.py",
+    "platforms/predictfun/recovery_bootstrap.py",
     "platforms/predictfun/ws_relay.py",
     "deploy/mac-mini/predictfun_api_proxy.py",
     "deploy/mac-mini/ai.codex.predictfun-api-proxy.plist",
@@ -476,6 +483,71 @@ def run_relay_probe(ws_url: str, market_id: int) -> dict[str, Any]:
     return asyncio.run(probe_relay(ws_url, market_id, timeout_sec=10.0))
 
 
+@dataclass(frozen=True)
+class LaunchAgentState:
+    disabled: bool
+    running: bool
+
+
+def _launch_agent_loaded(runner: CommandRunner, service: str) -> bool:
+    try:
+        output = runner.run(("launchctl", "print", service))
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 113 and "Could not find service" in (exc.stderr or ""):
+            return False
+        raise RelayDeploymentError("cannot verify launch agent state") from None
+    # launchctl indents direct job fields once; coalitions have nested states.
+    # Bind the response to the requested job and never scan nested diagnostics.
+    lines = output.splitlines()
+    if not lines or lines[0] != f"{service} = {{" or lines[-1] != "}":
+        raise RelayDeploymentError("invalid launch agent state response")
+    states = re.findall(r"^\tstate = ([^\r\n]+)$", output, re.MULTILINE)
+    if states != ["running"]:
+        raise RelayDeploymentError("launch agent state is not stable running/unloaded")
+    return True
+
+
+def _launch_agent_state(
+    runner: CommandRunner, domain: str, label: str, snapshot: FileSnapshot,
+) -> LaunchAgentState:
+    try:
+        output = runner.run(("launchctl", "print-disabled", domain))
+    except subprocess.CalledProcessError:
+        raise RelayDeploymentError("cannot verify launch agent enablement") from None
+    body = re.fullmatch(r"\s*disabled services = \{(.*)\}\s*", output, re.DOTALL)
+    if body is None:
+        raise RelayDeploymentError("invalid launch agent enablement response")
+    overrides = {}
+    for line in body.group(1).splitlines():
+        if not line.strip():
+            continue
+        entry = re.fullmatch(r'\s*"([^"\r\n]+)"\s*=>\s*(true|false)\s*', line)
+        if entry is None or entry[1] in overrides:
+            raise RelayDeploymentError("invalid launch agent enablement entry")
+        overrides[entry[1]] = entry[2] == "true"
+    if label in overrides:
+        disabled = overrides[label]
+    else:
+        try:
+            plist = plistlib.loads(snapshot.content) if snapshot.content is not None else {}
+            disabled = plist.get("Disabled", False)
+            if not isinstance(disabled, bool):
+                raise ValueError("invalid Disabled value")
+        except Exception:
+            raise RelayDeploymentError("cannot verify plist default enablement") from None
+    running = _launch_agent_loaded(runner, f"{domain}/{label}")
+    # A loaded but disabled/inactive job cannot be faithfully recreated via RunAtLoad.
+    if running and (disabled or snapshot.content is None):
+        raise RelayDeploymentError("launch agent state cannot be safely restored")
+    return LaunchAgentState(disabled=disabled, running=running)
+
+
+def _require_agents_unloaded(runner: CommandRunner, services: Sequence[str]) -> None:
+    for service in services:
+        if _launch_agent_loaded(runner, service):
+            raise RelayDeploymentError("launch agent did not stop")
+
+
 def activate_release(
     paths: RelayDeploymentPaths,
     runner: CommandRunner,
@@ -502,6 +574,13 @@ def activate_release(
         raise RelayDeploymentError(
             f"relay current changed: expected {expected}, found {previous_sha}"
         )
+    recovery_floor = check_release_transition(paths.runtime_root, "macmini", target_sha, previous_sha)
+    startup_bindings = recovery_service_binding.check_transition(
+        "macmini", paths.runtime_root, paths.release_root, paths.python, target_sha, previous_sha)
+    if startup_bindings is not None:
+        expected_paths = set(recovery_service_binding.binding_files("macmini"))
+        if expected_paths != {paths.launch_agent, paths.api_launch_agent}:
+            raise RelayDeploymentError("guarded launch agent paths mismatch")
     release = paths.release_root / target_sha
     verify_release(release, target_sha)
     _validate_secret_file(paths.secret_file)
@@ -587,14 +666,32 @@ def activate_release(
     domain = f"gui/{paths.uid}"
     service = f"{domain}/{LABEL}"
     api_service = f"{domain}/{API_LABEL}"
+    prior_states = (
+        (API_LABEL, paths.api_launch_agent, api_snapshot,
+         _launch_agent_state(runner, domain, API_LABEL, api_snapshot)),
+        (LABEL, paths.launch_agent, snapshot,
+         _launch_agent_state(runner, domain, LABEL, snapshot)),
+    )
+    recovery_floor.require_unchanged()
+    if startup_bindings is not None:
+        startup_bindings.require_unchanged()
     try:
         runner.run(("launchctl", "bootout", service), check=False)
         runner.run(("launchctl", "bootout", api_service), check=False)
+        recovery_floor.require_unchanged()
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
+        _require_agents_unloaded(runner, (service, api_service))
         _atomic_symlink(paths.current_link, release)
-        _atomic_write(paths.launch_agent, plist_content, 0o644)
-        _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
+        if startup_bindings is None:
+            _atomic_write(paths.launch_agent, plist_content, 0o644)
+            _atomic_write(paths.api_launch_agent, api_plist_content, 0o644)
         runner.run(("plutil", "-lint", str(paths.launch_agent)))
         runner.run(("plutil", "-lint", str(paths.api_launch_agent)))
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
+            runner.run(("launchctl", "enable", api_service))
+            runner.run(("launchctl", "enable", service))
         runner.run(
             ("launchctl", "bootstrap", domain, str(paths.api_launch_agent))
         )
@@ -653,10 +750,14 @@ def activate_release(
             raise RelayDeploymentError(
                 f"relay public market subscription failed: {last_error}"
             )
+        recovery_floor.require_unchanged()
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
         return {
             "status": "activated",
             "target_sha": target_sha,
             "previous_sha": previous_sha,
+            "recovery_release_floor_sha256": recovery_floor.digest,
             "authorization_id": authorization_id,
             "service": LABEL,
             "api_service": API_LABEL,
@@ -667,40 +768,48 @@ def activate_release(
     except Exception as exc:
         runner.run(("launchctl", "bootout", service), check=False)
         runner.run(("launchctl", "bootout", api_service), check=False)
-        if previous_target is None:
-            try:
-                paths.current_link.unlink()
-            except FileNotFoundError:
-                pass
-        else:
-            _atomic_symlink(paths.current_link, previous_target)
-        _restore(paths.launch_agent, snapshot)
-        _restore(paths.api_launch_agent, api_snapshot)
-        if api_snapshot.content is not None:
-            runner.run(
-                (
-                    "launchctl",
-                    "bootstrap",
-                    domain,
-                    str(paths.api_launch_agent),
-                ),
-                check=False,
-            )
-            runner.run(
-                ("launchctl", "kickstart", "-k", api_service),
-                check=False,
-            )
-        if snapshot.content is not None:
-            runner.run(
-                ("launchctl", "bootstrap", domain, str(paths.launch_agent)),
-                check=False,
-            )
-            runner.run(
-                ("launchctl", "kickstart", "-k", service),
-                check=False,
-            )
+        # Restore stop intent even if a damaged recovery guard forbids any restart.
+        for label, _, _, prior in prior_states:
+            if prior.disabled:
+                runner.run(("launchctl", "disable", f"{domain}/{label}"))
+        recovery_floor.require_unchanged()
+        recovery_floor.require_release(previous_sha)
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
+        try:
+            _require_agents_unloaded(runner, (service, api_service))
+            if previous_target is None:
+                paths.current_link.unlink(missing_ok=True)
+            else:
+                _atomic_symlink(paths.current_link, previous_target)
+            if startup_bindings is None:
+                _restore(paths.launch_agent, snapshot)
+                _restore(paths.api_launch_agent, api_snapshot)
+            for label, _, _, prior in prior_states:
+                runner.run(("launchctl", "disable" if prior.disabled else "enable", f"{domain}/{label}"))
+            for label, path, _, prior in prior_states:
+                if prior.running:
+                    recovery_floor.require_unchanged()
+                    if startup_bindings is not None:
+                        startup_bindings.require_unchanged()
+                    runner.run(("launchctl", "bootstrap", domain, str(path)))
+                    runner.run(("launchctl", "kickstart", "-k", f"{domain}/{label}"))
+            for label, _, saved, prior in prior_states:
+                if _launch_agent_state(runner, domain, label, saved) != prior:
+                    raise RelayDeploymentError("restored launch agent state mismatch")
+        except Exception as rollback_exc:
+            # Never report recovery as successful when a command/probe failed.
+            for target in (service, api_service):
+                try:
+                    runner.run(("launchctl", "bootout", target), check=False)
+                except Exception:
+                    pass
+            raise RelayDeploymentError(
+                "relay activation failed; rollback incomplete; manual verification required "
+                f"({type(rollback_exc).__name__})"
+            ) from None
         raise RelayDeploymentError(
-            f"relay activation failed; previous state restored: {exc}"
+            f"relay activation failed; previous state restored ({type(exc).__name__})"
         ) from exc
 
 

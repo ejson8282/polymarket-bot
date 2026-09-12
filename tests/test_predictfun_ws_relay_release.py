@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,6 +24,113 @@ from platforms.predictfun.deploy_ws_relay import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("fail_probe", [False, True])
+def test_guarded_mac_activation_never_rewrites_protected_plists(tmp_path, monkeypatch, fail_probe):
+    from types import SimpleNamespace
+    paths, sha = _prepare(tmp_path)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    for path in (paths.launch_agent, paths.api_launch_agent):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic protected binding")
+    checks = []
+    installed = SimpleNamespace(require_unchanged=lambda: checks.append(True))
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition", lambda *a: installed)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files",
+                        lambda p: {paths.launch_agent: b"", paths.api_launch_agent: b""})
+    monkeypatch.setattr(relay_deploy, "_atomic_write", lambda *a: pytest.fail("protected plist overwrite"))
+    monkeypatch.setattr(relay_deploy, "_restore", lambda *a: pytest.fail("protected plist restore"))
+    runner = LaunchctlRunner()
+    args = dict(target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                authorization_id="synthetic-guarded-test",
+                api_probe=lambda url: {"ok": not fail_probe, "release_sha": sha},
+                discover_market=lambda url: 10835, relay_probe=lambda *a: {"ok": True})
+    if fail_probe:
+        with pytest.raises(RelayDeploymentError):
+            activate_release(paths, runner, **args)
+    else:
+        assert activate_release(paths, runner, **args)["status"] == "activated"
+    assert checks
+    assert ("launchctl", "enable", "gui/501/ai.codex.predictfun-api-proxy") in runner.calls
+    assert all(p.read_bytes() == b"synthetic protected binding" for p in (paths.launch_agent, paths.api_launch_agent))
+
+
+@pytest.mark.parametrize("initially_disabled", [False, True])
+def test_guarded_mac_damage_refuses_rollback_restarts(tmp_path, monkeypatch, initially_disabled):
+    from types import SimpleNamespace
+    from platforms.predictfun.recovery_service_binding import BindingError
+    paths, sha = _prepare(tmp_path)
+    paths.current_link.symlink_to(paths.release_root / sha)
+    damaged = False
+    def recheck():
+        if damaged:
+            raise BindingError("synthetic removed anchor")
+    def probe(url):
+        nonlocal damaged
+        damaged = True
+        return {"ok": False}
+    installed = SimpleNamespace(require_unchanged=recheck)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition", lambda *a: installed)
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files",
+                        lambda p: {paths.launch_agent: b"", paths.api_launch_agent: b""})
+    monkeypatch.setattr(relay_deploy, "_restore", lambda *a: pytest.fail("must not restore after damage"))
+    disabled = (relay_deploy.API_LABEL, relay_deploy.LABEL) if initially_disabled else ()
+    runner = LaunchctlRunner(disabled=disabled)
+    with pytest.raises(BindingError):
+        activate_release(paths, runner, target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                         authorization_id="synthetic-damage-test", api_probe=probe)
+    assert runner.loaded == set()
+    assert runner.disabled == set(disabled)
+    stop_index = max(i for i, c in enumerate(runner.calls) if c[:2] == ("launchctl", "bootout"))
+    assert not any(c[:2] in (("launchctl", "bootstrap"), ("launchctl", "kickstart"))
+                   for c in runner.calls[stop_index:])
+
+
+@pytest.fixture(autouse=True)
+def restore_floor_permissions(tmp_path):
+    yield
+    directory = tmp_path / "home/predictfun-ws-runtime/recovery-release-floor"
+    if directory.is_dir() and not directory.is_symlink():
+        directory.chmod(0o700)
+
+
+@pytest.mark.parametrize("damage", ["changed", "missing", "corrupt"])
+def test_failed_mac_activation_never_restarts_old_release_after_floor_damage(tmp_path, damage):
+    from platforms.predictfun.recovery_release_floor import RecoveryReleaseFloorError
+    paths, sha = _prepare(tmp_path)
+    old = "a" * 40
+    previous = paths.release_root / old
+    previous.mkdir()
+    paths.current_link.symlink_to(previous)
+    directory = paths.runtime_root / "recovery-release-floor"
+    directory.mkdir(parents=True)
+    policy_file = directory / "policy.json"
+    policy = {"version": 1, "repository": "ejson8282/polymarket-bot", "profile": "macmini",
+              "recovery_id": "c" * 64, "allowed_releases": sorted([old, sha])}
+    policy_file.write_text(json.dumps(policy))
+    policy_file.chmod(0o400)
+    directory.chmod(0o500)
+    def fail_probe(*args):
+        directory.chmod(0o700)
+        if damage == "missing":
+            policy_file.unlink()
+            directory.rmdir()
+        else:
+            policy_file.chmod(0o600)
+            policy_file.write_text(json.dumps({**policy, "allowed_releases": [sha]}) if damage == "changed" else "{")
+            policy_file.chmod(0o400)
+            directory.chmod(0o500)
+        return {"ok": False}
+    runner = LaunchctlRunner()
+    with pytest.raises(RecoveryReleaseFloorError):
+        activate_release(paths, runner, target_sha=sha, expected_current=old,
+                         confirm=CONFIRMATION, authorization_id="synthetic-floor-test",
+                         api_probe=fail_probe)
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert runner.calls[-2:] == [
+        ("launchctl", "bootout", "gui/501/ai.codex.predictfun-ws-relay"),
+        ("launchctl", "bootout", "gui/501/ai.codex.predictfun-api-proxy")]
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -75,8 +183,10 @@ def _paths(tmp_path: Path) -> tuple[RelayDeploymentPaths, str]:
 
 
 class LaunchctlRunner(CommandRunner):
-    def __init__(self) -> None:
+    def __init__(self, *, running=(), disabled=()) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.loaded = set(running)
+        self.disabled = set(disabled)
 
     def run(
         self,
@@ -86,11 +196,34 @@ class LaunchctlRunner(CommandRunner):
         env: Optional[Mapping[str, str]] = None,
         check: bool = True,
     ) -> str:
-        del cwd, env, check
+        del cwd, env
         command = tuple(str(value) for value in args)
         self.calls.append(command)
+        if command[:2] == ("launchctl", "print-disabled"):
+            return 'disabled services = {\n' + '\n'.join(
+                f'"{label}" => {str(label in self.disabled).lower()}'
+                for label in (relay_deploy.API_LABEL, relay_deploy.LABEL)) + '\n}'
         if command[:2] == ("launchctl", "print"):
-            return "state = running"
+            if command[-1].split("/")[-1] not in self.loaded:
+                raise subprocess.CalledProcessError(113, command, stderr="Could not find service")
+            return (f"{command[-1]} = {{\n\tstate = running\n"
+                    "\tresource coalition = {\n\t\tstate = active\n\t}\n"
+                    "\tjetsam coalition = {\n\t\tstate = active\n\t}\n}")
+        if command[:2] == ("launchctl", "bootout"):
+            self.loaded.discard(command[-1].split("/")[-1])
+        if command[:2] in (("launchctl", "enable"), ("launchctl", "disable")):
+            label = command[-1].split("/")[-1]
+            if command[1] == "disable":
+                self.disabled.add(label)
+            else:
+                self.disabled.discard(label)
+        if command[:2] == ("launchctl", "bootstrap"):
+            label = Path(command[-1]).stem
+            if label in self.disabled:
+                if check:
+                    raise subprocess.CalledProcessError(5, command)
+            else:
+                self.loaded.add(label)
         return ""
 
 
@@ -108,10 +241,11 @@ class DelayedLaunchctlRunner(LaunchctlRunner):
         check: bool = True,
     ) -> str:
         command = tuple(str(value) for value in args)
-        if command[:2] == ("launchctl", "print") and self.delayed_prints > 0:
+        if (command[:2] == ("launchctl", "print") and self.delayed_prints > 0
+                and command[-1].split("/")[-1] in self.loaded):
             self.calls.append(command)
             self.delayed_prints -= 1
-            return "state = waiting"
+            return f"{command[-1]} = {{\n\tstate = waiting\n}}"
         return super().run(args, cwd=cwd, env=env, check=check)
 
 
@@ -241,7 +375,7 @@ def test_activate_waits_for_launch_agent_to_reach_running(
     assert result["status"] == "activated"
     assert len(
         [call for call in runner.calls if call[:2] == ("launchctl", "print")]
-    ) == 4
+    ) == 8
 
 
 def test_failed_probe_restores_prior_launch_agent(
@@ -365,3 +499,152 @@ def test_relay_release_manifest_detects_tampering(tmp_path: Path) -> None:
 
     with pytest.raises(RelayDeploymentError, match="hash mismatch"):
         verify_release(release, sha)
+
+
+def _old_launch_agents(paths, sha):
+    paths.current_link.symlink_to(paths.release_root / sha)
+    for label, path in ((relay_deploy.API_LABEL, paths.api_launch_agent),
+                        (relay_deploy.LABEL, paths.launch_agent)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(plistlib.dumps({"Label": label, "RunAtLoad": True}))
+
+
+@pytest.mark.parametrize("running,disabled", [
+    ((), (relay_deploy.API_LABEL, relay_deploy.LABEL)),
+    ((), ()),
+    ((relay_deploy.API_LABEL,), (relay_deploy.LABEL,)),
+    ((relay_deploy.LABEL,), (relay_deploy.API_LABEL,)),
+    ((relay_deploy.API_LABEL, relay_deploy.LABEL), ()),
+])
+def test_failed_guarded_activation_restores_actual_service_states(tmp_path, monkeypatch, running, disabled):
+    from types import SimpleNamespace
+    paths, sha = _prepare(tmp_path)
+    _old_launch_agents(paths, sha)
+    original = {p: p.read_bytes() for p in (paths.launch_agent, paths.api_launch_agent)}
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition",
+                        lambda *a: SimpleNamespace(require_unchanged=lambda: None))
+    monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files", lambda p: original)
+    runner = LaunchctlRunner(running=running, disabled=disabled)
+    failure_index = 0
+    def fail_api(url):
+        nonlocal failure_index
+        failure_index = len(runner.calls)
+        return {"ok": False}
+    with pytest.raises(RelayDeploymentError, match="previous state restored"):
+        activate_release(paths, runner, target_sha=sha, expected_current=sha,
+                         confirm=CONFIRMATION, authorization_id="synthetic-state-rollback",
+                         api_probe=fail_api)
+    assert runner.loaded == set(running)
+    assert runner.disabled == set(disabled)
+    assert paths.current_link.resolve() == paths.release_root / sha
+    assert {p: p.read_bytes() for p in original} == original
+    restarted = {Path(call[-1]).stem for call in runner.calls[failure_index:]
+                 if call[:2] == ("launchctl", "bootstrap")}
+    assert restarted == set(running)
+
+
+@pytest.mark.parametrize("failure", ["disabled_error", "disabled_malformed", "print_error", "waiting", "missing_plist"])
+def test_unverifiable_initial_state_never_mutates_services(tmp_path, failure):
+    paths, sha = _prepare(tmp_path)
+    _old_launch_agents(paths, sha)
+    class UnknownRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            command = tuple(args)
+            if command[:2] == ("launchctl", "print-disabled"):
+                if failure == "disabled_error":
+                    raise subprocess.CalledProcessError(1, command, stderr="permission denied")
+                if failure == "disabled_malformed":
+                    return "not a disabled service map"
+            if command[:2] == ("launchctl", "print"):
+                if failure == "print_error":
+                    raise subprocess.CalledProcessError(1, command, stderr="permission denied")
+                if failure == "waiting":
+                    return f"{command[-1]} = {{\n\tstate = waiting\n}}"
+            return super().run(args, **kwargs)
+    runner = UnknownRunner(running=(relay_deploy.API_LABEL,))
+    if failure == "missing_plist":
+        paths.api_launch_agent.unlink()
+    with pytest.raises(RelayDeploymentError):
+        activate_release(paths, runner, target_sha=sha, expected_current=sha,
+                         confirm=CONFIRMATION, authorization_id="synthetic-unknown-state")
+    assert not any(c[0] == "launchctl" and c[1] not in ("print", "print-disabled") for c in runner.calls)
+    assert paths.current_link.resolve() == paths.release_root / sha
+
+
+@pytest.mark.parametrize("failure", ["bootstrap", "enable", "verification", "bootout"])
+def test_rollback_failure_never_reports_restored(tmp_path, failure):
+    paths, sha = _prepare(tmp_path)
+    _old_launch_agents(paths, sha)
+    class FailingRollbackRunner(LaunchctlRunner):
+        rollback = False
+        def run(self, args, **kwargs):
+            command = tuple(args)
+            if self.rollback and command[:2] == ("launchctl", failure):
+                self.calls.append(command)
+                if failure == "bootout":
+                    return ""  # Failed bootout cannot be mistaken for confirmed unload.
+                raise subprocess.CalledProcessError(5, command)
+            if self.rollback and failure == "verification" and command[:2] == ("launchctl", "print-disabled"):
+                raise subprocess.CalledProcessError(5, command)
+            return super().run(args, **kwargs)
+    runner = FailingRollbackRunner(running=(relay_deploy.API_LABEL, relay_deploy.LABEL))
+    def fail_api(url):
+        runner.rollback = True
+        return {"ok": False}
+    with pytest.raises(RelayDeploymentError, match="rollback incomplete; manual verification required"):
+        activate_release(paths, runner, target_sha=sha, expected_current=sha,
+                         confirm=CONFIRMATION, authorization_id="synthetic-rollback-failure",
+                         api_probe=fail_api)
+    if failure != "bootout":
+        assert runner.loaded == set()
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_launch_agent_state_uses_plist_default_when_no_override(disabled):
+    class NoOverrideRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            if tuple(args[:2]) == ("launchctl", "print-disabled"):
+                return "disabled services = {\n}"
+            return super().run(args, **kwargs)
+    saved = relay_deploy.FileSnapshot(plistlib.dumps({"Disabled": disabled}))
+    assert relay_deploy._launch_agent_state(NoOverrideRunner(), "gui/501", relay_deploy.LABEL, saved) == (
+        relay_deploy.LaunchAgentState(disabled=disabled, running=False))
+
+
+@pytest.mark.parametrize("output", [
+    'disabled services = {\n"x" => invalid\n}',
+    'disabled services = {\n"x" => true\n"x" => false\n}',
+])
+def test_launch_agent_state_rejects_invalid_override_map(output):
+    class InvalidRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            return output
+    with pytest.raises(RelayDeploymentError, match="enablement entry"):
+        relay_deploy._launch_agent_state(InvalidRunner(), "gui/501", relay_deploy.LABEL,
+                                        relay_deploy.FileSnapshot(None))
+
+
+@pytest.mark.parametrize("state,accepted", [
+    ("\tstate = running\n\tresource coalition = {\n\t\tstate = active\n\t}\n", True),
+    ("\tresource coalition = {\n\t\tstate = running\n\t}\n", False),
+    ("\tstate = waiting\n\tresource coalition = {\n\t\tstate = running\n\t}\n", False),
+    ("\tstate = running\n\tstate = waiting\n", False),
+])
+def test_only_direct_launch_agent_state_is_used(state, accepted):
+    service = f"gui/501/{relay_deploy.API_LABEL}"
+    class StateRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            return f"{service} = {{\n{state}}}"
+    if accepted:
+        assert relay_deploy._launch_agent_loaded(StateRunner(), service)
+    else:
+        with pytest.raises(RelayDeploymentError):
+            relay_deploy._launch_agent_loaded(StateRunner(), service)
+
+
+def test_launch_agent_state_rejects_wrong_service_response():
+    class WrongServiceRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            return "gui/501/unrelated = {\n\tstate = running\n}"
+    with pytest.raises(RelayDeploymentError, match="state response"):
+        relay_deploy._launch_agent_loaded(WrongServiceRunner(), f"gui/501/{relay_deploy.API_LABEL}")

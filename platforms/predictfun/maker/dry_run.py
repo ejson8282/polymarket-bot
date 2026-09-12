@@ -17,6 +17,7 @@ if __package__ in {None, ""}:
 
 from platforms.predictfun.client import PredictFunClient, as_decimal, decimal_tick
 from platforms.predictfun.maker.admission import select_stable_markets
+from platforms.predictfun.maker.market_exclusions import MarketExclusions
 from platforms.predictfun.maker.intents import (
     build_intent_state,
     load_previous_intents,
@@ -55,7 +56,9 @@ class DryRunPlan:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    MarketExclusions.from_config(cfg)
+    return cfg
 
 
 def _allowed_market_modes(raw: Any) -> set[tuple[bool, bool]]:
@@ -637,6 +640,7 @@ def run_once(
     inventory_positions: list[dict[str, Any]] | None = None,
     execution_mode: str = "dry_run",
 ) -> dict[str, Any]:
+    market_exclusions = MarketExclusions.from_config(cfg)
     scan_cfg = cfg.get("scan") or {}
     strategy = cfg.get("strategy") or {}
     risk = cfg.get("risk") or {}
@@ -836,6 +840,7 @@ def run_once(
                 "max_account_market_notional": risk.get("max_account_market_desired_notional"),
             },
             mode=execution_mode,
+            market_exclusions=market_exclusions,
         )
         write_intent_state(intents_path, intent_state)
         state["intents"] = intent_state.get("summary", {})
