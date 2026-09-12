@@ -5051,8 +5051,23 @@ class PolyLPSMulti:
                 }:
                     self._set_event_state(target, EVENT_DEFENSIVE, pair_reason)
 
-            # Cancel the opposite leg first: it is the leg otherwise left live
-            # when the triggering side fails its feasibility gate.
+            # Dispatch both known BUY legs before an empty sibling's failed
+            # REST read can enter the global cancellation retry loop.
+            fast_cancels = []
+            for target in targets:
+                known_ids = [
+                    self._order_id(order)
+                    for order in getattr(self, "_market_live_orders", {}).get(target, [])
+                    if _order_is_live(order) and self._order_side(order) == "BUY"
+                ]
+                if known_ids:
+                    fast_cancels.append(self._cancel_order_ids(
+                        target, known_ids, f"{pair_reason}:fast_pair"
+                    ))
+            if fast_cancels:
+                await asyncio.gather(*fast_cancels, return_exceptions=True)
+
+            # Official reads still establish absence; an ACK is not that proof.
             for target in targets:
                 results.append(
                     await self._cancel_risk_buys(target, pair_reason)
@@ -13423,13 +13438,27 @@ class PolyLPSMulti:
                             "side": "BUY", "status": "LIVE",
                             "price": str(price), "size": str(size),
                         })
-                paired = self._coordinated_pair_token(token_id)
-                pair_key = self._aggressive_pair_key(token_id, paired) if paired else ""
-                while pair_key and pair_key in getattr(self, "_aggressive_pair_cancel_inflight", set()):
-                    await asyncio.sleep(0.05)
-                cleared = await self._cancel_coordinated_pair_quotes(
-                    token_id, "late_buy_receipt"
-                )
+                async def clean_late_receipt() -> bool:
+                    paired = self._coordinated_pair_token(token_id)
+                    pair_key = self._aggressive_pair_key(token_id, paired) if paired else ""
+                    while pair_key and pair_key in getattr(self, "_aggressive_pair_cancel_inflight", set()):
+                        await asyncio.sleep(0.05)
+                    return await self._cancel_coordinated_pair_quotes(
+                        token_id, "late_buy_receipt"
+                    )
+
+                cleanup_task = asyncio.create_task(clean_late_receipt())
+                while True:
+                    try:
+                        cleared = await asyncio.shield(cleanup_task)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup_task.cancelled():
+                            self._force_exchange_maintenance(
+                                "late_buy_cleanup_interrupted", "late_buy_receipt", immediate_cancel=True
+                            )
+                            raise
+                        interrupted = True
                 if not cleared:
                     self._force_exchange_maintenance(
                         "late_buy_cancel_unverified", "late_buy_receipt", immediate_cancel=True
