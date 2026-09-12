@@ -93,6 +93,7 @@ class CommandRunner:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         check: bool = True,
+        timeout: float | None = None,
     ) -> str:
         result = subprocess.run(
             [str(arg) for arg in args],
@@ -102,6 +103,7 @@ class CommandRunner:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=timeout,
         )
         return result.stdout.strip()
 
@@ -489,12 +491,17 @@ class LaunchAgentState:
     running: bool
 
 
-def _launch_agent_loaded(runner: CommandRunner, service: str) -> bool:
+def _launch_agent_status(
+    runner: CommandRunner, service: str, *, timeout: float = 5.0,
+    allow_missing_state: bool = False,
+) -> str | None:
     try:
-        output = runner.run(("launchctl", "print", service))
+        output = runner.run(("launchctl", "print", service), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RelayDeploymentError("launch agent state probe timed out") from None
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 113 and "Could not find service" in (exc.stderr or ""):
-            return False
+            return None
         raise RelayDeploymentError("cannot verify launch agent state") from None
     # launchctl indents direct job fields once; coalitions have nested states.
     # Bind the response to the requested job and never scan nested diagnostics.
@@ -502,7 +509,18 @@ def _launch_agent_loaded(runner: CommandRunner, service: str) -> bool:
     if not lines or lines[0] != f"{service} = {{" or lines[-1] != "}":
         raise RelayDeploymentError("invalid launch agent state response")
     states = re.findall(r"^\tstate = ([^\r\n]+)$", output, re.MULTILINE)
-    if states != ["running"]:
+    if not states and allow_missing_state:
+        return ""  # A present job without a state field is not an unloaded job.
+    if len(states) != 1 or not states[0].strip():
+        raise RelayDeploymentError("invalid launch agent direct state")
+    return states[0]
+
+
+def _launch_agent_loaded(runner: CommandRunner, service: str) -> bool:
+    state = _launch_agent_status(runner, service)
+    if state is None:
+        return False
+    if state != "running":
         raise RelayDeploymentError("launch agent state is not stable running/unloaded")
     return True
 
@@ -542,10 +560,26 @@ def _launch_agent_state(
     return LaunchAgentState(disabled=disabled, running=running)
 
 
-def _require_agents_unloaded(runner: CommandRunner, services: Sequence[str]) -> None:
-    for service in services:
-        if _launch_agent_loaded(runner, service):
-            raise RelayDeploymentError("launch agent did not stop")
+def _require_agents_unloaded(
+    runner: CommandRunner, services: Sequence[str], *, timeout: float = 15.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        all_unloaded = True
+        for service in services:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RelayDeploymentError("timed out waiting for launch agents to unload")
+            # Any present state is still loaded, including exiting/not running.
+            state = _launch_agent_status(
+                runner, service, timeout=min(5.0, remaining), allow_missing_state=True)
+            all_unloaded = all_unloaded and state is None
+        if all_unloaded:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RelayDeploymentError("timed out waiting for launch agents to unload")
+        time.sleep(min(0.25, remaining))
 
 
 def activate_release(
@@ -682,6 +716,9 @@ def activate_release(
         if startup_bindings is not None:
             startup_bindings.require_unchanged()
         _require_agents_unloaded(runner, (service, api_service))
+        recovery_floor.require_unchanged()
+        if startup_bindings is not None:
+            startup_bindings.require_unchanged()
         _atomic_symlink(paths.current_link, release)
         if startup_bindings is None:
             _atomic_write(paths.launch_agent, plist_content, 0o644)
@@ -778,6 +815,9 @@ def activate_release(
             startup_bindings.require_unchanged()
         try:
             _require_agents_unloaded(runner, (service, api_service))
+            recovery_floor.require_unchanged()
+            if startup_bindings is not None:
+                startup_bindings.require_unchanged()
             if previous_target is None:
                 paths.current_link.unlink(missing_ok=True)
             else:

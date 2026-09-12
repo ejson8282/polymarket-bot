@@ -196,8 +196,9 @@ class LaunchctlRunner(CommandRunner):
         cwd: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
         check: bool = True,
+        timeout: float | None = None,
     ) -> str:
-        del cwd, env
+        del cwd, env, timeout
         command = tuple(str(value) for value in args)
         self.calls.append(command)
         if command[:2] == ("launchctl", "print-disabled"):
@@ -241,6 +242,7 @@ class DelayedLaunchctlRunner(LaunchctlRunner):
         cwd: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
         check: bool = True,
+        timeout: float | None = None,
     ) -> str:
         command = tuple(str(value) for value in args)
         if (command[:2] == ("launchctl", "print") and self.delayed_prints > 0
@@ -248,7 +250,7 @@ class DelayedLaunchctlRunner(LaunchctlRunner):
             self.calls.append(command)
             self.delayed_prints -= 1
             return f"{command[-1]} = {{\n\tstate = waiting\n}}"
-        return super().run(args, cwd=cwd, env=env, check=check)
+        return super().run(args, cwd=cwd, env=env, check=check, timeout=timeout)
 
 
 def _prepare(tmp_path: Path) -> tuple[RelayDeploymentPaths, str]:
@@ -575,7 +577,8 @@ def test_unverifiable_initial_state_never_mutates_services(tmp_path, failure):
 
 
 @pytest.mark.parametrize("failure", ["bootstrap", "enable", "verification", "bootout"])
-def test_rollback_failure_never_reports_restored(tmp_path, failure):
+def test_rollback_failure_never_reports_restored(tmp_path, monkeypatch, failure):
+    _fake_clock(monkeypatch)
     paths, sha = _prepare(tmp_path)
     _old_launch_agents(paths, sha)
     class FailingRollbackRunner(LaunchctlRunner):
@@ -669,3 +672,103 @@ def test_launch_agent_enablement_supported_tokens(token, disabled):
     result = relay_deploy._launch_agent_state(
         TokenRunner(), "gui/501", label, relay_deploy.FileSnapshot(None))
     assert result == relay_deploy.LaunchAgentState(disabled=disabled, running=False)
+
+
+def _fake_clock(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(relay_deploy.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(relay_deploy.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    return now
+
+
+@pytest.mark.parametrize("transient", ["running", "exiting", "not running", "waiting", None])
+def test_unload_wait_requires_confirmed_absence(monkeypatch, transient):
+    now = _fake_clock(monkeypatch)
+    class DrainingRunner(LaunchctlRunner):
+        probes = 0
+        def run(self, args, **kwargs):
+            self.probes += 1
+            assert 0 < kwargs["timeout"] <= 1.0 - now[0]
+            if self.probes <= 2:
+                state = f"\tstate = {transient}\n" if transient is not None else ""
+                return f"{args[-1]} = {{\n{state}}}"
+            raise subprocess.CalledProcessError(113, args, stderr="Could not find service")
+    runner = DrainingRunner()
+    relay_deploy._require_agents_unloaded(runner, ["gui/501/synthetic"], timeout=1.0)
+    assert runner.probes == 3
+    assert now[0] == 0.5
+
+
+def test_unload_wait_times_out_if_any_service_remains(monkeypatch):
+    now = _fake_clock(monkeypatch)
+    class StuckRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            if args[-1].endswith("stuck"):
+                return f"{args[-1]} = {{\n\tstate = not running\n}}"
+            raise subprocess.CalledProcessError(113, args, stderr="Could not find service")
+    with pytest.raises(RelayDeploymentError, match="timed out waiting"):
+        relay_deploy._require_agents_unloaded(
+            StuckRunner(), ["gui/501/gone", "gui/501/stuck"], timeout=1.0)
+    assert now[0] == 1.0
+
+
+@pytest.mark.parametrize("failure", ["permission", "timeout", "malformed"])
+def test_unload_probe_failure_is_not_treated_as_stopped(monkeypatch, failure):
+    now = _fake_clock(monkeypatch)
+    class FailedProbeRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            if failure == "permission":
+                raise subprocess.CalledProcessError(1, args, stderr="denied")
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return "unrecognized launchctl response"
+    with pytest.raises(RelayDeploymentError):
+        relay_deploy._require_agents_unloaded(FailedProbeRunner(), ["gui/501/synthetic"], timeout=1.0)
+    assert now[0] == 0.0
+
+
+@pytest.mark.parametrize("fail_probe", [False, True])
+def test_activation_and_rollback_wait_for_delayed_bootout(tmp_path, monkeypatch, fail_probe):
+    _fake_clock(monkeypatch)
+    paths, sha = _prepare(tmp_path)
+    _old_launch_agents(paths, sha)
+    class DelayedBootoutRunner(LaunchctlRunner):
+        def __init__(self):
+            super().__init__(running=(relay_deploy.API_LABEL, relay_deploy.LABEL))
+            self.draining = {}
+            self.transitions = 0
+        def run(self, args, **kwargs):
+            command = tuple(args)
+            label = command[-1].split("/")[-1]
+            if command[:2] == ("launchctl", "bootout") and label in self.loaded:
+                self.calls.append(command)
+                self.draining[label] = 2
+                return ""
+            if command[:2] == ("launchctl", "print") and label in self.draining:
+                self.calls.append(command)
+                if self.draining[label]:
+                    self.draining[label] -= 1
+                    self.transitions += 1
+                    return f"{command[-1]} = {{\n\tstate = exiting\n}}"
+                self.draining.pop(label)
+                self.loaded.discard(label)
+            if command[:2] == ("launchctl", "bootstrap"):
+                assert not self.draining
+            return super().run(args, **kwargs)
+    runner = DelayedBootoutRunner()
+    args = dict(target_sha=sha, expected_current=sha, confirm=CONFIRMATION,
+                authorization_id="synthetic-delayed-bootout",
+                api_probe=lambda url: {"ok": not fail_probe, "release_sha": sha},
+                discover_market=lambda url: 10835, relay_probe=lambda *a: {"ok": True})
+    if fail_probe:
+        with pytest.raises(RelayDeploymentError, match="previous state restored"):
+            activate_release(paths, runner, **args)
+    else:
+        assert activate_release(paths, runner, **args)["status"] == "activated"
+    assert runner.loaded == {relay_deploy.API_LABEL, relay_deploy.LABEL}
+    assert runner.transitions == (6 if fail_probe else 4)
+
+
+def test_command_runner_enforces_probe_timeout():
+    with pytest.raises(subprocess.TimeoutExpired):
+        CommandRunner().run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.01)
