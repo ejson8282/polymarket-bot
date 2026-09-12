@@ -782,7 +782,10 @@ def _run_loop_locked(
             capital_rows = build_account_capital_rows(
                 account_ids,
                 balances=capital_balances,
-                positions=live_positions,
+                positions=[
+                    row for row in live_positions
+                    if not market_exclusions.excludes_inventory_budget(row.account_id, row.market_id)
+                ],
                 previous_profiles=previous_profiles,
                 fallback_equity=Decimal(
                     str(capital_cfg.get("fallback_equity") or "100")
