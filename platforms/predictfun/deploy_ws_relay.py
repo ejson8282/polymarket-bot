@@ -521,10 +521,10 @@ def _launch_agent_state(
     for line in body.group(1).splitlines():
         if not line.strip():
             continue
-        entry = re.fullmatch(r'\s*"([^"\r\n]+)"\s*=>\s*(true|false)\s*', line)
+        entry = re.fullmatch(r'\s*"([^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)\s*', line)
         if entry is None or entry[1] in overrides:
             raise RelayDeploymentError("invalid launch agent enablement entry")
-        overrides[entry[1]] = entry[2] == "true"
+        overrides[entry[1]] = entry[2] in {"true", "disabled"}
     if label in overrides:
         disabled = overrides[label]
     else:
