@@ -183,10 +183,11 @@ def _paths(tmp_path: Path) -> tuple[RelayDeploymentPaths, str]:
 
 
 class LaunchctlRunner(CommandRunner):
-    def __init__(self, *, running=(), disabled=()) -> None:
+    def __init__(self, *, running=(), disabled=(), boolean_tokens=False) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.loaded = set(running)
         self.disabled = set(disabled)
+        self.boolean_tokens = boolean_tokens
 
     def run(
         self,
@@ -200,8 +201,9 @@ class LaunchctlRunner(CommandRunner):
         command = tuple(str(value) for value in args)
         self.calls.append(command)
         if command[:2] == ("launchctl", "print-disabled"):
+            tokens = ("false", "true") if self.boolean_tokens else ("enabled", "disabled")
             return 'disabled services = {\n' + '\n'.join(
-                f'"{label}" => {str(label in self.disabled).lower()}'
+                f'"{label}" => {tokens[label in self.disabled]}'
                 for label in (relay_deploy.API_LABEL, relay_deploy.LABEL)) + '\n}'
         if command[:2] == ("launchctl", "print"):
             if command[-1].split("/")[-1] not in self.loaded:
@@ -516,7 +518,8 @@ def _old_launch_agents(paths, sha):
     ((relay_deploy.LABEL,), (relay_deploy.API_LABEL,)),
     ((relay_deploy.API_LABEL, relay_deploy.LABEL), ()),
 ])
-def test_failed_guarded_activation_restores_actual_service_states(tmp_path, monkeypatch, running, disabled):
+@pytest.mark.parametrize("boolean_tokens", [False, True])
+def test_failed_guarded_activation_restores_actual_service_states(tmp_path, monkeypatch, running, disabled, boolean_tokens):
     from types import SimpleNamespace
     paths, sha = _prepare(tmp_path)
     _old_launch_agents(paths, sha)
@@ -524,7 +527,7 @@ def test_failed_guarded_activation_restores_actual_service_states(tmp_path, monk
     monkeypatch.setattr(relay_deploy.recovery_service_binding, "check_transition",
                         lambda *a: SimpleNamespace(require_unchanged=lambda: None))
     monkeypatch.setattr(relay_deploy.recovery_service_binding, "binding_files", lambda p: original)
-    runner = LaunchctlRunner(running=running, disabled=disabled)
+    runner = LaunchctlRunner(running=running, disabled=disabled, boolean_tokens=boolean_tokens)
     failure_index = 0
     def fail_api(url):
         nonlocal failure_index
@@ -614,6 +617,9 @@ def test_launch_agent_state_uses_plist_default_when_no_override(disabled):
 @pytest.mark.parametrize("output", [
     'disabled services = {\n"x" => invalid\n}',
     'disabled services = {\n"x" => true\n"x" => false\n}',
+    'disabled services = {\n"x" => enabled\n"x" => disabled\n}',
+    'disabled services = {\n"x" => ENABLED\n}',
+    'disabled services = {\n"x" => disabled trailing\n}',
 ])
 def test_launch_agent_state_rejects_invalid_override_map(output):
     class InvalidRunner(LaunchctlRunner):
@@ -648,3 +654,18 @@ def test_launch_agent_state_rejects_wrong_service_response():
             return "gui/501/unrelated = {\n\tstate = running\n}"
     with pytest.raises(RelayDeploymentError, match="state response"):
         relay_deploy._launch_agent_loaded(WrongServiceRunner(), f"gui/501/{relay_deploy.API_LABEL}")
+
+
+@pytest.mark.parametrize("token,disabled", [
+    ("enabled", False), ("disabled", True), ("false", False), ("true", True),
+])
+def test_launch_agent_enablement_supported_tokens(token, disabled):
+    label = relay_deploy.API_LABEL
+    class TokenRunner(LaunchctlRunner):
+        def run(self, args, **kwargs):
+            if tuple(args[:2]) == ("launchctl", "print-disabled"):
+                return f'disabled services = {{\n\t"{label}" => {token}\n}}'
+            return super().run(args, **kwargs)
+    result = relay_deploy._launch_agent_state(
+        TokenRunner(), "gui/501", label, relay_deploy.FileSnapshot(None))
+    assert result == relay_deploy.LaunchAgentState(disabled=disabled, running=False)
